@@ -63,6 +63,7 @@ type ChannelMessage struct {
 	Response       chan *schemas.BifrostResponse
 	ResponseStream chan chan *schemas.BifrostStreamChunk
 	Err            chan schemas.BifrostError
+	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -1370,11 +1371,12 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 		}
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
+		// A document carries either prose or a structured body; only an empty pair is unrankable.
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
-					Message: fmt.Sprintf("document text is empty at index %d", i),
+					Message: fmt.Sprintf("document has no text or data at index %d", i),
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
 					RequestType:            schemas.RerankRequest,
@@ -3907,6 +3909,8 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 			default:
 				// newPq is full — cancel this message and all remaining in oldPq.
 				cancelMsg := func(r *ChannelMessage) {
+					// Cancelling instead of transferring: close its queue-wait span.
+					bifrost.endQueueWaitSpan(r)
 					prov, mod, _ := r.BifrostRequest.GetRequestFields()
 					select {
 					case r.Err <- schemas.BifrostError{
@@ -5546,6 +5550,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
+	// Open the queue-wait span; the worker closes it when it dequeues the message.
+	startQueueWaitSpan(ctx, tracer, msg)
+
 	// If the queue is closing, check whether the provider was updated (new queue
 	// available) or removed. On update, transparently re-route to the new queue
 	// so in-flight producers don't get spurious errors. On removal, error out.
@@ -5887,6 +5894,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+
+	// Open the queue-wait span; the worker closes it when it dequeues the message.
+	startQueueWaitSpan(ctx, tracer, msg)
 
 	// If the queue is closing, check whether the provider was updated (new queue
 	// available) or removed. On update, transparently re-route to the new queue
@@ -6390,14 +6400,20 @@ func executeRequestWithRetries[T any](
 			exportHeaderAttributes(passthrough)
 		}
 
-		// Populate LLM request attributes (messages, parameters, etc.)
-		if req != nil {
-			tracer.PopulateLLMRequestAttributes(handle, req)
-		}
-
-		// Update context with span ID (no valueCtx alloc; StartSpanID returned it).
+		// Make the LLM call the active span before attribute-population so that phase
+		// nests inside it rather than the preceding span (no valueCtx alloc; StartSpanID
+		// returned spanID).
 		if spanID != "" {
 			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+		}
+
+		// Populate LLM request attributes (messages, parameters, etc.). Timed as an
+		// "attribute-population" span: writing a large prompt's messages onto the span
+		// is real, payload-scaled work that otherwise hides in the core bucket.
+		if req != nil {
+			_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
+			tracer.PopulateLLMRequestAttributes(handle, req)
+			tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 		}
 
 		// Record stream start time for TTFT calculation (only for streaming requests)
@@ -6480,11 +6496,15 @@ func executeRequestWithRetries[T any](
 					}
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
+				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			} else if bifrostError != nil {
 				// Failed stream requests carry a chan result and miss the cast above;
 				// stamp error attributes explicitly so spans don't report unknown.
+				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
+				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
 
 			// End span with appropriate status
@@ -6681,12 +6701,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		select {
 		case r := <-pq.queue:
 			req = r
+			bifrost.endQueueWaitSpan(req)
 		case <-pq.done:
 			// Provider is shutting down. Drain any buffered requests and send
 			// back errors so callers are not left blocked on their response channel.
 			for {
 				select {
 				case r := <-pq.queue:
+					// Draining a still-open queue-wait span: close it before discarding.
+					bifrost.endQueueWaitSpan(r)
 					provKey, mod, _ := r.GetRequestFields()
 					select {
 					case r.Err <- schemas.BifrostError{
@@ -8281,6 +8304,28 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // POOL & RESOURCE MANAGEMENT
 
+// startQueueWaitSpan opens a nil-safe "queue-wait" internal span measuring how long
+// the message sits in the provider queue before a worker dequeues it. The handle is
+// stored on the message; endQueueWaitSpan closes it on dequeue, and
+// releaseChannelMessage closes it if the send never reached a worker. When no trace
+// is active StartSpanID returns a nil handle, so the phase simply folds into core.
+func startQueueWaitSpan(ctx *schemas.BifrostContext, tracer schemas.Tracer, msg *ChannelMessage) {
+	if tracer == nil {
+		return
+	}
+	_, msg.queueSpan = tracer.StartSpanID(ctx, "queue-wait", schemas.SpanKindInternal)
+}
+
+// endQueueWaitSpan closes the queue-wait span once (nil-safe, idempotent): it clears
+// the handle so a later releaseChannelMessage does not double-close it.
+func (bifrost *Bifrost) endQueueWaitSpan(msg *ChannelMessage) {
+	if msg == nil || msg.queueSpan == nil {
+		return
+	}
+	bifrost.getTracer().EndSpan(msg.queueSpan, schemas.SpanStatusOk, "")
+	msg.queueSpan = nil
+}
+
 // getChannelMessage gets a ChannelMessage from the pool and configures it with the request.
 // It also gets response and error channels from their respective pools.
 func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMessage {
@@ -8337,6 +8382,8 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 	for {
 		select {
 		case r := <-pq.queue:
+			// Draining a still-open queue-wait span: close it before discarding.
+			bifrost.endQueueWaitSpan(r)
 			provKey, mod, _ := r.GetRequestFields()
 			select {
 			case r.Err <- schemas.BifrostError{
@@ -8361,6 +8408,10 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
+	// Close the queue-wait span if the message never reached a worker (send failed
+	// on a shutdown/drop path). No-op when the worker already closed it.
+	bifrost.endQueueWaitSpan(msg)
+
 	// Drain any undelivered values before pooling so an idle pooled channel
 	// doesn't pin a full response/error until its next reuse. getChannelMessage
 	// drains again on acquire as defense in depth.
@@ -8401,6 +8452,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil
+	msg.queueSpan = nil
 	bifrost.channelMessagePool.Put(msg)
 }
 

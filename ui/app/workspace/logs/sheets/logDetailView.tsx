@@ -1,4 +1,5 @@
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -38,7 +39,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -365,6 +366,25 @@ const formatToolChoice = (value: unknown): string => {
 	}
 };
 
+// batchRequestStates lists the provider's per-state request tallies as discrete
+// label/count pairs. Total, Completed, and Failed are universal (every provider
+// sets them, and a 0 is a real, useful count — e.g. "no failures yet"), so they
+// always render. The remaining states are Anthropic-specific and simply absent
+// for other providers, so those are dropped when not reported.
+const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
+	const optional: [string, number | undefined][] = [
+		["Succeeded", counts.succeeded],
+		["Expired", counts.expired],
+		["Canceled", counts.canceled],
+		["Pending", counts.pending],
+	];
+	return [
+		["Completed", counts.completed],
+		["Failed", counts.failed],
+		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
+	];
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -396,6 +416,16 @@ const statusDotStyles: Record<string, string> = {
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 };
+
+const batchStatusBadgeStyles: Record<string, string> = {
+	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+};
+const batchStatusBadgeDefault = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
 
 function StatusPill({ status }: { status: Status }) {
 	return (
@@ -444,6 +474,191 @@ function HeroStat({
 				{value}
 			</div>
 			{sub ? <div className="text-muted-foreground mt-0.5 truncate text-[11px]">{sub}</div> : null}
+		</div>
+	);
+}
+
+// formatMicros renders a microsecond overhead value, promoting to ms once it is
+// large enough that microseconds would just be noise.
+function formatMicros(us: number): string {
+	if (us >= 1000) return `${(us / 1000).toFixed(2)} ms`;
+	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
+}
+
+// Top-level overhead categories. The four JSON (un)marshalling phases fold into one
+// "Serialization" category; the auth middleware spans (middleware.*) fold into
+// "Middleware"; every plugin span folds into "Plugins"; the remaining named phase
+// spans (queue-wait, convertor, key.selection) and the backend "core" remainder each
+// get their own category; anything else lands in "Other". The stacked bar and legend
+// show these categories, and "View details" drills into the member spans (individual
+// (un)marshal phases, individual middlewares, individual plugins) inside grouped ones.
+type OverheadCategory = {
+	key: string;
+	label: string;
+	colorClass: string;
+	totalUs: number;
+	members: OverheadBucket[];
+};
+
+// The four serialization phases collapsed into the "Serialization" category. Their
+// per-phase labels below are used for the drill-down rows.
+const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
+
+const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
+	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
+	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
+	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
+	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
+	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
+	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
+	"request-unmarshal": { label: "Request unmarshal", colorClass: "bg-sky-500/70" },
+	convertor: { label: "Convertor", colorClass: "bg-fuchsia-500/70" },
+	"attribute-population": { label: "Attribute population", colorClass: "bg-pink-500/70" },
+	"request-marshal": { label: "Request marshal", colorClass: "bg-indigo-500/70" },
+	"response-parse": { label: "Response unmarshal", colorClass: "bg-purple-500/70" },
+	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
+	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
+	core: { label: "Core", colorClass: "bg-slate-500/70" },
+	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
+	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
+	other: { label: "Other", colorClass: "bg-emerald-500/70" },
+};
+
+function overheadCategoryKey(b: OverheadBucket): string {
+	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
+		return "serialization";
+	}
+	if (b.name.startsWith("middleware.")) {
+		return "middleware";
+	}
+	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
+		return b.name;
+	}
+	return b.kind === "plugin" ? "plugins" : "other";
+}
+
+// overheadMemberLabel renders a drill-down member with its friendly phase label when
+// there is one (serialization phases), else the raw span name (plugins).
+function overheadMemberLabel(name: string): string {
+	return OVERHEAD_CATEGORY_META[name]?.label ?? name;
+}
+
+// buildOverheadCategories groups the raw buckets into the top-level categories,
+// ordered largest-first so the bar and legend read like the numbers.
+function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
+	const grouped = new Map<string, OverheadBucket[]>();
+	for (const b of buckets) {
+		const key = overheadCategoryKey(b);
+		const list = grouped.get(key);
+		if (list) list.push(b);
+		else grouped.set(key, [b]);
+	}
+	const cats: OverheadCategory[] = [];
+	for (const [key, members] of grouped) {
+		members.sort((a, b) => b.duration_us - a.duration_us);
+		cats.push({
+			key,
+			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
+			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
+			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
+			members,
+		});
+	}
+	return cats.sort((a, b) => b.totalUs - a.totalUs);
+}
+
+// OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
+// split into the top-level categories, with a legend beneath. Plugin and internal
+// spans are measured directly; the "core" bucket (from the backend) accounts for the
+// rest of the overhead, so the segments sum to the full overhead number. "View
+// details" expands the categories that hold more than one span (Plugins, Other) into
+// their individual members so a specific plugin can be inspected.
+function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
+	const [showDetails, setShowDetails] = useState(false);
+	if (!buckets || buckets.length === 0) return null;
+
+	const categories = buildOverheadCategories(buckets);
+	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
+	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
+
+	// When measured spans already exceed the computed overhead, the backend omits a
+	// core bucket (it would be negative): a sign the upstream accumulator is
+	// over-counting. Surface it rather than let the numbers look inconsistent.
+	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
+
+	const barTotal = categories.reduce((acc, c) => acc + c.totalUs, 0) || 1;
+	// Only categories that aggregate more than one span are worth drilling into.
+	const drillable = categories.filter((c) => c.members.length > 1);
+
+	return (
+		<div className="space-y-3">
+			<div className="flex items-center justify-between gap-2">
+				<BlockHeader title="Overhead Breakdown" />
+				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
+			</div>
+
+			<div className="flex h-3 w-full overflow-hidden rounded-sm">
+				{categories.map((c) => (
+					<div
+						key={c.key}
+						className={cn(c.colorClass, "h-full")}
+						style={{ width: `${(c.totalUs / barTotal) * 100}%` }}
+						title={`${c.label} · ${formatMicros(c.totalUs)}`}
+					/>
+				))}
+			</div>
+
+			<div className="flex flex-wrap gap-x-4 gap-y-1.5">
+				{categories.map((c) => (
+					<div key={c.key} className="flex items-center gap-1.5 font-mono text-[11px]">
+						<span className={cn("h-2.5 w-2.5 shrink-0 rounded-[2px]", c.colorClass)} />
+						<span>{c.label}</span>
+						<span className="text-muted-foreground tabular-nums">{formatMicros(c.totalUs)}</span>
+					</div>
+				))}
+			</div>
+
+			{drillable.length > 0 ? (
+				<button
+					type="button"
+					onClick={() => setShowDetails((v) => !v)}
+					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
+				>
+					View details
+					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
+				</button>
+			) : null}
+
+			{showDetails ? (
+				<div className="space-y-3 pt-1">
+					{drillable.map((c) => (
+						<div key={c.key} className="space-y-1.5">
+							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
+								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
+								{c.label}
+								<span className="tabular-nums">{formatMicros(c.totalUs)}</span>
+							</div>
+							<div className="space-y-1 pl-3">
+								{c.members.map((m) => (
+									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
+										<span className="truncate" title={m.name}>
+											{overheadMemberLabel(m.name)}
+										</span>
+										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
+									</div>
+								))}
+							</div>
+						</div>
+					))}
+				</div>
+			) : null}
+
+			{overCounted ? (
+				<div className="text-muted-foreground text-[11px]">
+					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
+					over-counting.
+				</div>
+			) : null}
 		</div>
 	);
 }
@@ -670,6 +885,118 @@ export function LogDetailView({
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const batchDebug = log.batch_debug;
+	const batchRawRequest = useMemo(() => {
+		if (!batchDebug || !log.raw_request) return null;
+		try {
+			const parsed = JSON.parse(log.raw_request);
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+		} catch {
+			return null;
+		}
+	}, [batchDebug, log.raw_request]);
+	const batchInlineRequests = useMemo(() => {
+		const requests = batchRawRequest?.requests;
+		if (Array.isArray(requests)) {
+			return requests
+				.map((r: any, index: number) => ({
+					customId: typeof r?.custom_id === "string" && r.custom_id ? r.custom_id : `request-${index + 1}`,
+					model: typeof r?.params?.model === "string" ? r.params.model : typeof r?.body?.model === "string" ? r.body.model : null,
+					messages: Array.isArray(r?.params?.messages) ? r.params.messages : Array.isArray(r?.body?.messages) ? r.body.messages : [],
+				}))
+				.filter((r) => r.messages.length > 0);
+		}
+		const geminiRequests = batchRawRequest?.batch as any;
+		const geminiItems = geminiRequests?.inputConfig?.requests?.requests;
+		if (Array.isArray(geminiItems)) {
+			return geminiItems
+				.map((item: any, index: number) => {
+					const contents = item?.request?.contents;
+					const messages = Array.isArray(contents)
+						? contents.map((c: any) => ({
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
+						: [];
+					return {
+						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
+						model: null as string | null,
+						messages,
+					};
+				})
+				.filter((r) => r.messages.length > 0);
+		}
+		return [];
+	}, [batchRawRequest]);
+	const batchInputFileId =
+		typeof batchRawRequest?.input_file_id === "string"
+			? (batchRawRequest.input_file_id as string)
+			: typeof (batchRawRequest?.batch as any)?.inputConfig?.fileName === "string"
+				? ((batchRawRequest?.batch as any).inputConfig.fileName as string)
+				: null;
+	const batchRawResponse = useMemo(() => {
+		if (!batchDebug || !log.raw_response) return null;
+		try {
+			const parsed = JSON.parse(log.raw_response);
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+		} catch {
+			return null;
+		}
+	}, [batchDebug, log.raw_response]);
+	const batchResultItems = useMemo(() => {
+		const raw = batchRawResponse;
+		const results: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? (raw!.results as any[]) : [];
+		return results
+			.map((item: any, index: number) => {
+				const customId = typeof item?.custom_id === "string" && item.custom_id ? item.custom_id : `result-${index + 1}`;
+				const body = item?.response?.body;
+				const model =
+					typeof item?.result?.message?.model === "string"
+						? item.result.message.model
+						: typeof body?.model === "string"
+							? body.model
+							: null;
+				let message: any = null;
+				let rawFallback: string | null = null;
+				const candidate = Array.isArray(body?.candidates) ? body.candidates[0] : null;
+				if (item?.result?.message) {
+					message = item.result.message;
+				} else if (body?.choices?.[0]?.message) {
+					message = body.choices[0].message;
+				} else if (body?.content !== undefined) {
+					message = body;
+				} else if (candidate) {
+					const parts = candidate?.content?.parts;
+					const text = Array.isArray(parts)
+						? parts
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
+						: "";
+					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
+					message = { role, content: text };
+				} else if (typeof body?.text === "string") {
+					message = { role: "assistant", content: body.text };
+				} else if (body && Object.keys(body).length > 0) {
+					rawFallback = JSON.stringify(body, null, 2);
+				} else if (item?.result && Object.keys(item.result).length > 0) {
+					rawFallback = JSON.stringify(item.result, null, 2);
+				}
+				const errorMessage: string | null =
+					item?.error?.message ||
+					(item?.result?.type && item.result.type !== "succeeded" ? `Batch item ${item.result.type}` : null) ||
+					(typeof item?.response?.status_code === "number" && item.response.status_code >= 400
+						? `Provider returned HTTP ${item.response.status_code}`
+						: null);
+				return { customId, model, message, rawFallback, errorMessage };
+			})
+			.filter((r) => r.message || r.rawFallback || r.errorMessage);
+	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
 				method?: string;
@@ -1048,6 +1375,9 @@ export function LogDetailView({
 								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
 							/>
 						</div>
+						{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
+							<OverheadBreakdown buckets={log.overhead_breakdown} overheadMs={log.overhead_latency} />
+						) : null}
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
@@ -1613,6 +1943,59 @@ export function LogDetailView({
 									</>
 								);
 							})()}
+							{batchDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Batch Details" />
+										{batchDebug.batch_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Batch ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+														<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
+											<div className="grid w-full grid-cols-1 md:grid-cols-3 items-start justify-between gap-4">
+												{batchDebug.request_counts && (
+													<>
+														<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
+															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
+														))}
+													</>
+												)}
+												{batchDebug.accounting?.cost != null && (
+													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
+												)}
+											</div>
+										)}
+										{batchDebug.status && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Status"
+												value={
+													<Badge
+														variant="outline"
+														className={cn(
+															"rounded-sm px-2 py-0.5 font-medium uppercase",
+															batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+														)}
+													>
+														{batchDebug.status.replace(/_/g, " ")}
+													</Badge>
+												}
+											/>
+										)}
+									</div>
+								</>
+							)}
+
 							{log.cache_debug && (
 								<>
 									<DottedSeparator />
@@ -1805,9 +2188,19 @@ export function LogDetailView({
 						)}
 				</div>
 			</details>
-			<Tabs key={log.id} defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
+			<Tabs key={log.id} defaultValue={batchDebug ? "details" : showTabs ? "messages" : "plugins"} className="gap-2">
 				<TabsList className="bg-muted/60 h-10 w-fit">
-					{showTabs && (
+					{showTabs && batchDebug && (
+						<TabsTrigger value="details" className="px-3">
+							Details
+							{batchInlineRequests.length + batchResultItems.length ? (
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{batchInlineRequests.length + batchResultItems.length}
+								</span>
+							) : null}
+						</TabsTrigger>
+					)}
+					{showTabs && !batchDebug && (
 						<TabsTrigger value="messages" className="px-3">
 							Messages
 							{log.input_history?.length ? (
@@ -1818,7 +2211,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && (
+					{showTabs && !isPassthrough && !log.list_models_output && !batchDebug && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -1852,6 +2245,139 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 				</TabsList>
+
+				{batchDebug && (
+					<TabsContent value="details" className="space-y-4">
+						{(batchDebug.batch_id || (batchInlineRequests.length === 0 && batchInputFileId)) && (
+							<div className="bg-card rounded-sm border p-5 space-y-4">
+								{batchDebug.batch_id && (
+									<LogEntryDetailsView
+										label="Batch ID"
+										value={
+											<span className="flex items-center gap-1">
+												<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+												<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-details-copy-batch-id-button" />
+											</span>
+										}
+									/>
+								)}
+								{batchInlineRequests.length === 0 && batchInputFileId && (
+									<LogEntryDetailsView
+										label="Input File ID"
+										value={
+											<span className="flex items-center gap-1">
+												<code className="font-mono text-xs">{batchInputFileId}</code>
+												<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
+											</span>
+										}
+									/>
+								)}
+							</div>
+						)}
+						<div className="bg-card rounded-sm border">
+							{batchInlineRequests.length > 0 ? (
+								<div className="px-5 pt-5 pb-2">
+									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+										Batch Requests ({batchInlineRequests.length})
+									</div>
+									<Accordion type="multiple" className="w-full">
+										{batchInlineRequests.map((request, index) => (
+											<AccordionItem key={`${request.customId}-${index}`} value={`${request.customId}-${index}`}>
+												<AccordionTrigger className="text-[13px]">
+													<span className="flex items-center gap-2">
+														<code className="font-mono text-xs">{request.customId}</code>
+														{request.model && (
+															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																{request.model}
+															</Badge>
+														)}
+														<span className="text-muted-foreground text-[11px]">
+															{request.messages.length} message{request.messages.length === 1 ? "" : "s"}
+														</span>
+													</span>
+												</AccordionTrigger>
+												<AccordionContent className="space-y-3 pb-2">
+													{request.messages.map((message: any, msgIndex: number) => {
+														const role = ((message?.role as string) || "user") as MessageRole;
+														const text = extractMessageText(message);
+														return (
+															<MessageRow key={msgIndex} role={role} last={msgIndex === request.messages.length - 1}>
+																{text ? (
+																	<CollapsibleCode text={text} preview={3} mono={false} />
+																) : (
+																	<span className="text-muted-foreground text-xs">Empty message</span>
+																)}
+															</MessageRow>
+														);
+													})}
+												</AccordionContent>
+											</AccordionItem>
+										))}
+									</Accordion>
+								</div>
+							) : batchResultItems.length > 0 ? (
+								<div className="px-5 pt-5 pb-2">
+									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+										Batch Results ({batchResultItems.length})
+									</div>
+									<Accordion type="multiple" className="w-full">
+										{batchResultItems.map((result, index) => (
+											<AccordionItem key={`${result.customId}-${index}`} value={`${result.customId}-${index}`}>
+												<AccordionTrigger className="text-[13px]">
+													<span className="flex items-center gap-2">
+														<code className="font-mono text-xs">{result.customId}</code>
+														{result.model && (
+															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																{result.model}
+															</Badge>
+														)}
+														{result.errorMessage && (
+															<span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>
+														)}
+													</span>
+												</AccordionTrigger>
+												<AccordionContent className="space-y-3 pb-2">
+													{result.errorMessage ? (
+														<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 text-[12.5px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
+															{result.errorMessage}
+														</div>
+													) : result.message ? (
+														(() => {
+															const role = ((result.message?.role as string) || "assistant") as MessageRole;
+															const text = extractMessageText(result.message);
+															return (
+																<MessageRow role={role} last>
+																	{text ? (
+																		<CollapsibleCode text={text} preview={3} mono={false} />
+																	) : (
+																		<span className="text-muted-foreground text-xs">Empty message</span>
+																	)}
+																</MessageRow>
+															);
+														})()
+													) : result.rawFallback ? (
+														<div>
+															<div className="text-muted-foreground mb-1 text-[10.5px]">
+																Unrecognized result shape — showing the raw response body
+															</div>
+															<CollapsibleCode text={result.rawFallback} preview={5} lang="json" />
+														</div>
+													) : (
+														<span className="text-muted-foreground text-xs">Empty result</span>
+													)}
+												</AccordionContent>
+											</AccordionItem>
+										))}
+									</Accordion>
+								</div>
+							) : (
+								<div className="text-muted-foreground p-5 text-center text-sm">
+									No batch request or result details were captured for this row.
+								</div>
+							)}
+						</div>
+					</TabsContent>
+				)}
 
 				<TabsContent value="messages" className="space-y-4">
 					{log.content_hidden && (

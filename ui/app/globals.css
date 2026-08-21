@@ -103,11 +103,16 @@
 	   Full-viewport surfaces that sit outside the card — dialogs, portalled
 	   popovers, the sidebar, the auth-only MinimalShell — keep using 100dvh. */
 	--app-topbar-height: 3.25rem;
-	/* Pages size themselves as `calc(var(--app-content-viewport) - 1rem)` — a
+	/* Pages size themselves as
+	   `calc(var(--app-content-viewport) - var(--app-bottom-padding))` — a
 	   leftover from when the card carried my-2. It now has only mb-2, so add
 	   that 0.5rem back here to keep their subtraction landing exactly on the
 	   card's inner height. */
 	--app-content-viewport: calc(100dvh - var(--app-topbar-height) + 0.5rem);
+	/* Gap left below a full-height page so it doesn't sit flush against the
+	   bottom of the content card. Change it here, not per page — every
+	   full-height page subtracts this from --app-content-viewport. */
+	--app-bottom-padding: 20px;
 
 	--height-base: calc(var(--app-content-viewport) - 130px);
 

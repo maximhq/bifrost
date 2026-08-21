@@ -289,11 +289,8 @@ func createBedrockRerankRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockRerankRequest); ok {
-				rerankRequest := bedrockReq.ToBifrostRerankRequest(ctx)
-				// Bedrock echoes the ranked document in every result.
-				rerankRequest.Params.ReturnDocuments = new(true)
 				return &schemas.BifrostRequest{
-					RerankRequest: rerankRequest,
+					RerankRequest: bedrockReq.ToBifrostRerankRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid rerank request type")

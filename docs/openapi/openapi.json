@@ -2346,10 +2346,26 @@
                         "type": "string",
                         "enum": [
                           "url",
-                          "b64_json"
+                          "b64_json",
+                          "data_uri"
                         ],
                         "default": "url",
-                        "description": "Format of the response.\n"
+                        "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                      },
+                      "input_images": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Input images for image-to-image generation, as public URLs, provider-side asset IDs,\nor base64 data URIs. Providers that accept only a single input use the first entry.\n"
+                      },
+                      "aspect_ratio": {
+                        "type": "string",
+                        "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
                       },
                       "background": {
                         "type": "string",
@@ -2385,9 +2401,11 @@
                         "enum": [
                           "png",
                           "webp",
-                          "jpeg"
+                          "jpeg",
+                          "tiff",
+                          "svg"
                         ],
-                        "description": "Output image format"
+                        "description": "Output image format. `svg` applies to vectorize operations"
                       },
                       "user": {
                         "type": "string",
@@ -2450,6 +2468,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -2466,6 +2488,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -2723,47 +2767,98 @@
       "post": {
         "operationId": "imageEdit",
         "summary": "Edit an image",
-        "description": "Edits an image using a text prompt and optional mask. Request must be sent as multipart/form-data\nwith at least `model`, `prompt` (unless `type` is `background_removal`), and `image` (or `image[]`).\n",
+        "description": "Edits an image using a text prompt and optional mask. Accepts either `application/json` (sources\nas URLs or base64 under `images`) or `multipart/form-data` (to upload the image as `image` or\n`image[]`). Requires at least `model`, one image, and `prompt` - the latter except for the\noperation types driven purely by the input image, e.g. `background_removal`. Only the JSON body\npreserves the types of provider-native extra params; multipart carries every value as a string.\n",
         "tags": [
           "Images"
         ],
         "requestBody": {
           "required": true,
           "content": {
-            "multipart/form-data": {
+            "application/json": {
               "schema": {
                 "type": "object",
+                "description": "JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form\n/v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the\nprovider as extra params with their JSON types intact, which is what a model's nested tuning\nobject needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,\npost `multipart/form-data` instead - see `ImageEditMultipartRequest`.\n",
                 "required": [
                   "model",
-                  "image"
+                  "images"
                 ],
                 "properties": {
                   "model": {
                     "type": "string",
                     "description": "Model identifier in format `provider/model`"
                   },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "description": "One source image, either as a bare string - the form `input_images` takes on\n/v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept\na given form reject it.\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "description": "Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object\nform's `url`.\n"
+                        },
+                        {
+                          "type": "object",
+                          "description": "Exactly one of the two properties is expected.",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "description": "Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as\nbase64.\n"
+                            },
+                            "image": {
+                              "type": "string",
+                              "format": "byte",
+                              "description": "Base64-encoded image bytes"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "description": "Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no\nusable image is rejected. Providers treat the first image as the primary one (Runware's seed\nimage, Bedrock's style-transfer base), so the order is part of the contract. Only the\nreference-image models accept more than one; elsewhere images after the first are dropped.\n"
+                  },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the edit. Required unless `type` is `background_removal`.\n"
-                  },
-                  "image": {
-                    "type": "string",
-                    "format": "binary",
-                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\n"
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
                   },
                   "mask": {
                     "type": "string",
-                    "format": "binary",
-                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit)"
+                    "format": "byte",
+                    "description": "Optional base64-encoded mask image for inpainting (transparent areas indicate regions to\nedit). Dropped for models that declare no mask input.\n"
                   },
                   "type": {
                     "type": "string",
                     "enum": [
                       "inpainting",
                       "outpainting",
-                      "background_removal"
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
-                    "description": "Type of edit operation"
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
                   },
                   "n": {
                     "type": "integer",
@@ -2787,10 +2882,11 @@
                     "type": "string",
                     "enum": [
                       "url",
-                      "b64_json"
+                      "b64_json",
+                      "data_uri"
                     ],
                     "default": "url",
-                    "description": "Format of the response"
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
                   },
                   "stream": {
                     "type": "boolean",
@@ -2836,9 +2932,187 @@
                     "enum": [
                       "png",
                       "webp",
-                      "jpeg"
+                      "jpeg",
+                      "tiff",
+                      "svg"
                     ],
-                    "description": "Output image format"
+                    "description": "Output image format. `svg` applies to vectorize operations"
+                  },
+                  "num_inference_steps": {
+                    "type": "integer",
+                    "description": "Number of inference steps"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Compression level (0-100%)"
+                  },
+                  "negative_prompt": {
+                    "type": "string",
+                    "description": "What to avoid in the edit"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "User identifier for tracking"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "description": "Multipart encoding of an image edit, and the only encoding that can upload the image as a file.\nThis is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a\nstring, so provider-native extra params arrive as strings; post `application/json` instead when\na provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.\n",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                  },
+                  "image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\nEither `image` or `image_url` is required.\n"
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "description": "Input image as a public URL or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this\navoids round-tripping the asset through the gateway as base64. Uploads keep their leading\nposition, and providers treat the first image as the primary one.\n"
+                  },
+                  "mask": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for\nmodels that declare no mask input.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "inpainting",
+                      "outpainting",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
+                    ],
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of images to generate"
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": [
+                      "256x256",
+                      "512x512",
+                      "1024x1024",
+                      "1536x1024",
+                      "1024x1536",
+                      "auto"
+                    ],
+                    "description": "Size of the output image"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json",
+                      "data_uri"
+                    ],
+                    "default": "url",
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, stream the response via Server-Sent Events"
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ],
+                    "description": "Background type for the image"
+                  },
+                  "input_fidelity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "high"
+                    ],
+                    "description": "How closely to follow the original image"
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of partial images to generate when streaming"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "high",
+                      "medium",
+                      "low",
+                      "standard"
+                    ],
+                    "description": "Quality of the output image"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "webp",
+                      "jpeg",
+                      "tiff",
+                      "svg"
+                    ],
+                    "description": "Output image format. `svg` applies to vectorize operations"
                   },
                   "num_inference_steps": {
                     "type": "integer",
@@ -2900,6 +3174,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -2916,6 +3194,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -3258,6 +3558,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -3274,6 +3578,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -3413,8 +3739,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "model",
-                  "prompt"
+                  "model"
                 ],
                 "properties": {
                   "model": {
@@ -3423,7 +3748,27 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the video to generate"
+                    "description": "Text prompt describing the video to generate. Optional for operations driven purely by an\ninput asset, such as image-to-3D.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "3d",
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector for providers that run more than one async task type on this endpoint\n(e.g. `3d` for mesh generation on Runware). Omit for standard video generation.\n"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
                   },
                   "input_reference": {
                     "type": "string",
@@ -4437,6 +4782,330 @@
           },
           "404": {
             "description": "Source video not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/videos/edits": {
+      "post": {
+        "operationId": "videoEdit",
+        "summary": "Edit a video",
+        "description": "Edits an existing video - prompt-driven editing, upscaling, or background removal, selected\nwith `type`. Accepts either `application/json` (with the source as a provider-side ID or a\nURL) or `multipart/form-data` (to upload the source as `video`). Like generation this is an\nasynchronous operation that returns a job ID; poll the retrieve endpoint for completion.\n",
+        "tags": [
+          "Videos"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "JSON encoding of a video edit. The source is supplied as a nested `video` object holding either\nan `id` or a `url`. To upload the source as a file, post `multipart/form-data` instead - see\n`VideoEditMultipartRequest`.\n",
+                "required": [
+                  "model",
+                  "video"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "video": {
+                    "type": "object",
+                    "description": "Source video for an edit. Supply exactly one of `id` or `url`. Output geometry and duration are\nderived from the source and are not accepted as parameters.\n",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Provider-side video ID, as returned by a previous generation"
+                      },
+                      "url": {
+                        "type": "string",
+                        "description": "Public URL or data URI"
+                      }
+                    }
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for operation types driven purely by the\nsource video: `background_removal` and `upscale`.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector. Omit for prompt-driven editing. Support varies by provider; unsupported\nvalues fall back to a standard edit.\n"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "description": "Multipart encoding of a video edit, and the only encoding that can upload a source file. This\nis what the official OpenAI SDKs send unconditionally, flattening the reference form to a\n`video[id]` field. Supply exactly one of `video`, `video[id]` or `video[url]`.\n",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "video": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Source video file to upload"
+                  },
+                  "video[id]": {
+                    "type": "string",
+                    "description": "Provider-side video ID, as an alternative to uploading a file"
+                  },
+                  "video[url]": {
+                    "type": "string",
+                    "description": "Public URL of the source video, as an alternative to uploading a file"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for operation types driven purely by the\nsource video: `background_removal` and `upscale`.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector. Omit for prompt-driven editing"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "`type: \"upscale\"` only; mutually exclusive with `target_megapixels`"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "`type: \"upscale\"` only; mutually exclusive with `upscale_factor`"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns a video job object with status information.\nPoll the retrieve endpoint to check completion status.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Provider-native job ID. To use in path parameters (retrieve/delete/download), combine as `{id}:{provider}` (e.g., `task_abc123:runway`)"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "video"
+                      ],
+                      "description": "Object type, always \"video\""
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model used for video generation"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                    },
+                    "progress": {
+                      "type": "number",
+                      "format": "float",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Approximate completion percentage (0-100)"
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "description": "Prompt used to generate the video"
+                    },
+                    "remixed_from_video_id": {
+                      "type": "string",
+                      "description": "Source video ID if this is a remix"
+                    },
+                    "seconds": {
+                      "type": "string",
+                      "description": "Duration of the generated video in seconds as a string (e.g., \"4\")"
+                    },
+                    "size": {
+                      "type": "string",
+                      "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job was created"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job completed"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                    },
+                    "videos": {
+                      "type": "array",
+                      "description": "Generated video outputs (only present when status is \"completed\")",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "base64"
+                            ],
+                            "description": "Output format of this video"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "URL to the generated video (present when type is \"url\")"
+                          },
+                          "base64": {
+                            "type": "string",
+                            "description": "Base64-encoded video content (present when type is \"base64\")"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the video (e.g., \"video/mp4\")"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
             "content": {
               "application/json": {
                 "schema": {
@@ -9590,10 +10259,26 @@
                         "type": "string",
                         "enum": [
                           "url",
-                          "b64_json"
+                          "b64_json",
+                          "data_uri"
                         ],
                         "default": "url",
-                        "description": "Format of the response.\n"
+                        "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                      },
+                      "input_images": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Input images for image-to-image generation, as public URLs, provider-side asset IDs,\nor base64 data URIs. Providers that accept only a single input use the first entry.\n"
+                      },
+                      "aspect_ratio": {
+                        "type": "string",
+                        "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
                       },
                       "background": {
                         "type": "string",
@@ -9629,9 +10314,11 @@
                         "enum": [
                           "png",
                           "webp",
-                          "jpeg"
+                          "jpeg",
+                          "tiff",
+                          "svg"
                         ],
-                        "description": "Output image format"
+                        "description": "Output image format. `svg` applies to vectorize operations"
                       },
                       "user": {
                         "type": "string",
@@ -9735,40 +10422,91 @@
         "requestBody": {
           "required": true,
           "content": {
-            "multipart/form-data": {
+            "application/json": {
               "schema": {
                 "type": "object",
+                "description": "JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form\n/v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the\nprovider as extra params with their JSON types intact, which is what a model's nested tuning\nobject needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,\npost `multipart/form-data` instead - see `ImageEditMultipartRequest`.\n",
                 "required": [
                   "model",
-                  "image"
+                  "images"
                 ],
                 "properties": {
                   "model": {
                     "type": "string",
                     "description": "Model identifier in format `provider/model`"
                   },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "description": "One source image, either as a bare string - the form `input_images` takes on\n/v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept\na given form reject it.\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "description": "Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object\nform's `url`.\n"
+                        },
+                        {
+                          "type": "object",
+                          "description": "Exactly one of the two properties is expected.",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "description": "Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as\nbase64.\n"
+                            },
+                            "image": {
+                              "type": "string",
+                              "format": "byte",
+                              "description": "Base64-encoded image bytes"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "description": "Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no\nusable image is rejected. Providers treat the first image as the primary one (Runware's seed\nimage, Bedrock's style-transfer base), so the order is part of the contract. Only the\nreference-image models accept more than one; elsewhere images after the first are dropped.\n"
+                  },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the edit. Required unless `type` is `background_removal`.\n"
-                  },
-                  "image": {
-                    "type": "string",
-                    "format": "binary",
-                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\n"
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
                   },
                   "mask": {
                     "type": "string",
-                    "format": "binary",
-                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit)"
+                    "format": "byte",
+                    "description": "Optional base64-encoded mask image for inpainting (transparent areas indicate regions to\nedit). Dropped for models that declare no mask input.\n"
                   },
                   "type": {
                     "type": "string",
                     "enum": [
                       "inpainting",
                       "outpainting",
-                      "background_removal"
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
-                    "description": "Type of edit operation"
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
                   },
                   "n": {
                     "type": "integer",
@@ -9792,10 +10530,11 @@
                     "type": "string",
                     "enum": [
                       "url",
-                      "b64_json"
+                      "b64_json",
+                      "data_uri"
                     ],
                     "default": "url",
-                    "description": "Format of the response"
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
                   },
                   "stream": {
                     "type": "boolean",
@@ -9841,9 +10580,187 @@
                     "enum": [
                       "png",
                       "webp",
-                      "jpeg"
+                      "jpeg",
+                      "tiff",
+                      "svg"
                     ],
-                    "description": "Output image format"
+                    "description": "Output image format. `svg` applies to vectorize operations"
+                  },
+                  "num_inference_steps": {
+                    "type": "integer",
+                    "description": "Number of inference steps"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Compression level (0-100%)"
+                  },
+                  "negative_prompt": {
+                    "type": "string",
+                    "description": "What to avoid in the edit"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "User identifier for tracking"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "description": "Multipart encoding of an image edit, and the only encoding that can upload the image as a file.\nThis is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a\nstring, so provider-native extra params arrive as strings; post `application/json` instead when\na provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.\n",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                  },
+                  "image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\nEither `image` or `image_url` is required.\n"
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "description": "Input image as a public URL or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this\navoids round-tripping the asset through the gateway as base64. Uploads keep their leading\nposition, and providers treat the first image as the primary one.\n"
+                  },
+                  "mask": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for\nmodels that declare no mask input.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "inpainting",
+                      "outpainting",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
+                    ],
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of images to generate"
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": [
+                      "256x256",
+                      "512x512",
+                      "1024x1024",
+                      "1536x1024",
+                      "1024x1536",
+                      "auto"
+                    ],
+                    "description": "Size of the output image"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json",
+                      "data_uri"
+                    ],
+                    "default": "url",
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, stream the response via Server-Sent Events"
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ],
+                    "description": "Background type for the image"
+                  },
+                  "input_fidelity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "high"
+                    ],
+                    "description": "How closely to follow the original image"
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of partial images to generate when streaming"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "high",
+                      "medium",
+                      "low",
+                      "standard"
+                    ],
+                    "description": "Quality of the output image"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "webp",
+                      "jpeg",
+                      "tiff",
+                      "svg"
+                    ],
+                    "description": "Output image format. `svg` applies to vectorize operations"
                   },
                   "num_inference_steps": {
                     "type": "integer",
@@ -18031,6 +18948,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -18047,6 +18968,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -18379,6 +19322,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -18395,6 +19342,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -97455,6 +98424,14 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image_above_1024_and_1536_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_image_above_2048_and_2048_pixels": {
             "type": "number",
             "minimum": 0
@@ -97499,6 +98476,54 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image_above_1024_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
           "input_cost_per_image_token": {
             "type": "number",
             "minimum": 0
@@ -97538,6 +98563,11 @@
           "search_context_cost_per_query": {
             "type": "number",
             "minimum": 0
+          },
+          "input_cost_per_query": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-query rate for rerank models. One query covers up to 100 document chunks, so a request over that many chunks bills as several queries."
           },
           "code_interpreter_cost_per_session": {
             "type": "number",

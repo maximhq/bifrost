@@ -1239,15 +1239,30 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
-	// Parse the response using the new Bedrock type
+	// Parse the response using the new Bedrock type. Timed as the "response-parse"
+	// overhead phase, matching HandleProviderResponseCtx on the other completion paths.
+	parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
+		if parseTracer != nil {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if parseTracer != nil {
+		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
 	}
 
 	// Convert using the new response converter
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 	if err != nil {
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
 
 	// Override finish reason for structured output (Converse API only)
@@ -1730,9 +1745,17 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
-	// Parse the response using the new Bedrock type
+	// Parse the response using the new Bedrock type. Timed as the "response-parse"
+	// overhead phase, matching HandleProviderResponseCtx on the other completion paths.
+	parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
+		if parseTracer != nil {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if parseTracer != nil {
+		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
 	}
 
 	// Convert using the new response converter
@@ -2118,15 +2141,6 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
-		// For embeddings_by_type responses preserve the raw Bedrock payload so the
-		// invoke-endpoint converter can return all encoding variants verbatim, since
-		// the internal BifrostEmbeddingResponse only has float32 and string fields.
-		if cohereResp.ResponseType == "embeddings_by_type" {
-			var rawResponseData interface{}
-			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-				bifrostResponse.ExtraFields.RawResponse = rawResponseData
-			}
-		}
 	}
 
 	// Bedrock Cohere embed models omit token usage from the response body and instead
@@ -2195,7 +2209,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	}
 
 	response := &BedrockRerankResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(rawResponseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, rawResponseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2213,6 +2227,18 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 				TotalTokens:  inputTokens,
 			}
 		}
+	}
+
+	// Rerank bills per query, where AWS defines a query as one call covering up to 100 document
+	// chunks ("if a request contains 350 documents, it will be treated as 4 queries"). The count
+	// is exposed only as the CloudWatch SearchUnits metric, never in the response, so it is
+	// derived here. A document over ~500 tokens is chunked upstream into several, so this is a
+	// lower bound for long documents; CloudWatch remains the source for exact reconciliation.
+	if len(request.Documents) > 0 {
+		if bifrostResponse.Usage == nil {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
+		}
+		bifrostResponse.Usage.SearchUnits = new((len(request.Documents) + bedrockRerankChunksPerQuery - 1) / bedrockRerankChunksPerQuery)
 	}
 
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -3179,8 +3205,8 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
-	sendBackRawRequest := provider.sendBackRawRequest
-	sendBackRawResponse := provider.sendBackRawResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3228,8 +3254,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	var bedrockResp BedrockBatchJobResponse
-	if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr2 != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr2, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// AWS CreateModelInvocationJob only returns jobArn, not status or other details.
@@ -3246,7 +3273,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			InputFileID: inputFileID,
 			Status:      schemas.BatchStatusValidating,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawRequest:  rawRequest,
+				RawResponse: rawResponse,
 			},
 		}, nil
 	}
@@ -3259,7 +3288,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		Status:      retrieveResp.Status,
 		CreatedAt:   retrieveResp.CreatedAt,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawRequest:  rawRequest,
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -3536,8 +3567,9 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		var bedrockResp BedrockBatchJobResponse
-		if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr2 != nil {
+			lastErr = bifrostErr2
 			continue
 		}
 
@@ -3556,7 +3588,8 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			Status:   ToBifrostBatchStatus(bedrockResp.Status),
 			Metadata: metadata,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawResponse: rawResponse,
 			},
 		}
 
@@ -3782,11 +3815,15 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		// Direct download succeeded, parse the content
 		results, parseErrors := parseBatchResultsJSONL(fileContentResp.Content, provider)
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpointChatCompletions,
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: fileContentResp.ExtraFields.Latency,
 			},
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			batchResultsResp.ExtraFields.RawResponse = results
 		}
 		if len(parseErrors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseErrors
@@ -3815,13 +3852,17 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: allResults,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  allResults,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: totalLatency,
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = allResults
+	}
 	if len(allParseErrors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = allParseErrors
 	}

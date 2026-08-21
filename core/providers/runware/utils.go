@@ -48,6 +48,8 @@ func runwareOutputType(responseFormat *string) *string {
 		out = "base64Data"
 	case "url":
 		out = "URL"
+	case "data_uri", "data-uri", "datauri":
+		out = "dataURI"
 	default:
 		return nil
 	}
@@ -68,6 +70,8 @@ func runwareOutputFormat(outputFormat *string) *string {
 		out = "JPG"
 	case "webp":
 		out = "WEBP"
+	case "tiff", "tif":
+		out = "TIFF"
 	case "svg":
 		out = "SVG"
 	case "mp4":

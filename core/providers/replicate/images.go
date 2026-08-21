@@ -54,7 +54,7 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 				}
 				images = append(images, sanitizedURL)
 			}
-			setInputImageField(input, bifrostReq.Model, images)
+			setInputImageField(input, schemas.ResolveModelCaps(schemas.Replicate, bifrostReq.Model), images)
 		}
 
 		if bifrostReq.Params.N != nil {
@@ -369,9 +369,9 @@ func formatSquarePixelSize(pixels int) string {
 
 // getInputImageFieldName returns the appropriate input image field name based on the model.
 // Uses O(1) map lookup for high RPS performance.
-func getInputImageFieldName(model string) string {
+func getInputImageFieldName(caps schemas.ModelCaps) string {
 	// Normalize model name to lowercase for comparison
-	modelLower := strings.ToLower(model)
+	modelLower := strings.ToLower(caps.Model())
 
 	// Extract model identifier (handle both "owner/name" and "owner/name:version" formats)
 	modelIdentifier := modelLower
@@ -379,18 +379,19 @@ func getInputImageFieldName(model string) string {
 		modelIdentifier = before
 	}
 
+	// Default to input_images for all other models; the datasheet overrides the table when it
+	// carries a record, so the mapping can move to the feed without a release.
+	fallback := "input_images"
 	if fieldName, exists := modelInputImageFieldMap[modelIdentifier]; exists {
-		return fieldName
+		fallback = fieldName
 	}
-
-	// Default to input_images for all other models
-	return "input_images"
+	return caps.FieldName(schemas.LogicalFieldInputImage, fallback)
 }
 
 // setInputImageField assigns images to the input field the model expects.
 // Shared by the generation and edit paths so both stay in sync.
-func setInputImageField(input *ReplicatePredictionRequestInput, model string, images []string) {
-	switch getInputImageFieldName(model) {
+func setInputImageField(input *ReplicatePredictionRequestInput, caps schemas.ModelCaps, images []string) {
+	switch getInputImageFieldName(caps) {
 	case "image_prompt":
 		// For flux-1.1-pro variants: use first image as image_prompt
 		input.ImagePrompt = &images[0]
@@ -429,7 +430,7 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 		}
 
 		if len(images) > 0 {
-			setInputImageField(input, bifrostReq.Model, images)
+			setInputImageField(input, schemas.ResolveModelCaps(schemas.Replicate, bifrostReq.Model), images)
 		}
 	}
 

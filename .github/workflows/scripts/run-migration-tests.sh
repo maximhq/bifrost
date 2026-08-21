@@ -2074,6 +2074,27 @@ append_dynamic_columns_postgres() {
     fi
   done
 
+  # governance_model_pricing per-size and joint size+quality per-image output rates
+  # (added via add_image_size_quality_pricing_columns)
+  for col in output_cost_per_image_above_1024_and_1536_pixels output_cost_per_image_above_1536_and_1024_pixels \
+    output_cost_per_image_above_1024_and_1024_pixels_low_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_low_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_low_quality \
+    output_cost_per_image_above_1024_and_1024_pixels_medium_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_medium_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_medium_quality \
+    output_cost_per_image_above_1024_and_1024_pixels_high_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_high_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_high_quality \
+    output_cost_per_image_above_1024x1024_pixels_standard_quality \
+    output_cost_per_image_above_1024x1536_pixels_standard_quality \
+    output_cost_per_image_above_1536x1024_pixels_standard_quality; do
+    if column_exists_postgres "governance_model_pricing" "$col"; then
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
   if column_exists_postgres "logs" "redaction_mapping"; then
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
@@ -2201,6 +2222,8 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
   # v1.6.4 columns
   # -------------------------------------------------------------------------
 
@@ -3551,6 +3574,27 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
+
+    # governance_model_pricing per-size and joint size+quality per-image output rates
+    # (added via add_image_size_quality_pricing_columns)
+    for col in output_cost_per_image_above_1024_and_1536_pixels output_cost_per_image_above_1536_and_1024_pixels \
+      output_cost_per_image_above_1024_and_1024_pixels_low_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_low_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_low_quality \
+      output_cost_per_image_above_1024_and_1024_pixels_medium_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_medium_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_medium_quality \
+      output_cost_per_image_above_1024_and_1024_pixels_high_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_high_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_high_quality \
+      output_cost_per_image_above_1024x1024_pixels_standard_quality \
+      output_cost_per_image_above_1024x1536_pixels_standard_quality \
+      output_cost_per_image_above_1536x1024_pixels_standard_quality; do
       if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"

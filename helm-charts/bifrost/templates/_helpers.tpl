@@ -617,11 +617,27 @@ false
 {{- /* Cluster Config */ -}}
 {{- if and .Values.bifrost.cluster .Values.bifrost.cluster.enabled }}
 {{- $cluster := dict "enabled" true }}
-{{- if .Values.bifrost.cluster.peers }}
-{{- $_ := set $cluster "peers" .Values.bifrost.cluster.peers }}
-{{- end }}
+{{- $clusterType := default "mesh" .Values.bifrost.cluster.type }}
+{{- $_ := set $cluster "type" $clusterType }}
 {{- if .Values.bifrost.cluster.region }}
 {{- $_ := set $cluster "region" .Values.bifrost.cluster.region }}
+{{- end }}
+{{- if eq $clusterType "broker" }}
+{{- $broker := dict }}
+{{- $_ := set $broker "address" .Values.bifrost.cluster.broker.address }}
+{{- if .Values.bifrost.cluster.broker.listenPort }}
+{{- $_ := set $broker "listen_port" .Values.bifrost.cluster.broker.listenPort }}
+{{- end }}
+{{- if hasKey .Values.bifrost.cluster.broker "tls" }}
+{{- $_ := set $broker "tls" .Values.bifrost.cluster.broker.tls }}
+{{- end }}
+{{- if .Values.bifrost.cluster.broker.authToken }}
+{{- $_ := set $broker "auth_token" .Values.bifrost.cluster.broker.authToken }}
+{{- end }}
+{{- $_ := set $cluster "broker" $broker }}
+{{- else }}
+{{- if .Values.bifrost.cluster.peers }}
+{{- $_ := set $cluster "peers" .Values.bifrost.cluster.peers }}
 {{- end }}
 {{- if .Values.bifrost.cluster.gossip }}
 {{- $gossip := dict }}
@@ -695,6 +711,7 @@ false
 {{- $_ := set $discovery "mdns_service" .Values.bifrost.cluster.discovery.mdnsService }}
 {{- end }}
 {{- $_ := set $cluster "discovery" $discovery }}
+{{- end }}
 {{- end }}
 {{- $_ := set $config "cluster_config" $cluster }}
 {{- end }}
@@ -1316,6 +1333,12 @@ false
 {{- if .Values.bifrost.plugins.logging.enabled }}
 {{- $plugin := dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config }}
 {{- if hasKey .Values.bifrost.plugins.logging "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.logging.version | int) }}{{- end }}
+{{- if .Values.bifrost.plugins.logging.semaphore_size }}
+{{- $_ := set $plugin "semaphore_size" (.Values.bifrost.plugins.logging.semaphore_size | int) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.logging.inject_timeout }}
+{{- $_ := set $plugin "inject_timeout" .Values.bifrost.plugins.logging.inject_timeout }}
+{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.enabled }}
@@ -1462,6 +1485,12 @@ false
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
 {{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
+{{- if .Values.bifrost.plugins.otel.semaphore_size }}
+{{- $_ := set $plugin "semaphore_size" (.Values.bifrost.plugins.otel.semaphore_size | int) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.otel.inject_timeout }}
+{{- $_ := set $plugin "inject_timeout" .Values.bifrost.plugins.otel.inject_timeout }}
+{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.datadog.enabled }}
@@ -1730,6 +1759,8 @@ false
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
+{{- if .semaphore_size }}{{- $_ := set $customPlugin "semaphore_size" (.semaphore_size | int) }}{{- end }}
+{{- if .inject_timeout }}{{- $_ := set $customPlugin "inject_timeout" .inject_timeout }}{{- end }}
 {{- $plugins = append $plugins $customPlugin }}
 {{- end }}
 {{- end }}

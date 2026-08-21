@@ -2,7 +2,9 @@ package lib
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
@@ -660,5 +662,281 @@ func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
 				t.Fatalf("context webhook endpoint = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// sessionIDFromContext is a helper for the harness-fallback tests below.
+func sessionIDFromContext(t *testing.T, ctx *fasthttp.RequestCtx) string {
+	t.Helper()
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	sessionID, _ := bifrostCtx.Value(schemas.BifrostContextKeySessionID).(string)
+	return sessionID
+}
+
+func TestConvertToBifrostContext_HarnessSessionHeaderFallback(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "claude code",
+			headers: map[string]string{"x-claude-code-session-id": "cc-1"},
+			want:    "cc-1",
+		},
+		{
+			name:    "opencode session affinity",
+			headers: map[string]string{"x-session-affinity": "oc-1"},
+			want:    "oc-1",
+		},
+		{
+			name:    "generic x-session-id",
+			headers: map[string]string{"x-session-id": "generic-1"},
+			want:    "generic-1",
+		},
+		{
+			name:    "codex dashed",
+			headers: map[string]string{"session-id": "cx-1"},
+			want:    "cx-1",
+		},
+		{
+			name:    "codex underscored",
+			headers: map[string]string{"session_id": "cx-2"},
+			want:    "cx-2",
+		},
+		{
+			name:    "codex thread id",
+			headers: map[string]string{"thread-id": "cx-3"},
+			want:    "cx-3",
+		},
+		{
+			name:    "codex conversation id",
+			headers: map[string]string{"conversation_id": "cx-4"},
+			want:    "cx-4",
+		},
+		{
+			name:    "header name is case insensitive",
+			headers: map[string]string{"X-Claude-Code-Session-Id": "cc-2"},
+			want:    "cc-2",
+		},
+		{
+			name:    "value is trimmed",
+			headers: map[string]string{"x-claude-code-session-id": "  cc-3  "},
+			want:    "cc-3",
+		},
+		{
+			name:    "whitespace only does not shadow lower priority header",
+			headers: map[string]string{"x-claude-code-session-id": "   ", "session-id": "cx-5"},
+			want:    "cx-5",
+		},
+		{
+			name:    "no session headers at all",
+			headers: map[string]string{"user-agent": "claude-cli/2.1.0"},
+			want:    "",
+		},
+		{
+			name:    "baggage session-id member is not a session id",
+			headers: map[string]string{"baggage": "session-id=bg-1"},
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tt.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			if got := sessionIDFromContext(t, ctx); got != tt.want {
+				t.Fatalf("session id = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertToBifrostContext_ExplicitSessionIDBeatsHarnessHeader(t *testing.T) {
+	// Set the harness header first: the header loop in ConvertToBifrostContext is
+	// a single pass with early returns, so this ordering is the regression guard
+	// against resolving the fallback inline instead of after the loop.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-claude-code-session-id", "harness")
+	ctx.Request.Header.Set("session-id", "codex")
+	ctx.Request.Header.Set("x-bf-session-id", "explicit")
+
+	if got := sessionIDFromContext(t, ctx); got != "explicit" {
+		t.Fatalf("session id = %q, want %q", got, "explicit")
+	}
+}
+
+func TestConvertToBifrostContext_HarnessSessionHeaderPriority(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	// Deliberately set in reverse priority order.
+	ctx.Request.Header.Set("conversation_id", "cx-conversation")
+	ctx.Request.Header.Set("thread-id", "cx-thread")
+	ctx.Request.Header.Set("session_id", "cx-underscore")
+	ctx.Request.Header.Set("session-id", "cx-dash")
+	ctx.Request.Header.Set("x-session-id", "generic")
+	ctx.Request.Header.Set("x-session-affinity", "opencode")
+	ctx.Request.Header.Set("x-claude-code-session-id", "claude-code")
+
+	if got := sessionIDFromContext(t, ctx); got != "claude-code" {
+		t.Fatalf("session id = %q, want %q", got, "claude-code")
+	}
+}
+
+func TestConvertToBifrostContext_OversizedHarnessSessionHeaderRejected(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-claude-code-session-id", strings.Repeat("a", schemas.MaxSessionIDLength+1))
+	ctx.Request.Header.Set("session-id", "cx-1")
+
+	// The oversized value is dropped, not truncated, and must not shadow the next
+	// candidate: it would otherwise become a KV lookup key and a trace attribute.
+	if got := sessionIDFromContext(t, ctx); got != "cx-1" {
+		t.Fatalf("session id = %q, want %q", got, "cx-1")
+	}
+}
+
+func TestConvertToBifrostContext_OversizedExplicitSessionIDRejected(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-session-id", strings.Repeat("a", schemas.MaxSessionIDLength+1))
+	ctx.Request.Header.Set("x-claude-code-session-id", "cc-1")
+
+	// The caller asserted an explicit session; when that value is unusable the
+	// request gets no session rather than silently adopting a different identity.
+	if got := sessionIDFromContext(t, ctx); got != "" {
+		t.Fatalf("session id = %q, want empty", got)
+	}
+}
+
+func TestConvertToBifrostContext_MultiByteSessionIDCountedInRunes(t *testing.T) {
+	// MaxSessionIDLength counts runes, so this value is legal at 255 runes even
+	// though it is 765 bytes.
+	want := strings.Repeat("\u754c", schemas.MaxSessionIDLength)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-session-id", want)
+
+	if got := sessionIDFromContext(t, ctx); got != want {
+		t.Fatalf("session id runes = %d, want %d", utf8.RuneCountInString(got), schemas.MaxSessionIDLength)
+	}
+
+	over := &fasthttp.RequestCtx{}
+	over.Request.Header.Set("x-bf-session-id", strings.Repeat("\u754c", schemas.MaxSessionIDLength+1))
+	if got := sessionIDFromContext(t, over); got != "" {
+		t.Fatalf("session id = %q, want empty for %d runes", got, schemas.MaxSessionIDLength+1)
+	}
+}
+
+func TestConvertToBifrostContext_MaxLengthHarnessSessionHeaderAccepted(t *testing.T) {
+	want := strings.Repeat("a", schemas.MaxSessionIDLength)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-claude-code-session-id", want)
+
+	if got := sessionIDFromContext(t, ctx); got != want {
+		t.Fatalf("session id length = %d, want %d", len(got), len(want))
+	}
+}
+
+func TestResolveSessionIDFromRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{name: "no headers", headers: nil, want: ""},
+		{name: "explicit only", headers: map[string]string{"x-bf-session-id": "explicit"}, want: "explicit"},
+		{name: "harness only", headers: map[string]string{"x-claude-code-session-id": "cc-1"}, want: "cc-1"},
+		{
+			name:    "explicit wins",
+			headers: map[string]string{"x-claude-code-session-id": "cc-1", "x-bf-session-id": "explicit"},
+			want:    "explicit",
+		},
+		{
+			name:    "blank explicit falls through to harness",
+			headers: map[string]string{"x-bf-session-id": "  ", "session-id": "cx-1"},
+			want:    "cx-1",
+		},
+		{
+			// An asserted-but-oversized explicit header yields no session at all.
+			// Falling through would silently group the request under a session
+			// identity the caller never asked for.
+			name: "oversized explicit does not fall through to harness",
+			headers: map[string]string{
+				"x-bf-session-id": strings.Repeat("a", schemas.MaxSessionIDLength+1),
+				"session-id":      "cx-1",
+			},
+			want: "",
+		},
+		{
+			name:    "explicit at the rune limit is accepted",
+			headers: map[string]string{"x-bf-session-id": strings.Repeat("a", schemas.MaxSessionIDLength)},
+			want:    strings.Repeat("a", schemas.MaxSessionIDLength),
+		},
+		{
+			// The cap counts runes, so a multi-byte value at the limit is legal
+			// even though its byte length is far over it.
+			name:    "multi-byte explicit at the rune limit is accepted",
+			headers: map[string]string{"x-bf-session-id": strings.Repeat("\u754c", schemas.MaxSessionIDLength)},
+			want:    strings.Repeat("\u754c", schemas.MaxSessionIDLength),
+		},
+		{
+			name:    "priority order holds",
+			headers: map[string]string{"thread-id": "cx-thread", "x-session-affinity": "opencode"},
+			want:    "opencode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tt.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			if got := ResolveSessionIDFromRequest(&ctx.Request.Header); got != tt.want {
+				t.Fatalf("ResolveSessionIDFromRequest() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("nil header", func(t *testing.T) {
+		if got := ResolveSessionIDFromRequest(nil); got != "" {
+			t.Fatalf("ResolveSessionIDFromRequest(nil) = %q, want empty", got)
+		}
+	})
+}
+
+// TestSessionIDResolutionIsConsistent pins the invariant that key stickiness
+// (ConvertToBifrostContext) and the OTEL session.id trace attribute
+// (ResolveSessionIDFromRequest, called from the tracing middleware) never
+// disagree: they run at different points in the request lifecycle.
+func TestSessionIDResolutionIsConsistent(t *testing.T) {
+	headerSets := []map[string]string{
+		{"x-bf-session-id": "explicit"},
+		{"x-claude-code-session-id": "cc-1"},
+		{"x-session-affinity": "oc-1"},
+		{"x-session-id": "generic-1"},
+		{"x-session-affinity": "oc-1", "x-session-id": "oc-1"},
+		{"session-id": "cx-1"},
+		{"session_id": "cx-2"},
+		{"conversation_id": "cx-3"},
+		{"x-bf-session-id": "explicit", "session-id": "cx-1"},
+		{"x-claude-code-session-id": "cc-1", "thread-id": "cx-thread"},
+		{"user-agent": "codex-cli/1.0"},
+		{"x-bf-session-id": strings.Repeat("a", schemas.MaxSessionIDLength+1), "session-id": "cx-1"},
+		{"x-claude-code-session-id": strings.Repeat("a", schemas.MaxSessionIDLength+1), "session-id": "cx-1"},
+		{"x-bf-session-id": strings.Repeat("\u754c", schemas.MaxSessionIDLength)},
+		{"x-bf-session-id": strings.Repeat("\u754c", schemas.MaxSessionIDLength+1), "session-id": "cx-1"},
+	}
+
+	for _, headers := range headerSets {
+		ctx := &fasthttp.RequestCtx{}
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		fromMiddleware := ResolveSessionIDFromRequest(&ctx.Request.Header)
+		fromContext := sessionIDFromContext(t, ctx)
+		if fromMiddleware != fromContext {
+			t.Fatalf("headers %v: middleware resolved %q but context resolved %q", headers, fromMiddleware, fromContext)
+		}
 	}
 }

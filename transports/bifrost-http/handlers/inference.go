@@ -216,6 +216,7 @@ var rerankParamsKnownFields = map[string]bool{
 	"max_tokens_per_doc": true,
 	"priority":           true,
 	"return_documents":   true,
+	"next_token":         true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -282,6 +283,7 @@ var imageEditParamsKnownFields = map[string]bool{
 	"image[]":             true,
 	"image_url":           true,
 	"image_url[]":         true,
+	"images":              true, // JSON body form of the above
 	"mask":                true,
 	"type":                true,
 	"background":          true,
@@ -326,6 +328,7 @@ var videoGenerationParamsKnownFields = map[string]bool{
 	"negative_prompt":   true,
 	"seed":              true,
 	"type":              true,
+	"output_format":     true,
 	"upscale_factor":    true,
 	"target_megapixels": true,
 	"video_uri":         true,
@@ -1040,7 +1043,11 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+	pt, ph := startTransportSpan(ctx, "request-unmarshal")
 	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.config)
+	if pt != nil {
+		pt.EndSpan(ph, schemas.SpanStatusOk, "")
+	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1072,7 +1079,11 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	mt, mh := startTransportSpan(ctx, "response-marshal")
 	SendJSON(ctx, resp)
+	if mt != nil {
+		mt.EndSpan(mh, schemas.SpanStatusOk, "")
+	}
 }
 
 // prepareResponsesRequest prepares a BifrostResponsesRequest from a ResponsesRequest
@@ -1213,8 +1224,8 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
-			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
+			return nil, nil, fmt.Errorf("document text or data is required for rerank at index %d", i)
 		}
 	}
 	if req.RerankParameters == nil {
@@ -2344,27 +2355,13 @@ func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.Request
 	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ImageGenerationStreamRequest, getStream, cancel)
 }
 
-// prepareImageEditRequest prepares a BifrostImageEditRequest from a multipart form
-func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
-	var req ImageEditHTTPRequest
-	form, err := ctx.MultipartForm()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse multipart form: %v", err)
+// parseImageEditMultipartForm fills req from an OpenAI-style multipart image edit form. Uploaded
+// files and the image_url convenience fields both feed Images; scalars are converted here because
+// multipart carries every value as a string.
+func parseImageEditMultipartForm(form *multipart.Form, req *ImageEditHTTPRequest) error {
+	if modelValues := form.Value["model"]; len(modelValues) > 0 {
+		req.Model = modelValues[0]
 	}
-	modelValues := form.Value["model"]
-	if len(modelValues) == 0 || modelValues[0] == "" {
-		return nil, nil, fmt.Errorf("model is required")
-	}
-	req.Model = modelValues[0]
-	provider, modelName, err := resolveModelAndProvider(ctx, config, req.Model)
-	if err != nil {
-		return nil, nil, err
-	}
-	var editType string
-	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
-		editType = typeValues[0]
-	}
-	promptValues := form.Value["prompt"]
 	var imageFiles []*multipart.FileHeader
 	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
 		imageFiles = imageFilesArray
@@ -2377,9 +2374,6 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if len(imageURLs) == 0 {
 		imageURLs = form.Value["image_url"]
 	}
-	if len(imageFiles) == 0 && len(imageURLs) == 0 {
-		return nil, nil, fmt.Errorf("at least one image or image_url is required")
-	}
 	// Uploads keep their leading position so a request that sends no URL is ordered exactly as
 	// before: providers treat the first image as the primary one (Runware's seed image, Bedrock's
 	// style-transfer base), so the order is part of the contract.
@@ -2387,12 +2381,12 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	for _, fh := range imageFiles {
 		f, err := fh.Open()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open uploaded file: %v", err)
+			return fmt.Errorf("failed to open uploaded file: %v", err)
 		}
 		fileData, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read uploaded file: %v", err)
+			return fmt.Errorf("failed to read uploaded file: %v", err)
 		}
 		images = append(images, schemas.ImageInput{Image: fileData})
 	}
@@ -2402,7 +2396,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		}
 	}
 	prompt := ""
-	if len(promptValues) > 0 && promptValues[0] != "" {
+	if promptValues := form.Value["prompt"]; len(promptValues) > 0 && promptValues[0] != "" {
 		prompt = promptValues[0]
 	}
 	req.ImageEditInput = &schemas.ImageEditInput{
@@ -2410,10 +2404,13 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		Prompt: prompt,
 	}
 	req.ImageEditParameters = &schemas.ImageEditParameters{}
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		req.ImageEditParameters.Type = &typeValues[0]
+	}
 	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
 		n, err := strconv.Atoi(nValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid n value: %v", err)
+			return fmt.Errorf("invalid n value: %v", err)
 		}
 		req.ImageEditParameters.N = &n
 	}
@@ -2426,7 +2423,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if partialImagesValues := form.Value["partial_images"]; len(partialImagesValues) > 0 && partialImagesValues[0] != "" {
 		partialImages, err := strconv.Atoi(partialImagesValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid partial_images value: %v", err)
+			return fmt.Errorf("invalid partial_images value: %v", err)
 		}
 		req.ImageEditParameters.PartialImages = &partialImages
 	}
@@ -2442,35 +2439,35 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if numInferenceStepsValues := form.Value["num_inference_steps"]; len(numInferenceStepsValues) > 0 && numInferenceStepsValues[0] != "" {
 		numInferenceSteps, err := strconv.Atoi(numInferenceStepsValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid num_inference_steps value: %v", err)
+			return fmt.Errorf("invalid num_inference_steps value: %v", err)
 		}
 		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
 	}
 	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
 		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid upscale_factor value: %v", err)
+			return fmt.Errorf("invalid upscale_factor value: %v", err)
 		}
 		req.ImageEditParameters.UpscaleFactor = &upscaleFactor
 	}
 	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
 		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid target_megapixels value: %v", err)
+			return fmt.Errorf("invalid target_megapixels value: %v", err)
 		}
 		req.ImageEditParameters.TargetMegapixels = &targetMegapixels
 	}
 	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
 		seed, err := strconv.Atoi(seedValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid seed value: %v", err)
+			return fmt.Errorf("invalid seed value: %v", err)
 		}
 		req.ImageEditParameters.Seed = &seed
 	}
 	if outputCompressionValues := form.Value["output_compression"]; len(outputCompressionValues) > 0 && outputCompressionValues[0] != "" {
 		outputCompression, err := strconv.Atoi(outputCompressionValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid output_compression value: %v", err)
+			return fmt.Errorf("invalid output_compression value: %v", err)
 		}
 		req.ImageEditParameters.OutputCompression = &outputCompression
 	}
@@ -2483,29 +2480,18 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
 		req.ImageEditParameters.User = &userValues[0]
 	}
-	if editType != "" {
-		req.ImageEditParameters.Type = &editType
-	}
 	if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
 		maskFile := maskFiles[0]
 		f, err := maskFile.Open()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open mask file: %v", err)
+			return fmt.Errorf("failed to open mask file: %v", err)
 		}
 		maskData, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read mask file: %v", err)
+			return fmt.Errorf("failed to read mask file: %v", err)
 		}
 		req.ImageEditParameters.Mask = maskData
-	}
-	if req.ImageEditParameters.ExtraParams == nil {
-		req.ImageEditParameters.ExtraParams = make(map[string]interface{})
-	}
-	for key, value := range form.Value {
-		if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
-			req.ImageEditParameters.ExtraParams[key] = value[0]
-		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
 		req.Fallbacks = fallbackValues
@@ -2514,6 +2500,70 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		stream := streamValues[0] == "true"
 		req.Stream = &stream
 	}
+	return nil
+}
+
+// prepareImageEditRequest builds a BifrostImageEditRequest from either a multipart form (uploaded
+// image bytes, matching OpenAI's /v1/images/edits) or a JSON body (images referenced by URL or
+// base64 under "images"). JSON is the only form that carries typed provider-native extra params:
+// multipart values are always strings, so a nested object or a number reaches the provider with
+// its type intact only through the JSON body.
+func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
+	var req ImageEditHTTPRequest
+	var extraParams map[string]any
+
+	if isMultipartRequest(ctx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse multipart form: %v", err)
+		}
+		if err := parseImageEditMultipartForm(form, &req); err != nil {
+			return nil, nil, err
+		}
+		extraParams = make(map[string]any)
+		for key, value := range form.Value {
+			if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
+				extraParams[key] = value[0]
+			}
+		}
+	} else {
+		if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+			return nil, nil, fmt.Errorf("Invalid request payload")
+		}
+		ep, epErr := extractExtraParams(ctx.PostBody(), imageEditParamsKnownFields)
+		if epErr != nil {
+			logger.Warn("Failed to extract extra params: %v", epErr)
+		} else {
+			extraParams = ep
+		}
+	}
+
+	if req.Model == "" {
+		return nil, nil, fmt.Errorf("model is required")
+	}
+	provider, modelName, err := resolveModelAndProvider(ctx, config, req.Model)
+	if err != nil {
+		return nil, nil, err
+	}
+	if req.ImageEditInput != nil {
+		// An entry carrying neither bytes nor a URL is meaningless to every provider, and JSON has
+		// several ways to produce one (null, {}, {"url":""}). Drop them the way the multipart path
+		// already drops empty image_url values, so the count below is the count that can be sent.
+		kept := req.ImageEditInput.Images[:0]
+		for _, img := range req.ImageEditInput.Images {
+			if len(img.Image) > 0 || strings.TrimSpace(img.URL) != "" {
+				kept = append(kept, img)
+			}
+		}
+		req.ImageEditInput.Images = kept
+	}
+	if req.ImageEditInput == nil || len(req.ImageEditInput.Images) == 0 {
+		return nil, nil, fmt.Errorf("at least one image or image_url is required")
+	}
+	if req.ImageEditParameters == nil {
+		req.ImageEditParameters = &schemas.ImageEditParameters{}
+	}
+	req.ImageEditParameters.ExtraParams = extraParams
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
 		return nil, nil, err
@@ -2541,6 +2591,7 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image edit
 	if req.Stream != nil && *req.Stream {
@@ -3344,9 +3395,24 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to extract extra params: %v", err)
 	}
 
+	// Model is optional at the batch level per OpenAI spec — it lives inside
+	// each JSONL request body. When absent, lift it from the first inline request
+	// so the sweeper has a fallback model for pricing lookups.
+	//
+	// Taking Requests[0] is deliberate, not a mixed-model hazard. It is only ever
+	// a fallback: accounting prefers the model echoed on each result row, and the
+	// providers where the fallback actually decides pricing run one model per job
+	// anyway — Gemini carries it in the URL (models/%s:batchGenerateContent) and
+	// Bedrock requires a job-level model. Leaving it unset when inline models
+	// differ would break Bedrock batch creation and make Gemini silently run its
+	// default model.
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
+	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
+		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
+			model = schemas.Ptr(m)
+		}
 	}
 
 	// Build Bifrost batch create request

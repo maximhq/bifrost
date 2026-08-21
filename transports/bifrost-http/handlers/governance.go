@@ -4791,6 +4791,11 @@ type quotaModelSpend struct {
 	TotalRequests int64   `json:"total_requests"`
 	TotalTokens   int64   `json:"total_tokens"`
 	TotalCost     float64 `json:"total_cost"`
+	// Per-category cost split; sums to TotalCost. AdditionalCost holds internal
+	// sidecar costs with no input/output token category (guardrail, MCP).
+	InputCost      float64 `json:"input_cost"`
+	OutputCost     float64 `json:"output_cost"`
+	AdditionalCost float64 `json:"additional_cost"`
 }
 
 // quotaBudget is a VK budget plus the actual per-model spend (from request logs) accumulated
@@ -4832,11 +4837,14 @@ func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usa
 			if ranking != nil {
 				for _, r := range ranking.Rankings {
 					entry.Models = append(entry.Models, quotaModelSpend{
-						Model:         r.Model,
-						Provider:      r.Provider,
-						TotalRequests: r.TotalRequests,
-						TotalTokens:   r.TotalTokens,
-						TotalCost:     r.TotalCost,
+						Model:          r.Model,
+						Provider:       r.Provider,
+						TotalRequests:  r.TotalRequests,
+						TotalTokens:    r.TotalTokens,
+						TotalCost:      r.TotalCost,
+						InputCost:      r.InputCost,
+						OutputCost:     r.OutputCost,
+						AdditionalCost: r.AdditionalCost,
 					})
 				}
 			}

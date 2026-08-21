@@ -497,14 +497,14 @@ func TestMCPToolLogCreateSerializesFields(t *testing.T) {
 }
 
 func TestBuildBulkUpdateCostPostgresSQL(t *testing.T) {
-	updates := map[string]float64{
-		"log-a": 1.25,
-		"log-b": 2.5,
+	updates := map[string]CostUpdate{
+		"log-a": {Total: 1.25, Input: 1.0, Output: 0.2, Additional: 0.05},
+		"log-b": {Total: 2.5, Input: 2.0, Output: 0.4, Additional: 0.1},
 	}
 
 	query, args := buildBulkUpdateCostPostgresSQL([]string{"log-a", "log-b"}, updates)
-	wantQuery := "UPDATE logs SET cost = v.cost FROM (VALUES ($1::text,$2::float8),($3::text,$4::float8)) AS v(id, cost) WHERE logs.id = v.id"
-	wantArgs := []interface{}{"log-a", 1.25, "log-b", 2.5}
+	wantQuery := "UPDATE logs SET cost = v.cost, input_cost = v.input_cost, output_cost = v.output_cost, additional_cost = v.additional_cost FROM (VALUES ($1::text,$2::float8,$3::float8,$4::float8,$5::float8),($6::text,$7::float8,$8::float8,$9::float8,$10::float8)) AS v(id, cost, input_cost, output_cost, additional_cost) WHERE logs.id = v.id"
+	wantArgs := []interface{}{"log-a", 1.25, 1.0, 0.2, 0.05, "log-b", 2.5, 2.0, 0.4, 0.1}
 
 	if query != wantQuery {
 		t.Fatalf("query mismatch\n got: %s\nwant: %s", query, wantQuery)
@@ -626,20 +626,28 @@ func TestBulkUpdateCostSQLiteFallback(t *testing.T) {
 		}
 	}
 
-	if err := store.BulkUpdateCost(context.Background(), map[string]float64{
-		"log-a": 1.5,
-		"log-b": 2.5,
+	if err := store.BulkUpdateCost(context.Background(), map[string]CostUpdate{
+		"log-a": {Total: 1.5, Input: 1.0, Output: 0.4, Additional: 0.1},
+		"log-b": {Total: 2.5, Input: 2.0, Output: 0.5},
 	}); err != nil {
 		t.Fatalf("BulkUpdateCost() error = %v", err)
 	}
 
-	for id, wantCost := range map[string]float64{"log-a": 1.5, "log-b": 2.5} {
+	wantSplit := map[string]CostUpdate{
+		"log-a": {Total: 1.5, Input: 1.0, Output: 0.4, Additional: 0.1},
+		"log-b": {Total: 2.5, Input: 2.0, Output: 0.5},
+	}
+	for id, want := range wantSplit {
 		logEntry, err := store.FindByID(context.Background(), id)
 		if err != nil {
 			t.Fatalf("FindByID(%s) error = %v", id, err)
 		}
-		if logEntry.Cost == nil || *logEntry.Cost != wantCost {
-			t.Fatalf("cost mismatch for %s: got %v want %v", id, logEntry.Cost, wantCost)
+		if logEntry.Cost == nil || *logEntry.Cost != want.Total {
+			t.Fatalf("cost mismatch for %s: got %v want %v", id, logEntry.Cost, want.Total)
+		}
+		if logEntry.InputCost != want.Input || logEntry.OutputCost != want.Output || logEntry.AdditionalCost != want.Additional {
+			t.Fatalf("split mismatch for %s: got in=%v out=%v add=%v want in=%v out=%v add=%v",
+				id, logEntry.InputCost, logEntry.OutputCost, logEntry.AdditionalCost, want.Input, want.Output, want.Additional)
 		}
 	}
 }

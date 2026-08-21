@@ -3,7 +3,7 @@ title: "Migrating to Enterprise v2.0.0"
 description: "Breaking changes and migration instructions for the Enterprise v2.0.0 release"
 ---
 
-Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, and how the changes interact with SCIM-based authentication.
+Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, the plugin transport-hook change, and how the changes interact with SCIM-based authentication.
 
 <Warning>
 **A provisioned Bifrost Enterprise license is required for v2.0.0.** Before migrating, contact the Bifrost team to obtain your `license.bif` file. Set the entire contents of this file as the value of the `BIFROST_LICENSE` environment variable on every node running Bifrost. Complete this configuration before upgrading to avoid interrupting your deployment.
@@ -35,3 +35,89 @@ This is **not an additional breaking change**: no action is required, and nothin
 </Note>
 
 The practical implication: under SCIM, protection for the custom-plugin-path endpoint rests entirely on `SCIMController.Middleware()`'s own fail-closed behavior, rather than on the layered, defense-in-depth check that non-SCIM deployments get in addition to their own auth middleware. If you rely on SCIM for dashboard authentication, treat `SCIMController.Middleware()`'s correctness as the sole safeguard for this endpoint rather than assuming the OSS-documented check is also active.
+
+---
+
+## Plugin Transport Hooks: New Pre-Auth Phase
+
+OSS v2.0.0 adds `HTTPTransportPreAuthHook`, which runs before the transport authenticates a request, and moves `HTTPTransportPreHook` to run after authentication (see [Breaking Change 4](/migration-guides/v2.0.0#breaking-change-4-httptransportprehook-now-runs-after-authentication)). On Enterprise the ordering half of that change is not new — `HTTPTransportPreHook` has run after the SCIM and API-key middlewares since the release that introduced the desktop agent. What is new is a phase that runs *before* them.
+
+**Who is affected:** any custom plugin that supplies a credential — deriving a virtual key from an upstream identity header, rewriting an `Authorization` header — from `HTTPTransportPreHook`.
+
+On Enterprise this has been silently ineffective for SCIM deployments, and the symptom depends on whether an identity provider is configured:
+
+| Deployment | Credential injected from `HTTPTransportPreHook` |
+|---|---|
+| Identity provider configured, `enforce_auth_on_inference` on | Never seen. Inference auth rejects the request with `401` before the plugin runs |
+| No identity provider | Still works. The injected key is not seen by the auth middlewares, but it does reach governance downstream, which validates it |
+
+The second row is why this often looks like an SSO-specific bug: the same plugin binary works on a deployment without an IdP and fails on one with it.
+
+**How to fix it:** rename the function to `HTTPTransportPreAuthHook`. It receives the same `*HTTPRequest` — headers, query, path params and body — and applies the same mutations, so the hook body does not change. After the rename the plugin behaves identically with or without an identity provider.
+
+<Note>
+**Ordering with large payloads.** The request-body snapshot now happens in the pre-auth phase, so the large-payload threshold middleware moved ahead of it. A body above `large_payload.request_threshold_bytes` is still skipped rather than copied, exactly as before. No configuration change is required.
+</Note>
+
+---
+
+## Downgrading to v1.5.x After Running a 2.0 Prerelease
+
+**This applies only if your deployment ran `v2.0.0-prerelease3` — the one prerelease that shipped the `ent_split_oidc_session_auth_token_column` migration — and you now want to move back to v1.5.x.** Upgrading from that prerelease to v2.0.0 does not undo it: the migration is already recorded as applied, so it does not run again. Deployments that reached v2.0.0 from v1.5.x directly, or from `v2.0.0-prerelease2` or earlier, are unaffected, and downgrading from v2.0.0 itself needs no manual step — v2.0.0 leaves the legacy column in place, so a v1.5.x binary still finds session tokens where it expects them.
+
+That migration replaces `enterprise_oidc_sessions.encrypted_auth_token` — a single column that held the ID token for some providers and the access token for others — with two unambiguous columns, `encrypted_id_token` and `encrypted_access_token`. In `v2.0.0-prerelease3` it also **dropped** `encrypted_auth_token` once the values were copied across. The v1.5.x session model still declares that column, so every session query a v1.5.x binary issues against such a database fails with `column enterprise_oidc_sessions.encrypted_auth_token does not exist` — dashboard and SSO sign-in included.
+
+Check whether you are affected:
+
+```sql
+SELECT column_name
+FROM information_schema.columns
+WHERE table_name = 'enterprise_oidc_sessions'
+  AND column_name IN ('encrypted_auth_token', 'encrypted_id_token', 'encrypted_access_token');
+```
+
+If `encrypted_auth_token` is absent and the other two are present, run the script below against your Bifrost database **before** starting the v1.5.x binary. It recreates the column, collapses the two split columns back into it using the same provider rule the single-column code used, drops the split columns, and removes the migration's ledger row so a later upgrade re-applies it.
+
+<Warning>
+Take a database backup before running this. It drops two columns, and there is no second copy of the values once they are gone.
+</Warning>
+
+```sql
+BEGIN;
+
+-- 1. Recreate the legacy column.
+ALTER TABLE enterprise_oidc_sessions
+    ADD COLUMN IF NOT EXISTS encrypted_auth_token text;
+
+-- 2. Collapse the split columns back into it: the ID token for the providers
+--    that preferred it, the access token otherwise. Ciphertext copies verbatim,
+--    so no decryption step is involved.
+UPDATE enterprise_oidc_sessions s
+SET encrypted_auth_token = CASE
+        WHEN COALESCE(s.encrypted_id_token, '') <> ''
+             AND LOWER(COALESCE(
+                     (SELECT u.source_name FROM governance_users u WHERE u.id = s.user_id),
+                     '')) IN ('google', 'okta', 'entra', 'auth0', 'generic')
+        THEN s.encrypted_id_token
+        ELSE COALESCE(s.encrypted_access_token, '')
+    END
+WHERE COALESCE(s.encrypted_id_token, '') <> ''
+   OR COALESCE(s.encrypted_access_token, '') <> '';
+
+-- 3. Drop the split columns.
+ALTER TABLE enterprise_oidc_sessions
+    DROP COLUMN IF EXISTS encrypted_id_token,
+    DROP COLUMN IF EXISTS encrypted_access_token;
+
+-- 4. Forget the migration so a later upgrade re-applies it.
+DELETE FROM migrations
+WHERE id = 'ent_split_oidc_session_auth_token_column';
+
+COMMIT;
+```
+
+<Note>
+Sessions created or refreshed while you were on the prerelease hold both tokens, so step 2 has to pick one. It picks the token the v1.5.x code would have stored; a session whose cookie was minted against the other token type is rejected on its next refresh and that user signs in again. To avoid the question entirely, run `DELETE FROM enterprise_oidc_sessions;` in place of step 2 — every user signs in again, and no token has to be reconstructed.
+</Note>
+
+Running the script a second time is harmless: with the split columns already gone, step 2 errors and the whole transaction rolls back.

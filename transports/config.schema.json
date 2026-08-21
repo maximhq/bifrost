@@ -2307,6 +2307,18 @@
             "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
             "optional": true,
             "default": 0
+          },
+          "semaphore_size": {
+            "type": "integer",
+            "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+            "default": 10000,
+            "minimum": 1
+          },
+          "inject_timeout": {
+            "type": "string",
+            "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+            "default": "5s"
           }
         },
         "allOf": [
@@ -4653,6 +4665,9 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
+        },
+        "openai_config": {
+          "$ref": "#/$defs/openai_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
