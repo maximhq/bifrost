@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -397,52 +398,83 @@ func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 	require.NotEmpty(t, routes)
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+	uploadID := "retry-upload-id"
 
-	uploadID := "test-upload-id"
 	session := &gemini.GeminiResumableUploadSession{
-		DisplayName: "test.pdf",
+		DisplayName: "retry-test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	// Verify the session exists before FileRequestConverter.
-	storedBefore, err := kvStore.Get(uploadID)
-	require.NoError(t, err)
-	require.NotNil(t, storedBefore)
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
 
-	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID: uploadID,
-		FileData: []byte("test file data"),
+	chunk := []byte("first upload chunk")
+
+	// First upload of the chunk.
+	firstReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		FileData:        chunk,
+		UploadCommand:   "upload",
+		UploadOffset:    0,
+		HasUploadOffset: true,
 	}
 
-	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	fileReq, err := route.FileRequestConverter(bifrostCtx, req)
-
+	firstFileReq, err := route.FileRequestConverter(bifrostCtx, firstReq)
 	require.NoError(t, err)
-	require.NotNil(t, fileReq)
+	require.NotNil(t, firstFileReq)
 
-	assert.Equal(t, schemas.FileUploadRequest, fileReq.Type)
-	require.NotNil(t, fileReq.UploadRequest)
+	assert.True(t, firstFileReq.Handled)
+	assert.Nil(t, firstFileReq.UploadRequest)
+	assert.Equal(t, "active", firstFileReq.HandledHeaders["X-Goog-Upload-Status"])
 
-	assert.Equal(t, []byte("test file data"), fileReq.UploadRequest.File)
-	assert.Equal(t, "test.pdf", fileReq.UploadRequest.Filename)
-	assert.Equal(t, schemas.Gemini, fileReq.UploadRequest.Provider)
-
-	// FileRequestConverter must NOT delete the resumable upload session.
-	storedAfter, err := kvStore.Get(uploadID)
+	storedSessionValue, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
-	require.NotNil(t, storedAfter)
 
-	stored, ok := storedAfter.(*gemini.GeminiResumableUploadSession)
+	storedSession, ok := storedSessionValue.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
 
-	assert.Equal(t, session.DisplayName, stored.DisplayName)
-	assert.Equal(t, session.MimeType, stored.MimeType)
-	assert.Equal(t, session.Provider, stored.Provider)
+	assert.Equal(t, int64(len(chunk)), storedSession.NextOffset)
+	require.Contains(t, storedSession.Chunks, int64(0))
+	assert.Equal(t, chunk, storedSession.Chunks[0])
+
+	retryReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		FileData:        chunk,
+		UploadCommand:   "upload",
+		UploadOffset:    0,
+		HasUploadOffset: true,
+	}
+
+	retryFileReq, err := route.FileRequestConverter(bifrostCtx, retryReq)
+
+	require.NoError(t, err)
+	require.NotNil(t, retryFileReq)
+
+	assert.True(t, retryFileReq.Handled)
+	assert.Nil(t, retryFileReq.UploadRequest)
+	assert.Equal(t, "active", retryFileReq.HandledHeaders["X-Goog-Upload-Status"])
+
+	storedSessionValue, err = kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession, ok = storedSessionValue.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, int64(len(chunk)), storedSession.NextOffset)
+	assert.Equal(t, chunk, storedSession.Chunks[0])
+
+	// Verify that the original session metadata is preserved.
+	assert.Equal(t, session.DisplayName, storedSession.DisplayName)
+	assert.Equal(t, session.MimeType, storedSession.MimeType)
+	assert.Equal(t, session.Provider, storedSession.Provider)
 }
 
 // Test that the resumable upload session can be reused for retries.
@@ -468,56 +500,63 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 		DisplayName: "retry-test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
+		Chunks:      make(map[int64][]byte),
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chunk := []byte("first upload chunk")
 
+	// First upload.
 	firstReq := &gemini.GeminiFileUploadHandlerReq{
-		UploadID: uploadID,
-		FileData: []byte("first upload chunk"),
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        chunk,
 	}
 
 	firstFileReq, err := route.FileRequestConverter(bifrostCtx, firstReq)
 
 	require.NoError(t, err)
 	require.NotNil(t, firstFileReq)
-	require.NotNil(t, firstFileReq.UploadRequest)
+	require.True(t, firstFileReq.Handled)
 
-	assert.Equal(t, schemas.FileUploadRequest, firstFileReq.Type)
-	assert.Equal(t, []byte("first upload chunk"), firstFileReq.UploadRequest.File)
-	assert.Equal(t, "retry-test.pdf", firstFileReq.UploadRequest.Filename)
-	assert.Equal(t, schemas.Gemini, firstFileReq.UploadRequest.Provider)
-
-	// Retry using the same upload session.
-	secondReq := &gemini.GeminiFileUploadHandlerReq{
-		UploadID: uploadID,
-		FileData: []byte("retry upload chunk"),
-	}
-
-	secondFileReq, err := route.FileRequestConverter(bifrostCtx, secondReq)
+	// Verify the chunk was stored and NextOffset advanced.
+	storedValue, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
-	require.NotNil(t, secondFileReq)
-	require.NotNil(t, secondFileReq.UploadRequest)
 
-	assert.Equal(t, schemas.FileUploadRequest, secondFileReq.Type)
-	assert.Equal(t, []byte("retry upload chunk"), secondFileReq.UploadRequest.File)
-	assert.Equal(t, "retry-test.pdf", secondFileReq.UploadRequest.Filename)
-	assert.Equal(t, schemas.Gemini, secondFileReq.UploadRequest.Provider)
-
-	// Verify the session is still available after the retry.
-	storedSession, err := kvStore.Get(uploadID)
-	require.NoError(t, err)
-	require.NotNil(t, storedSession)
-
-	stored, ok := storedSession.(*gemini.GeminiResumableUploadSession)
+	storedSession, ok := storedValue.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
 
-	assert.Equal(t, session.DisplayName, stored.DisplayName)
-	assert.Equal(t, session.MimeType, stored.MimeType)
-	assert.Equal(t, session.Provider, stored.Provider)
+	assert.Equal(t, int64(len(chunk)), storedSession.NextOffset)
+	assert.Equal(t, chunk, storedSession.Chunks[0])
+
+	// Retry the SAME offset with the SAME bytes.
+	retryReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        chunk,
+	}
+
+	retryFileReq, err := route.FileRequestConverter(bifrostCtx, retryReq)
+	require.NoError(t, err)
+	require.NotNil(t, retryFileReq)
+	require.True(t, retryFileReq.Handled)
+
+	// Retry must not advance NextOffset again.
+	storedValue, err = kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession, ok = storedValue.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, int64(len(chunk)), storedSession.NextOffset)
+	assert.Equal(t, chunk, storedSession.Chunks[0])
 }
 
 // Test that the upload session is deleted after successful finalization.
@@ -714,27 +753,36 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 
 	var expectedUploadID atomic.Pointer[string]
 	var providerCallCount atomic.Int32
+	var providerFailureCount atomic.Int32
+
 	providerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		providerCallCount.Add(1)
+		callCount := providerCallCount.Add(1)
+
 		if r.URL.Path != "/upload/v1beta/files" {
 			http.Error(w, "unexpected provider path", http.StatusNotFound)
 			return
 		}
+
 		expectedUploadIDValue := expectedUploadID.Load()
 		if expectedUploadIDValue == nil {
 			http.Error(w, "upload ID was not captured", http.StatusInternalServerError)
 			return
 		}
+
+		// The upload session must still exist when the provider is called.
 		if _, err := kvStore.Get(*expectedUploadIDValue); err != nil {
 			http.Error(w, fmt.Sprintf("upload session unavailable: %v", err), http.StatusInternalServerError)
 			return
 		}
+
 		multipartReader, err := r.MultipartReader()
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid multipart upload: %v", err), http.StatusBadRequest)
 			return
 		}
+
 		var sawMetadata, sawFile bool
+
 		for {
 			part, err := multipartReader.NextPart()
 			if err == io.EOF {
@@ -744,51 +792,87 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 				http.Error(w, fmt.Sprintf("invalid multipart part: %v", err), http.StatusBadRequest)
 				return
 			}
+
 			partBody, err := io.ReadAll(part)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("failed to read multipart part: %v", err), http.StatusBadRequest)
 				return
 			}
+
 			switch part.FormName() {
 			case "metadata":
 				sawMetadata = strings.Contains(string(partBody), `"displayName":"test.pdf"`) && strings.Contains(string(partBody), `"mimeType":"application/pdf"`)
+
 			case "file":
 				sawFile = string(partBody) == "PDF file content here"
 			}
 		}
+
 		if !sawMetadata || !sawFile {
 			http.Error(w, "missing or invalid multipart upload parts", http.StatusBadRequest)
 			return
 		}
+
+		// Fail the first provider request intentionally.
+		// This simulates an upstream failure after the chunk has already
+		// been atomically persisted in the resumable upload session.
+		if callCount == 1 {
+			providerFailureCount.Add(1)
+
+			http.Error(w, "simulated provider failure", http.StatusInternalServerError)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"file":{"name":"files/test","displayName":"test.pdf","mimeType":"application/pdf","sizeBytes":"20","createTime":"2026-07-01T00:00:00Z","state":"ACTIVE","uri":"https://example.test/files/test"}}`))
+		w.Header().Set("X-Goog-Upload-Status", "final")
+
+		_, _ = w.Write([]byte(
+			`{"file":{"name":"files/test","displayName":"test.pdf","mimeType":"application/pdf","sizeBytes":"20","createTime":"2026-07-01T00:00:00Z","state":"ACTIVE","uri":"https://example.test/files/test"}}`,
+		))
 	})
+
 	providerServer := httptest.NewServer(providerHandler)
 	t.Cleanup(providerServer.Close)
-	providerBaseURL := providerServer.URL
 
+	providerBaseURL := providerServer.URL
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-		Account: &genAIUploadTestAccount{baseURL: providerBaseURL},
-		Logger:  bifrost.NewNoOpLogger(),
+		Account: &genAIUploadTestAccount{
+			baseURL: providerBaseURL,
+		},
+		Logger: bifrost.NewNoOpLogger(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 
 	fileRoutes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+
 	genAIRouter := NewGenericRouter(client, handlerStore, fileRoutes, nil, bifrost.NewNoOpLogger())
 	httpRouter := router.New()
 	genAIRouter.RegisterRoutes(httpRouter)
-	gatewayServer := &fasthttp.Server{Handler: httpRouter.Handler}
+
+	gatewayServer := &fasthttp.Server{
+		Handler: httpRouter.Handler,
+	}
+
 	gatewayListener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	go func() { _ = gatewayServer.Serve(gatewayListener) }()
-	t.Cleanup(func() { _ = gatewayServer.Shutdown() })
+	go func() {
+		_ = gatewayServer.Serve(gatewayListener)
+	}()
+
+	t.Cleanup(func() {
+		_ = gatewayServer.Shutdown()
+	})
 
 	httpClient := &http.Client{}
-	startBody := strings.NewReader(`{"file":{"display_name":"test.pdf"},"mime_type":"application/pdf"}`)
+	startBody := strings.NewReader(
+		`{"file":{"display_name":"test.pdf"},"mime_type":"application/pdf"}`,
+	)
+
 	startRequest, err := http.NewRequest(http.MethodPost, "http://"+gatewayListener.Addr().String()+"/genai/upload/v1beta/files", startBody)
 	require.NoError(t, err)
+
 	startRequest.Header.Set("Content-Type", "application/json")
 	startRequest.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	startRequest.Header.Set("X-Goog-Upload-Command", "start")
@@ -798,29 +882,35 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	require.NoError(t, err)
 	defer startResponse.Body.Close()
 
-	assert.Equal(t, http.StatusOK, startResponse.StatusCode)
+	require.Equal(t, http.StatusOK, startResponse.StatusCode)
 	assert.Equal(t, "active", startResponse.Header.Get("X-Goog-Upload-Status"))
+
 	uploadURL := startResponse.Header.Get("X-Goog-Upload-URL")
 	require.NotEmpty(t, uploadURL)
 
 	uploadURLParsed, err := url.Parse(uploadURL)
 	require.NoError(t, err)
+
 	uploadID := uploadURLParsed.Query().Get("upload_id")
 	require.NotEmpty(t, uploadID)
+
 	expectedUploadID.Store(&uploadID)
 
-	// Verify session exists after START
+	// Verify that START created the session.
 	stored, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
+
 	session, ok := stored.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
+
 	assert.Equal(t, "test.pdf", session.DisplayName)
 	assert.Equal(t, "application/pdf", session.MimeType)
+	assert.Equal(t, int64(0), session.NextOffset)
 
-	// Upload the first chunk without finalizing. This must not invoke the provider.
 	firstChunk := "PDF file "
 	firstUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(firstChunk))
 	require.NoError(t, err)
+
 	firstUpload.Header.Set("Content-Type", "application/octet-stream")
 	firstUpload.Header.Set("X-Goog-Upload-Command", "upload")
 	firstUpload.Header.Set("X-Goog-Upload-Offset", "0")
@@ -828,27 +918,331 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	firstResponse, err := httpClient.Do(firstUpload)
 	require.NoError(t, err)
 	defer firstResponse.Body.Close()
-	assert.Equal(t, http.StatusOK, firstResponse.StatusCode)
+
+	require.Equal(t, http.StatusOK, firstResponse.StatusCode)
 	assert.Equal(t, "active", firstResponse.Header.Get("X-Goog-Upload-Status"))
+
+	// The provider must not be called for a non-final chunk.
 	assert.Equal(t, int32(0), providerCallCount.Load())
 
-	// Finalize with the next offset. The provider receives both chunks assembled in order.
-	finalUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("content here"))
+	// Verify the first chunk was atomically persisted.
+	stored, err = kvStore.Get(uploadID)
 	require.NoError(t, err)
+
+	session, ok = stored.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, int64(len(firstChunk)), session.NextOffset)
+	require.Contains(t, session.Chunks, int64(0))
+
+	assert.Equal(t, []byte(firstChunk), session.Chunks[0])
+
+	finalChunk := "content here"
+	finalOffset := len(firstChunk)
+
+	finalUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(finalChunk))
+	require.NoError(t, err)
+
 	finalUpload.Header.Set("Content-Type", "application/octet-stream")
 	finalUpload.Header.Set("X-Goog-Upload-Command", "upload, finalize")
-	finalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(len(firstChunk)))
+	finalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(finalOffset))
 
-	uploadResponse, err := httpClient.Do(finalUpload)
+	finalResponse, err := httpClient.Do(finalUpload)
 	require.NoError(t, err)
-	defer uploadResponse.Body.Close()
+	defer finalResponse.Body.Close()
 
-	uploadResponseBody, err := io.ReadAll(uploadResponse.Body)
-	require.NoError(t, err)
-	require.Equalf(t, http.StatusOK, uploadResponse.StatusCode, "upload response body: %s", uploadResponseBody)
-	assert.Equal(t, "final", uploadResponse.Header.Get("X-Goog-Upload-Status"))
+	// Provider intentionally fails.
+	assert.Equal(t, http.StatusInternalServerError, finalResponse.StatusCode)
+
 	assert.Equal(t, int32(1), providerCallCount.Load())
+	assert.Equal(t, int32(1), providerFailureCount.Load())
+
+	stored, err = kvStore.Get(uploadID)
+	require.NoError(t, err, "upload session must survive provider failure")
+
+	session, ok = stored.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, int64(len(firstChunk)+len(finalChunk)), session.NextOffset)
+	assert.Equal(t, []byte(firstChunk), session.Chunks[0])
+
+	assert.Equal(t, []byte(finalChunk), session.Chunks[int64(finalOffset)])
+
+	retryFinalUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(finalChunk))
+	require.NoError(t, err)
+
+	retryFinalUpload.Header.Set("Content-Type", "application/octet-stream")
+	retryFinalUpload.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	retryFinalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(finalOffset))
+
+	retryResponse, err := httpClient.Do(retryFinalUpload)
+	require.NoError(t, err)
+
+	retryResponseBody, err := io.ReadAll(retryResponse.Body)
+	require.NoError(t, err)
+	defer retryResponse.Body.Close()
+
+	require.Equalf(t, http.StatusOK, retryResponse.StatusCode, "retry response body: %s", retryResponseBody)
+
+	assert.Equal(t, "final", retryResponse.Header.Get("X-Goog-Upload-Status"))
+
+	// Provider was called once initially and once for the retry.
+	assert.Equal(t, int32(2), providerCallCount.Load())
 
 	_, err = kvStore.Get(uploadID)
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
+}
+
+func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "different-data-retry"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		Chunks: map[int64][]byte{
+			0: []byte("original chunk"),
+		},
+		NextOffset: int64(len("original chunk")),
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        []byte("different chunk"),
+	}
+
+	fileReq, err := route.FileRequestConverter(bifrostCtx, req)
+
+	require.Error(t, err)
+	assert.Nil(t, fileReq)
+	assert.Contains(t, err.Error(), "already exists with different data")
+
+	// Verify the original chunk was not modified.
+	storedValue, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession := storedValue.(*gemini.GeminiResumableUploadSession)
+
+	assert.Equal(t, []byte("original chunk"), storedSession.Chunks[0])
+	assert.Equal(t, int64(len("original chunk")), storedSession.NextOffset)
+}
+
+// missing offset
+func TestFileRequestConverter_RejectsMissingUploadCommand(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        "test-upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        []byte("chunk"),
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileReq, err := route.FileRequestConverter(ctx, req)
+	require.Error(t, err)
+
+	assert.Nil(t, fileReq)
+	assert.Equal(t, "missing X-Goog-Upload-Command header", err.Error())
+}
+
+// invalid headers don't mutate the session
+func TestFileRequestConverter_RejectsUnsupportedUploadCommand(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        "test-upload",
+		UploadCommand:   "query",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        []byte("chunk"),
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileReq, err := route.FileRequestConverter(ctx, req)
+	require.Error(t, err)
+
+	assert.Nil(t, fileReq)
+	assert.Contains(
+		t,
+		err.Error(),
+		"unsupported X-Goog-Upload-Command",
+	)
+}
+
+// concurrent requests test
+func TestFileRequestConverter_ConcurrentRequestsSameUploadID(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "concurrent-upload"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "concurrent.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		Chunks:      make(map[int64][]byte),
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req1 := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        []byte("chunk"),
+	}
+
+	req2 := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    0,
+		FileData:        []byte("chunk"),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var err1, err2 error
+
+	go func() {
+		defer wg.Done()
+		_, err1 = route.FileRequestConverter(ctx1, req1)
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, err2 = route.FileRequestConverter(ctx2, req2)
+	}()
+
+	wg.Wait()
+
+	require.NoError(t, err1)
+	require.NoError(t, err2)
+
+	storedValue, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession := storedValue.(*gemini.GeminiResumableUploadSession)
+
+	// The same chunk must only advance the offset once.
+	assert.Equal(t, int64(len("chunk")), storedSession.NextOffset)
+	assert.Equal(t, []byte("chunk"), storedSession.Chunks[0])
+}
+
+func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "invalid-offset-upload"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		NextOffset:  10,
+		Chunks: map[int64][]byte{
+			0: []byte("1234567890"),
+		},
+	}
+
+	require.NoError(t, kvStore.SetWithTTL(uploadID, session, time.Minute))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    5,
+		FileData:        []byte("chunk"),
+	}
+
+	fileReq, err := route.FileRequestConverter(ctx, req)
+
+	require.Error(t, err)
+	assert.Nil(t, fileReq)
+	assert.Contains(t, err.Error(), "invalid upload offset")
+
+	stored, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession := stored.(*gemini.GeminiResumableUploadSession)
+	assert.Equal(t, int64(10), storedSession.NextOffset)
 }

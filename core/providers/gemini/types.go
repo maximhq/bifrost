@@ -3360,4 +3360,6 @@ type GeminiFileUploadHandlerReq struct {
 	FileData      []byte `json:"-"`
 	UploadCommand string `json:"-"`
 	UploadOffset  int64  `json:"-"`
+
+	HasUploadOffset bool `json:"-"`
 }

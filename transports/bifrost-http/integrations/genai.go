@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -346,15 +347,26 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			r := req.(*gemini.GeminiFileUploadHandlerReq)
 			uploadID := string(ctx.QueryArgs().Peek("upload_id"))
 			if uploadID != "" {
-				// Step 2: body is raw binary — do not JSON-decode.
 				r.UploadID = uploadID
-				r.FileData = ctx.Request.Body()
+				r.FileData = append([]byte(nil), ctx.Request.Body()...)
+
+				r.UploadCommand = string(ctx.Request.Header.Peek("X-Goog-Upload-Command"))
+				if offset := ctx.Request.Header.Peek("X-Goog-Upload-Offset"); len(offset) > 0 {
+					parsedOffset, err := strconv.ParseInt(string(offset), 10, 64)
+					if err != nil {
+						return fmt.Errorf("invalid X-Goog-Upload-Offset: %w", err)
+					}
+
+					r.UploadOffset = parsedOffset
+					r.HasUploadOffset = true
+				}
 				return nil
 			}
-			// Step 1: body is JSON metadata.
+
 			if body := ctx.Request.Body(); len(body) > 0 {
 				return sonic.Unmarshal(body, r)
 			}
+
 			return nil
 		},
 		// ShortCircuit handles step 1 for non-Gemini providers: it acknowledges
@@ -412,68 +424,117 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
 			}
 
+			// Reject incomplete or unsupported resumable-upload headers.
+			if r.UploadCommand == "" {
+				return nil, errors.New("missing X-Goog-Upload-Command header")
+			}
+
+			normalizedCmd := strings.ReplaceAll(strings.ToLower(r.UploadCommand), " ", "")
+			if normalizedCmd != "upload" && normalizedCmd != "upload,finalize" {
+				return nil, fmt.Errorf(
+					"unsupported X-Goog-Upload-Command: %q",
+					r.UploadCommand,
+				)
+			}
+
+			if !r.HasUploadOffset {
+				return nil, errors.New("missing X-Goog-Upload-Offset header")
+			}
+
 			kvStore := handlerStore.GetKVStore()
 			if kvStore == nil {
 				return nil, errors.New("kvstore not initialized")
 			}
 
-			//Use Get instead of GetANDDelete which will keep session available for upload retries.
-			val, err := kvStore.Get(r.UploadID)
-			if err != nil {
-				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
+			var session *gemini.GeminiResumableUploadSession
+			// CAS loop makes validation + chunk storage + offset advancement atomic.
+			for {
+				val, err := kvStore.Get(r.UploadID)
+				if err != nil {
+					return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
+				}
+
+				currentSession, ok := val.(*gemini.GeminiResumableUploadSession)
+				if !ok {
+					return nil, errors.New("invalid upload session type in kvstore")
+				}
+
+				newSession := &gemini.GeminiResumableUploadSession{
+					DisplayName: currentSession.DisplayName,
+					MimeType:    currentSession.MimeType,
+					Provider:    currentSession.Provider,
+					VirtualKey:  currentSession.VirtualKey,
+					NextOffset:  currentSession.NextOffset,
+					Chunks:      make(map[int64][]byte, len(currentSession.Chunks)),
+				}
+
+				for offset, chunk := range currentSession.Chunks {
+					newSession.Chunks[offset] = append([]byte(nil), chunk...)
+				}
+
+				// If this offset already exists, this can only be a retry of the exact same chunk.
+				if existingChunk, exists := newSession.Chunks[r.UploadOffset]; exists {
+					if !bytes.Equal(existingChunk, r.FileData) {
+						return nil, fmt.Errorf("chunk at offset %d already exists with different data", r.UploadOffset)
+					}
+				} else {
+					if r.UploadOffset < 0 || r.UploadOffset != newSession.NextOffset {
+						return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, newSession.NextOffset)
+					}
+
+					chunk := append([]byte(nil), r.FileData...)
+					newSession.Chunks[r.UploadOffset] = chunk
+					newSession.NextOffset += int64(len(chunk))
+				}
+
+				success, err := kvStore.CompareAndSwap(r.UploadID, val, newSession, 1*time.Minute)
+				if err != nil {
+					return nil, fmt.Errorf("failed to persist upload chunk: %w", err)
+				}
+
+				if !success {
+					continue
+				}
+
+				session = newSession
+				break
 			}
 
-			session, ok := val.(*gemini.GeminiResumableUploadSession)
-			if !ok {
-				return nil, errors.New("invalid upload session type in kvstore")
-			}
-
-			// Chunk requests carry no auth headers (resumable-upload protocol:
-			// the upload_id is the credential), so restore the virtual key that
-			// initiated the upload. Headers presented on the chunk request win.
 			if session.VirtualKey != "" {
 				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
 					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
 				}
 			}
 
-			assembled := r.FileData
-			if r.UploadCommand != "" {
-				if r.UploadOffset < 0 || r.UploadOffset != session.NextOffset {
-					return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, session.NextOffset)
-				}
-				if session.Chunks == nil {
-					session.Chunks = make(map[int64][]byte)
-				}
-				chunk := append([]byte(nil), r.FileData...)
-				session.Chunks[r.UploadOffset] = chunk
-				session.NextOffset += int64(len(chunk))
-				if err := kvStore.SetWithTTL(r.UploadID, session, 1*time.Minute); err != nil {
-					return nil, fmt.Errorf("failed to persist upload chunk: %w", err)
-				}
+			if normalizedCmd == "upload" {
+				return &FileRequest{
+					Handled: true,
+					HandledHeaders: map[string]string{
+						"X-Goog-Upload-Status": "active",
+					},
+				}, nil
+			}
 
-				if !hasGeminiUploadCommand(r.UploadCommand, "finalize") {
-					return &FileRequest{
-						Handled:        true,
-						HandledHeaders: map[string]string{"X-Goog-Upload-Status": "active"},
-					}, nil
-				}
+			// Finalize: assemble all chunks in offset order.
+			offsets := make([]int64, 0, len(session.Chunks))
+			for offset := range session.Chunks {
+				offsets = append(offsets, offset)
+			}
 
-				offsets := make([]int64, 0, len(session.Chunks))
-				for offset := range session.Chunks {
-					offsets = append(offsets, offset)
-				}
-				sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
-				assembled = make([]byte, 0, session.NextOffset)
-				for _, offset := range offsets {
-					assembled = append(assembled, session.Chunks[offset]...)
-				}
+			sort.Slice(offsets, func(i, j int) bool {
+				return offsets[i] < offsets[j]
+			})
+
+			assembled := make([]byte, 0, session.NextOffset)
+			for _, offset := range offsets {
+				assembled = append(assembled, session.Chunks[offset]...)
 			}
 
 			filename := session.DisplayName
 			if filename == "" {
 				filename = "upload"
 			}
+
 			contentType := session.MimeType
 
 			return &FileRequest{
