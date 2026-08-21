@@ -12,6 +12,46 @@ npm install
 npx playwright install
 ```
 
+### Non-Debian Linux (Fedora, RHEL, Arch, …)
+
+Playwright publishes browser builds and dependency tooling for Debian/Ubuntu only
+([microsoft/playwright#29559](https://github.com/microsoft/playwright/issues/29559),
+closed as won't-fix). On other distributions `npx playwright install --with-deps`
+fails with `apt-get: command not found`, and the plain `npx playwright install`
+can hang partway through extracting the browser archive.
+
+Run the suite in Playwright's own image instead. This needs no repo or config
+changes — the container runs the same `playwright.config.ts` and the same specs.
+The image tag is read from `package.json` so it always matches the installed
+`@playwright/test`; a mismatch makes Playwright re-download browsers inside the
+container.
+
+```bash
+PW_VERSION=$(node -p "require('@playwright/test/package.json').version")
+
+# The dev server must already be running (make dev): SKIP_WEB_SERVER=1 tells
+# Playwright not to start one itself.
+docker run --rm --network=host \
+  -e SKIP_WEB_SERVER=1 -e BASE_URL=http://localhost:3000 \
+  -v "$(git rev-parse --show-toplevel)":/work -w /work/tests/e2e \
+  "mcr.microsoft.com/playwright:v${PW_VERSION}-noble" \
+  npx playwright test
+```
+
+`--network=host` is what lets the container reach the dev server on `:3000` and
+the gateway on `:8080`.
+
+Podman works as a drop-in replacement; add `:z` to the volume mount so SELinux
+relabels the bind mount:
+
+```bash
+podman run --rm --network=host \
+  -e SKIP_WEB_SERVER=1 -e BASE_URL=http://localhost:3000 \
+  -v "$(git rev-parse --show-toplevel)":/work:z -w /work/tests/e2e \
+  "mcr.microsoft.com/playwright:v${PW_VERSION}-noble" \
+  npx playwright test
+```
+
 ## Running Tests
 
 ```bash
