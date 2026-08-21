@@ -2033,11 +2033,52 @@ type ResponsesCodeExecutionCall struct {
 }
 
 type ResponsesToolMessageActionStruct struct {
-	ResponsesComputerToolCallAction   *ResponsesComputerToolCallAction
-	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
-	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
-	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
-	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
+	ResponsesComputerToolCallAction        *ResponsesComputerToolCallAction
+	ResponsesWebSearchToolCallAction       *ResponsesWebSearchToolCallAction
+	ResponsesWebFetchToolCallAction        *ResponsesWebFetchToolCallAction
+	ResponsesLocalShellToolCallAction      *ResponsesLocalShellToolCallAction
+	ResponsesMCPApprovalRequestAction      *ResponsesMCPApprovalRequestAction
+	ResponsesImageGenerationToolCallAction *ResponsesImageGenerationToolCallAction
+	Raw                                    json.RawMessage `json:"-"`
+}
+
+// ResponsesImageGenerationAction is the compile-time set of actions accepted
+// by the Responses image_generation tool. Providers may still return an
+// unknown action; the action union preserves that raw value rather than
+// coercing it into an unrelated computer action.
+type ResponsesImageGenerationAction string
+
+const (
+	ResponsesImageGenerationActionGenerate ResponsesImageGenerationAction = "generate"
+	ResponsesImageGenerationActionEdit     ResponsesImageGenerationAction = "edit"
+	ResponsesImageGenerationActionAuto     ResponsesImageGenerationAction = "auto"
+)
+
+// ResponsesImageGenerationToolCallAction represents the provider action form
+// seen on image_generation_call items. OpenAI-compatible providers have used
+// both a scalar ("generate") and an object ({"type":"generate"}) shape.
+type ResponsesImageGenerationToolCallAction struct {
+	// Type is ignored by MarshalJSON when Raw is populated, because Raw retains
+	// an extension-bearing provider payload for lossless round trips.
+	Type   ResponsesImageGenerationAction `json:"type,omitempty"`
+	Scalar bool                           `json:"-"`
+	// Raw is populated only when a known image action object contains fields
+	// that this version of the schema does not model. Keeping those bytes lets
+	// a provider response make a lossless decode/encode round trip while still
+	// exposing the known action through Type.
+	Raw json.RawMessage `json:"-"`
+}
+
+func (action ResponsesImageGenerationToolCallAction) MarshalJSON() ([]byte, error) {
+	if len(action.Raw) > 0 {
+		return append([]byte(nil), action.Raw...), nil
+	}
+	if action.Scalar {
+		return Marshal(action.Type)
+	}
+	return MarshalSorted(struct {
+		Type ResponsesImageGenerationAction `json:"type"`
+	}{Type: action.Type})
 }
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
@@ -2056,16 +2097,58 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
+	if action.ResponsesImageGenerationToolCallAction != nil {
+		return MarshalSorted(action.ResponsesImageGenerationToolCallAction)
+	}
+	if len(action.Raw) > 0 {
+		return append([]byte(nil), action.Raw...), nil
+	}
 	return nil, fmt.Errorf("responses tool message action struct is empty")
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
-	// First, peek at the type field to determine which variant to unmarshal
+	*action = ResponsesToolMessageActionStruct{}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		// Preserve an explicitly supplied null for direct union round trips.
+		// Pointer fields normally consume null without invoking this method,
+		// but callers can unmarshal the union value itself.
+		action.Raw = append([]byte(nil), trimmed...)
+		return nil
+	}
+	if !gjson.ValidBytes(trimmed) {
+		return fmt.Errorf("invalid JSON in responses tool message action")
+	}
+
+	// Hosted image-generation actions may be scalar strings. Handle this
+	// before peeking at an object discriminator, which is what rejected
+	// `"generate"` in the original parser.
+	var scalar string
+	if err := Unmarshal(trimmed, &scalar); err == nil {
+		if isResponsesImageGenerationAction(scalar) {
+			action.ResponsesImageGenerationToolCallAction = &ResponsesImageGenerationToolCallAction{
+				Type:   ResponsesImageGenerationAction(scalar),
+				Scalar: true,
+			}
+		} else {
+			action.Raw = append([]byte(nil), trimmed...)
+		}
+		return nil
+	}
+
+	// First, peek at the type field to determine which object variant to unmarshal.
 	var typeStruct struct {
 		Type string `json:"type"`
 	}
-	if err := Unmarshal(data, &typeStruct); err != nil {
-		return fmt.Errorf("failed to peek at type field: %w", err)
+	if err := Unmarshal(data, &typeStruct); err != nil { //nolint:nilerr // non-object actions are preserved verbatim in Raw
+		// Preserve a provider-native action shape that is not an object with a
+		// string discriminator. This keeps the surrounding Responses item
+		// decodable while retaining bytes for a later round trip.
+		action.Raw = append([]byte(nil), trimmed...)
+		return nil
 	}
 
 	// Based on the type, unmarshal into the appropriate variant
@@ -2102,6 +2185,20 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 		action.ResponsesWebFetchToolCallAction = &webFetchToolCallAction
 		return nil
 
+	case string(ResponsesImageGenerationActionGenerate), string(ResponsesImageGenerationActionEdit), string(ResponsesImageGenerationActionAuto):
+		imageAction := &ResponsesImageGenerationToolCallAction{Type: ResponsesImageGenerationAction(typeStruct.Type)}
+		// Keep the typed discriminator, but preserve any provider extension
+		// fields so MarshalJSON does not silently discard them.
+		gjson.ParseBytes(trimmed).ForEach(func(key, _ gjson.Result) bool {
+			if key.String() != "type" {
+				imageAction.Raw = append([]byte(nil), trimmed...)
+				return false
+			}
+			return true
+		})
+		action.ResponsesImageGenerationToolCallAction = imageAction
+		return nil
+
 	case "click", "double_click", "drag", "keypress", "move", "screenshot", "scroll", "type", "wait", "zoom":
 		var computerToolCallAction ResponsesComputerToolCallAction
 		if err := Unmarshal(data, &computerToolCallAction); err != nil {
@@ -2111,13 +2208,20 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 		return nil
 
 	default:
-		// use computer tool, as it can have many possible actions
-		var computerToolCallAction ResponsesComputerToolCallAction
-		if err := Unmarshal(data, &computerToolCallAction); err != nil {
-			return fmt.Errorf("failed to unmarshal computer tool call action: %w", err)
-		}
-		action.ResponsesComputerToolCallAction = &computerToolCallAction
+		// Unknown provider actions are retained losslessly. Do not silently
+		// reinterpret them as computer actions: hosted-tool schemas evolve
+		// independently from Bifrost's canonical union.
+		action.Raw = append([]byte(nil), trimmed...)
 		return nil
+	}
+}
+
+func isResponsesImageGenerationAction(value string) bool {
+	switch ResponsesImageGenerationAction(value) {
+	case ResponsesImageGenerationActionGenerate, ResponsesImageGenerationActionEdit, ResponsesImageGenerationActionAuto:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -3542,6 +3646,7 @@ type ResponsesToolCodeInterpreter struct {
 
 // ResponsesToolImageGeneration represents a tool image generation
 type ResponsesToolImageGeneration struct {
+	Action            *ResponsesImageGenerationAction             `json:"action,omitempty"`             // "generate" | "edit" | "auto"
 	Background        *string                                     `json:"background,omitempty"`         // "transparent" | "opaque" | "auto"
 	InputFidelity     *string                                     `json:"input_fidelity,omitempty"`     // "high" | "low"
 	InputImageMask    *ResponsesToolImageGenerationInputImageMask `json:"input_image_mask,omitempty"`   // Optional mask for inpainting
