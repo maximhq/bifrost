@@ -2266,6 +2266,55 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 			b.first = s.StartTime
 		}
 	}
+
+	// Streaming runs no per-chunk spans: the relay loop's JSON decode, struct->unified
+	// mapping, and downstream-backpressure stall are stamped as root-span attributes at
+	// stream end. Fold them into the same buckets as their unary equivalents (decode ->
+	// response-parse/Serialization, mapping -> convertor/Convertor) so a stream's numbers
+	// read like a unary request's. Backpressure has no unary twin and is not Bifrost CPU,
+	// so it gets its own bucket. Seeding the map here means measuredNs and core pick them
+	// up on the existing path, with no separate bookkeeping.
+	if trace.RootSpan != nil {
+		attrs := trace.RootSpan.Attributes
+		addStreamBucketMs := func(name string, ms float64) {
+			if ms <= 0 {
+				return
+			}
+			b := buckets[name]
+			if b == nil {
+				b = &agg{kind: schemas.SpanKindInternal, first: trace.RootSpan.StartTime}
+				buckets[name] = b
+			}
+			b.dur += time.Duration(ms * float64(time.Millisecond))
+		}
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamParseMs); ok {
+			addStreamBucketMs("response-parse", ms)
+		}
+		// Inbound per-chunk mapping (provider->Bifrost) is conversion work: it belongs
+		// in the Convertor category, as its own member so the stream split is visible.
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamConvertMs); ok {
+			addStreamBucketMs("convertor.stream-in", ms)
+		}
+		// Backpressure is the provider-side downstream wait that IS in the overhead
+		// total. Split it into (A) client-write vs (B) transport CPU using the transport
+		// goroutine's concurrent measurements as weights (those run in parallel and are
+		// not themselves in the total, so they weight rather than add). The (B) share is
+		// the outbound per-chunk mapping (Bifrost->client) -- also conversion work, so it
+		// joins the Convertor category as the outbound member. The (A) share is the client
+		// socket write and stays its own bucket. No transport timing (raw passthrough, or a
+		// client that disconnected) falls back to a single undifferentiated bucket.
+		if bp, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamBackpressureMs); ok && bp > 0 {
+			cpuMs, _ := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamTransportCPUMs)
+			writeMs, _ := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamClientWriteMs)
+			if total := cpuMs + writeMs; total > 0 {
+				addStreamBucketMs("stream-client-write", bp*writeMs/total)
+				addStreamBucketMs("convertor.stream-out", bp*cpuMs/total)
+			} else {
+				addStreamBucketMs("stream-backpressure", bp)
+			}
+		}
+	}
+
 	out := make([]logstore.OverheadBucket, 0, len(buckets)+1)
 	var measuredNs int64
 	for name, b := range buckets {
