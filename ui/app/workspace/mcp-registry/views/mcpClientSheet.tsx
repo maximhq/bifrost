@@ -840,20 +840,22 @@ export default function MCPClientSheet({
 																	</FormItem>
 																)}
 															/>
-															{needsSessionStickinessDirty && (
-																<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-																	<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-																	<p>
-																		Toggling this takes effect immediately on save:{" "}
-																		{needsSessionStickiness
-																			? "the shared connection will be opened now."
-																			: "the existing shared connection will be closed now."}
-																	</p>
-																</div>
-															)}
 														</>
 													)}
 											</div>
+											{/* Sits outside the bordered row group: it's a consequence of the
+											    toggle above, not another setting row. */}
+											{needsSessionStickinessDirty && (
+												<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+													<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+													<p>
+														Toggling this takes effect immediately on save:{" "}
+														{needsSessionStickiness
+															? "the shared connection will be opened now."
+															: "the existing shared connection will be closed now."}
+													</p>
+												</div>
+											)}
 										</div>
 
 										<DottedSeparator />
@@ -963,8 +965,6 @@ export default function MCPClientSheet({
 												/>
 											</div>
 										</div>
-
-										<DottedSeparator />
 
 										<FormField
 											control={form.control}
