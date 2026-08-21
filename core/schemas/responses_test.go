@@ -60,6 +60,38 @@ func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *te
 	}
 }
 
+func TestBifrostResponsesStreamCreatedNormalizesEmptyTruncation(t *testing.T) {
+	tests := []struct {
+		name       string
+		truncation *string
+		want       string
+	}{
+		{name: "missing", want: "disabled"},
+		{name: "empty", truncation: Ptr(""), want: "disabled"},
+		{name: "auto", truncation: Ptr("auto"), want: "auto"},
+		{name: "disabled", truncation: Ptr("disabled"), want: "disabled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &BifrostResponsesStreamResponse{
+				Type: ResponsesStreamResponseTypeCreated,
+				Response: &BifrostResponsesResponse{
+					Truncation: tt.truncation,
+				},
+			}
+
+			defaulted := resp.WithDefaults()
+			if defaulted == nil || defaulted.Response == nil || defaulted.Response.Truncation == nil {
+				t.Fatalf("expected response.created truncation to be defaulted, got %#v", defaulted)
+			}
+			if got := *defaulted.Response.Truncation; got != tt.want {
+				t.Fatalf("expected truncation %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.
