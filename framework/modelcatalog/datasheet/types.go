@@ -96,14 +96,16 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 // as the patch shape for Override.
 type Options struct {
 	// Costs - Text
-	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
-	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
-	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
-	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
-	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
-	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerToken           *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority   *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority  *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenUltrafast  *float64 `json:"input_cost_per_token_ultrafast,omitempty"`
+	OutputCostPerTokenUltrafast *float64 `json:"output_cost_per_token_ultrafast,omitempty"`
+	InputCostPerTokenFlex       *float64 `json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex      *float64 `json:"output_cost_per_token_flex,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -138,6 +140,7 @@ type Options struct {
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                   *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
 	CacheReadInputTokenCostFlex                        *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
 	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
@@ -148,6 +151,7 @@ type Options struct {
 	CacheCreationInputTokenCostFlex                *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority            *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostUltrafast           *float64 `json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
@@ -199,8 +203,8 @@ type Options struct {
 	//
 	// Not applicable to Vertex: its Ranking API bills "ranking units" derived from record count
 	// and title/content size, so a flat per-query rate would misprice every call.
-	InputCostPerQuery *float64 `json:"input_cost_per_query,omitempty"`
-	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
+	InputCostPerQuery        *float64 `json:"input_cost_per_query,omitempty"`
+	InferenceGeoUSMultiplier *float64 `json:"inference_geo_us_multiplier,omitempty"`
 	// CostPerRequest is a flat fee added once per billed request, on top of
 	// whatever usage-based cost the request otherwise computes to.
 	CostPerRequest *float64 `json:"cost_per_request,omitempty"`
@@ -290,9 +294,10 @@ type Override struct {
 // serviceTier captures the OpenAI service_tier value from a response.
 // Add new tier flags here as OpenAI introduces them.
 type serviceTier struct {
-	isPriority bool // true when service_tier == "priority"
-	isFlex     bool // true when service_tier == "flex"
-	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
+	isPriority  bool // true when service_tier == "priority"
+	isFlex      bool // true when service_tier == "flex"
+	isUltrafast bool // true when service_tier == "ultrafast"
+	isFast      bool // true when usage.speed == "fast" (Anthropic fast mode)
 	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
 	inferenceGeoUS bool
 }
@@ -612,6 +617,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenBatches:                 entry.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:                 entry.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                entry.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:               entry.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
 		InputCostPerTokenFast:                     entry.InputCostPerTokenFast,
@@ -642,6 +649,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   entry.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    entry.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                   entry.CacheReadInputTokenCostUltrafast,
 		CacheReadInputTokenCostFlex:                        entry.CacheReadInputTokenCostFlex,
 		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
@@ -651,6 +659,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostFlex:                    entry.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:     entry.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                entry.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostUltrafast:               entry.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostFast:                    entry.CacheCreationInputTokenCostFast,
 		CacheCreationInputTokenCostAbove1hrFast:            entry.CacheCreationInputTokenCostAbove1hrFast,
 		CacheReadInputTokenCostFast:                        entry.CacheReadInputTokenCostFast,
@@ -707,6 +716,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:                 pricing.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                pricing.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:               pricing.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
 		InputCostPerTokenFast:                     pricing.InputCostPerTokenFast,
@@ -737,6 +748,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   pricing.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    pricing.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                   pricing.CacheReadInputTokenCostUltrafast,
 		CacheReadInputTokenCostFlex:                        pricing.CacheReadInputTokenCostFlex,
 		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
@@ -746,6 +758,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostFlex:                    pricing.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:     pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                pricing.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostUltrafast:               pricing.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostFast:                    pricing.CacheCreationInputTokenCostFast,
 		CacheCreationInputTokenCostAbove1hrFast:            pricing.CacheCreationInputTokenCostAbove1hrFast,
 		CacheReadInputTokenCostFast:                        pricing.CacheReadInputTokenCostFast,

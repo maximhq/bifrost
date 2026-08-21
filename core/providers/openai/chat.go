@@ -42,6 +42,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
+		openaiReq.ServiceTier = serviceTierForModel(caps, openaiReq.ServiceTier)
 		if openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
 			openaiReq.ChatParameters.MaxCompletionTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
@@ -136,6 +137,19 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		return openaiReq
 	}
+}
+
+// serviceTierForModel filters a requested tier against the final target model's
+// capabilities. Omitting an unsupported tier lets the provider use its default
+// instead of returning an unsupported-tier error.
+func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *schemas.BifrostServiceTier {
+	if tier == nil {
+		return nil
+	}
+	if !caps.ServiceTierSupported(*tier, true) {
+		return nil
+	}
+	return tier
 }
 
 // Filter OpenAI Specific Parameters

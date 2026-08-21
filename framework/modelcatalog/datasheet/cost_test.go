@@ -360,9 +360,9 @@ func TestComputeTextCost_Breakdown(t *testing.T) {
 func TestComputeTextCost_AudioBreakdown(t *testing.T) {
 	const inputRate, outputRate = 0.000003, 0.000015
 	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     2000,
-		CompletionTokens: 400,
-		TotalTokens:      2400,
+		PromptTokens:            2000,
+		CompletionTokens:        400,
+		TotalTokens:             2400,
 		PromptTokensDetails:     &schemas.ChatPromptTokensDetails{AudioTokens: 500},
 		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{AudioTokens: 100},
 	}
@@ -434,8 +434,8 @@ func TestComputeTextCost_AudioBreakdown(t *testing.T) {
 		// Audio clamps to the 300 non-cached tokens, so text drops to 0 (float
 		// subtraction leaves only rounding noise, never the -6e-4 the bug produced).
 		assert.GreaterOrEqual(t, bd.InputCostDetails.TextCost, -1e-12)
-		assert.InDelta(t, 0.0, bd.InputCostDetails.TextCost, 1e-12) // 300*3e-6 - 300*3e-6
-		assert.InDelta(t, 0.003, bd.InputCostDetails.AudioCost, 1e-12)      // 300 * 1e-5
+		assert.InDelta(t, 0.0, bd.InputCostDetails.TextCost, 1e-12)          // 300*3e-6 - 300*3e-6
+		assert.InDelta(t, 0.003, bd.InputCostDetails.AudioCost, 1e-12)       // 300 * 1e-5
 		assert.InDelta(t, 0.0007, bd.InputCostDetails.CachedReadCost, 1e-12) // 700 * 1e-6
 		assert.InDelta(t, 0.0037, bd.InputCost, 1e-12)
 		assert.InDelta(t, bd.InputCost,
@@ -3423,11 +3423,52 @@ func TestTierFromResponse_Flex(t *testing.T) {
 	assert.True(t, tier.isFlex)
 }
 
+func TestTierFromResponse_Ultrafast(t *testing.T) {
+	s := schemas.BifrostServiceTierUltrafast
+	tier := tierFromResponse(&s, nil, nil)
+	assert.False(t, tier.isPriority)
+	assert.False(t, tier.isFlex)
+	assert.True(t, tier.isUltrafast)
+}
+
+func TestUltrafastRates(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:                    new(1.0),
+		OutputCostPerToken:                   new(2.0),
+		CacheReadInputTokenCost:              new(0.5),
+		CacheCreationInputTokenCost:          new(0.75),
+		InputCostPerTokenUltrafast:           new(3.0),
+		OutputCostPerTokenUltrafast:          new(6.0),
+		CacheReadInputTokenCostUltrafast:     new(1.5),
+		CacheCreationInputTokenCostUltrafast: new(2.25),
+	}
+	tier := serviceTier{isUltrafast: true}
+	assert.Equal(t, 3.0, tieredInputRate(&p, 1000, tier))
+	assert.Equal(t, 6.0, tieredOutputRate(&p, 1000, tier))
+	assert.Equal(t, 1.5, tieredCacheReadInputTokenRate(&p, 1000, tier))
+	assert.Equal(t, 2.25, tieredCacheCreationInputTokenRate(&p, 1000, tier))
+}
+
+func TestUltrafastRatesFallBackToStandardWhenUnconfigured(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:           new(1.0),
+		OutputCostPerToken:          new(2.0),
+		CacheReadInputTokenCost:     new(0.5),
+		CacheCreationInputTokenCost: new(0.75),
+	}
+	tier := serviceTier{isUltrafast: true}
+	assert.Equal(t, 1.0, tieredInputRate(&p, 1000, tier))
+	assert.Equal(t, 2.0, tieredOutputRate(&p, 1000, tier))
+	assert.Equal(t, 0.5, tieredCacheReadInputTokenRate(&p, 1000, tier))
+	assert.Equal(t, 0.75, tieredCacheCreationInputTokenRate(&p, 1000, tier))
+}
+
 func TestTierFromResponse_Default(t *testing.T) {
 	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
 		tier := tierFromResponse(&s, nil, nil)
 		assert.False(t, tier.isPriority, "expected no priority for %q", s)
 		assert.False(t, tier.isFlex, "expected no flex for %q", s)
+		assert.False(t, tier.isUltrafast, "expected no ultrafast for %q", s)
 	}
 }
 

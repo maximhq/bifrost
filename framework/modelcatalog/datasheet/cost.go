@@ -1462,7 +1462,7 @@ func totalOnlyCost(c float64) *schemas.BifrostCost {
 // ---------------------------------------------------------------------------
 
 // tierFromResponse builds a serviceTier from a response's billing-relevant
-// fields: the OpenAI service_tier (priority/flex) and the Anthropic speed
+// fields: the OpenAI service_tier (priority/flex/ultrafast) and the Anthropic speed
 // (fast mode). speed == "fast" means fast mode was actually served — the
 // provider echoes the served speed, so stripped/fell-back requests report
 // "standard" and bill at standard rates.
@@ -1474,6 +1474,8 @@ func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo
 			tier.isPriority = true
 		case schemas.BifrostServiceTierFlex:
 			tier.isFlex = true
+		case schemas.BifrostServiceTierUltrafast:
+			tier.isUltrafast = true
 		}
 	}
 	tier.isFast = speed != nil && *speed == "fast"
@@ -1488,6 +1490,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
 		return *pricing.InputCostPerTokenFast
+	}
+	if tier.isUltrafast && pricing.InputCostPerTokenUltrafast != nil {
+		return *pricing.InputCostPerTokenUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
@@ -1532,6 +1537,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
 		return *pricing.OutputCostPerTokenFast
+	}
+	if tier.isUltrafast && pricing.OutputCostPerTokenUltrafast != nil {
+		return *pricing.OutputCostPerTokenUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
@@ -1641,6 +1649,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
 		return *pricing.CacheReadInputTokenCostFast
 	}
+	if tier.isUltrafast && pricing.CacheReadInputTokenCostUltrafast != nil {
+		return *pricing.CacheReadInputTokenCostUltrafast
+	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
 			return *pricing.CacheReadInputTokenCostFlexAbove272kTokens
@@ -1675,12 +1686,15 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 }
 
 // OpenAI introduced cache-write (cache-creation) pricing with gpt-5.6, tiered by
-// service tier (flex/priority) and by the 272k context window; Anthropic uses the
+// service tier (flex/priority/ultrafast) and by the 272k context window; Anthropic uses the
 // flat fast rate. Precedence mirrors tieredCacheReadInputTokenRate.
 func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
 		return *pricing.CacheCreationInputTokenCostFast
+	}
+	if tier.isUltrafast && pricing.CacheCreationInputTokenCostUltrafast != nil {
+		return *pricing.CacheCreationInputTokenCostUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {
