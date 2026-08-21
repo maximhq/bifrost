@@ -1534,6 +1534,9 @@ storage:
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m). Unset derives 5x the interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
+    #   # Native ENGINE = Replicated database mode. Set false only when an
+    #   # external operator or migration process creates/updates tables on every replica.
+    #   managedReplication: true
     #   host: "clickhouse.default.svc.cluster.local"  # Required
     #   port: "9000"          # Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)
     #   database: "default"
@@ -1542,7 +1545,9 @@ storage:
     #   protocol: "native"    # Options: native, http (default: native)
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
-    #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
+    #   # Set false only when external replication automation manages table DDL on every replica.
+    #   tableEngine: "MergeTree"  # Options: MergeTree, REPLICATED_MERGETREE
+    #   cluster: ""               # Required for unmanaged REPLICATED_MERGETREE; applies ON CLUSTER only with MergeTree
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
     #   maxBatchSize: 1000

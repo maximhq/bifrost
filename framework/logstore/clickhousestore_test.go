@@ -38,6 +38,73 @@ func clickhouseTestConfig() *ClickHouseConfig {
 	}
 }
 
+func TestClickHouseDDLConfig(t *testing.T) {
+	trueValue := true
+	tests := []struct {
+		name        string
+		config      ClickHouseConfig
+		env         map[string]string
+		wantEngine  clickHouseTableEngine
+		wantManaged bool
+		wantErr     string
+	}{
+		{name: "local defaults", wantEngine: clickHouseEngineMergeTree},
+		{name: "cluster config defaults to MergeTree", config: ClickHouseConfig{Cluster: "cluster-a"}, wantEngine: clickHouseEngineMergeTree},
+		{name: "managed replicated config", config: ClickHouseConfig{ManagedReplication: &trueValue, TableEngine: "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
+		{name: "environment defaults", env: map[string]string{"CLICKHOUSE_MANAGED_REPLICATION": "true", "CLICKHOUSE_TABLE_ENGINE": "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
+		{name: "managed replication rejects cluster for replicated table engine", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue, TableEngine: "REPLICATED_MERGETREE"}, wantErr: "cluster must be empty"},
+		{name: "managed replication is ignored for MergeTree", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue, TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
+		{name: "non replicated cluster is allowed", config: ClickHouseConfig{Cluster: "cluster-a", TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
+		{name: "unmanaged replicated engine requires cluster", config: ClickHouseConfig{TableEngine: "REPLICATED_MERGETREE"}, wantErr: "cluster is required"},
+		{name: "unknown table engine rejected", config: ClickHouseConfig{TableEngine: "SharedMergeTree"}, wantErr: "table_engine must be"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CLICKHOUSE_CLUSTER", "")
+			t.Setenv("CLICKHOUSE_MANAGED_REPLICATION", "")
+			t.Setenv("CLICKHOUSE_TABLE_ENGINE", "")
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			got, err := tt.config.ddlConfig()
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantEngine, got.engine)
+			assert.Equal(t, tt.wantManaged, got.managedReplication)
+		})
+	}
+}
+
+func TestClickHouseDDLReplicationModes(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        clickHouseDDLConfig
+		wantEngine    string
+		wantOnCluster string
+	}{
+		{name: "local", config: clickHouseDDLConfig{engine: clickHouseEngineMergeTree}, wantEngine: "ReplacingMergeTree(ver)"},
+		{name: "non replicated cluster", config: clickHouseDDLConfig{cluster: "cluster-a", engine: clickHouseEngineMergeTree}, wantEngine: "ReplacingMergeTree(ver)", wantOnCluster: " ON CLUSTER `cluster-a`"},
+		{name: "unmanaged replicated", config: clickHouseDDLConfig{cluster: "cluster-a", engine: clickHouseEngineReplicatedMergeTree}, wantEngine: "ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/logs', '{replica}', ver)"},
+		{name: "managed replicated", config: clickHouseDDLConfig{engine: clickHouseEngineReplicatedMergeTree, managedReplication: true}, wantEngine: "ReplicatedReplacingMergeTree(ver)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.tableEngine("logs")
+			assert.Equal(t, tt.wantEngine, got)
+			assert.Equal(t, tt.wantOnCluster, tt.config.onClusterClause())
+			if tt.config.managedReplication {
+				assert.NotContains(t, got, "/clickhouse/tables/")
+			}
+		})
+	}
+}
+
 // trySetupClickHouseStore connects to the docker-compose ClickHouse, runs
 // migrations, and truncates the log tables for a clean slate. Skips the test
 // when ClickHouse is unavailable.
