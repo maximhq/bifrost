@@ -72,6 +72,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
+		openaiReq.stripTemperatureForReasoningModels(capModel)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
@@ -205,6 +206,17 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
+	}
+}
+
+// stripTemperatureForReasoningModels drops the temperature parameter for OpenAI/Azure
+// reasoning models (o1/o3/o4 series, gpt-oss, GPT-5.x), which reject any non-default
+// temperature value with a 400 error. Unlike top_p, GPT-5.x rejects temperature even
+// at the default "none" reasoning effort, so this strips unconditionally rather than
+// only for always-reasoning (-pro/-codex) variants.
+func (req *OpenAIChatRequest) stripTemperatureForReasoningModels(capModel string) {
+	if req.ChatParameters.Temperature != nil && IsOpenAIReasoningModel(capModel) {
+		req.ChatParameters.Temperature = nil
 	}
 }
 
