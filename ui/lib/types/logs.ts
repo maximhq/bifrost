@@ -561,6 +561,16 @@ export interface RedactionMapping {
 	output?: Record<string, string>;
 }
 
+// One slice of Bifrost overhead, attributed to a span (or group of spans) by
+// self-time. duration_us is microseconds. Buckets come in chronological order and
+// summing them gives an independent measure of overhead vs the overhead_latency
+// number (which is total minus the upstream socket accumulator).
+export interface OverheadBucket {
+	name: string; // e.g. "key.selection", "plugin.governance", "transport/core"
+	kind: string; // originating span kind, for grouping/coloring
+	duration_us: number;
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
@@ -636,13 +646,14 @@ export interface LogEntry {
 	latency?: number;
 	upstream_latency?: number; // provider socket time across all attempts, ms
 	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
+	overhead_breakdown?: OverheadBucket[]; // per-span self-time decomposition of overhead (microseconds)
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	batch_debug?: BatchDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
-	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "default".
+	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "ultrafast" / "default".
 	service_tier?: string;
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.

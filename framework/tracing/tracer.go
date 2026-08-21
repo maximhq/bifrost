@@ -170,7 +170,10 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 		return
 	}
 	patterns := t.CollectRequestHeaderPatterns()
-	matched := schemas.FilterHeaders(headers, patterns)
+	// Redact credential-bearing headers once, here at the single capture point, so
+	// every connector reading trace.RequestHeaders (Datadog, OTEL, BigQuery, Kafka,
+	// Pub/Sub) exports redacted values even under a broad pattern like "*".
+	matched := schemas.RedactSensitiveHeaders(schemas.FilterHeaders(headers, patterns))
 	if len(matched) == 0 {
 		return
 	}
@@ -220,10 +223,15 @@ func (t *Tracer) ReleaseTrace(trace *schemas.Trace) {
 }
 
 // spanHandle is the concrete implementation of schemas.SpanHandle for Tracer.
-// It contains the trace and span IDs needed to reference the span in the store.
+// It carries the trace and span IDs plus a direct pointer to the span. The pointer
+// lets EndSpan/SetAttribute/SpanFromHandle skip the GetTrace + linear GetSpan lookup
+// on the hot path (a request creates dozens of spans, and the scan was O(n) per end,
+// i.e. O(n^2) per request). The ID fields remain as a fallback for handles created
+// without a span pointer, and so the handle stays valid if the pointer is ever nil.
 type spanHandle struct {
 	traceID string
 	spanID  string
+	span    *schemas.Span
 }
 
 // StartSpan creates a new span as a child of the current span in context.
@@ -272,13 +280,20 @@ func (t *Tracer) StartSpanID(ctx context.Context, name string, kind schemas.Span
 	if span == nil {
 		return "", nil
 	}
-	return span.SpanID, &spanHandle{traceID: traceID, spanID: span.SpanID}
+	return span.SpanID, &spanHandle{traceID: traceID, spanID: span.SpanID, span: span}
 }
 
 // EndSpan completes a span with the given status and message.
 func (t *Tracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, statusMsg string) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
+		return
+	}
+	// Fast path: end via the cached pointer, skipping the trace + linear span lookup.
+	// EndIfMatch guards against a pooled span that ReleaseTrace/TTL cleanup recycled
+	// out from under this handle; on a miss we fall back to the by-ID lookup, which
+	// no-ops safely when the trace is gone.
+	if h.span != nil && h.span.EndIfMatch(h.spanID, status, statusMsg) {
 		return
 	}
 	t.store.EndSpan(h.traceID, h.spanID, status, statusMsg, nil)
@@ -288,6 +303,12 @@ func (t *Tracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, s
 func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
+		return
+	}
+	// Fast path: the cached pointer avoids the trace + linear span lookup.
+	// SetAttributeIfMatch guards against a recycled pooled span; on a miss we fall
+	// back to the by-ID lookup, which no-ops safely when the trace is gone.
+	if h.span != nil && h.span.SetAttributeIfMatch(h.spanID, key, value) {
 		return
 	}
 	trace := t.store.GetTrace(h.traceID)
@@ -307,6 +328,12 @@ func (t *Tracer) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
 		return nil
+	}
+	// Return the cached pointer only if it still refers to this handle's span;
+	// MatchesID rejects a span the pool recycled to another trace, falling back to
+	// the by-ID lookup (nil when the trace is gone).
+	if h.span != nil && h.span.MatchesID(h.spanID) {
+		return h.span
 	}
 	trace := t.store.GetTrace(h.traceID)
 	if trace == nil {
@@ -329,12 +356,16 @@ func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanH
 		if trace.RootSpan == nil {
 			return nil
 		}
-		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID, span: trace.RootSpan}
 	}
-	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+	if *spanID == "" {
 		return nil
 	}
-	return &spanHandle{traceID: traceID, spanID: *spanID}
+	span := trace.GetSpan(*spanID)
+	if span == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID, span: span}
 }
 
 // AddEvent adds a timestamped event to the span identified by the handle.
@@ -865,6 +896,13 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// so every trace connector sees the same value on the root span.
 		exportTrace.StampOverheadDuration()
 
+		// Connectors receive a copy with the internal overhead-breakdown spans stripped
+		// so they don't inflate span volume in OTEL/Datadog/etc.; only plugins that opt
+		// in via OverheadSpanConsumer (the logging plugin, which needs them to compute
+		// the breakdown) get the full trace. Computed once; returns exportTrace unchanged
+		// when there are no breakdown spans to strip.
+		connectorTrace := exportTrace.WithoutOverheadBreakdownSpans()
+
 		var slots []*obsPluginSlot
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			slots = *loaded
@@ -904,7 +942,13 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 				}()
 				injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
 				defer cancel()
-				if err := slot.plugin.Inject(injectCtx, exportTrace); err != nil && t.logger != nil {
+				// Opt-in consumers (the logging plugin) get the full trace incl. overhead
+				// breakdown spans; every other connector gets the stripped copy.
+				traceForPlugin := connectorTrace
+				if consumer, ok := slot.plugin.(schemas.OverheadSpanConsumer); ok && consumer.ConsumesOverheadSpans() {
+					traceForPlugin = exportTrace
+				}
+				if err := slot.plugin.Inject(injectCtx, traceForPlugin); err != nil && t.logger != nil {
 					if errors.Is(err, context.DeadlineExceeded) {
 						t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, exportTrace.TraceID, slot.injectTimeout)
 					} else {

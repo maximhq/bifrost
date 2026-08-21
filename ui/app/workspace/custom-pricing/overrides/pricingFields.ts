@@ -80,6 +80,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "input_cost_per_token_ultrafast",
+		label: "Input / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "output_cost_per_token_ultrafast",
+		label: "Output / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "input_cost_per_token_flex",
 		label: "Input / token (flex)",
 		group: "chat",
@@ -218,6 +230,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_read_input_token_cost_ultrafast",
+		label: "Cache read / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_read_input_token_cost_flex",
 		label: "Cache read / token (flex)",
 		group: "chat",
@@ -268,6 +286,12 @@ export const PRICING_FIELDS = [
 	{
 		key: "cache_creation_input_token_cost_priority",
 		label: "Cache creation / token (priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_ultrafast",
+		label: "Cache creation / token (ultrafast)",
 		group: "chat",
 		requestTypeGroups: ["chat"],
 	},
@@ -442,6 +466,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["image"],
 	},
 	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels",
+		label: "Output / image (>1024x1536px)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels",
+		label: "Output / image (>1536x1024px)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
 		key: "output_cost_per_image_above_2048_and_2048_pixels",
 		label: "Output / image (>2048px)",
 		group: "image",
@@ -504,6 +540,78 @@ export const PRICING_FIELDS = [
 	{
 		key: "output_cost_per_image_auto_quality",
 		label: "Output / image (auto quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_low_quality",
+		label: "Output / image (>1024x1024px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_low_quality",
+		label: "Output / image (>1024x1536px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_low_quality",
+		label: "Output / image (>1536x1024px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_medium_quality",
+		label: "Output / image (>1024x1024px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_medium_quality",
+		label: "Output / image (>1024x1536px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_medium_quality",
+		label: "Output / image (>1536x1024px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_high_quality",
+		label: "Output / image (>1024x1024px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_high_quality",
+		label: "Output / image (>1024x1536px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_high_quality",
+		label: "Output / image (>1536x1024px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_standard_quality",
+		label: "Output / image (>1024x1024px, standard quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_standard_quality",
+		label: "Output / image (>1024x1536px, standard quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_standard_quality",
+		label: "Output / image (>1536x1024px, standard quality)",
 		group: "image",
 		requestTypeGroups: ["image"],
 	},

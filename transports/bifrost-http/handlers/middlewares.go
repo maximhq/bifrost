@@ -490,7 +490,9 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for _, plugin := range plugins {
 				pluginName := plugin.GetName()
 				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+				st, sh := startTransportPluginSpan(ctx, pluginName, "transportprehook")
 				resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+				endTransportPluginSpan(st, sh, err)
 				pluginCtx.ReleasePluginScope()
 				if err != nil {
 					// Short-circuit with error — drain plugin logs before returning
@@ -547,10 +549,23 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					preHookLogs = logs
 				}
 
+				// Capture the tracer and trace/root-span ids while ctx is still live so the
+				// deferred post-hooks can be timed after ctx is recycled. spanParentCtx is a
+				// minimal context carrying just what StartSpanID reads (trace id + parent id).
+				var spanTracer schemas.Tracer
+				var spanParentCtx context.Context
+				if t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && t != nil {
+					if traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); traceID != "" {
+						rootSpanID, _ := ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+						spanTracer = t
+						spanParentCtx = context.WithValue(context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID), schemas.BifrostContextKeySpanID, rootSpanID)
+					}
+				}
+
 				completer := func() ([]schemas.PluginLogEntry, error) {
 					defer schemas.ReleaseHTTPRequest(capturedReq)
 					defer schemas.ReleaseHTTPResponse(capturedResp)
-					postHookLogs, err := runTransportPostHooksCaptured(capturedReq, capturedResp, plugins, bifrostCtx)
+					postHookLogs, err := runTransportPostHooksCaptured(capturedReq, capturedResp, plugins, bifrostCtx, spanTracer, spanParentCtx)
 					allLogs := preHookLogs
 					if len(postHookLogs) > 0 {
 						allLogs = append(allLogs, postHookLogs...)
@@ -596,7 +611,9 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 		plugin := plugins[i]
 		pluginName := plugin.GetName()
 		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		st, sh := startTransportPluginSpan(ctx, pluginName, "transportposthook")
 		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		endTransportPluginSpan(st, sh, err)
 		pluginCtx.ReleasePluginScope()
 		if err != nil {
 			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
@@ -621,7 +638,10 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 // a fasthttp RequestCtx, which may have been recycled by the time this runs in a
 // streaming goroutine. Returns accumulated plugin logs (instead of writing them to
 // ctx.UserValue) so the caller can forward them to the trace completer.
-func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedResp *schemas.HTTPResponse, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext) ([]schemas.PluginLogEntry, error) {
+// spanTracer/spanParentCtx (captured before the fasthttp ctx was recycled) let each
+// post-hook be timed as a plugin.<name>.transportposthook span nested under the root;
+// both are nil when no trace is active and the hooks run untimed.
+func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedResp *schemas.HTTPResponse, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext, spanTracer schemas.Tracer, spanParentCtx context.Context) ([]schemas.PluginLogEntry, error) {
 	// Clone into fresh pooled objects so plugins can mutate without affecting the snapshots.
 	req := schemas.AcquireHTTPRequest()
 	defer schemas.ReleaseHTTPRequest(req)
@@ -646,7 +666,12 @@ func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedRes
 		plugin := plugins[i]
 		pluginName := plugin.GetName()
 		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		var sh schemas.SpanHandle
+		if spanTracer != nil {
+			_, sh = spanTracer.StartSpanID(spanParentCtx, transportPluginSpanName(pluginName, "transportposthook"), schemas.SpanKindPlugin)
+		}
 		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		endTransportPluginSpan(spanTracer, sh, err)
 		pluginCtx.ReleasePluginScope()
 		if err != nil {
 			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
@@ -1488,6 +1513,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
 				}
+				// Expose this exact tracer on the request context so transport-edge
+				// handlers can open "transport" spans (client request parse, response
+				// marshal) that nest under this root span. Using the same tracer instance
+				// that created the root span keeps the spans in the same trace store.
+				ctx.SetUserValue(schemas.BifrostContextKeyTracer, tracer)
 			}
 			// Capture request headers onto the trace when a connector has opted in.
 			// Gated so there is no overhead when no observability plugin wants headers.

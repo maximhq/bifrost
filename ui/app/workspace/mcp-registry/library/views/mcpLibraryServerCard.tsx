@@ -48,6 +48,8 @@ export function authLabel(authType?: string): string {
 			return "User headers";
 		case "per_user_oauth":
 			return "User OAuth";
+		case "token_exchange":
+			return "Token exchange";
 		default:
 			return "No auth";
 	}

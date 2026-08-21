@@ -489,3 +489,15 @@ type ObservabilityLimits struct {
 	// default (5s).
 	InjectTimeout time.Duration
 }
+
+// OverheadSpanConsumer is an optional interface an ObservabilityPlugin may implement
+// to opt into receiving the internal overhead-breakdown spans (see
+// IsOverheadBreakdownSpan). By default those spans are stripped from the trace before
+// it reaches a connector, so they feed the log-detail overhead breakdown without
+// inflating span volume in OTEL/Datadog/etc. The logging plugin implements this and
+// returns true because it computes the breakdown from those spans; connectors that do
+// not implement it receive the stripped trace. Type-asserted by the tracer, so no
+// change is required of existing plugins.
+type OverheadSpanConsumer interface {
+	ConsumesOverheadSpans() bool
+}

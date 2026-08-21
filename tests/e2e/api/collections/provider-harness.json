@@ -107,6 +107,22 @@
           "    } else if (j.embedding && Array.isArray(j.embedding.values)) {",
           "        shape = 'genai-embedding';",
           "        hasContent = j.embedding.values.length > 0;",
+          "    } else if (j.embeddingsByType && typeof j.embeddingsByType === 'object') {",
+          "        shape = 'bedrock-titan-typed-embedding';",
+          "        var titanEmbeddingTypes = ['float', 'binary'];",
+          "        hasContent = titanEmbeddingTypes.some(function (type) {",
+          "            return Array.isArray(j.embeddingsByType[type]) && j.embeddingsByType[type].length > 0;",
+          "        });",
+          "    } else if (Array.isArray(j.embeddings)) {",
+          "        shape = 'bedrock-cohere-embedding';",
+          "        hasContent = j.embeddings.some(function (vector) { return Array.isArray(vector) && vector.length > 0; });",
+          "    } else if (j.embeddings && typeof j.embeddings === 'object') {",
+          "        shape = 'bedrock-cohere-typed-embedding';",
+          "        var cohereEmbeddingTypes = ['float', 'int8', 'uint8', 'binary', 'ubinary'];",
+          "        hasContent = cohereEmbeddingTypes.some(function (type) {",
+          "            var vectors = j.embeddings[type];",
+          "            return Array.isArray(vectors) && vectors.length > 0 && Array.isArray(vectors[0]) && vectors[0].length > 0;",
+          "        });",
           "    } else if (Array.isArray(j.embedding)) {",
           "        shape = 'bedrock-titan-embedding';",
           "        hasContent = j.embedding.length > 0;",
@@ -274,6 +290,11 @@
     },
     {
       "key": "bedrockOpenaiModel",
+      "value": "openai.gpt-5.6-sol",
+      "type": "string"
+    },
+    {
+      "key": "bedrockOpenaiDirectModel",
       "value": "global.openai.gpt-5.6-sol",
       "type": "string"
     },
@@ -4538,7 +4559,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 4096 }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-pro/converse",
@@ -4594,7 +4615,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 4096 }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/bedrock/model/vertex%2Fgemini-2.5-pro/converse",
@@ -7349,7 +7370,7 @@
                   }
                 },
                 {
-                  "name": "vertex/imagen-4.0-generate-001",
+                  "name": "vertex/gemini-2.5-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7360,7 +7381,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/images/generations",
@@ -7492,7 +7513,7 @@
                   }
                 },
                 {
-                  "name": "vertex/imagen-4.0-generate-001",
+                  "name": "vertex/gemini-2.5-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7503,7 +7524,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -38910,7 +38931,7 @@
                       }
                     },
                     {
-                      "name": "vertex/imagen-4.0-generate-001",
+                      "name": "vertex/gemini-2.5-flash-image",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -38921,7 +38942,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -130349,11 +130370,11 @@
     },
     {
       "name": "53. Embeddings x provider x parameter surface",
-      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every other key is dropped silently unless the request carries x-bf-passthrough-extra-params: true and nests the key under \"extra_params\" (transports/bifrost-http/integrations/router.go). There is no embedding route on the /bedrock drop-in at all - /bedrock/model/{id}/invoke converts to Converse and then to Responses - so Bedrock embeddings are reachable only through /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
+      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every OTHER top-level key is collected as an extra param by extractExtraParams (transports/bifrost-http/handlers/inference.go) and handed to the provider converter, which maps the ones it knows (normalize, embeddingTypes, input_type, truncate, embedding_types) onto native fields; anything left over reaches the wire only when the request carries x-bf-passthrough-extra-params: true. Do NOT nest these under an \"extra_params\" object here - that unwrapping exists only on the integration/drop-in routes served by GenericRouter (transports/bifrost-http/integrations/router.go). On this native route the wrapper is just another unknown key, so the params inside it are ignored AND the wrapper itself is forwarded, which Bedrock rejects with \"extraneous key [extra_params] is not permitted\". Native Bedrock embeddings are also reachable through /bedrock/model/{id}/invoke and /langchain/model/{id}/invoke; normalized and SDK-compatible routes include /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
       "item": [
         {
           "name": "53.A Bedrock Titan envelope (amazon.titan-embed-*)",
-          "description": "Titan takes a single `inputText` string and returns a single vector, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). These rows pin the Titan-shaped request body reaching AWS and the single-vector response coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider through x-bf-passthrough-extra-params: true plus an \"extra_params\" object, which is the door those rows use.",
+          "description": "Titan takes a single `inputText` string, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). The legacy/default response has one float vector; `embeddingTypes` returns one vector per requested representation. These rows pin the Titan-shaped request body reaching AWS and every requested representation coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider as plain TOP-LEVEL keys, which extractExtraParams collects and ToBedrockTitanEmbeddingRequest maps onto the Titan envelope; that is the door those rows use. Nesting them under \"extra_params\" does not work on this route (see the parent folder description).\n\nnormalize is only observable below the default width: at 1024 dimensions Titan V2 returns a vector that is already unit-length, so normalize:false is indistinguishable from normalize:true. The A4/A5 pair pins dimensions:256, where normalize:false measures L2 ~0.57 against ~1.0 for the control.",
           "item": [
             {
               "name": "53.A1 bedrock/amazon.titan-embed-text-v2:0 - baseline single input",
@@ -130528,7 +130549,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": true\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"normalize\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130582,7 +130603,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": false\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"normalize\": false\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130640,7 +130661,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"embeddingTypes\": [\n      \"float\",\n      \"binary\"\n    ]\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130668,15 +130689,19 @@
                       "var data = j.data || [];",
                       "// AWS documents embeddingTypes (camelCase) as a Titan V2 field, and warns that the",
                       "// `embedding` field is omitted entirely when embeddingTypes contains only \"binary\".",
-                      "// This row asks for both, so the normalized float path must stay intact while the",
-                      "// binary variant is still recoverable from the raw provider payload.",
-                      "pm.test('returns 1 vector(s) - float path survives alongside binary', function () {",
+                      "// This row asks for both, so both normalized representations must survive while",
+                      "// the native AWS envelope remains recoverable from the opted-in raw payload.",
+                      "pm.test('returns both normalized float and binary representations', function () {",
                       "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
-                      "    .to.eql(1);",
+                      "    .to.eql(2);",
+                      "  var formats = [];",
                       "  for (var i = 0; i < data.length; i++) {",
                       "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
                       "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "    formats.push(data[i].encoding_format);",
                       "  }",
+                      "  formats.sort();",
+                      "  pm.expect(formats, 'expected one float and one binary representation').to.eql(['binary', 'float']);",
                       "});",
                       "pm.test('embeddingsByType.binary reached the caller via raw_response', function () {",
                       "  var raw = (j.extra_fields || {}).raw_response || {};",
@@ -130803,7 +130828,10 @@
                       "pm.test('values are int8, not floats', function () {",
                       "  var v = data[0].embedding;",
                       "  for (var i = 0; i < v.length; i++) {",
-                      "    pm.expect(v[i] % 1, 'value at ' + i + ' is not an integer: ' + v[i]).to.eql(0);",
+                      "    // Number.isInteger, not `v[i] % 1`: the latter is -0 for any negative integer and",
+                      "    // chai's eql compares with SameValue, so -0 never equals +0 - this assertion used to",
+                      "    // fail on the first negative value of every int8 vector.",
+                      "    pm.expect(Number.isInteger(v[i]), 'value at ' + i + ' is not an integer: ' + v[i]).to.be.true;",
                       "    pm.expect(v[i], 'value at ' + i + ' is outside int8 range: ' + v[i]).to.be.within(-128, 127);",
                       "  }",
                       "});"
@@ -130869,7 +130897,7 @@
               ]
             },
             {
-              "name": "53.B4 bedrock/global.cohere.embed-v4:0 - /v1/embeddings + extra_params.input_type",
+              "name": "53.B4 bedrock/global.cohere.embed-v4:0 - /v1/embeddings + top-level input_type",
               "request": {
                 "method": "POST",
                 "header": [
@@ -130884,7 +130912,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_query\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_query\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130910,8 +130938,9 @@
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
                       "var data = j.data || [];",
-                      "// The working counterpart to 53.B3: input_type supplied through the passthrough door.",
-                      "pm.test('returns 1 vector(s) - input_type via extra_params reaches Bedrock', function () {",
+                      "// The working counterpart to 53.B3: input_type supplied through the passthrough door -",
+                      "// a top-level key, which is what /v1/embeddings collects as an extra param.",
+                      "pm.test('returns 1 vector(s) - top-level input_type reaches Bedrock', function () {",
                       "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
                       "    .to.eql(1);",
                       "  for (var i = 0; i < data.length; i++) {",
@@ -130940,7 +130969,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ],\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ],\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131002,7 +131031,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 512,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 512,\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131058,7 +131087,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131502,7 +131531,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -136261,6 +136290,286 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "58. Typed embedding envelopes and SDK alias (PR #6335)",
+      "item": [
+        {
+          "name": "58.A bedrock/model Titan V2 binary-only native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputText\": \"binary-only embedding harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-text-v2:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-text-v2:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting this valid Titan body is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Titan binary-only invoke returns the AWS embeddingsByType envelope', function () {",
+                  "  var byType = j.embeddingsByType || {};",
+                  "  pm.expect(byType, 'embeddingsByType missing; body: ' + pm.response.text().slice(0, 300)).to.have.property('binary');",
+                  "  pm.expect(Array.isArray(byType.binary), 'embeddingsByType.binary is not an array').to.be.true;",
+                  "  pm.expect(byType.binary.length, 'embeddingsByType.binary is empty').to.be.above(0);",
+                  "  for (var i = 0; i < byType.binary.length; i++) {",
+                  "    pm.expect(byType.binary[i], 'binary value outside Titan range at ' + i).to.be.within(-1, 1);",
+                  "    pm.expect(byType.binary[i] % 1, 'binary value is not an integer at ' + i).to.eql(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.B bedrock/model Titan V2 float+binary native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputText\": \"dual representation embedding harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-text-v2:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-text-v2:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting this valid Titan body is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Titan combined invoke preserves both AWS typed representations', function () {",
+                  "  var byType = j.embeddingsByType || {};",
+                  "  pm.expect(Array.isArray(byType.float), 'embeddingsByType.float missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(byType.float.length, 'embeddingsByType.float is empty').to.be.above(0);",
+                  "  pm.expect(Array.isArray(byType.binary), 'embeddingsByType.binary missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(byType.binary.length, 'embeddingsByType.binary is empty').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.C bedrock/model Cohere v4 all typed encodings native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"texts\": [\n    \"cohere typed embedding harness check\"\n  ],\n  \"input_type\": \"search_document\",\n  \"output_dimension\": 256,\n  \"embedding_types\": [\n    \"float\",\n    \"int8\",\n    \"uint8\",\n    \"binary\",\n    \"ubinary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.cohere.embed-v4:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting these documented Cohere encodings is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Cohere invoke returns embeddings_by_type', function () {",
+                  "  pm.expect(j.response_type, 'unexpected response envelope: ' + pm.response.text().slice(0, 300)).to.eql('embeddings_by_type');",
+                  "});",
+                  "pm.test('Cohere invoke preserves every requested encoding', function () {",
+                  "  var embeddings = j.embeddings || {};",
+                  "  var types = ['float', 'int8', 'uint8', 'binary', 'ubinary'];",
+                  "  for (var i = 0; i < types.length; i++) {",
+                  "    var vectors = embeddings[types[i]];",
+                  "    pm.expect(Array.isArray(vectors), types[i] + ' vectors missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "    pm.expect(vectors.length, types[i] + ' vector list is empty').to.be.above(0);",
+                  "    pm.expect(Array.isArray(vectors[0]), types[i] + ' first vector is not an array').to.be.true;",
+                  "    pm.expect(vectors[0].length, types[i] + ' first vector is empty').to.be.above(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.D langchain/model Cohere v3 singular embedding alias - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"texts\": [\n    \"langchain cohere compatibility harness check\"\n  ],\n  \"input_type\": \"search_document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/cohere.embed-english-v3/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "cohere.embed-english-v3",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: this is the stock LangChain BedrockEmbeddings request shape.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('LangChain gets the singular embedding field it reads', function () {",
+                  "  pm.expect(Array.isArray(j.embedding), 'singular embedding missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(j.embedding.length, 'singular embedding is empty').to.be.above(0);",
+                  "});",
+                  "pm.test('native plural embeddings remain intact', function () {",
+                  "  pm.expect(Array.isArray(j.embeddings), 'native embeddings list missing').to.be.true;",
+                  "  pm.expect(j.embeddings.length, 'native embeddings list is empty').to.be.above(0);",
+                  "  pm.expect(j.embedding, 'singular alias does not match embeddings[0]').to.eql(j.embeddings[0]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.E bedrock/v1 Titan float+binary normalized without raw leakage - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"normalized dual representation harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: losing a requested representation is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('normalized Titan response retains float and binary vectors', function () {",
+                  "  pm.expect(data.length, 'expected two typed vectors; body: ' + pm.response.text().slice(0, 300)).to.eql(2);",
+                  "  // Each entry names the representation it came back as, so the encodings",
+                  "  // are read off the response instead of guessed from the vector values.",
+                  "  var formats = [];",
+                  "  for (var i = 0; i < data.length; i++) {",
+                  "    var vector = data[i].embedding || [];",
+                  "    pm.expect(vector.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                  "    formats.push(data[i].encoding_format);",
+                  "  }",
+                  "  formats.sort();",
+                  "  pm.expect(formats, 'expected one float and one binary representation; body: ' + pm.response.text().slice(0, 300)).to.eql(['binary', 'float']);",
+                  "});",
+                  "pm.test('provider-native envelope never surfaces on the normalized endpoint', function () {",
+                  "  // raw_response presence is governed by the provider's send_back_raw_response",
+                  "  // config, so it is not asserted here; the envelope shape is the invariant.",
+                  "  pm.expect(j.embeddingsByType, 'provider-native envelope leaked at the top level').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

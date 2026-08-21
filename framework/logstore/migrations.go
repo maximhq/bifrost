@@ -293,6 +293,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
+	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -667,6 +668,31 @@ func migrationAddUpstreamAndOverheadLatencyColumns(ctx context.Context, db *gorm
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding upstream/overhead latency columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOverheadBreakdownColumn adds the overhead_breakdown column to the
+// logs table. It holds the per-span self-time decomposition of Bifrost overhead.
+func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_overhead_breakdown_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &Log{}, "overhead_breakdown")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &Log{}, "overhead_breakdown")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding overhead_breakdown column: %s", err.Error())
 	}
 	return nil
 }

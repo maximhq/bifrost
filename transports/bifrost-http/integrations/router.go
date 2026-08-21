@@ -874,11 +874,24 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			return
 		}
 
-		// Convert the integration-specific request to Bifrost format (inference requests)
+		// Convert the integration-specific request to Bifrost format (inference requests).
+		// Timed as a "convertor" overhead phase (nests under the root span via the tracer
+		// on the request ctx); folds into core when no trace is active.
+		convTracer, _ := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		var convHandle schemas.SpanHandle
+		if convTracer != nil {
+			_, convHandle = convTracer.StartSpanID(ctx, "convertor", schemas.SpanKindInternal)
+		}
 		bifrostReq, err := config.RequestConverter(bifrostCtx, req)
 		if err != nil {
+			if convTracer != nil {
+				convTracer.EndSpan(convHandle, schemas.SpanStatusError, err.Error())
+			}
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format"))
 			return
+		}
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 		}
 		if bifrostReq == nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid request"))
