@@ -36,6 +36,8 @@ const requestedGeminiModelMetadataContextKey schemas.BifrostContextKey = "bifros
 
 const genAIRawRequestBodyContextKey schemas.BifrostContextKey = "bifrost-genai-raw-request-body"
 
+const MaxResumableUploadSize int64 = 100 * 1024 * 1024 // 100 MB
+
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
 	*GenericRouter
@@ -482,6 +484,12 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 						return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, newSession.NextOffset)
 					}
 
+					// Validate total upload size does not exceed 100 MB.
+					newChunkSize := int64(len(r.FileData))
+					if newSession.NextOffset+newChunkSize > MaxResumableUploadSize {
+						return nil, fmt.Errorf("upload size exceeds maximum allowed size of %d MB", MaxResumableUploadSize/(1024*1024))
+					}
+
 					chunk := append([]byte(nil), r.FileData...)
 					newSession.Chunks[r.UploadOffset] = chunk
 					newSession.NextOffset += int64(len(chunk))
@@ -525,9 +533,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return offsets[i] < offsets[j]
 			})
 
-			assembled := make([]byte, 0, session.NextOffset)
+			assembledFile := make([]byte, 0, session.NextOffset)
 			for _, offset := range offsets {
-				assembled = append(assembled, session.Chunks[offset]...)
+				assembledFile = append(assembledFile, session.Chunks[offset]...)
 			}
 
 			filename := session.DisplayName
@@ -541,7 +549,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				Type: schemas.FileUploadRequest,
 				UploadRequest: &schemas.BifrostFileUploadRequest{
 					Provider:    session.Provider,
-					File:        assembled,
+					File:        assembledFile,
 					Filename:    filename,
 					ContentType: &contentType,
 					Purpose:     schemas.FilePurposeBatch,
