@@ -216,7 +216,7 @@ func TestUpdateConfig_ReplacesAdminPasswordMatchingGenericSecretMask(t *testing.
 
 	const submittedPassword = "Aa1b************************cdef"
 	ctx := putConfigCtx(`{
-		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30},
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30,"compat":{}},
 		"auth_config":{
 			"admin_username":{"value":"admin"},
 			"admin_password":{"value":"` + submittedPassword + `"},
@@ -287,7 +287,7 @@ func TestUpdateConfig_UpdatesPasswordWithoutSubmittedUsername(t *testing.T) {
 
 	const submittedPassword = "NewPassword1!"
 	ctx := putConfigCtx(`{
-		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30},
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30,"compat":{}},
 		"auth_config":{
 			"admin_password":{"value":"` + submittedPassword + `"},
 			"is_enabled":true
