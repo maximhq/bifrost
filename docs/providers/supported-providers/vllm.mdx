@@ -120,6 +120,10 @@ case schemas.VLLM:
 
 vLLM supports standard OpenAI chat completion parameters. For full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions). Message types, tools, and streaming follow the same behavior.
 
+### Reasoning effort
+
+vLLM is a self-hosted OpenAI-compatible server. Bifrost forwards Chat Completions `reasoning_effort` and Responses `reasoning.effort` without applying OpenAI's model-name taxonomy, so values such as `xhigh` reach your checkpoint as-is. Whether a given value is accepted depends on the model loaded in vLLM (for example Qwen3.8 accepts `xhigh`, `medium`, and `low`, but not `high`).
+
 ---
 
 # 2. Responses API
@@ -192,6 +196,12 @@ Your upstream vLLM server must be started with a rerank-capable model (pooling/c
 **Severity**: High
 **Behavior**: vLLM resolves request routing from `vllm_key_config.url`.
 **Impact**: Requests fail without `vllm_key_config.url`, even if a provider-level `network_config.base_url` is present.
+</Accordion>
+
+<Accordion title="Reasoning effort is not remapped by model name">
+**Severity**: Low
+**Behavior**: Unlike hosted OpenAI, Bifrost does not rewrite `xhigh` to `high` for vLLM based on the checkpoint name.
+**Impact**: Send the effort values your loaded model actually supports. A value OpenAI would coerce (for example `xhigh` on a non-GPT-5.2 name) is forwarded unchanged and may 400 if that checkpoint rejects it.
 </Accordion>
 
 <Accordion title="Error responses with HTTP 200">
