@@ -4212,7 +4212,8 @@
       "properties": {
         "base_url": {
           "type": "string",
-          "description": "Base URL for the provider (optional, required for Ollama). Supports a literal URL or env.VAR_NAME / vault.path."
+          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }, { "pattern": "^vault\\..+$" }],
+          "description": "Base URL for the provider (optional, required for Ollama). Supports a literal URL, an env.VAR_NAME reference, or (Enterprise) a vault.path reference."
         },
         "extra_headers": {
           "type": "object",
