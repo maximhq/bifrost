@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -36,6 +37,10 @@ type configHandlerTestManager struct {
 }
 
 func (m *configHandlerTestManager) UpdateAuthConfig(ctx context.Context, config *configstore.AuthConfig) error {
+	if config.IsEnabled && (config.AdminUserName == nil || config.AdminUserName.GetValue() == "" ||
+		config.AdminPassword == nil || config.AdminPassword.GetValue() == "") {
+		return errors.New("username and password are required when auth is enabled")
+	}
 	return m.store.UpdateAuthConfig(ctx, config)
 }
 
@@ -266,4 +271,38 @@ func TestUpdateConfig_RejectsWeakAdminPasswordBeforeConfigMutation(t *testing.T)
 	require.NotNil(t, storedAuth)
 	assert.Equal(t, oldHash, storedAuth.AdminPassword.GetValue())
 	assert.Zero(t, store.flushSessionsCalls)
+}
+
+func TestUpdateConfig_UpdatesPasswordWithoutSubmittedUsername(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler, store := newConfigHandlerAuthTest(t)
+
+	oldHash, err := encrypt.Hash("OldPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(oldHash),
+		IsEnabled:     true,
+	}))
+
+	const submittedPassword = "NewPassword1!"
+	ctx := putConfigCtx(`{
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30},
+		"auth_config":{
+			"admin_password":{"value":"` + submittedPassword + `"},
+			"is_enabled":true
+		}
+	}`)
+	handler.updateConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	storedAuth, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	assert.Equal(t, "admin", storedAuth.AdminUserName.GetValue())
+	assert.NotEqual(t, oldHash, storedAuth.AdminPassword.GetValue())
+	passwordMatches, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), submittedPassword)
+	require.NoError(t, err)
+	assert.True(t, passwordMatches)
+	assert.Equal(t, 1, store.flushSessionsCalls)
 }

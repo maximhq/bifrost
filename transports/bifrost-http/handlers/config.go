@@ -943,6 +943,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.GetRawRef()))
 				return
 			}
+			if authConfig != nil && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
+			}
 			if authConfig == nil && (payload.AuthConfig.AdminUserName.GetValue() == "" || payload.AuthConfig.AdminPassword.GetValue() == "") {
 				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
 				return
@@ -958,25 +961,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
-			// Fetching current Auth config
-			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
-					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
-						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
-						return
-					}
-					// Assuming that password hasn't been changed
-					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
-				} else {
-					// Password has been changed
-					hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					payload.AuthConfig.AdminPassword = hashedPassword
+			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
+				if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
+					SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
+					return
 				}
+				// Assuming that password hasn't been changed
+				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				// Password has been changed
+				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
+				if err != nil {
+					logger.Warn("failed to hash password: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashedPassword
 			}
 			// Save auth config - this handles both first-time creation and updates
 			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
