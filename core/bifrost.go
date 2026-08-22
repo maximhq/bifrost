@@ -6121,7 +6121,7 @@ func executeRequestWithRetries[T any](
 				keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
 				if attempts > 0 {
-					keyTracer.SetAttribute(keyHandle, schemas.AttrLegacyRetryCount, attempts)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostRetries, attempts)
 				}
 			}
 
@@ -6293,46 +6293,31 @@ func executeRequestWithRetries[T any](
 		span.SetAttribute(schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		span.SetAttribute(schemas.AttrRequestModel, model)
 		span.SetAttribute(schemas.AttrOperationName, otelOp)
-		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
-		if attempts > 0 {
-			span.SetAttribute(schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
-		}
+		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
-		// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: the
-		// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
-		// are the canonical home going forward; once all dashboards migrate, drop the
-		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			span.SetAttribute(schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			span.SetAttribute(schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			span.SetAttribute(schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			span.SetAttribute(schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerName, customerName)
 		}
 		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
@@ -6369,10 +6354,8 @@ func executeRequestWithRetries[T any](
 			span.SetAttribute(schemas.AttrBifrostUserEmail, userEmail)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			span.SetAttribute(schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		span.SetAttribute(schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
 		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
