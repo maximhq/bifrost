@@ -439,6 +439,264 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
+// NormalizeRawMidConversationSystem applies the same conservative policy as the
+// typed Responses converter to raw Anthropic-shaped bodies while preserving
+// unknown message fields and the byte representation of untouched messages.
+//
+// Native role:"system" messages are kept only when SupportsMidConversationSystem
+// and the typed converter's conservative placement check both pass. Otherwise,
+// Claude-family requests reuse inlineMidConversationSystem so cache-control and
+// reminder formatting stay owned by the shared typed-path helper. Non-Claude models keep
+// the historical top-level-system behavior.
+func NormalizeRawMidConversationSystem(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	if len(jsonBody) == 0 {
+		return jsonBody, nil
+	}
+
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	messages := messagesResult.Array()
+	if len(messages) == 0 {
+		return jsonBody, nil
+	}
+
+	isSystemRole := func(role string) bool {
+		return role == string(AnthropicMessageRoleSystem) || role == "developer"
+	}
+	endsWithServerToolResult := func(msg gjson.Result) bool {
+		if msg.Get("role").String() != string(AnthropicMessageRoleAssistant) {
+			return false
+		}
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return false
+		}
+		blocks := content.Array()
+		return len(blocks) > 0 && isAnthropicServerToolTerminalBlockType(blocks[len(blocks)-1].Get("type").String())
+	}
+	systemRunBounds := func(index int) (int, int) {
+		start, end := index, index
+		for start > 0 && isSystemRole(messages[start-1].Get("role").String()) {
+			start--
+		}
+		for end+1 < len(messages) && isSystemRole(messages[end+1].Get("role").String()) {
+			end++
+		}
+		return start, end
+	}
+	placementOK := func(index int) bool {
+		start, end := systemRunBounds(index)
+		if start == 0 {
+			return false
+		}
+		previous := messages[start-1]
+		previousOK := previous.Get("role").String() == string(AnthropicMessageRoleUser) || endsWithServerToolResult(previous)
+		nextOK := end == len(messages)-1 || messages[end+1].Get("role").String() == string(AnthropicMessageRoleAssistant)
+		return previousOK && nextOK
+	}
+	endsWithClientToolUse := func(msg gjson.Result) bool {
+		if msg.Get("role").String() != string(AnthropicMessageRoleAssistant) {
+			return false
+		}
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return false
+		}
+		blocks := content.Array()
+		if len(blocks) == 0 {
+			return false
+		}
+		switch blocks[len(blocks)-1].Get("type").String() {
+		case string(AnthropicContentBlockTypeToolUse), string(AnthropicContentBlockTypeMCPToolUse):
+			return true
+		default:
+			return false
+		}
+	}
+	hasClientToolResult := func(msg gjson.Result) bool {
+		if msg.Get("role").String() != string(AnthropicMessageRoleUser) {
+			return false
+		}
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return false
+		}
+		for _, block := range content.Array() {
+			switch block.Get("type").String() {
+			case string(AnthropicContentBlockTypeToolResult), string(AnthropicContentBlockTypeMCPToolResult):
+				return true
+			}
+		}
+		return false
+	}
+	inlineToolResultTarget := func(index int) (int, bool) {
+		start, end := systemRunBounds(index)
+		if start == 0 || end+1 >= len(messages) {
+			return 0, false
+		}
+		if !endsWithClientToolUse(messages[start-1]) || !hasClientToolResult(messages[end+1]) {
+			return 0, false
+		}
+		return end + 1, true
+	}
+	parseContent := func(result gjson.Result) (*AnthropicContent, error) {
+		if !result.Exists() || result.Type == gjson.Null {
+			return &AnthropicContent{}, nil
+		}
+		var content AnthropicContent
+		if err := sonic.UnmarshalString(result.Raw, &content); err != nil {
+			return nil, fmt.Errorf("unsupported raw system content: %w", err)
+		}
+		return &content, nil
+	}
+
+	systemCount := 0
+	for _, msg := range messages {
+		if isSystemRole(msg.Get("role").String()) {
+			systemCount++
+		}
+	}
+	if systemCount == 0 {
+		return jsonBody, nil
+	}
+
+	// Match the typed path's system-only safety behavior, extended to a run of
+	// system/developer messages so a raw request never ends up with no messages.
+	if systemCount == len(messages) {
+		var combined *AnthropicContent
+		for _, msg := range messages {
+			content, err := parseContent(msg.Get("content"))
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw system-only request: %w", err)
+			}
+			combined = appendToSystemContent(combined, *content)
+		}
+		if combined == nil {
+			return jsonBody, nil
+		}
+		var err error
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "messages.0.role", string(AnthropicMessageRoleUser))
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw system-only role: %w", err)
+		}
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "messages.0.content", *combined)
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw system-only content: %w", err)
+		}
+		for i := len(messages) - 1; i > 0; i-- {
+			jsonBody, err = sjson.DeleteBytes(jsonBody, fmt.Sprintf("messages.%d", i))
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw system-only messages: %w", err)
+			}
+		}
+		return jsonBody, nil
+	}
+
+	nativeSupported := SupportsMidConversationSystem(provider, model)
+	inlineFallback := schemas.IsAnthropicModelFamily(ctx, model)
+	seenConversation := false
+	deleteIndexes := make([]int, 0, systemCount)
+	inlineToolResultBlocks := make(map[int][]AnthropicContentBlock)
+	var hoisted *AnthropicContent
+	var err error
+
+	for i, msg := range messages {
+		role := msg.Get("role").String()
+		if !isSystemRole(role) {
+			if role == string(AnthropicMessageRoleUser) || role == string(AnthropicMessageRoleAssistant) {
+				seenConversation = true
+			}
+			continue
+		}
+
+		content, parseErr := parseContent(msg.Get("content"))
+		if parseErr != nil {
+			return nil, fmt.Errorf("normalize raw mid-conversation system content: %w", parseErr)
+		}
+
+		switch {
+		case seenConversation && nativeSupported && placementOK(i):
+			// Developer is a cross-provider input role; Anthropic's native wire role is system.
+			if role == "developer" {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, fmt.Sprintf("messages.%d.role", i), string(AnthropicMessageRoleSystem))
+				if err != nil {
+					return nil, fmt.Errorf("normalize raw developer role: %w", err)
+				}
+			}
+		case seenConversation && inlineFallback:
+			inlined := inlineMidConversationSystem(content)
+			if inlined == nil {
+				deleteIndexes = append(deleteIndexes, i)
+				continue
+			}
+			// A standalone reminder between client tool_use and its user tool_result
+			// remains wire-invalid. Preserve the raw tool-result message byte-for-byte
+			// and append only the generated reminder blocks after its existing content.
+			if target, ok := inlineToolResultTarget(i); ok {
+				inlineToolResultBlocks[target] = append(inlineToolResultBlocks[target], inlined.Content.ContentBlocks...)
+				deleteIndexes = append(deleteIndexes, i)
+				continue
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, fmt.Sprintf("messages.%d.role", i), string(inlined.Role))
+			if err != nil {
+				return nil, fmt.Errorf("inline raw mid-conversation system role: %w", err)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, fmt.Sprintf("messages.%d.content", i), inlined.Content)
+			if err != nil {
+				return nil, fmt.Errorf("inline raw mid-conversation system content: %w", err)
+			}
+		default:
+			hoisted = appendToSystemContent(hoisted, *content)
+			deleteIndexes = append(deleteIndexes, i)
+		}
+	}
+
+	// Apply raw-array appends before deleting system messages so target indexes
+	// still refer to the original request. sjson's -1 path appends without
+	// decoding or re-encoding the existing tool_result blocks or unknown fields.
+	for target := 0; target < len(messages); target++ {
+		for _, block := range inlineToolResultBlocks[target] {
+			rawBlock, marshalErr := providerUtils.MarshalSorted(block)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("marshal raw inline tool-result reminder: %w", marshalErr)
+			}
+			jsonBody, err = providerUtils.SetRawJSONField(jsonBody, fmt.Sprintf("messages.%d.content.-1", target), rawBlock)
+			if err != nil {
+				return nil, fmt.Errorf("append raw inline tool-result reminder: %w", err)
+			}
+		}
+	}
+
+	for i := len(deleteIndexes) - 1; i >= 0; i-- {
+		jsonBody, err = sjson.DeleteBytes(jsonBody, fmt.Sprintf("messages.%d", deleteIndexes[i]))
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw system messages: %w", err)
+		}
+	}
+
+	if hoisted == nil {
+		return jsonBody, nil
+	}
+	var existing *AnthropicContent
+	if result := providerUtils.GetJSONField(jsonBody, "system"); result.Exists() && result.Type != gjson.Null {
+		existing, err = parseContent(result)
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw top-level system: %w", err)
+		}
+	}
+	combined := appendToSystemContent(existing, *hoisted)
+	if combined == nil {
+		return jsonBody, nil
+	}
+	jsonBody, err = providerUtils.SetJSONField(jsonBody, "system", *combined)
+	if err != nil {
+		return nil, fmt.Errorf("normalize raw top-level system: %w", err)
+	}
+	return jsonBody, nil
+}
+
 // StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body
@@ -1148,12 +1406,47 @@ func clampAnthropicCacheBreakpoints(req *AnthropicMessageRequest) int {
 	return excess
 }
 
+// isAnthropicServerToolTerminalBlockType reports whether a content block can
+// legally terminate the assistant turn that precedes a mid-conversation system
+// section. Anthropic documents a server-tool result as the exceptional boundary.
+// The suffix checks intentionally cover future server tools without treating a
+// bare server_tool_use or the client-side plain tool_result as a completed result.
+func isAnthropicServerToolTerminalBlockType(blockType string) bool {
+	return (strings.HasSuffix(blockType, "_tool_result") && blockType != string(AnthropicContentBlockTypeToolResult)) ||
+		strings.HasSuffix(blockType, "_tool_result_error")
+}
+
+func anthropicAssistantEndsWithServerToolResult(msg *AnthropicMessage) bool {
+	if msg == nil || msg.Role != AnthropicMessageRoleAssistant || len(msg.Content.ContentBlocks) == 0 {
+		return false
+	}
+	return isAnthropicServerToolTerminalBlockType(string(msg.Content.ContentBlocks[len(msg.Content.ContentBlocks)-1].Type))
+}
+
+// anthropicAssistantEndsWithClientToolUse identifies an assistant turn whose
+// next user turn must begin with the corresponding client-side tool result. A
+// fallback reminder cannot be inserted as a standalone user message at this
+// boundary; it must be appended after the tool_result blocks in that same turn.
+func anthropicAssistantEndsWithClientToolUse(msg *AnthropicMessage) bool {
+	if msg == nil || msg.Role != AnthropicMessageRoleAssistant || len(msg.Content.ContentBlocks) == 0 {
+		return false
+	}
+	switch msg.Content.ContentBlocks[len(msg.Content.ContentBlocks)-1].Type {
+	case AnthropicContentBlockTypeToolUse, AnthropicContentBlockTypeMCPToolUse:
+		return true
+	default:
+		return false
+	}
+}
+
 // inlineMidConversationSystem renders a mid-conversation system message as a user turn wrapped in
 // the <system-reminder> envelope, preserving each block's cache_control.
 //
 // This is the fallback for a mid-conversation system message the provider+model cannot carry as
 // role:"system" — either because the model predates the feature (SupportsMidConversationSystem)
-// or because the platform doesn't expose it at all (Bedrock, Vertex, and Foundry do not). The
+// or because Bifrost has not enabled the native form for that transport. The legacy Bedrock
+// provider deliberately retains its existing Converse compatibility conversion, while Vertex and
+// Bedrock Mantle use the documented Claude Messages surfaces. The
 // alternative, folding the content into the top-level `system` block, is what this replaces: the
 // system block renders ahead of every message, so growing it mid-conversation invalidates the
 // cached prefix behind it and pins the cacheable region at the system/tools floor. Measured
@@ -1220,29 +1513,38 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	}
 }
 
-// SupportsMidConversationSystem returns true if the provider+model combination
-// supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
-// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
-// but Fable supports it as well). No beta header is required.
-//
-// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
-// gate, prefers the datasheet's supports_mid_conversation_system_messages
-// boolean; falls back to substring detection. The provider gate stays hardcoded
-// because a bare-model override lookup can't distinguish provider.
+// DefaultSupportsMidConversationSystem is the hardcoded fallback for a known
+// native Messages transport and documented model family. Unknown/custom
+// transports fail closed even when their model name resembles Claude.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
-	if provider != schemas.Anthropic {
+	features, ok := ProviderFeatures[provider]
+	if !ok || !features.MidConvSystem {
 		return false
 	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) {
+	if IsMythosPreview(m) {
+		return false
+	}
+	if strings.Contains(m, "fable-5") || strings.Contains(m, "mythos-5") || IsOpus5Plus(m) || IsSonnet5Plus(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
+// SupportsMidConversationSystem combines the hard transport allowlist with the
+// provider-scoped datasheet model capability. The outer transport gate is
+// intentional: a custom Anthropic-compatible endpoint must not gain a new wire
+// role solely because its model name or datasheet row resembles Claude.
+func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok || !features.MidConvSystem {
+		return false
+	}
+	caps := schemas.ResolveModelCaps(provider, model)
+	return caps.SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(provider, model))
 }
 
 // SupportsFastMode reports fast-mode support for a single (provider, model)

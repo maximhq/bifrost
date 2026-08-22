@@ -107,6 +107,18 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 		}
 	})
 
+	t.Run("empty_orphan_only_does_not_create_empty_user_turn", func(t *testing.T) {
+		msgs, system := ConvertBifrostMessagesToAnthropicMessages(ctx,
+			[]schemas.ResponsesMessage{functionOutput("toolu_orphan", "")},
+			true, schemas.ResolveModelCaps(provider, model))
+		if system != nil {
+			t.Fatalf("system = %#v, want nil", system)
+		}
+		if len(msgs) != 0 {
+			t.Fatalf("empty orphan should not create an empty user message: %#v", msgs)
+		}
+	})
+
 	// (b) Matched pair still produces tool_use + tool_result (no regression).
 	t.Run("matched_pair", func(t *testing.T) {
 		msgs, err := ConvertBifrostMessagesToAnthropicMessages(ctx,
@@ -150,4 +162,74 @@ func TestConvertBifrostMessages_OrphanToolResultBecomesUserText(t *testing.T) {
 			t.Fatal("expected orphan output to become user text")
 		}
 	})
+
+	// (d/e) A fallback reminder between a client tool_use and an orphaned
+	// tool_result must be emitted even when the orphan has no renderable text.
+	// When text is present, preserve the tool-output-before-reminder ordering used
+	// by valid matched tool results.
+	for _, tc := range []struct {
+		name      string
+		output    string
+		wantTexts []string
+	}{
+		{
+			name:   "empty_orphan_keeps_deferred_reminder",
+			output: "",
+			wantTexts: []string{
+				"<system-reminder>\nKeep the answer concise.\n</system-reminder>\n",
+			},
+		},
+		{
+			name:   "non_empty_orphan_precedes_deferred_reminder",
+			output: "Orphaned result",
+			wantTexts: []string{
+				"Tool result: Orphaned result",
+				"<system-reminder>\nKeep the answer concise.\n</system-reminder>\n",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs, system := ConvertBifrostMessagesToAnthropicMessages(ctx,
+				[]schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Run the tool"),
+						},
+					},
+					functionCall("call_match", "get_weather", `{"location":"SF"}`),
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Keep the answer concise."),
+						},
+					},
+					functionOutput("call_orphan", tc.output),
+				},
+				true, schemas.ResolveModelCaps(provider, model))
+
+			if system != nil {
+				t.Fatalf("mid-conversation reminder must not be hoisted: %#v", system)
+			}
+			if len(msgs) != 3 {
+				t.Fatalf("expected user, assistant tool use, and salvaged user turn; got %d: %#v", len(msgs), msgs)
+			}
+			if msgs[0].Role != AnthropicMessageRoleUser || msgs[1].Role != AnthropicMessageRoleAssistant || msgs[2].Role != AnthropicMessageRoleUser {
+				t.Fatalf("unexpected role sequence: %s,%s,%s", msgs[0].Role, msgs[1].Role, msgs[2].Role)
+			}
+			if hasToolResult(msgs, "call_orphan") {
+				t.Fatal("orphan must not be emitted as an invalid tool_result")
+			}
+
+			blocks := msgs[2].Content.ContentBlocks
+			if len(blocks) != len(tc.wantTexts) {
+				t.Fatalf("salvaged user blocks = %#v, want %d text blocks", blocks, len(tc.wantTexts))
+			}
+			for i, want := range tc.wantTexts {
+				if blocks[i].Type != AnthropicContentBlockTypeText || blocks[i].Text == nil || *blocks[i].Text != want {
+					t.Fatalf("block[%d] = %#v, want text %q", i, blocks[i], want)
+				}
+			}
+		})
+	}
 }

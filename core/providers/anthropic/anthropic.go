@@ -484,11 +484,12 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest),
 		request,
 		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
-			IsStreaming:               false,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			Provider:                      schemas.Anthropic,
+			MidConversationSystemProvider: provider.GetProviderKey(),
+			IsStreaming:                   false,
+			BetaHeaderOverrides:           provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:      provider.sendBackRawRequest,
+			ShouldSendBackRawResponse:     provider.sendBackRawResponse,
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
@@ -578,10 +579,11 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	}
 
 	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               true,
-		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		Provider:                      schemas.Anthropic,
+		MidConversationSystemProvider: provider.GetProviderKey(),
+		IsStreaming:                   true,
+		ShouldSendBackRawRequest:      provider.sendBackRawRequest,
+		ShouldSendBackRawResponse:     provider.sendBackRawResponse,
 	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1272,11 +1274,12 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest),
 		request,
 		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
-			IsStreaming:               false,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			Provider:                      schemas.Anthropic,
+			MidConversationSystemProvider: provider.GetProviderKey(),
+			IsStreaming:                   false,
+			BetaHeaderOverrides:           provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:      provider.sendBackRawRequest,
+			ShouldSendBackRawResponse:     provider.sendBackRawResponse,
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
@@ -1362,10 +1365,11 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	}
 
 	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               true,
-		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		Provider:                      schemas.Anthropic,
+		MidConversationSystemProvider: provider.GetProviderKey(),
+		IsStreaming:                   true,
+		ShouldSendBackRawRequest:      provider.sendBackRawRequest,
+		ShouldSendBackRawResponse:     provider.sendBackRawResponse,
 	})
 	if err != nil {
 		return nil, err
@@ -2888,13 +2892,14 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest),
 		request,
 		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
-			Model:                     request.Model,
-			IsCountTokens:             true,
-			IsStreaming:               false,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			Provider:                      schemas.Anthropic,
+			MidConversationSystemProvider: provider.GetProviderKey(),
+			Model:                         request.Model,
+			IsCountTokens:                 true,
+			IsStreaming:                   false,
+			BetaHeaderOverrides:           provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:      provider.sendBackRawRequest,
+			ShouldSendBackRawResponse:     provider.sendBackRawResponse,
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,

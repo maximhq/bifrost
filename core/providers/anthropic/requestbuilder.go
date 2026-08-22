@@ -14,10 +14,17 @@ import (
 // AnthropicProviderRequestDefaultsMap and are looked up by Provider inside the
 // builder — callers do not pass them.
 type AnthropicRequestBuildConfig struct {
-	// Provider is used for feature-gating (field stripping, header injection,
-	// tool validation) and to look up static request-shaping defaults from
-	// AnthropicProviderRequestDefaultsMap. Required.
+	// Provider identifies the built-in wire shape. It is used for feature-gating
+	// (field stripping, header injection, tool validation) and to look up static
+	// request-shaping defaults from AnthropicProviderRequestDefaultsMap. Required.
 	Provider schemas.ModelProvider
+
+	// MidConversationSystemProvider identifies the actual configured endpoint for
+	// native role:"system" capability gating. Custom providers must pass their
+	// custom provider key so support fails closed instead of assuming that every
+	// Anthropic-compatible endpoint implements Anthropic's newest message roles.
+	// When empty, Provider is used for backwards-compatible direct builder calls.
+	MidConversationSystemProvider schemas.ModelProvider
 
 	// Model overrides the model field. When empty the model is read from
 	// the request. Azure, Vertex, and Bedrock set this to the deployment /
@@ -52,6 +59,13 @@ type AnthropicRequestBuildConfig struct {
 	// providerUtils.EnrichError.
 	ShouldSendBackRawRequest  bool
 	ShouldSendBackRawResponse bool
+}
+
+func (cfg AnthropicRequestBuildConfig) midConversationSystemProvider() schemas.ModelProvider {
+	if cfg.MidConversationSystemProvider != "" {
+		return cfg.MidConversationSystemProvider
+	}
+	return cfg.Provider
 }
 
 // AnthropicProviderRequestDefaults captures the static, per-provider request-
@@ -142,8 +156,8 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
-// Anthropic-family request-body assembly pipeline, shared by the Anthropic,
-// Azure, and Vertex providers. Provider-specific behaviour is encoded in the
+// Anthropic-family request-body assembly pipeline, shared by every provider
+// that sends an Anthropic Messages-shaped request. Provider-specific behaviour is encoded in the
 // supplied AnthropicRequestBuildConfig; the shared steps (large-payload guard,
 // raw-vs-typed branching, field stripping, beta-header injection, fallbacks
 // deletion) are handled here.
@@ -161,6 +175,16 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return providerUtils.EnrichError(
 			ctx,
 			providerUtils.NewBifrostOperationError(msg, err),
+			reqBody,
+			nil,
+			cfg.ShouldSendBackRawRequest,
+			cfg.ShouldSendBackRawResponse,
+		)
+	}
+	newBadRequestErr := func(err error, reqBody []byte) *schemas.BifrostError {
+		return providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostBadRequestError(err.Error()),
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -237,6 +261,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = NormalizeRawMidConversationSystem(ctx, jsonBody, cfg.midConversationSystemProvider(), capModel)
+		if err != nil {
+			return nil, newBadRequestErr(err, jsonBody)
+		}
+
 		jsonBody, err = StripAutoInjectableTools(jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -301,7 +330,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
+		reqBody, convErr := toAnthropicResponsesRequest(ctx, request, cfg.midConversationSystemProvider())
 		if convErr != nil {
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
@@ -444,8 +473,8 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 }
 
 // BuildAnthropicChatRequestBody is the chat-completion analogue of
-// BuildAnthropicResponsesRequestBody, shared by Anthropic, Azure, Vertex, and
-// Bedrock for ChatCompletion / ChatCompletionStream paths. It mirrors the
+// BuildAnthropicResponsesRequestBody, shared by the Anthropic-shaped provider
+// paths for ChatCompletion / ChatCompletionStream. It mirrors the
 // responses pipeline (raw vs typed branching, field stripping, beta-header
 // injection, fallbacks deletion) but operates on BifrostChatRequest +
 // ToAnthropicChatRequest. IsCountTokens is not honoured here — count-tokens
@@ -465,6 +494,16 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		return providerUtils.EnrichError(
 			ctx,
 			providerUtils.NewBifrostOperationError(msg, err),
+			reqBody,
+			nil,
+			cfg.ShouldSendBackRawRequest,
+			cfg.ShouldSendBackRawResponse,
+		)
+	}
+	newBadRequestErr := func(err error, reqBody []byte) *schemas.BifrostError {
+		return providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostBadRequestError(err.Error()),
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -519,6 +558,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = NormalizeRawMidConversationSystem(ctx, jsonBody, cfg.midConversationSystemProvider(), capModel)
+		if err != nil {
+			return nil, newBadRequestErr(err, jsonBody)
+		}
+
 		jsonBody, err = StripAutoInjectableTools(jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -562,7 +606,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 	} else {
-		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
+		reqBody, convErr := toAnthropicChatRequest(ctx, request, cfg.midConversationSystemProvider())
 		if convErr != nil {
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
