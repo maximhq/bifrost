@@ -11,6 +11,7 @@
 - feat: generalize TokenRefreshWorker's auth-mode scope and allow gating OAuthTokenRefreshWorker sweeps
 - feat(mcp-guardrails): add MCP log redaction changes (#5744)
 - feat: add plugin logs to mcp logs (#5746)
+- fix(vectorstore): retry KNN search without `SORTBY` when the backend rejects the result alias, fixing semantic cache lookups on valkey-search (thanks [@wangkanai](https://github.com/wangkanai)!) (#4399)
 - fix: combine `offline_access` with `<audience>/.default` for Entra OBO instead of replacing it (#6078)
 - fix: don't treat a CAS loss to a still-active concurrent refresh as a dead credential
 - fix: propagate ctx through headerCredentialCache.Fill and userTokenCache.Fill so a canceled request unblocks instead of waiting on an unrelated leader
