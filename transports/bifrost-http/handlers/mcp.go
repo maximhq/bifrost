@@ -2598,7 +2598,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// folded into the final response instead of an early one.
 	var sharedConnectErr error
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
-		if errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
+		// ErrMCPEnableConnectFailed joins ErrMCPSharedConnectFailedAfterUpdate
+		// here for the same reason: the runtime already committed the change
+		// (the client is un-disabled, with a checker retrying — its state
+		// parked back at Disabled, or left at needs_reauth for a dead OAuth
+		// credential), so rolling the row back would leave the DB claiming
+		// disabled while the runtime reconnects — and a restart would then
+		// silently undo an enable the admin asked for.
+		if errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) || errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
 			// Rolling the DB back to oldDBConfig here would diverge it from
 			// the runtime, which already has the new config and a connection
 			// checker retrying the dial. Keep the persisted row.

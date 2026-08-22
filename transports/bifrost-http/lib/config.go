@@ -6712,7 +6712,15 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 			}
 		} else {
 			if err := c.client.EnableMCPClient(id); err != nil {
-				c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				// A dial failure is not a failed enable: the runtime has the
+				// client un-disabled with a checker retrying, so reverting
+				// this copy would make it disagree with both the runtime and
+				// the caller's persisted row (see ErrMCPEnableConnectFailed).
+				// Any other error means the enable itself did not happen, so
+				// the revert still applies there.
+				if !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
+					c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				}
 				return fmt.Errorf("failed to enable MCP client: %w", err)
 			}
 		}
