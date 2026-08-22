@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"math"
+	"os"
 	"strings"
 	"testing"
 
@@ -1129,6 +1130,52 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	assert.Equal(t, nc.CACertPEM.GetValue(), decoded.CACertPEM.GetValue(), "ca_cert_pem should round-trip")
 	assert.Contains(t, string(data), `"insecure_skip_verify":true`)
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
+}
+
+// TestNetworkConfig_BaseURLEnvReference verifies that base_url accepts an
+// "env.VAR_NAME" reference and resolves it the same way ca_cert_pem already
+// does, via SecretVar (see NetworkConfig.UnmarshalJSON). Addresses #6119.
+func TestNetworkConfig_BaseURLEnvReference(t *testing.T) {
+	os.Setenv("TEST_BIFROST_BASE_URL", "https://proxy.example.internal/v1")
+	defer os.Unsetenv("TEST_BIFROST_BASE_URL")
+
+	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL"}`)
+
+	var decoded NetworkConfig
+	err := json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://proxy.example.internal/v1", decoded.BaseURL,
+		"base_url should resolve an env.* reference the same way ca_cert_pem does")
+}
+
+// TestNetworkConfig_BaseURLPlainURLUnaffected verifies that a literal base_url
+// (the overwhelmingly common case) passes through unchanged -- the env/vault
+// resolution in UnmarshalJSON must not touch ordinary URLs.
+func TestNetworkConfig_BaseURLPlainURLUnaffected(t *testing.T) {
+	data := []byte(`{"base_url":"https://api.example.com/v1"}`)
+
+	var decoded NetworkConfig
+	err := json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://api.example.com/v1", decoded.BaseURL)
+}
+
+// TestNetworkConfig_BaseURLUnsetEnvReference verifies that referencing an env
+// var that isn't set resolves to empty (matching every other SecretVar-backed
+// field's behavior -- e.g. ca_cert_pem -- rather than leaving the literal
+// "env.VAR_NAME" string in place, which would silently become an invalid URL).
+func TestNetworkConfig_BaseURLUnsetEnvReference(t *testing.T) {
+	os.Unsetenv("TEST_BIFROST_BASE_URL_UNSET")
+
+	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL_UNSET"}`)
+
+	var decoded NetworkConfig
+	err := json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, "", decoded.BaseURL)
 }
 
 // TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds
