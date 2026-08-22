@@ -1705,14 +1705,16 @@ class TestLangChainRerank:
     """Rerank via LangChain document compressors through Bifrost.
 
     LangChain wraps each provider's rerank API in a BaseDocumentCompressor, so these exercise
-    Bifrost's rerank routes through a third abstraction layer. CohereRerank coerces every
-    document to a string before calling the API (Document -> page_content, dict -> YAML,
-    str -> itself), so these also cover Bifrost accepting the plain-string document form.
+    Bifrost's rerank routes through a third abstraction layer. Two compressors are covered:
+    CohereRerank over /cohere/v2/rerank and BedrockRerank over /bedrock/rerank. They coerce
+    documents differently - CohereRerank flattens everything to a string (Document ->
+    page_content, dict -> YAML, str -> itself) while BedrockRerank sends dicts as a native
+    jsonDocument - so between them they cover both of Bifrost's document forms.
 
     Cross-provider tests cover the operations a customer's behaviour depends on. Tests that
     pin LangChain's own client-side mechanics (rank_fields YAML filtering, the empty-input
-    short circuit, metadata deep-copy) run against Cohere only - the provider cannot change
-    what LangChain does before and after the call.
+    short circuit, metadata deep-copy) run against one provider only - the provider cannot
+    change what LangChain does before and after the call.
     """
 
     @staticmethod
@@ -1725,13 +1727,38 @@ class TestLangChainRerank:
         ]
 
     @staticmethod
-    def _compressor(provider, model, **kwargs):
+    def _compressor(provider, model, base_url=None, **kwargs):
         from langchain_cohere import CohereRerank
 
+        # A compressor only ever speaks one dialect, so the serving provider reaches Bifrost
+        # through the model string alone. Without the prefix a bare id resolves through the
+        # model catalog and every parameter would silently collapse onto one provider.
         return CohereRerank(
-            base_url=get_integration_url("cohere"),
+            base_url=base_url or get_integration_url("cohere"),
             cohere_api_key=os.getenv("COHERE_API_KEY", "dummy-key"),
-            model=model,
+            model=model if "/" in model else f"{provider}/{model}",
+            **kwargs,
+        )
+
+    @staticmethod
+    def _bedrock_compressor(provider, model, base_url=None, **kwargs):
+        from langchain_aws import BedrockRerank
+
+        region = get_config().get_integration_settings("bedrock").get("region", "us-west-2")
+
+        # BedrockRerank aliases endpoint_url to base_url, so its own client builder reads
+        # endpoint_url out of the raw input and always finds nothing. Bifrost is reached by
+        # handing it a pre-built client instead.
+        client = boto3.client(
+            "bedrock-agent-runtime",
+            region_name=region,
+            endpoint_url=base_url or get_integration_url("bedrock"),
+        )
+
+        return BedrockRerank(
+            client=client,
+            model_arn=model if "/" in model else f"{provider}/{model}",
+            region_name=region,
             **kwargs,
         )
 
@@ -1760,27 +1787,17 @@ class TestLangChainRerank:
 
         assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
 
-    def test_21_bedrock_rerank_compressor(self, test_config):
-        """langchain_aws.BedrockRerank against Bifrost's /bedrock routes."""
-        from langchain_aws import BedrockRerank
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_21_bedrock_rerank_compressor(self, provider, model):
+        """langchain_aws.BedrockRerank against Bifrost's /bedrock routes.
 
-        config = get_config()
-        region = config.get_integration_settings("bedrock").get("region", "us-west-2")
-
-        # BedrockRerank exposes endpoint_url as an output field only, so Bifrost is reached
-        # by handing it a pre-built client rather than an endpoint override.
-        client = boto3.client(
-            "bedrock-agent-runtime",
-            region_name=region,
-            endpoint_url=get_integration_url("bedrock"),
-        )
-
-        compressor = BedrockRerank(
-            client=client,
-            model_arn=config.get_provider_model("bedrock", "rerank"),
-            region_name=region,
-            top_n=2,
-        )
+        Served by a non-Bedrock provider this is the converter path the route exists for:
+        a camelCase Agent Runtime body in, a camelCase Agent Runtime body back out.
+        """
+        compressor = self._bedrock_compressor(provider, model, top_n=2)
 
         compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
 
@@ -1836,19 +1853,29 @@ class TestLangChainRerank:
 
         assert_valid_rerank_results(self._pairs(compressed), expected_count=1)
 
-    def test_25_top_n_per_call_override(self, test_config):
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_25_top_n_per_call_override(self, provider, model):
         """A per-call top_n wins over the constructor value."""
-        model = get_config().get_provider_model("cohere", "rerank")
-        compressor = self._compressor("cohere", model, top_n=1)
+        compressor = self._compressor(provider, model, top_n=1)
 
         results = compressor.rerank(self._documents(), RERANK_QUERY, top_n=2)
 
         assert len(results) == 2, f"per-call top_n ignored: got {len(results)}"
 
-    def test_26_top_n_none_returns_all(self, test_config):
-        """top_n=None asks for the full ranking rather than the constructor default."""
-        model = get_config().get_provider_model("cohere", "rerank")
-        compressor = self._compressor("cohere", model, top_n=1)
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_26_top_n_none_returns_all(self, provider, model):
+        """top_n=None asks for the full ranking rather than the constructor default.
+
+        The parameter is omitted rather than sent as null, so this also pins that each
+        provider defaults to returning every document.
+        """
+        compressor = self._compressor(provider, model, top_n=1)
 
         results = compressor.rerank(self._documents(), RERANK_QUERY, top_n=None)
 
@@ -1858,10 +1885,13 @@ class TestLangChainRerank:
 
     # ---------------------------------------------------------------- document forms
 
-    def test_27_string_documents(self, test_config):
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_27_string_documents(self, provider, model):
         """Plain strings - the form CohereRerank sends for every document type."""
-        model = get_config().get_provider_model("cohere", "rerank")
-        compressor = self._compressor("cohere", model, top_n=3)
+        compressor = self._compressor(provider, model, top_n=3)
 
         results = compressor.rerank(RERANK_DOCUMENTS, RERANK_QUERY)
 
@@ -1893,10 +1923,18 @@ class TestLangChainRerank:
         assert compressor.rerank([], RERANK_QUERY) == []
         assert list(compressor.compress_documents([], RERANK_QUERY)) == []
 
-    def test_30_max_tokens_per_doc(self, test_config):
-        """max_tokens_per_doc is forwarded and accepted by the rerank route."""
-        model = get_config().get_provider_model("cohere", "rerank")
-        compressor = self._compressor("cohere", model, top_n=3)
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_30_max_tokens_per_doc(self, provider, model):
+        """max_tokens_per_doc is forwarded and accepted by the rerank route.
+
+        Cohere takes it as a top-level parameter; Bedrock only accepts it inside
+        additionalModelRequestFields, whose allowlist rejects the whole request on an
+        unknown key. Same caller parameter, two wire positions.
+        """
+        compressor = self._compressor(provider, model, top_n=3)
 
         results = compressor.rerank(
             self._documents(), RERANK_QUERY, max_tokens_per_doc=512
@@ -1943,5 +1981,160 @@ class TestLangChainRerank:
         compressed = asyncio.run(
             compressor.acompress_documents(self._documents(), RERANK_QUERY)
         )
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    # ---------------------------------------------------------------- bedrock dialect
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_33_bedrock_rerank_returns_index_and_score(self, provider, model):
+        """BedrockRerank.rerank() reads relevanceScore off each result.
+
+        The camelCase key is the one thing a Bifrost response has to get right for this
+        compressor: a snake_case relevance_score would KeyError rather than misrank.
+        """
+        compressor = self._bedrock_compressor(provider, model, top_n=3)
+
+        results = compressor.rerank(self._documents(), RERANK_QUERY)
+
+        assert results, "rerank returned nothing"
+        for result in results:
+            assert set(result) >= {"index", "relevance_score"}, f"unexpected keys: {list(result)}"
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_34_bedrock_top_n_per_call_override(self, provider, model):
+        """A per-call top_n becomes numberOfResults, overriding the constructor value."""
+        compressor = self._bedrock_compressor(provider, model, top_n=1)
+
+        results = compressor.rerank(self._documents(), RERANK_QUERY, top_n=2)
+
+        assert len(results) == 2, f"per-call top_n ignored: got {len(results)}"
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_35_bedrock_json_documents(self, provider, model):
+        """dict documents ride over as a native jsonDocument source.
+
+        This is the one LangChain path that reaches Bifrost's structured document form
+        rather than flattening to prose, so it covers RerankDocument.Data end to end -
+        served natively by Bedrock, and JSON-encoded into text for a provider without it.
+        """
+        compressor = self._bedrock_compressor(provider, model, top_n=3)
+        documents = [
+            {"title": "France", "body": RERANK_DOCUMENTS[0]},
+            {"title": "Carrots", "body": RERANK_DOCUMENTS[1]},
+            {"title": "Germany", "body": RERANK_DOCUMENTS[2]},
+        ]
+
+        results = compressor.rerank(documents, RERANK_QUERY)
+
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_36_bedrock_additional_model_request_fields(self, provider, model):
+        """additionalModelRequestFields is passed through to the serving provider.
+
+        Bedrock validates the map against a per-model allowlist and 400s the whole request
+        on an unknown key, so a Bifrost route that invented one would fail loudly here.
+        """
+        compressor = self._bedrock_compressor(provider, model, top_n=3)
+
+        results = compressor.rerank(
+            self._documents(),
+            RERANK_QUERY,
+            additional_model_request_fields={"max_tokens_per_doc": 512},
+        )
+
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    def test_37_bedrock_empty_documents_short_circuits(self, test_config):
+        """An empty document list returns [] without calling the API."""
+        model = get_config().get_provider_model("bedrock", "rerank")
+        compressor = self._bedrock_compressor("bedrock", model, top_n=3)
+
+        assert compressor.rerank([], RERANK_QUERY) == []
+        assert list(compressor.compress_documents([], RERANK_QUERY)) == []
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_38_bedrock_contextual_compression_retriever(self, provider, model):
+        """The RAG pattern again, this time with the Bedrock compressor."""
+        from langchain_classic.retrievers import ContextualCompressionRetriever
+        from langchain_core.retrievers import BaseRetriever
+
+        documents = self._documents()
+
+        class StaticRetriever(BaseRetriever):
+            def _get_relevant_documents(self, query, *, run_manager=None):
+                return documents
+
+        retriever = ContextualCompressionRetriever(
+            base_compressor=self._bedrock_compressor(provider, model, top_n=2),
+            base_retriever=StaticRetriever(),
+        )
+
+        compressed = retriever.invoke(RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_39_bedrock_async_compress_documents(self, provider, model):
+        """acompress_documents - BedrockRerank inherits the executor-backed default."""
+        compressor = self._bedrock_compressor(provider, model, top_n=2)
+
+        compressed = asyncio.run(
+            compressor.acompress_documents(self._documents(), RERANK_QUERY)
+        )
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    # ---------------------------------------------------------------- langchain drop-in prefix
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_40_langchain_prefix_cohere_dialect(self, provider, model):
+        """/langchain/v2/rerank - the prefix Bifrost documents for LangChain apps.
+
+        Same dialect as /cohere/v2/rerank, mounted under the drop-in prefix, so this pins
+        that the umbrella router registers rerank rather than only chat and embeddings.
+        """
+        compressor = self._compressor(
+            provider, model, base_url=get_integration_url("langchain"), top_n=2
+        )
+
+        compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("rerank", exclude_providers=["vertex"]),
+    )
+    def test_41_langchain_prefix_bedrock_dialect(self, provider, model):
+        """/langchain/rerank - the bedrock dialect under the same drop-in prefix."""
+        compressor = self._bedrock_compressor(
+            provider, model, base_url=get_integration_url("langchain"), top_n=2
+        )
+
+        compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
 
         assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
