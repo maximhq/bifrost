@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -29,6 +30,8 @@ func parseVertexJSONLLines(t *testing.T, data []byte) []map[string]interface{} {
 // native {"request": {contents...}} shape (via the shared Gemini converter), and that each
 // custom_id is carried in the request labels for round-trip correlation.
 func TestVertexConvertRequestsToJSONL(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
 	t.Run("ConvertsOpenAIMessagesAndCarriesCustomIDLabel", func(t *testing.T) {
 		requests := []schemas.BatchRequestItem{
 			{
@@ -41,7 +44,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -72,7 +75,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -99,7 +102,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -132,7 +135,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -149,7 +152,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			{CustomID: "b", Body: map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "2"}}}},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -160,7 +163,109 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 
 	t.Run("ErrorsWhenItemHasNoBody", func(t *testing.T) {
 		requests := []schemas.BatchRequestItem{{CustomID: "empty"}}
-		_, err := vertexConvertRequestsToJSONL(requests)
+		_, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
 		require.Error(t, err)
 	})
+
+	t.Run("AnthropicConvertsOpenAIBodyAndUsesNativeCustomID", func(t *testing.T) {
+		requests := []schemas.BatchRequestItem{
+			{
+				CustomID: "req-1",
+				Body: map[string]interface{}{
+					// A system-role message marks this as an OpenAI body needing conversion.
+					"messages": []interface{}{
+						map[string]interface{}{"role": "system", "content": "You are helpful"},
+						map[string]interface{}{"role": "user", "content": "Hello"},
+					},
+					"max_tokens": 50,
+				},
+			},
+		}
+
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		require.NoError(t, err)
+
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+
+		// custom_id is a native top-level field for Claude batch, not Gemini labels.
+		assert.Equal(t, "req-1", lines[0]["custom_id"])
+
+		request, ok := lines[0]["request"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, "vertex-2023-10-16", request["anthropic_version"])
+		assert.Contains(t, request, "messages")
+		assert.NotContains(t, request, "labels")
+		assert.NotContains(t, request, "model") // model lives at the job level
+	})
+
+	t.Run("AnthropicPassesThroughNativeBodyAndDropsModel", func(t *testing.T) {
+		requests := []schemas.BatchRequestItem{
+			{
+				CustomID: "req-native",
+				Body: map[string]interface{}{
+					"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "Hi"}},
+					"system":     "be brief",
+					"max_tokens": 64,
+					"model":      "claude-3-5-haiku",
+				},
+			},
+		}
+
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		require.NoError(t, err)
+
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "req-native", lines[0]["custom_id"])
+
+		request := lines[0]["request"].(map[string]interface{})
+		assert.Equal(t, "vertex-2023-10-16", request["anthropic_version"])
+		assert.Equal(t, "be brief", request["system"])
+		assert.EqualValues(t, 64, request["max_tokens"])
+		assert.NotContains(t, request, "model")
+	})
+
+	t.Run("AnthropicPreservesExistingAnthropicVersion", func(t *testing.T) {
+		requests := []schemas.BatchRequestItem{
+			{
+				CustomID: "req-ver",
+				Body: map[string]interface{}{
+					"messages":          []interface{}{map[string]interface{}{"role": "user", "content": "Hi"}},
+					"max_tokens":        16,
+					"anthropic_version": "vertex-2023-10-16",
+				},
+			},
+		}
+
+		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		require.NoError(t, err)
+
+		lines := parseVertexJSONLLines(t, data)
+		request := lines[0]["request"].(map[string]interface{})
+		assert.Equal(t, "vertex-2023-10-16", request["anthropic_version"])
+	})
+}
+
+// TestToVertexBatchCreateRequestPublisher verifies the batch job model is resolved to the
+// correct publisher path per model family, and that already-qualified paths pass through.
+func TestToVertexBatchCreateRequestPublisher(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name     string
+		model    string
+		expected string
+	}{
+		{"AnthropicBareName", "claude-3-5-haiku", "publishers/anthropic/models/claude-3-5-haiku"},
+		{"GeminiBareName", "gemini-1.5-flash", "publishers/google/models/gemini-1.5-flash"},
+		{"AlreadyQualifiedPassesThrough", "publishers/anthropic/models/claude-3-5-haiku", "publishers/anthropic/models/claude-3-5-haiku"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr(tc.model)}
+			out := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+			assert.Equal(t, tc.expected, out.Model)
+		})
+	}
 }
