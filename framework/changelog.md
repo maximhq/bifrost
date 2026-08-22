@@ -1,3 +1,4 @@
+- **GigaChat Key Reconciliation**: Include GigaChat authentication and TLS configuration in key reconciliation hashes. [@krakenalt](https://github.com/krakenalt)
 - feat: add `cost_per_request` flat-fee pricing field across DB, cost engine, overrides and docs (#6079)
 - feat(modelcatalog): resolve pricing overrides for catalog rows (#6055)
 - feat: add `use_idp_credentials` to token-exchange config (#6068)

@@ -81303,6 +81303,7 @@
           "cerebras",
           "deepseek",
           "gemini",
+          "gigachat",
           "openrouter",
           "elevenlabs",
           "huggingface",
