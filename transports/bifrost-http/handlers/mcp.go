@@ -1053,26 +1053,45 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients.
 // states carries the raw connection-state selection (connected/disconnected);
 // it is resolved against the live engine here because state is not a DB column.
-// projectPerUserAdminCredentialState overlays a response-only needs_reauth
-// state onto a per-user client's runtime state when the retained admin
-// credential used for periodic tool-list discovery needs repair. The runtime
-// manager is never touched: per-user clients keep serving (end-user
-// credentials and tool calls keep working); this projection only tells the
-// registry UI that an admin should repair the discovery credential.
-// adminTokenStatus is the admin OAuth token row's status ("" when no row
-// exists), adminCredStatus the admin header credential row's status ("" when
-// no row exists). A missing row leaves the state alone: clients verified
-// before credential retention existed have no admin row and are healthy.
+// projectMCPCredentialState overlays a response-only needs_reauth state onto
+// a client's runtime state when the credential the registry depends on has
+// been invalidated. The runtime manager is never touched: this projection
+// only tells the registry UI that an admin has to re-authorize.
+//
+// Two shapes, one rule. For a per-user client it is the retained admin
+// credential used for periodic tool-list discovery: the client keeps serving
+// (end-user credentials and tool calls are unaffected) and only discovery is
+// broken. For a shared-OAuth client it is the one credential every caller
+// uses, so a dead one means the client is not usable at all.
+//
+// The shared case needs this projection rather than relying on the runtime
+// state alone. Rotating oauth_config cascades every bound token row to
+// needs_reauth, including the shared one, but the matching in-memory flip
+// (CloseAndMarkNeedsReauth) only lands for a client holding a persistent
+// connection. A shared client running per-call — the default for anything
+// created with needs_session_stickiness unset — has no connection to close,
+// so it returns ErrMCPReconnectNotApplicable and the runtime state stays
+// Healthy on credentials that no longer work. The in-memory flip is also
+// lost on restart, since nothing persists runtime state for shared clients.
+// The token row is the durable record in both cases, so read it here.
+//
+// statuses are "" when no row exists, which leaves the state alone: clients
+// verified before credential retention existed have no admin row and are
+// healthy.
 //
 // Applies over both Healthy and Unstable runtime states: needs_reauth is a
-// more actionable signal than Unstable (a dead admin credential never
-// self-heals — Unstable might, on the next successful check), so it must
-// win rather than being masked by a pre-existing Unstable reading. It does
-// NOT apply over Disabled/PendingVerification/anything else: those already
-// carry a more specific, authoritative meaning of their own (an explicit
-// admin action, or a one-time bootstrap that was never completed at all)
-// that a stale discovery credential shouldn't override.
-func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeState schemas.MCPConnectionState, adminTokenStatus, adminCredStatus string) schemas.MCPConnectionState {
+// more actionable signal than Unstable (a dead credential never self-heals —
+// Unstable might, on the next successful check), so it must win rather than
+// being masked by a pre-existing Unstable reading. It does NOT apply over
+// Disabled/PendingVerification/anything else: those already carry a more
+// specific, authoritative meaning of their own (an explicit admin action, or
+// a one-time bootstrap that was never completed at all) that a stale
+// credential shouldn't override.
+func projectMCPCredentialState(
+	authType schemas.MCPAuthType,
+	runtimeState schemas.MCPConnectionState,
+	adminTokenStatus, adminCredStatus, sharedTokenStatus string,
+) schemas.MCPConnectionState {
 	if runtimeState != schemas.MCPConnectionStateHealthy && runtimeState != schemas.MCPConnectionStateUnstable {
 		return runtimeState
 	}
@@ -1083,6 +1102,10 @@ func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeSta
 		}
 	case schemas.MCPAuthTypePerUserHeaders:
 		if adminCredStatus == "needs_update" {
+			return schemas.MCPConnectionStateNeedsReauth
+		}
+	case schemas.MCPAuthTypeOauth:
+		if sharedTokenStatus == "needs_reauth" {
 			return schemas.MCPConnectionStateNeedsReauth
 		}
 	}
@@ -1194,15 +1217,27 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 	// every registry list.
 	adminTokenStatusByClientID := make(map[string]string)
 	adminCredStatusByClientID := make(map[string]string)
+	sharedTokenStatusByClientID := make(map[string]string)
 	if h.store.ConfigStore != nil {
 		adminTokenClientIDs := make([]string, 0)
 		perUserHeaderClientIDs := make([]string, 0)
+		// Shared-OAuth rows are keyed by oauth_config_id, not client id, so
+		// keep the reverse mapping to fold the result back onto clients.
+		sharedOauthConfigIDs := make([]string, 0)
+		clientIDsByOauthConfigID := make(map[string][]string)
 		for _, c := range dbClients {
 			switch schemas.MCPAuthType(c.AuthType) {
 			case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
 				adminTokenClientIDs = append(adminTokenClientIDs, c.ClientID)
 			case schemas.MCPAuthTypePerUserHeaders:
 				perUserHeaderClientIDs = append(perUserHeaderClientIDs, c.ClientID)
+			case schemas.MCPAuthTypeOauth:
+				if c.OauthConfigID != nil && *c.OauthConfigID != "" {
+					if _, seen := clientIDsByOauthConfigID[*c.OauthConfigID]; !seen {
+						sharedOauthConfigIDs = append(sharedOauthConfigIDs, *c.OauthConfigID)
+					}
+					clientIDsByOauthConfigID[*c.OauthConfigID] = append(clientIDsByOauthConfigID[*c.OauthConfigID], c.ClientID)
+				}
 			}
 		}
 		if len(adminTokenClientIDs) > 0 {
@@ -1221,6 +1256,17 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 				}
 			} else {
 				logger.Debug("failed to batch-get admin header credentials for MCP registry state projection: %v", err)
+			}
+		}
+		if len(sharedOauthConfigIDs) > 0 {
+			if sharedTokens, err := h.store.ConfigStore.GetSharedOauthTokensByConfigIDs(ctx, sharedOauthConfigIDs); err == nil {
+				for oauthConfigID, token := range sharedTokens {
+					for _, clientID := range clientIDsByOauthConfigID[oauthConfigID] {
+						sharedTokenStatusByClientID[clientID] = token.Status
+					}
+				}
+			} else {
+				logger.Debug("failed to batch-get shared oauth tokens for MCP registry state projection: %v", err)
 			}
 		}
 	}
@@ -1288,11 +1334,12 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
-			resolvedState := projectPerUserAdminCredentialState(
+			resolvedState := projectMCPCredentialState(
 				clientConfig.AuthType,
 				connectedClient.State,
 				adminTokenStatusByClientID[dbClient.ClientID],
 				adminCredStatusByClientID[dbClient.ClientID],
+				sharedTokenStatusByClientID[dbClient.ClientID],
 			)
 			resp := MCPClientResponse{
 				Config:    redactedConfig,

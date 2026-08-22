@@ -1485,6 +1485,10 @@ func (m *MockConfigStore) GetAdminOauthTokensByMCPClientIDs(ctx context.Context,
 	return map[string]*tables.TableMCPOauthToken{}, nil
 }
 
+func (m *MockConfigStore) GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	return map[string]*tables.TableMCPOauthToken{}, nil
+}
+
 func (m *MockConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oauthConfigID, mcpClientID string) error {
 	return nil
 }
