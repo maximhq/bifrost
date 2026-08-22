@@ -486,6 +486,18 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Alibaba:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Kimi:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Zhipu:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Wafer:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true

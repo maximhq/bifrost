@@ -189,6 +189,15 @@ type ProviderFeatureSupport struct {
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	// OutputConfigEffort marks non-Anthropic Anthropic-compatible mounts whose vendor
+	// documents output_config.effort as an accepted extension field. Anthropic's own
+	// support stays model-gated via SupportsEffortParameter; this flag covers vendors
+	// whose mounts accept (and server-side map) the field for specific model families —
+	// see providerSupportsEffortModel for the per-vendor model scope.
+	// Cites: Z = https://docs.z.ai/guides/capabilities/thinking (GLM-5.2+),
+	// Q = https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
+	// (qwen3.8-max, hosted glm-5.2, deepseek-v4-pro/flash).
+	OutputConfigEffort bool
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -343,6 +352,34 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking:    true,
 		ServiceTier:            true,
 	},
+	// Alibaba Cloud Model Studio / Kimi / Zhipu Anthropic-compatible mounts:
+	// start fail-closed (all Anthropic server-side features off). Enable flags
+	// only as vendor docs verify them (docs/research 02 §8.4, 03 §6.3, 04 §7.4).
+	//
+	// Zhipu — z.ai's Anthropic mount (Coding Plan only) accepts output_config.effort
+	// for GLM-5.2 and above; out-of-scale values are mapped server-side per
+	// https://docs.z.ai/guides/capabilities/thinking (verified 2026-08-16; live ZCode
+	// traffic shows thinking{budget_tokens} + output_config{effort} coexisting).
+	// InterleavedThinking is on because z.ai accepts the interleaved-thinking beta
+	// header Claude Code sends against this mount (docs/research 04 §7.4) — it only
+	// gates header passthrough, GLM serves interleaved thinking natively.
+	schemas.Zhipu: {
+		OutputConfigEffort:  true,
+		InterleavedThinking: true,
+	},
+	// Alibaba — Model Studio's /apps/anthropic mount documents output_config.effort
+	// for qwen3.8-max (xhigh/medium/low; max,high→xhigh), hosted glm-5.2 and
+	// deepseek-v4-pro/flash (high/max; low,medium→high, xhigh→max). The vendor maps
+	// out-of-enum values itself, so values pass through verbatim; the model scope is
+	// enforced in providerSupportsEffortModel. Cite: Q (verified 2026-08-16).
+	schemas.Alibaba: {
+		OutputConfigEffort: true,
+	},
+	// Kimi — the /anthropic mount is still an unofficial, empirical contract
+	// (MoonshotAI/Kimi-K2#129): model, messages, system, tools, tool_choice,
+	// max_tokens, temperature, stream. No effort equivalent is documented, so
+	// output_config.effort stays stripped (K3's reasoning_effort is OpenAI-mount only).
+	schemas.Kimi: {},
 }
 
 // ==================== REQUEST TYPES ====================
