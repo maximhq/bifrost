@@ -1053,26 +1053,45 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients.
 // states carries the raw connection-state selection (connected/disconnected);
 // it is resolved against the live engine here because state is not a DB column.
-// projectPerUserAdminCredentialState overlays a response-only needs_reauth
-// state onto a per-user client's runtime state when the retained admin
-// credential used for periodic tool-list discovery needs repair. The runtime
-// manager is never touched: per-user clients keep serving (end-user
-// credentials and tool calls keep working); this projection only tells the
-// registry UI that an admin should repair the discovery credential.
-// adminTokenStatus is the admin OAuth token row's status ("" when no row
-// exists), adminCredStatus the admin header credential row's status ("" when
-// no row exists). A missing row leaves the state alone: clients verified
-// before credential retention existed have no admin row and are healthy.
+// projectMCPCredentialState overlays a response-only needs_reauth state onto
+// a client's runtime state when the credential the registry depends on has
+// been invalidated. The runtime manager is never touched: this projection
+// only tells the registry UI that an admin has to re-authorize.
+//
+// Two shapes, one rule. For a per-user client it is the retained admin
+// credential used for periodic tool-list discovery: the client keeps serving
+// (end-user credentials and tool calls are unaffected) and only discovery is
+// broken. For a shared-OAuth client it is the one credential every caller
+// uses, so a dead one means the client is not usable at all.
+//
+// The shared case needs this projection rather than relying on the runtime
+// state alone. Rotating oauth_config cascades every bound token row to
+// needs_reauth, including the shared one, but the matching in-memory flip
+// (CloseAndMarkNeedsReauth) only lands for a client holding a persistent
+// connection. A shared client running per-call — the default for anything
+// created with needs_session_stickiness unset — has no connection to close,
+// so it returns ErrMCPReconnectNotApplicable and the runtime state stays
+// Healthy on credentials that no longer work. The in-memory flip is also
+// lost on restart, since nothing persists runtime state for shared clients.
+// The token row is the durable record in both cases, so read it here.
+//
+// statuses are "" when no row exists, which leaves the state alone: clients
+// verified before credential retention existed have no admin row and are
+// healthy.
 //
 // Applies over both Healthy and Unstable runtime states: needs_reauth is a
-// more actionable signal than Unstable (a dead admin credential never
-// self-heals — Unstable might, on the next successful check), so it must
-// win rather than being masked by a pre-existing Unstable reading. It does
-// NOT apply over Disabled/PendingVerification/anything else: those already
-// carry a more specific, authoritative meaning of their own (an explicit
-// admin action, or a one-time bootstrap that was never completed at all)
-// that a stale discovery credential shouldn't override.
-func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeState schemas.MCPConnectionState, adminTokenStatus, adminCredStatus string) schemas.MCPConnectionState {
+// more actionable signal than Unstable (a dead credential never self-heals —
+// Unstable might, on the next successful check), so it must win rather than
+// being masked by a pre-existing Unstable reading. It does NOT apply over
+// Disabled/PendingVerification/anything else: those already carry a more
+// specific, authoritative meaning of their own (an explicit admin action, or
+// a one-time bootstrap that was never completed at all) that a stale
+// credential shouldn't override.
+func projectMCPCredentialState(
+	authType schemas.MCPAuthType,
+	runtimeState schemas.MCPConnectionState,
+	adminTokenStatus, adminCredStatus, sharedTokenStatus string,
+) schemas.MCPConnectionState {
 	if runtimeState != schemas.MCPConnectionStateHealthy && runtimeState != schemas.MCPConnectionStateUnstable {
 		return runtimeState
 	}
@@ -1083,6 +1102,10 @@ func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeSta
 		}
 	case schemas.MCPAuthTypePerUserHeaders:
 		if adminCredStatus == "needs_update" {
+			return schemas.MCPConnectionStateNeedsReauth
+		}
+	case schemas.MCPAuthTypeOauth:
+		if sharedTokenStatus == "needs_reauth" {
 			return schemas.MCPConnectionStateNeedsReauth
 		}
 	}
@@ -1194,15 +1217,27 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 	// every registry list.
 	adminTokenStatusByClientID := make(map[string]string)
 	adminCredStatusByClientID := make(map[string]string)
+	sharedTokenStatusByClientID := make(map[string]string)
 	if h.store.ConfigStore != nil {
 		adminTokenClientIDs := make([]string, 0)
 		perUserHeaderClientIDs := make([]string, 0)
+		// Shared-OAuth rows are keyed by oauth_config_id, not client id, so
+		// keep the reverse mapping to fold the result back onto clients.
+		sharedOauthConfigIDs := make([]string, 0)
+		clientIDsByOauthConfigID := make(map[string][]string)
 		for _, c := range dbClients {
 			switch schemas.MCPAuthType(c.AuthType) {
 			case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
 				adminTokenClientIDs = append(adminTokenClientIDs, c.ClientID)
 			case schemas.MCPAuthTypePerUserHeaders:
 				perUserHeaderClientIDs = append(perUserHeaderClientIDs, c.ClientID)
+			case schemas.MCPAuthTypeOauth:
+				if c.OauthConfigID != nil && *c.OauthConfigID != "" {
+					if _, seen := clientIDsByOauthConfigID[*c.OauthConfigID]; !seen {
+						sharedOauthConfigIDs = append(sharedOauthConfigIDs, *c.OauthConfigID)
+					}
+					clientIDsByOauthConfigID[*c.OauthConfigID] = append(clientIDsByOauthConfigID[*c.OauthConfigID], c.ClientID)
+				}
 			}
 		}
 		if len(adminTokenClientIDs) > 0 {
@@ -1221,6 +1256,17 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 				}
 			} else {
 				logger.Debug("failed to batch-get admin header credentials for MCP registry state projection: %v", err)
+			}
+		}
+		if len(sharedOauthConfigIDs) > 0 {
+			if sharedTokens, err := h.store.ConfigStore.GetSharedOauthTokensByConfigIDs(ctx, sharedOauthConfigIDs); err == nil {
+				for oauthConfigID, token := range sharedTokens {
+					for _, clientID := range clientIDsByOauthConfigID[oauthConfigID] {
+						sharedTokenStatusByClientID[clientID] = token.Status
+					}
+				}
+			} else {
+				logger.Debug("failed to batch-get shared oauth tokens for MCP registry state projection: %v", err)
 			}
 		}
 	}
@@ -1288,11 +1334,12 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
-			resolvedState := projectPerUserAdminCredentialState(
+			resolvedState := projectMCPCredentialState(
 				clientConfig.AuthType,
 				connectedClient.State,
 				adminTokenStatusByClientID[dbClient.ClientID],
 				adminCredStatusByClientID[dbClient.ClientID],
+				sharedTokenStatusByClientID[dbClient.ClientID],
 			)
 			resp := MCPClientResponse{
 				Config:    redactedConfig,
@@ -2096,6 +2143,27 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		redactedExisting := h.store.RedactMCPClientConfig(existingConfig)
 		headers = mergeMCPHeaders(req.Headers, existingConfig.Headers, redactedExisting.Headers)
 	}
+	// A real change to the static headers has to be applied to the live
+	// connection, not just to the stored config: on a sticky client the
+	// credential is baked onto the transport at dial time, so updating the
+	// config alone would leave the open connection talking to the upstream
+	// with the header the admin just replaced. Diffed against the resolved
+	// (post-redaction-merge) value so a caller that round-trips the map
+	// unchanged doesn't force a needless reconnect. Only shared auth types
+	// carry a connection-level header credential — per-user values are
+	// supplied per caller and never baked into a shared transport. HTTP only,
+	// matching the transport VerifyHeadersConnection builds for the
+	// pre-flight below.
+	// Skipped for a disabled client: there is no live connection to protect,
+	// and refusing the edit because a deliberately-unreachable upstream can't
+	// be dialed would make a disabled client's credentials uneditable. It is
+	// verified on enable instead, which dials for real.
+	staticHeadersChanged := (existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone) &&
+		existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP &&
+		!disabled &&
+		req.Headers != nil && !mcpHeadersEqual(existingConfig.Headers, headers)
+	headersChanged := staticHeadersChanged && !existingConfig.Disabled
+
 	// TLSConfig: if omitted keep existing; if provided, restore raw CACertPEM when the
 	// incoming value is the redacted placeholder returned by the API.
 	tlsConfig := existingConfig.TLSConfig
@@ -2351,6 +2419,45 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
 		return
 	}
+	// Pre-flight the new static headers against the upstream before anything
+	// is written. VerifyHeadersConnection dials its own ephemeral transport
+	// and closes it, touching neither the stored row nor the live connection,
+	// so a rejected credential leaves the client exactly as it was — still
+	// serving on the headers that work. Committing first and reconnecting
+	// afterwards cannot offer that: the failed dial drops the live connection
+	// (leaving the client unusable with "no active connection") while the bad
+	// headers are already persisted, so the connection checker has nothing
+	// good to retry with. Same verify-then-persist order the create path uses
+	// for per-user headers.
+	if staticHeadersChanged {
+		verifyConfig := *existingConfig
+		verifyConfig.Headers = headers
+		verifyConfig.TLSConfig = tlsConfig
+		// Only Authorization goes in this map. VerifyHeadersConnection layers
+		// StaticConfigHeaders(verifyConfig) in itself, which already carries
+		// every other header on the config; Authorization is the one entry
+		// that set deliberately withholds (so plugins never observe the
+		// bearer), and it gets applied after the plugin gate instead. Passing
+		// exactly that one header here reproduces the header set a real
+		// sticky dial builds, since sharedHeadersResolver.ConnectionHeaders
+		// resolves only Authorization too — including its first-match-wins
+		// behavior if the map somehow holds two casings of the name.
+		verifyHeaders := make(map[string]string, 1)
+		for key, value := range headers {
+			if strings.EqualFold(key, "Authorization") {
+				verifyHeaders["Authorization"] = value.GetValue()
+				break
+			}
+		}
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+		_, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
+		cancel()
+		if verifyErr != nil {
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
+			return
+		}
+	}
+
 	// Rotation is deferred until after the DB and in-memory client updates
 	// below both succeed (see the call site further down): RotateMCPOAuthConfig
 	// opens its own transaction and, once it commits, cascades every existing
@@ -2491,7 +2598,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// folded into the final response instead of an early one.
 	var sharedConnectErr error
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
-		if errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
+		// ErrMCPEnableConnectFailed joins ErrMCPSharedConnectFailedAfterUpdate
+		// here for the same reason: the runtime already committed the change
+		// (the client is un-disabled, with a checker retrying — its state
+		// parked back at Disabled, or left at needs_reauth for a dead OAuth
+		// credential), so rolling the row back would leave the DB claiming
+		// disabled while the runtime reconnects — and a restart would then
+		// silently undo an enable the admin asked for.
+		if errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) || errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
 			// Rolling the DB back to oldDBConfig here would diverge it from
 			// the runtime, which already has the new config and a connection
 			// checker retrying the dial. Keep the persisted row.
@@ -2507,6 +2621,29 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
 			return
+		}
+	}
+
+	// Swap the verified headers onto the live connection. Only a client that
+	// was and remains sticky needs this: it holds an open transport with the
+	// old header baked in, and UpdateMCPClientCredentials is the only thing
+	// that replaces it. Every other combination is already handled —
+	// UpdateMCPClient above replaced ExecutionConfig (all a per-call client
+	// needs, since it reads the current config on every dial) and itself
+	// re-dialed on a per-call->sticky flip, so re-dialing again here would
+	// just be a second connect with the same credentials.
+	//
+	// The same credentials already completed a full connect during the
+	// pre-flight above, so a failure here is a transient dial problem rather
+	// than a bad credential — and UpdateClientCredentials restores the
+	// previous ExecutionConfig on failure, leaving the connection checker to
+	// retry. Reported as a partial success for that reason, not a hard
+	// failure: every other effect of this request already committed.
+	if headersChanged && sharedConnectErr == nil && !wasPerCallConnection && !isPerCallConnection {
+		if err := h.updateMCPClientCredentialsWithRetry(ctx, id, schemasConfig); err != nil &&
+			!errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			logger.Error(fmt.Sprintf("MCP client %s updated, but reconnecting with the new headers failed: %v", id, err))
+			sharedConnectErr = err
 		}
 	}
 
@@ -2893,6 +3030,23 @@ func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, co
 		time.Sleep(retryDelay)
 	}
 	return lastErr
+}
+
+// mcpHeadersEqual reports whether two resolved static header maps carry the
+// same credentials. Compared on the post-merge values (mergeMCPHeaders has
+// already restored any unchanged redacted entry to its stored raw value), so
+// a caller round-tripping the redacted map it was served reads as unchanged.
+func mcpHeadersEqual(a, b map[string]schemas.SecretVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, aVal := range a {
+		bVal, ok := b[key]
+		if !ok || !aVal.Equals(&bVal) {
+			return false
+		}
+	}
+	return true
 }
 
 // updateMCPClientCredentialsWithRetry calls mcpManager.UpdateMCPClientCredentials with a short retry loop.

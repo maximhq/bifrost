@@ -6,27 +6,28 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// TestProjectPerUserAdminCredentialState table-tests the response-only
-// needs_reauth projection the registry list applies to per-user clients when
-// the retained admin discovery credential needs repair. The projection must
-// only ever flip a connected per-user client to needs_reauth: any other
-// runtime state passes through untouched (a disconnected or pending client
-// has bigger problems than a stale discovery credential), shared-connection
-// auth types are never projected (their needs_reauth comes from the runtime
-// manager itself), and a missing admin row ("" status) leaves the state
-// alone because clients verified before credential retention existed have
-// no admin row and are healthy.
-func TestProjectPerUserAdminCredentialState(t *testing.T) {
+// TestProjectMCPCredentialState table-tests the response-only needs_reauth
+// projection the registry list applies when the credential a client depends
+// on has been invalidated: the retained admin discovery credential for a
+// per-user client, or the single issued token for a shared-OAuth one. The
+// projection must only ever flip a connected client to needs_reauth: any
+// other runtime state passes through untouched (a disconnected or pending
+// client has bigger problems than a stale credential), each auth type reads
+// only its own credential's status, and a missing row ("" status) leaves the
+// state alone because clients verified before credential retention existed
+// have no admin row and are healthy.
+func TestProjectMCPCredentialState(t *testing.T) {
 	connected := schemas.MCPConnectionStateHealthy
 	needsReauth := schemas.MCPConnectionStateNeedsReauth
 
 	tests := []struct {
-		name             string
-		authType         schemas.MCPAuthType
-		runtimeState     schemas.MCPConnectionState
-		adminTokenStatus string
-		adminCredStatus  string
-		want             schemas.MCPConnectionState
+		name              string
+		authType          schemas.MCPAuthType
+		runtimeState      schemas.MCPConnectionState
+		adminTokenStatus  string
+		adminCredStatus   string
+		sharedTokenStatus string
+		want              schemas.MCPConnectionState
 	}{
 		{
 			name:     "per_user_oauth connected with dead admin token projects needs_reauth",
@@ -99,23 +100,67 @@ func TestProjectPerUserAdminCredentialState(t *testing.T) {
 			adminTokenStatus: "active", want: schemas.MCPConnectionStateUnstable,
 		},
 		{
-			name:     "shared oauth clients are never projected",
+			// The regression this projection exists for on the shared side:
+			// rotating oauth_config marks the shared token row needs_reauth,
+			// but a per-call shared client has no connection for
+			// CloseAndMarkNeedsReauth to flip, so the runtime state stays
+			// healthy on credentials that no longer work.
+			name:     "shared oauth connected with rotated token projects needs_reauth",
+			authType: schemas.MCPAuthTypeOauth, runtimeState: connected,
+			sharedTokenStatus: "needs_reauth", want: needsReauth,
+		},
+		{
+			name:     "shared oauth connected with active token stays connected",
+			authType: schemas.MCPAuthTypeOauth, runtimeState: connected,
+			sharedTokenStatus: "active", want: connected,
+		},
+		{
+			name:     "shared oauth connected with no token row stays connected",
+			authType: schemas.MCPAuthTypeOauth, runtimeState: connected,
+			sharedTokenStatus: "", want: connected,
+		},
+		{
+			name:     "shared oauth unstable with rotated token projects needs_reauth",
+			authType: schemas.MCPAuthTypeOauth, runtimeState: schemas.MCPConnectionStateUnstable,
+			sharedTokenStatus: "needs_reauth", want: needsReauth,
+		},
+		{
+			name:     "shared oauth ignores the per-user admin credential statuses",
 			authType: schemas.MCPAuthTypeOauth, runtimeState: connected,
 			adminTokenStatus: "needs_reauth", adminCredStatus: "needs_update", want: connected,
 		},
 		{
+			name:     "per_user_oauth ignores the shared token status",
+			authType: schemas.MCPAuthTypePerUserOauth, runtimeState: connected,
+			sharedTokenStatus: "needs_reauth", want: connected,
+		},
+		{
+			// Shared headers carry no issued credential: the header map is the
+			// credential, so editing it is a config change with nothing to
+			// re-authorize. A wrong value surfaces as unstable via the health
+			// check instead.
+			name:     "shared headers are never projected",
+			authType: schemas.MCPAuthTypeHeaders, runtimeState: connected,
+			sharedTokenStatus: "needs_reauth", want: connected,
+		},
+		{
+			name:     "disabled shared oauth passes through even with a rotated token",
+			authType: schemas.MCPAuthTypeOauth, runtimeState: schemas.MCPConnectionStateDisabled,
+			sharedTokenStatus: "needs_reauth", want: schemas.MCPConnectionStateDisabled,
+		},
+		{
 			name:     "non-auth clients are never projected",
 			authType: schemas.MCPAuthTypeNone, runtimeState: connected,
-			adminTokenStatus: "needs_reauth", adminCredStatus: "needs_update", want: connected,
+			adminTokenStatus: "needs_reauth", adminCredStatus: "needs_update", sharedTokenStatus: "needs_reauth", want: connected,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := projectPerUserAdminCredentialState(tt.authType, tt.runtimeState, tt.adminTokenStatus, tt.adminCredStatus)
+			got := projectMCPCredentialState(tt.authType, tt.runtimeState, tt.adminTokenStatus, tt.adminCredStatus, tt.sharedTokenStatus)
 			if got != tt.want {
-				t.Errorf("projectPerUserAdminCredentialState(%q, %q, %q, %q) = %q, want %q",
-					tt.authType, tt.runtimeState, tt.adminTokenStatus, tt.adminCredStatus, got, tt.want)
+				t.Errorf("projectMCPCredentialState(%q, %q, %q, %q, %q) = %q, want %q",
+					tt.authType, tt.runtimeState, tt.adminTokenStatus, tt.adminCredStatus, tt.sharedTokenStatus, got, tt.want)
 			}
 		})
 	}
