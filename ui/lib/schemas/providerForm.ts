@@ -285,12 +285,15 @@ export const ProviderFormSchema = z
 
 			const baseURL = data.networkConfig?.base_url;
 			// env./vault. references resolve on the backend (see NetworkConfig.UnmarshalJSON) --
-			// they won't match the http(s) pattern and shouldn't be forced to.
-			const isSecretRef = !!baseURL && (baseURL.startsWith("env.") || baseURL.startsWith("vault."));
+			// they won't match the http(s) pattern and shouldn't be forced to. Matched against
+			// the full reference syntax (not just the prefix) so a typo like "env." or "env.$BAD"
+			// still gets caught here instead of silently reaching the backend as an unresolvable,
+			// empty base_url -- same patterns as transports/config.schema.json's base_url entry.
+			const isSecretRef = !!baseURL && (/^env\.[A-Za-z_][A-Za-z0-9_]*$/.test(baseURL) || /^vault\..+$/.test(baseURL));
 			if (baseURL && !isSecretRef && !/^https?:\/\/.+/.test(baseURL)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: "Base URL must start with http:// or https://, or be an env./vault. reference",
+					message: "Base URL must start with http:// or https://, or be a valid env.VAR_NAME / vault.path reference",
 					path: ["networkConfig", "base_url"],
 				});
 			}

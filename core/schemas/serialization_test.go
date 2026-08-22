@@ -1136,8 +1136,10 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 // "env.VAR_NAME" reference and resolves it the same way ca_cert_pem already
 // does, via SecretVar (see NetworkConfig.UnmarshalJSON). Addresses #6119.
 func TestNetworkConfig_BaseURLEnvReference(t *testing.T) {
-	os.Setenv("TEST_BIFROST_BASE_URL", "https://proxy.example.internal/v1")
-	defer os.Unsetenv("TEST_BIFROST_BASE_URL")
+	// t.Setenv saves and restores whatever this var held before the test,
+	// unlike a bare os.Setenv + defer os.Unsetenv (which would clobber a
+	// pre-existing value with the same name instead of restoring it).
+	t.Setenv("TEST_BIFROST_BASE_URL", "https://proxy.example.internal/v1")
 
 	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL"}`)
 
@@ -1167,7 +1169,14 @@ func TestNetworkConfig_BaseURLPlainURLUnaffected(t *testing.T) {
 // field's behavior -- e.g. ca_cert_pem -- rather than leaving the literal
 // "env.VAR_NAME" string in place, which would silently become an invalid URL).
 func TestNetworkConfig_BaseURLUnsetEnvReference(t *testing.T) {
-	os.Unsetenv("TEST_BIFROST_BASE_URL_UNSET")
+	// t.Setenv has no unset counterpart, so guarantee-unset-and-restore by
+	// hand: only touch/clean up the var if it actually had a prior value.
+	if prev, ok := os.LookupEnv("TEST_BIFROST_BASE_URL_UNSET"); ok {
+		require.NoError(t, os.Unsetenv("TEST_BIFROST_BASE_URL_UNSET"))
+		t.Cleanup(func() {
+			require.NoError(t, os.Setenv("TEST_BIFROST_BASE_URL_UNSET", prev))
+		})
+	}
 
 	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL_UNSET"}`)
 
