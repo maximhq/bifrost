@@ -286,10 +286,14 @@ export const ProviderFormSchema = z
 				});
 			}
 
-			if (data.networkConfig?.base_url && !/^https?:\/\/.+/.test(data.networkConfig.base_url)) {
+			const baseURL = data.networkConfig?.base_url;
+			// env./vault. references resolve on the backend (see NetworkConfig.UnmarshalJSON) --
+			// they won't match the http(s) pattern and shouldn't be forced to.
+			const isSecretRef = !!baseURL && (baseURL.startsWith("env.") || baseURL.startsWith("vault."));
+			if (baseURL && !isSecretRef && !/^https?:\/\/.+/.test(baseURL)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: "Base URL must start with http:// or https://",
+					message: "Base URL must start with http:// or https://, or be an env./vault. reference",
 					path: ["networkConfig", "base_url"],
 				});
 			}
