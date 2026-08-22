@@ -2565,6 +2565,10 @@ func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = results
+	}
+
 	if len(parseResult.Errors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
 	}

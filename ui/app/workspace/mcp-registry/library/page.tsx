@@ -222,7 +222,7 @@ export default function MCPLibraryPage() {
 								{hasCreateMCPClientAccess && (
 									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
 										<Plus className="h-4 w-4" />
-										Add Server
+										Add to Library
 									</Button>
 								)}
 								{hasSettingsAccess && (

@@ -132797,7 +132797,7 @@
         },
         {
           "name": "54.3 Image edits (/v1/images/edits) - task types via the neutral `type` selector",
-          "description": "First /v1/images/edits coverage in the harness for any provider. Runware routes five distinct taskTypes off Bifrost's neutral `type` parameter - imageInference (no type), upscale, removeBackground, imageMasking and vectorize - each with its own envelope and its own output family. Masking returns maskImage* rather than image*, so reading only image* would surface an empty response; that row asserts the asset and the detections array both survive.\n\nModel choices are load-bearing. runware:101@1 is a plain image-to-image model, while runware:102@1 is FLUX Fill, which the provider rejects without a mask ('Model is of type Inpainting'), so the two are separate rows. The upscalers run at 4x, not 2x: the 360x360 fixture at 2x is 0.52 MP, and prunaai floors that to a target of 0 and rejects it.\n\nCovers the two upscalers a customer was blocked on: topazlabs Wonder 3.5 and prunaai P-Image.",
+          "description": "First /v1/images/edits coverage in the harness for any provider. Runware routes five distinct taskTypes off Bifrost's neutral `type` parameter - imageInference (no type), upscale, removeBackground, imageMasking and vectorize - each with its own envelope and its own output family. Masking returns maskImage* rather than image*, so reading only image* would surface an empty response; that row asserts the asset and the detections array both survive.\n\nModel choices are load-bearing. runware:101@1 is a plain image-to-image model, while runware:102@1 is FLUX Fill, which the provider rejects without a mask ('Model is of type Inpainting'), so the two are separate rows. The upscalers run at 4x, not 2x: the 360x360 fixture at 2x is 0.52 MP, and prunaai floors that to a target of 0 and rejects it.\n\nCovers the two upscalers a customer was blocked on: topazlabs Wonder 3.5 and prunaai P-Image.\n\nThe route takes both encodings. Multipart is the only one that can upload the image as a file, and it carries every value as a string; JSON references the image under `images` (a bare URL string or `{url}` / `{image}`) and is the only encoding that preserves the types of provider-native extra params. The JSON rows assert on raw_request because both regressions they pin are invisible in the response body: a nested `settings` object arriving stringified, and `images` leaking back out as an extra param on top of the `inputs` envelope the converter already built.",
           "item": [
             {
               "name": "runware/runware:101@1 image edit image-to-image (seed image, no mask)",
@@ -133513,6 +133513,199 @@
                       "  var j = pm.response.json();",
                       "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
                       "  pm.collectionVariables.set('runwareAsyncEditJobId', j.id);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/topazlabs:wonder@3.5 upscale via JSON body (images[] + typed settings)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/topazlabs:wonder@3.5\",\n  \"images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ],\n  \"type\": \"upscale\",\n  \"upscale_factor\": 4,\n  \"settings\": {\n    \"enhancementStrength\": \"high\",\n    \"grain\": {\n      \"size\": 1.5\n    }\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('a JSON body is accepted on /v1/images/edits', function () {",
+                      "  pm.expect(pm.response.text(), 'JSON body parsed as multipart').to.not.include('multipart');",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "if (pm.response.code >= 400) { return; }",
+                      "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "var task = (rr && rr.length) ? rr[0] : null;",
+                      "pm.test('raw_request captured', function () {",
+                      "  pm.expect(task, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                      "});",
+                      "if (!task) { return; }",
+                      "pm.test('a bare string in images[] reaches the nested inputs envelope', function () {",
+                      "  pm.expect(task.inputs && task.inputs.image, 'inputs: ' + JSON.stringify(task.inputs)).to.be.a('string').that.is.not.empty;",
+                      "});",
+                      "pm.test('images is a known field, not re-sent verbatim as an extra param', function () {",
+                      "  // Runware rejects the duplicate with \"Unsupported use of 'images' parameter\".",
+                      "  pm.expect(task, 'images leaked to the wire: ' + JSON.stringify(task)).to.not.have.property('images');",
+                      "});",
+                      "pm.test('nested settings keep their JSON types (multipart would stringify them)', function () {",
+                      "  var s = task.settings || {};",
+                      "  pm.expect(s.enhancementStrength, 'settings: ' + JSON.stringify(s)).to.equal('high');",
+                      "  pm.expect(s.grain, 'grain stringified: ' + JSON.stringify(s)).to.be.an('object');",
+                      "  pm.expect(s.grain.size, 'grain.size: ' + JSON.stringify(s)).to.be.a('number');",
+                      "});",
+                      "pm.test('typed upscale_factor maps to a numeric upscaleFactor', function () {",
+                      "  pm.expect(task.upscaleFactor, 'task: ' + JSON.stringify(task)).to.equal(4);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/ideogram:remove-background@0 background removal via JSON images[{url}] (object form)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/ideogram:remove-background@0\",\n  \"images\": [\n    {\n      \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"type\": \"background_removal\",\n  \"output_format\": \"png\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('the object form of images[] is accepted', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "if (pm.response.code >= 400) { return; }",
+                      "var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "var task = (rr && rr.length) ? rr[0] : null;",
+                      "pm.test('raw_request captured', function () {",
+                      "  pm.expect(task, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                      "});",
+                      "if (!task) { return; }",
+                      "pm.test('images[{url}] reaches inputs.image and never the wire as-is', function () {",
+                      "  pm.expect(task.inputs && task.inputs.image, 'inputs: ' + JSON.stringify(task.inputs)).to.be.a('string').that.is.not.empty;",
+                      "  pm.expect(task, 'images leaked to the wire: ' + JSON.stringify(task)).to.not.have.property('images');",
+                      "});",
+                      "pm.test('typed output_format still maps to outputFormat on the JSON path', function () {",
+                      "  pm.expect(task.outputFormat, 'task: ' + JSON.stringify(task)).to.equal('PNG');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:101@1 async image edit submit (JSON via /v1/async/images/edits)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/runware:101@1\",\n  \"images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ],\n  \"prompt\": \"make the background a deep blue\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/async/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "async",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('the async route shares prepareImageEditRequest, so it takes JSON too', function () {",
+                      "  pm.expect(pm.response.text(), 'JSON body parsed as multipart').to.not.include('multipart');",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(202);",
+                      "});",
+                      "pm.test('returns an async job id', function () {",
+                      "  // Deliberately does not set runwareAsyncEditJobId - the multipart submit row owns that chain.",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
                       "});"
                     ]
                   }

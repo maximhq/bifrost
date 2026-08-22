@@ -6644,6 +6644,35 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 	return nil
 }
 
+// GetSharedOauthTokensByConfigIDs is GetSharedOauthTokenByConfigID's batch
+// counterpart: resolves the auth_mode='shared' token row for each of the
+// given oauth config IDs in one query, keyed by OauthConfigID. Applies the
+// same active-first, most-recently-updated ordering, so a stale duplicate
+// row can't shadow the live one. Not filtered by status; configs with no
+// shared row are absent from the map.
+func (s *RDBConfigStore) GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	if len(oauthConfigIDs) == 0 {
+		return map[string]*tables.TableMCPOauthToken{}, nil
+	}
+	var tokens []tables.TableMCPOauthToken
+	if err := s.DB().WithContext(ctx).
+		Where("oauth_config_id IN ? AND auth_mode = ?", oauthConfigIDs, "shared").
+		Order("CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC").
+		Find(&tokens).Error; err != nil {
+		return nil, fmt.Errorf("failed to batch-get shared oauth tokens: %w", err)
+	}
+	// The ordering above puts the preferred row for each config first, so the
+	// first write per key wins and later duplicates are dropped.
+	result := make(map[string]*tables.TableMCPOauthToken, len(tokens))
+	for i := range tokens {
+		if _, seen := result[tokens[i].OauthConfigID]; seen {
+			continue
+		}
+		result[tokens[i].OauthConfigID] = &tokens[i]
+	}
+	return result, nil
+}
+
 // GetAdminOauthTokenByMCPClientID resolves the single retained admin-mode
 // token row for an MCP client — the bootstrap-verification credential kept
 // alive for a per-user client's periodic tool-discovery refresh (see

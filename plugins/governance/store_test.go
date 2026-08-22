@@ -1038,6 +1038,35 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t 
 	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
 }
 
+// TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel is a regression test for a
+// batch accounting bug: a VK created with an unscoped "Budget configuration" (via the
+// Create Virtual Key UI) stores the budget as a VK-scoped, all-providers, all-models
+// wildcard model config (scope=virtual_key, model="*", provider=nil). Batch-create
+// requests may not carry a top-level model, so CollectApplicableGovernanceIDs used to
+// gate the entire VK-scoped model-config lookup on model != "" and silently miss this
+// budget — the batch settled but the VK budget was never bumped.
+func TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel(t *testing.T) {
+	logger := NewMockLogger()
+	vkID := "vk-batches"
+	vkValue := "vk-batches-value"
+
+	budget := buildBudgetWithUsage("vk-wildcard-budget", 100.0, 0.0, "1M")
+	mc := buildVKScopedModelConfig("mc-vk-wildcard", configstoreTables.ModelConfigAllModels, nil, vkID, budget, nil)
+	vk := buildVirtualKey(vkID, vkValue, "batches", true)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	store.virtualKeys.Store(vkValue, vk)
+
+	budgetIDs, _ := store.CollectApplicableGovernanceIDs(context.Background(), vkValue, "", schemas.ModelProvider("anthropic"), "")
+
+	assert.Contains(t, budgetIDs, budget.ID, "VK-scoped wildcard budget must be found even when the request carries no model (e.g. batch-create)")
+}
+
 // TestGetBudgetAndRateLimitStatus_GlobalModelConfig tests that a global model+provider
 // config budget is visible to GetBudgetAndRateLimitStatus.
 func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
