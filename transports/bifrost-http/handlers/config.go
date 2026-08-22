@@ -83,6 +83,47 @@ func getPasswordPolicyFailures(password string) []string {
 	return failures
 }
 
+// shouldPreserveAdminPassword reports whether an incoming admin password is a
+// placeholder for the existing credential. Admin password redaction is more
+// specific than the generic SecretVar masking rules: a user-entered value that
+// happens to match a generic secret mask must still be treated as a new password.
+func shouldPreserveAdminPassword(password *schemas.SecretVar) bool {
+	if password == nil {
+		return true
+	}
+	if password.IsFromSecret() {
+		return false
+	}
+
+	value := password.GetValue()
+	return value == "" || strings.EqualFold(value, "<redacted>") || strings.EqualFold(value, "[redacted]")
+}
+
+func validateSubmittedAdminPassword(password *schemas.SecretVar) error {
+	if shouldPreserveAdminPassword(password) {
+		return nil
+	}
+	if password.IsFromSecret() && password.GetValue() == "" {
+		return fmt.Errorf("external reference %s for admin_password resolved to an empty value", password.GetRawRef())
+	}
+
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		return fmt.Errorf("auth password must include %s", strings.Join(failures, ", "))
+	}
+	return nil
+}
+
+func hashAdminPassword(password *schemas.SecretVar) (*schemas.SecretVar, error) {
+	hashedPassword, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		return nil, err
+	}
+
+	storedPassword := password.Clone()
+	storedPassword.Val = hashedPassword
+	return storedPassword, nil
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -311,6 +352,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
+	}
+	if payload.AuthConfig != nil {
+		if err := validateSubmittedAdminPassword(payload.AuthConfig.AdminPassword); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	// Validate MCP external URL overrides up front — the rest of this handler
@@ -859,9 +906,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
 			// Password is considered changed when it was intentionally submitted —
-			// ShouldPreserveStored() returns false for both plain values and secret refs.
+			// shouldPreserveAdminPassword() only recognizes admin-password sentinels.
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+				!shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword)
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -885,11 +932,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.GetRawRef()))
 				return
 			}
-			if payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", payload.AuthConfig.AdminPassword.GetRawRef()))
-				return
+			if authConfig != nil && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
 			}
-
 			if authConfig == nil && (payload.AuthConfig.AdminUserName.GetValue() == "" || payload.AuthConfig.AdminPassword.GetValue() == "") {
 				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
 				return
@@ -905,38 +950,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
-			// Fetching current Auth config
-			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
-					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
-						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
-						return
-					}
-					// Assuming that password hasn't been changed
-					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
-				} else {
-					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
-						return
-					}
-					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
+				if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
+					SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
+					return
 				}
+				// Assuming that password hasn't been changed
+				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				// Password has been changed
+				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
+				if err != nil {
+					logger.Warn("failed to hash password: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashedPassword
 			}
 			// Save auth config - this handles both first-time creation and updates
 			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
@@ -947,8 +976,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
+				if err != nil {
+					logger.Warn("failed to hash the disabled auth password: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashedPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
