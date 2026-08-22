@@ -5335,6 +5335,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	ctx.ResetUpstreamLatency()
+	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())

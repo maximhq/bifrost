@@ -2733,7 +2733,11 @@ func ProcessAndSendResponse(
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	// Time the send: a block here is the transport/client failing to drain (downstream
+	// backpressure), which the overhead breakdown attributes separately from Bifrost CPU.
+	sendStart := time.Now()
 	GateSendChunk(ctx, streamResponse, responseChan)
+	schemas.AddStreamBackpressure(ctx, time.Since(sendStart))
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -3808,6 +3812,7 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Stamp now the stream has drained; the handler returned long ago. Before the
 	// guard below so it still runs when there is no deferred span.
 	ctx.StampUpstreamLatency()
+	ctx.StampStreamOverhead()
 
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)

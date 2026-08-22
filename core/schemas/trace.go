@@ -918,6 +918,25 @@ const (
 	// never disagree.
 	AttrBifrostOverheadDurationMs = "bifrost.overhead.duration_ms"
 
+	// Per-chunk streaming overhead split out of the "core" bucket so a stream's
+	// breakdown reads like a unary request's. All float64 ms, stamped on the ROOT
+	// span at stream completion. parse/convert fold into the same buckets as their
+	// unary equivalents (response-parse, convertor); backpressure has no unary twin
+	// and is not Bifrost CPU (the transport/client draining slowly).
+	//   - parse:        per-event SSE JSON decode CPU
+	//   - convert:      per-event provider->Bifrost struct mapping CPU
+	//   - backpressure: time the provider goroutine blocked handing chunks to the transport
+	AttrBifrostStreamParseMs        = "bifrost.stream.parse_ms"
+	AttrBifrostStreamConvertMs      = "bifrost.stream.convert_ms"
+	AttrBifrostStreamBackpressureMs = "bifrost.stream.backpressure_ms"
+	// Transport-goroutine per-chunk split, stamped after the send loop drains.
+	// Concurrent with the provider, so NOT part of the overhead total: used only
+	// as weights to split backpressure into (A) client-write vs (B) transport CPU.
+	//   - transport_cpu: outbound Bifrost->client convert + marshal CPU
+	//   - client_write:  time blocked writing frames to the client socket
+	AttrBifrostStreamTransportCPUMs = "bifrost.stream.transport_cpu_ms"
+	AttrBifrostStreamClientWriteMs  = "bifrost.stream.client_write_ms"
+
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"

@@ -519,6 +519,10 @@ const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string
 	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
 	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
 	core: { label: "Core", colorClass: "bg-slate-500/70" },
+	"convertor.stream-in": { label: "Stream inbound convert", colorClass: "bg-fuchsia-500/70" },
+	"convertor.stream-out": { label: "Stream outbound convert", colorClass: "bg-fuchsia-500/70" },
+	"stream-client-write": { label: "Stream client write", colorClass: "bg-red-500/70" },
+	"stream-backpressure": { label: "Stream backpressure", colorClass: "bg-red-500/70" },
 	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
 	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
 	other: { label: "Other", colorClass: "bg-emerald-500/70" },
@@ -531,6 +535,11 @@ function overheadCategoryKey(b: OverheadBucket): string {
 	if (b.name.startsWith("middleware.")) {
 		return "middleware";
 	}
+	// Streaming emits per-chunk convert phases (convertor.stream-in / .stream-out) that
+	// belong under the single Convertor category, shown as members in the drill-down.
+	if (b.name.startsWith("convertor.")) {
+		return "convertor";
+	}
 	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
 		return b.name;
 	}
@@ -538,9 +547,12 @@ function overheadCategoryKey(b: OverheadBucket): string {
 }
 
 // overheadMemberLabel renders a drill-down member with its friendly phase label when
-// there is one (serialization phases), else the raw span name (plugins).
+// there is one (serialization phases), else the span name with the redundant
+// "plugin." prefix stripped (every plugin row already sits under the Plugins group).
 function overheadMemberLabel(name: string): string {
-	return OVERHEAD_CATEGORY_META[name]?.label ?? name;
+	const friendly = OVERHEAD_CATEGORY_META[name]?.label;
+	if (friendly) return friendly;
+	return name.startsWith("plugin.") ? name.slice("plugin.".length) : name;
 }
 
 // buildOverheadCategories groups the raw buckets into the top-level categories,
@@ -636,7 +648,8 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
 								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
 								{c.label}
-								<span className="tabular-nums">{formatMicros(c.totalUs)}</span>
+								{/* normal-case: keep the unit as "µs" — uppercasing mangles the micro sign into "ΜS" (reads as ms) */}
+								<span className="tabular-nums normal-case">{formatMicros(c.totalUs)}</span>
 							</div>
 							<div className="space-y-1 pl-3">
 								{c.members.map((m) => (
