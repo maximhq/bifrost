@@ -32,6 +32,11 @@ type BedrockResponsesStreamState struct {
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
 	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
+	ReasoningTextBuffers      map[int]*strings.Builder                                       // Maps output_index to accumulated reasoning text for done events
+	ReasoningSignatures       map[int]string                                                 // Maps output_index to the reasoning signature for done events and replay
+	OutputItems               map[int]*schemas.ResponsesMessage                              // Maps output_index to accumulated output item for response.completed
+	AnnotationsByOutputIndex  map[int][]schemas.ResponsesOutputMessageContentTextAnnotation  // Maps output_index to citation annotations for done events and response.completed
+	StructuredOutputIndex     *int                                                           // Output index of the synthetic text item carrying intercepted structured output
 	CurrentOutputIndex        int                                                            // Current output index counter
 	MessageID                 *string                                                        // Message ID (generated)
 	Model                     *string                                                        // Model name
@@ -59,6 +64,10 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			CompletedOutputIndices:    make(map[int]bool),
 			AnnotationIndices:         make(map[int]int),
 			TextBuffers:               make(map[int]*strings.Builder),
+			ReasoningTextBuffers:      make(map[int]*strings.Builder),
+			ReasoningSignatures:       make(map[int]string),
+			OutputItems:               make(map[int]*schemas.ResponsesMessage),
+			AnnotationsByOutputIndex:  make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -132,7 +141,28 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	} else {
 		clear(state.TextBuffers)
 	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.ReasoningTextBuffers)
+	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	} else {
+		clear(state.ReasoningSignatures)
+	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
+	if state.AnnotationsByOutputIndex == nil {
+		state.AnnotationsByOutputIndex = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
+	} else {
+		clear(state.AnnotationsByOutputIndex)
+	}
 	// Reset other fields
+	state.StructuredOutputIndex = nil
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
@@ -220,6 +250,27 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.TextBuffers)
 	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.ReasoningTextBuffers)
+	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	} else {
+		clear(state.ReasoningSignatures)
+	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
+	if state.AnnotationsByOutputIndex == nil {
+		state.AnnotationsByOutputIndex = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
+	} else {
+		clear(state.AnnotationsByOutputIndex)
+	}
+	state.StructuredOutputIndex = nil
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
@@ -228,6 +279,245 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.UsedStructuredOutputTool = false
+}
+
+// trackOutputItems records a copy of every emitted output_item.added/done by
+// output index so response.completed can carry the full output array. The done
+// event for an item overwrites its added shell. Items are stored as copies so
+// later bookkeeping never mutates an event already handed to the caller.
+func (state *BedrockResponsesStreamState) trackOutputItems(events []*schemas.BifrostResponsesStreamResponse) {
+	for _, event := range events {
+		if event == nil || event.OutputIndex == nil || event.Item == nil {
+			continue
+		}
+		if event.Type != schemas.ResponsesStreamResponseTypeOutputItemAdded &&
+			event.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
+			continue
+		}
+		// Never let an added shell overwrite a completed item: this provider
+		// closes blocks lazily (there is no contentBlockStop case), so a
+		// straggler delta can re-open an index that was already closed.
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded {
+			if existing, exists := state.OutputItems[*event.OutputIndex]; exists &&
+				existing.Status != nil && *existing.Status == "completed" {
+				continue
+			}
+		}
+		itemCopy := *event.Item
+		state.OutputItems[*event.OutputIndex] = &itemCopy
+	}
+}
+
+// emitTracked records any output items carried by the batch and returns it as
+// a non-terminal converter result.
+func (state *BedrockResponsesStreamState) emitTracked(responses []*schemas.BifrostResponsesStreamResponse) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+	state.trackOutputItems(responses)
+	return responses, nil, false
+}
+
+// annotationsForOutputIndex returns a copy of the citation annotations
+// accumulated for an output index, or an empty slice when none streamed.
+func (state *BedrockResponsesStreamState) annotationsForOutputIndex(outputIndex int) []schemas.ResponsesOutputMessageContentTextAnnotation {
+	annotations := make([]schemas.ResponsesOutputMessageContentTextAnnotation, len(state.AnnotationsByOutputIndex[outputIndex]))
+	copy(annotations, state.AnnotationsByOutputIndex[outputIndex])
+	return annotations
+}
+
+// closeReasoningItem completes an open reasoning item, emitting its
+// reasoning_summary_text.done, content_part.done, and output_item.done with
+// the accumulated reasoning text and signature, and returns the extended
+// event slice. The done item carries the payload as a reasoning content block
+// next to the empty summary, the same shape the non-streaming converter
+// produces, so replaying it through the request converters reconstructs the
+// Bedrock reasoning block instead of dropping it.
+func (state *BedrockResponsesStreamState) closeReasoningItem(outputIndex int, sequenceNumber int, responses []*schemas.BifrostResponsesStreamResponse) []*schemas.BifrostResponsesStreamResponse {
+	itemID := state.ItemIDs[outputIndex]
+
+	accText := ""
+	if buf := state.ReasoningTextBuffers[outputIndex]; buf != nil {
+		accText = buf.String()
+	}
+	var signature *string
+	if sig, exists := state.ReasoningSignatures[outputIndex]; exists && sig != "" {
+		signature = &sig
+	}
+
+	// For reasoning items, content_index is always 0 (reasoning content is the first and only content part)
+	reasoningContentIndex := 0
+
+	// Emit reasoning_summary_text.done with the accumulated reasoning text.
+	// Bedrock reasoning has a single summary part per item, so the summary
+	// index is always 0 (the field is required by the OpenAI event shape).
+	doneText := accText
+	reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &reasoningContentIndex,
+		SummaryIndex:   schemas.Ptr(0),
+		Text:           &doneText,
+	}
+	if itemID != "" {
+		reasoningDoneResponse.ItemID = &itemID
+	}
+	responses = append(responses, reasoningDoneResponse)
+
+	// Emit content_part.done for reasoning with the accumulated text and signature
+	partText := accText
+	part := &schemas.ResponsesMessageContentBlock{
+		Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+		Text:      &partText,
+		Signature: signature,
+	}
+	partDoneResponse := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &reasoningContentIndex,
+		Part:           part,
+	}
+	if itemID != "" {
+		partDoneResponse.ItemID = &itemID
+	}
+	responses = append(responses, partDoneResponse)
+
+	// Emit output_item.done for reasoning
+	statusCompleted := "completed"
+	messageType := schemas.ResponsesMessageTypeReasoning
+	role := schemas.ResponsesInputMessageRoleAssistant
+	doneItem := &schemas.ResponsesMessage{
+		Type:   &messageType,
+		Role:   &role,
+		Status: &statusCompleted,
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{},
+		},
+	}
+	if accText != "" || signature != nil {
+		itemText := accText
+		doneItem.Content = &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      &itemText,
+					Signature: signature,
+				},
+			},
+		}
+	}
+	if itemID != "" {
+		doneItem.ID = &itemID
+	}
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &reasoningContentIndex,
+		Item:           doneItem,
+	})
+
+	delete(state.ReasoningTextBuffers, outputIndex)
+	delete(state.ReasoningSignatures, outputIndex)
+
+	// Mark this output index as completed
+	state.CompletedOutputIndices[outputIndex] = true
+	return responses
+}
+
+// beginStructuredOutputTextItem opens the synthetic text item that carries
+// structured output converted from the intercepted structured-output tool
+// call. The stream handler swallows that tool's start event, so without this
+// the state held no item for the structured-output text and the done events
+// and the completed snapshot stayed empty on that path. Idempotent: a second
+// call returns no events.
+func (state *BedrockResponsesStreamState) beginStructuredOutputTextItem(contentBlockIndex int, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.StructuredOutputIndex != nil {
+		return nil
+	}
+	outputIndex := state.CurrentOutputIndex
+	state.CurrentOutputIndex++
+	state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
+	state.StructuredOutputIndex = schemas.Ptr(outputIndex)
+
+	var itemID string
+	if state.MessageID == nil {
+		itemID = fmt.Sprintf("item_%d", outputIndex)
+	} else {
+		itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+	}
+	state.ItemIDs[outputIndex] = itemID
+
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleAssistant
+	item := &schemas.ResponsesMessage{
+		ID:   &itemID,
+		Type: &messageType,
+		Role: &role,
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+		},
+	}
+	var responses []*schemas.BifrostResponsesStreamResponse
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		SequenceNumber: sequenceNumber,
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   schemas.Ptr(contentBlockIndex),
+		Item:           item,
+	})
+	emptyText := ""
+	part := &schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesOutputMessageContentTypeText,
+		Text: &emptyText,
+		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+		},
+	}
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+		SequenceNumber: sequenceNumber + 1,
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   schemas.Ptr(contentBlockIndex),
+		ItemID:         &itemID,
+		Part:           part,
+	})
+	state.trackOutputItems(responses)
+	return responses
+}
+
+// appendStructuredOutputText buffers a structured-output fragment on the
+// synthetic text item and returns the events to emit for it, opening the
+// item first when the tool start was not seen. The end-of-stream text close
+// then completes the item and the snapshot includes it like any text block.
+func (state *BedrockResponsesStreamState) appendStructuredOutputText(text string, contentBlockIndex int, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+	if state.StructuredOutputIndex == nil {
+		responses = state.beginStructuredOutputTextItem(contentBlockIndex, sequenceNumber)
+	}
+	if text == "" {
+		return responses
+	}
+	outputIndex := *state.StructuredOutputIndex
+	if state.TextBuffers[outputIndex] == nil {
+		state.TextBuffers[outputIndex] = &strings.Builder{}
+	}
+	state.TextBuffers[outputIndex].WriteString(text)
+	itemID := state.ItemIDs[outputIndex]
+	textCopy := text
+	deltaResponse := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   schemas.Ptr(contentBlockIndex),
+		Delta:          &textCopy,
+		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
+	}
+	if itemID != "" {
+		deltaResponse.ItemID = &itemID
+	}
+	responses = append(responses, deltaResponse)
+	return responses
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
@@ -307,67 +597,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					continue
 				}
 
-				itemID := state.ItemIDs[prevOutputIndex]
-
-				// For reasoning items, content_index is always 0
-				reasoningContentIndex := 0
-
-				// Emit reasoning_summary_text.done
-				emptyText := ""
-				reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &reasoningContentIndex,
-					Text:           &emptyText,
-				}
-				if itemID != "" {
-					reasoningDoneResponse.ItemID = &itemID
-				}
-				responses = append(responses, reasoningDoneResponse)
-
-				// Emit content_part.done for reasoning
-				part := &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text: &emptyText,
-				}
-				partDoneResponse := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &reasoningContentIndex,
-					Part:           part,
-				}
-				if itemID != "" {
-					partDoneResponse.ItemID = &itemID
-				}
-				responses = append(responses, partDoneResponse)
-
-				// Emit output_item.done for reasoning
-				statusCompleted := "completed"
-				messageType := schemas.ResponsesMessageTypeReasoning
-				role := schemas.ResponsesInputMessageRoleAssistant
-				doneItem := &schemas.ResponsesMessage{
-					Type:   &messageType,
-					Role:   &role,
-					Status: &statusCompleted,
-					ResponsesReasoning: &schemas.ResponsesReasoning{
-						Summary: []schemas.ResponsesReasoningSummary{},
-					},
-				}
-				if itemID != "" {
-					doneItem.ID = &itemID
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &reasoningContentIndex,
-					Item:           doneItem,
-				})
-
-				// Mark this output index as completed
-				state.CompletedOutputIndices[prevOutputIndex] = true
+				responses = state.closeReasoningItem(prevOutputIndex, sequenceNumber, responses)
 			}
 			// Clear reasoning content indices after closing them
 			clear(state.ReasoningContentIndices)
@@ -420,7 +650,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					Text: &prevPartText,
 					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						Annotations: state.annotationsForOutputIndex(prevOutputIndex),
 					},
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -442,7 +672,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 							Type: schemas.ResponsesOutputMessageContentTypeText,
 							Text: &prevItemText,
 							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								Annotations: state.annotationsForOutputIndex(prevOutputIndex),
 								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 							},
 						},
@@ -675,7 +905,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				})
 			}
 
-			return responses, nil, false
+			return state.emitTracked(responses)
 		}
 		// Text content start is handled by Role event, so we can ignore Start for text
 
@@ -696,70 +926,10 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 							continue
 						}
 
-						itemID := state.ItemIDs[prevOutputIndex]
-
-						// For reasoning items, content_index is always 0
-						reasoningContentIndex := 0
-
-						// Emit reasoning_summary_text.done
-						emptyText := ""
-						reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
-							SequenceNumber: sequenceNumber + len(responses),
-							OutputIndex:    schemas.Ptr(prevOutputIndex),
-							ContentIndex:   &reasoningContentIndex,
-							Text:           &emptyText,
-						}
-						if itemID != "" {
-							reasoningDoneResponse.ItemID = &itemID
-						}
-						responses = append(responses, reasoningDoneResponse)
-
-						// Emit content_part.done for reasoning
-						part := &schemas.ResponsesMessageContentBlock{
-							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: &emptyText,
-						}
-						partDoneResponse := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-							SequenceNumber: sequenceNumber + len(responses),
-							OutputIndex:    schemas.Ptr(prevOutputIndex),
-							ContentIndex:   &reasoningContentIndex,
-							Part:           part,
-						}
-						if itemID != "" {
-							partDoneResponse.ItemID = &itemID
-						}
-						responses = append(responses, partDoneResponse)
-
-						// Emit output_item.done for reasoning
-						statusCompleted := "completed"
-						messageType := schemas.ResponsesMessageTypeReasoning
-						role := schemas.ResponsesInputMessageRoleAssistant
-						doneItem := &schemas.ResponsesMessage{
-							Type:   &messageType,
-							Role:   &role,
-							Status: &statusCompleted,
-							ResponsesReasoning: &schemas.ResponsesReasoning{
-								Summary: []schemas.ResponsesReasoningSummary{},
-							},
-						}
-						if itemID != "" {
-							doneItem.ID = &itemID
-						}
-						responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-							SequenceNumber: sequenceNumber + len(responses),
-							OutputIndex:    schemas.Ptr(prevOutputIndex),
-							ContentIndex:   &reasoningContentIndex,
-							Item:           doneItem,
-						})
+						responses = state.closeReasoningItem(prevOutputIndex, sequenceNumber, responses)
 
 						// Clear the reasoning content index tracking
 						delete(state.ReasoningContentIndices, prevContentIndex)
-
-						// Mark this output index as completed
-						state.CompletedOutputIndices[prevOutputIndex] = true
 					}
 				}
 			}
@@ -846,7 +1016,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 			// If we have responses to return (either from closing reasoning or creating text item), return them first
 			if len(responses) > 0 {
-				return responses, nil, false
+				return state.emitTracked(responses)
 			}
 		}
 
@@ -898,6 +1068,9 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					URL:   schemas.Ptr(citation.Location.Web.URL),
 					Title: schemas.Ptr(citation.Location.Web.Domain),
 				}
+				// Keep a copy so the done events and response.completed can
+				// carry the accumulated annotations.
+				state.AnnotationsByOutputIndex[outputIndex] = append(state.AnnotationsByOutputIndex[outputIndex], *annotation)
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 					SequenceNumber:  sequenceNumber,
@@ -980,6 +1153,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				// Preserve signature if present
 				if reasoningDelta.Signature != nil {
 					item.ResponsesReasoning.EncryptedContent = reasoningDelta.Signature
+					state.ReasoningSignatures[outputIndex] = *reasoningDelta.Signature
 				}
 
 				// Track that this content index is a reasoning block
@@ -1015,27 +1189,42 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 				// If there's text content, also emit the delta
 				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
+					// Accumulate reasoning text so the terminal events can carry it.
+					// Bedrock reasoning has a single summary part per item, so the
+					// summary index is always 0 (the field is required by the
+					// OpenAI event shape).
+					if state.ReasoningTextBuffers[outputIndex] == nil {
+						state.ReasoningTextBuffers[outputIndex] = &strings.Builder{}
+					}
+					state.ReasoningTextBuffers[outputIndex].WriteString(*reasoningDelta.Text)
 					deltaResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
+						SummaryIndex:   schemas.Ptr(0),
 						Delta:          reasoningDelta.Text,
 						ItemID:         &itemID,
 					}
 					responses = append(responses, deltaResponse)
 				}
 
-				return responses, nil, false
+				return state.emitTracked(responses)
 			} else {
 				// Subsequent reasoning deltas - just emit the delta
 				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
+					// Accumulate reasoning text so the terminal events can carry it
+					if state.ReasoningTextBuffers[outputIndex] == nil {
+						state.ReasoningTextBuffers[outputIndex] = &strings.Builder{}
+					}
+					state.ReasoningTextBuffers[outputIndex].WriteString(*reasoningDelta.Text)
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
+						SummaryIndex:   schemas.Ptr(0),
 						Delta:          reasoningDelta.Text,
 					}
 					if itemID != "" {
@@ -1046,6 +1235,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 				// Handle signature deltas
 				if reasoningDelta.Signature != nil {
+					// Record the signature so the terminal events and the final
+					// snapshot can carry it for replay. The Converse delta union
+					// carries the signature as one value, so this assigns rather
+					// than accumulates.
+					state.ReasoningSignatures[outputIndex] = *reasoningDelta.Signature
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
@@ -1326,7 +1520,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Text: &partText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					Annotations: state.annotationsForOutputIndex(outputIndex),
 				},
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -1348,7 +1542,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 						Type: schemas.ResponsesOutputMessageContentTypeText,
 						Text: &itemText,
 						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							Annotations: state.annotationsForOutputIndex(outputIndex),
 							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 						},
 					},
@@ -1393,71 +1587,94 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 			continue
 		}
 
-		itemID := state.ItemIDs[outputIndex]
-
-		// For reasoning items, content_index is always 0 (reasoning content is the first and only content part)
-		reasoningContentIndex := 0
-
-		// Emit reasoning_summary_text.done
-		emptyText := ""
-		reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   &reasoningContentIndex,
-			Text:           &emptyText,
-		}
-		if itemID != "" {
-			reasoningDoneResponse.ItemID = &itemID
-		}
-		responses = append(responses, reasoningDoneResponse)
-
-		// Emit content_part.done for reasoning
-		part := &schemas.ResponsesMessageContentBlock{
-			Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-			Text: &emptyText,
-		}
-		partDoneResponse := &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   &reasoningContentIndex,
-			Part:           part,
-		}
-		if itemID != "" {
-			partDoneResponse.ItemID = &itemID
-		}
-		responses = append(responses, partDoneResponse)
-
-		// Emit output_item.done for reasoning
-		statusCompleted := "completed"
-		messageType := schemas.ResponsesMessageTypeReasoning
-		role := schemas.ResponsesInputMessageRoleAssistant
-		doneItem := &schemas.ResponsesMessage{
-			Type:   &messageType,
-			Role:   &role,
-			Status: &statusCompleted,
-			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
-			},
-		}
-		if itemID != "" {
-			doneItem.ID = &itemID
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   &reasoningContentIndex,
-			Item:           doneItem,
-		})
-
-		// Mark this output index as completed
-		state.CompletedOutputIndices[outputIndex] = true
+		responses = state.closeReasoningItem(outputIndex, sequenceNumber, responses)
 	}
 
 	// Note: Tool calls are already closed in the first loop above.
 	// This section is intentionally left empty to avoid duplicate events.
+
+	// Record the items closed above so the terminal snapshot can carry the
+	// full output array.
+	state.trackOutputItems(responses)
+
+	// Fold citation annotations that streamed after their text item had
+	// already completed into the tracked item, so the final snapshot keeps
+	// them. The accumulated list replaces the block's annotations, which
+	// keeps this idempotent when the done event already carried them.
+	// Items are cloned before mutation so events already handed to the
+	// caller are never touched.
+	for outputIndex, annotations := range state.AnnotationsByOutputIndex {
+		if len(annotations) == 0 {
+			continue
+		}
+		item, exists := state.OutputItems[outputIndex]
+		if !exists || item.Content == nil {
+			continue
+		}
+		blockIndex := -1
+		for i, block := range item.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesOutputMessageContentTypeText {
+				blockIndex = i
+				break
+			}
+		}
+		if blockIndex == -1 {
+			continue
+		}
+		itemCopy := *item
+		contentCopy := *item.Content
+		blocksCopy := make([]schemas.ResponsesMessageContentBlock, len(contentCopy.ContentBlocks))
+		copy(blocksCopy, contentCopy.ContentBlocks)
+		blockCopy := blocksCopy[blockIndex]
+		textMeta := schemas.ResponsesOutputMessageContentText{}
+		if blockCopy.ResponsesOutputMessageContentText != nil {
+			textMeta = *blockCopy.ResponsesOutputMessageContentText
+		}
+		textMeta.Annotations = state.annotationsForOutputIndex(outputIndex)
+		blockCopy.ResponsesOutputMessageContentText = &textMeta
+		blocksCopy[blockIndex] = blockCopy
+		contentCopy.ContentBlocks = blocksCopy
+		itemCopy.Content = &contentCopy
+		state.OutputItems[outputIndex] = &itemCopy
+	}
+
+	// Fold a signature that streamed after its reasoning item had already
+	// completed into the tracked item, so the final snapshot stays
+	// replayable. closeReasoningItem consumes the signature of every item it
+	// closes, so anything left here belongs to an item that closed early.
+	for outputIndex, signature := range state.ReasoningSignatures {
+		if signature == "" {
+			continue
+		}
+		item, exists := state.OutputItems[outputIndex]
+		if !exists || item.Type == nil || *item.Type != schemas.ResponsesMessageTypeReasoning {
+			continue
+		}
+		sigCopy := signature
+		itemCopy := *item
+		if itemCopy.Content == nil || len(itemCopy.Content.ContentBlocks) == 0 {
+			emptyReasoningText := ""
+			itemCopy.Content = &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text:      &emptyReasoningText,
+						Signature: &sigCopy,
+					},
+				},
+			}
+		} else {
+			contentCopy := *itemCopy.Content
+			blocksCopy := make([]schemas.ResponsesMessageContentBlock, len(contentCopy.ContentBlocks))
+			copy(blocksCopy, contentCopy.ContentBlocks)
+			if blocksCopy[0].Signature == nil {
+				blocksCopy[0].Signature = &sigCopy
+			}
+			contentCopy.ContentBlocks = blocksCopy
+			itemCopy.Content = &contentCopy
+		}
+		state.OutputItems[outputIndex] = &itemCopy
+	}
 
 	if usage.InputTokensDetails != nil {
 		usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
@@ -1532,6 +1749,24 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
 			if response.Status == nil {
 				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
+	}
+
+	// Populate the Output array from the accumulated items, sorted by output
+	// index, so the terminal snapshot carries the full output array like the
+	// non-streaming response does.
+	if len(state.OutputItems) > 0 {
+		maxOutputIndex := state.CurrentOutputIndex
+		for outputIndex := range state.OutputItems {
+			if outputIndex >= maxOutputIndex {
+				maxOutputIndex = outputIndex + 1
+			}
+		}
+		response.Output = make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+		for i := 0; i < maxOutputIndex; i++ {
+			if item, exists := state.OutputItems[i]; exists {
+				response.Output = append(response.Output, *item)
 			}
 		}
 	}
