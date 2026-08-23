@@ -33524,6 +33524,144 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "Cross-cut: anthropic/claude-opus-4-8 mid-conv system before roleless function_call replay (native, raw_request)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the get_weather tool.\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"system\",\n      \"content\": \"From now on, answer in one word.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_replay_1\",\n      \"name\": \"get_weather\",\n      \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_replay_1\",\n      \"output\": \"{\\\"temp\\\":21}\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Summarize that in French.\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('mid-conv system before tool-call replay: 2xx', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "if (pm.response.code >= 400) { return; }",
+                      "var body = pm.response.json() || {};",
+                      "var ef = body.extra_fields || {};",
+                      "var rr = ef.raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "pm.test('mid-conv system before tool-call replay: raw_request captured', function () {",
+                      "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                      "});",
+                      "if (!rr || typeof rr !== 'object') { return; }",
+                      "var msgs = rr.messages || [];",
+                      "var msgsS = JSON.stringify(msgs);",
+                      "var sysIdx = -1;",
+                      "msgs.forEach(function (m, i) { if (m.role === 'system') { sysIdx = i; } });",
+                      "pm.test('mid-conv system forwarded natively as role:system', function () {",
+                      "  pm.expect(sysIdx, 'messages: ' + msgsS).to.be.above(-1);",
+                      "});",
+                      "if (sysIdx === -1) { return; }",
+                      "pm.test('native system turn sits between the leading user turn and the regrouped assistant turn', function () {",
+                      "  pm.expect(msgs[sysIdx - 1].role, 'messages: ' + msgsS).to.eql('user');",
+                      "  pm.expect(msgs[sysIdx + 1].role, 'messages: ' + msgsS).to.eql('assistant');",
+                      "});",
+                      "pm.test('assistant turn after the system carries the replayed tool_use', function () {",
+                      "  var blocks = msgs[sysIdx + 1].content || [];",
+                      "  var hasToolUse = blocks.some(function (b) { return b.type === 'tool_use'; });",
+                      "  pm.expect(hasToolUse, 'assistant blocks: ' + JSON.stringify(blocks)).to.be.true;",
+                      "});",
+                      "pm.test('native system turn carries the instruction text', function () {",
+                      "  pm.expect(JSON.stringify(msgs[sysIdx]).indexOf('From now on'), 'system turn: ' + JSON.stringify(msgs[sysIdx])).to.be.above(-1);",
+                      "});",
+                      "pm.test('no <system-reminder> inline fallback emitted', function () {",
+                      "  pm.expect(msgsS.indexOf('<system-reminder>'), 'messages contain system-reminder: ' + msgsS).to.eql(-1);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Cross-cut: anthropic/claude-opus-4-8 mid-conv system before payload-less function_call (inlined, raw_request)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris?\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"system\",\n      \"content\": \"From now on, answer in one word.\"\n    },\n    {\n      \"type\": \"function_call\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Just say ok.\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('mid-conv system before payload-less function_call: 2xx', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "if (pm.response.code >= 400) { return; }",
+                      "var body = pm.response.json() || {};",
+                      "var ef = body.extra_fields || {};",
+                      "var rr = ef.raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "pm.test('mid-conv system before payload-less function_call: raw_request captured', function () {",
+                      "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                      "});",
+                      "if (!rr || typeof rr !== 'object') { return; }",
+                      "var msgs = rr.messages || [];",
+                      "var msgsS = JSON.stringify(msgs);",
+                      "pm.test('system NOT forwarded natively (payload-less function_call emits no assistant turn)', function () {",
+                      "  var hasSystem = msgs.some(function (m) { return m.role === 'system'; });",
+                      "  pm.expect(hasSystem, 'messages: ' + msgsS).to.be.false;",
+                      "});",
+                      "pm.test('system instruction inlined as a <system-reminder> user turn', function () {",
+                      "  pm.expect(msgsS.indexOf('<system-reminder>'), 'messages missing system-reminder: ' + msgsS).to.be.above(-1);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
