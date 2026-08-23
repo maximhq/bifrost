@@ -63,6 +63,7 @@ type ChannelMessage struct {
 	Response       chan *schemas.BifrostResponse
 	ResponseStream chan chan *schemas.BifrostStreamChunk
 	Err            chan schemas.BifrostError
+	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -3908,6 +3909,8 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 			default:
 				// newPq is full — cancel this message and all remaining in oldPq.
 				cancelMsg := func(r *ChannelMessage) {
+					// Cancelling instead of transferring: close its queue-wait span.
+					bifrost.endQueueWaitSpan(r)
 					prov, mod, _ := r.BifrostRequest.GetRequestFields()
 					select {
 					case r.Err <- schemas.BifrostError{
@@ -5332,6 +5335,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	ctx.ResetUpstreamLatency()
+	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -5546,6 +5550,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+
+	// Open the queue-wait span; the worker closes it when it dequeues the message.
+	startQueueWaitSpan(ctx, tracer, msg)
 
 	// If the queue is closing, check whether the provider was updated (new queue
 	// available) or removed. On update, transparently re-route to the new queue
@@ -5889,6 +5896,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
+	// Open the queue-wait span; the worker closes it when it dequeues the message.
+	startQueueWaitSpan(ctx, tracer, msg)
+
 	// If the queue is closing, check whether the provider was updated (new queue
 	// available) or removed. On update, transparently re-route to the new queue
 	// so in-flight producers don't get spurious errors. On removal, error out.
@@ -6112,7 +6122,7 @@ func executeRequestWithRetries[T any](
 				keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
 				if attempts > 0 {
-					keyTracer.SetAttribute(keyHandle, schemas.AttrLegacyRetryCount, attempts)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostRetries, attempts)
 				}
 			}
 
@@ -6284,46 +6294,31 @@ func executeRequestWithRetries[T any](
 		span.SetAttribute(schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		span.SetAttribute(schemas.AttrRequestModel, model)
 		span.SetAttribute(schemas.AttrOperationName, otelOp)
-		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
-		if attempts > 0 {
-			span.SetAttribute(schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
-		}
+		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
-		// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: the
-		// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
-		// are the canonical home going forward; once all dashboards migrate, drop the
-		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			span.SetAttribute(schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			span.SetAttribute(schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			span.SetAttribute(schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			span.SetAttribute(schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerName, customerName)
 		}
 		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
@@ -6360,10 +6355,8 @@ func executeRequestWithRetries[T any](
 			span.SetAttribute(schemas.AttrBifrostUserEmail, userEmail)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			span.SetAttribute(schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		span.SetAttribute(schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
 		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
@@ -6391,14 +6384,20 @@ func executeRequestWithRetries[T any](
 			exportHeaderAttributes(passthrough)
 		}
 
-		// Populate LLM request attributes (messages, parameters, etc.)
-		if req != nil {
-			tracer.PopulateLLMRequestAttributes(handle, req)
-		}
-
-		// Update context with span ID (no valueCtx alloc; StartSpanID returned it).
+		// Make the LLM call the active span before attribute-population so that phase
+		// nests inside it rather than the preceding span (no valueCtx alloc; StartSpanID
+		// returned spanID).
 		if spanID != "" {
 			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+		}
+
+		// Populate LLM request attributes (messages, parameters, etc.). Timed as an
+		// "attribute-population" span: writing a large prompt's messages onto the span
+		// is real, payload-scaled work that otherwise hides in the core bucket.
+		if req != nil {
+			_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
+			tracer.PopulateLLMRequestAttributes(handle, req)
+			tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 		}
 
 		// Record stream start time for TTFT calculation (only for streaming requests)
@@ -6481,11 +6480,15 @@ func executeRequestWithRetries[T any](
 					}
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
+				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			} else if bifrostError != nil {
 				// Failed stream requests carry a chan result and miss the cast above;
 				// stamp error attributes explicitly so spans don't report unknown.
+				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
+				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
 
 			// End span with appropriate status
@@ -6682,12 +6685,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		select {
 		case r := <-pq.queue:
 			req = r
+			bifrost.endQueueWaitSpan(req)
 		case <-pq.done:
 			// Provider is shutting down. Drain any buffered requests and send
 			// back errors so callers are not left blocked on their response channel.
 			for {
 				select {
 				case r := <-pq.queue:
+					// Draining a still-open queue-wait span: close it before discarding.
+					bifrost.endQueueWaitSpan(r)
 					provKey, mod, _ := r.GetRequestFields()
 					select {
 					case r.Err <- schemas.BifrostError{
@@ -8282,6 +8288,28 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // POOL & RESOURCE MANAGEMENT
 
+// startQueueWaitSpan opens a nil-safe "queue-wait" internal span measuring how long
+// the message sits in the provider queue before a worker dequeues it. The handle is
+// stored on the message; endQueueWaitSpan closes it on dequeue, and
+// releaseChannelMessage closes it if the send never reached a worker. When no trace
+// is active StartSpanID returns a nil handle, so the phase simply folds into core.
+func startQueueWaitSpan(ctx *schemas.BifrostContext, tracer schemas.Tracer, msg *ChannelMessage) {
+	if tracer == nil {
+		return
+	}
+	_, msg.queueSpan = tracer.StartSpanID(ctx, "queue-wait", schemas.SpanKindInternal)
+}
+
+// endQueueWaitSpan closes the queue-wait span once (nil-safe, idempotent): it clears
+// the handle so a later releaseChannelMessage does not double-close it.
+func (bifrost *Bifrost) endQueueWaitSpan(msg *ChannelMessage) {
+	if msg == nil || msg.queueSpan == nil {
+		return
+	}
+	bifrost.getTracer().EndSpan(msg.queueSpan, schemas.SpanStatusOk, "")
+	msg.queueSpan = nil
+}
+
 // getChannelMessage gets a ChannelMessage from the pool and configures it with the request.
 // It also gets response and error channels from their respective pools.
 func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMessage {
@@ -8338,6 +8366,8 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 	for {
 		select {
 		case r := <-pq.queue:
+			// Draining a still-open queue-wait span: close it before discarding.
+			bifrost.endQueueWaitSpan(r)
 			provKey, mod, _ := r.GetRequestFields()
 			select {
 			case r.Err <- schemas.BifrostError{
@@ -8362,6 +8392,10 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
+	// Close the queue-wait span if the message never reached a worker (send failed
+	// on a shutdown/drop path). No-op when the worker already closed it.
+	bifrost.endQueueWaitSpan(msg)
+
 	// Drain any undelivered values before pooling so an idle pooled channel
 	// doesn't pin a full response/error until its next reuse. getChannelMessage
 	// drains again on acquire as defense in depth.
@@ -8402,6 +8436,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil
+	msg.queueSpan = nil
 	bifrost.channelMessagePool.Put(msg)
 }
 

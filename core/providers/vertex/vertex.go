@@ -3432,14 +3432,18 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 	}
 
-	return &schemas.BifrostBatchResultsResponse{
+	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID:  request.BatchID,
 		Endpoint: schemas.BatchEndpointChatCompletions,
 		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: time.Since(startTime).Milliseconds(),
 		},
-	}, nil
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = results
+	}
+	return batchResultsResp, nil
 }
 
 func vertexNormalizeBatchUsage(body map[string]any) map[string]any {

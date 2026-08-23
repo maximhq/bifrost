@@ -1011,12 +1011,68 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 // gateway credentials and must never be forwarded to a provider.
 const internalHeaderPrefix = "x-bf-"
 
+// supportedBufferedContentEncodings are the response codings handled by
+// CheckAndDecodeBody. Accept-Encoding passthrough is intersected with this set
+// so Bifrost never advertises an upstream response format it cannot parse.
+var supportedBufferedContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+	"deflate":  {},
+	"br":       {},
+	"zstd":     {},
+}
+
+// supportedStreamingContentEncodings are the codings handled incrementally by
+// DecompressStreamBody. Keep this separate from the buffered set: advertising
+// Brotli or zstd on an SSE request would be unsafe until the stream reader can
+// decode those formats without buffering the whole response.
+var supportedStreamingContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+}
+
+func filterSupportedAcceptEncodings(values []string, supportedEncodings map[string]struct{}) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		for item := range strings.SplitSeq(value, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+
+			coding := item
+			if separator := strings.IndexByte(coding, ';'); separator >= 0 {
+				coding = coding[:separator]
+			}
+			coding = strings.ToLower(strings.TrimSpace(coding))
+			if _, ok := supportedEncodings[coding]; ok {
+				// Preserve parameters such as q-values while normalizing the list into
+				// one header value below.
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
 // SetPassthroughHeaders applies the caller's raw request headers captured for Anthropic OAuth
 // passthrough, where the caller's token is the upstream credential. ONLY the Anthropic provider
 // may call this: every other provider authenticates with its own configured credentials, so
 // forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
 // x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
 func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedBufferedContentEncodings)
+}
+
+// SetPassthroughHeadersForStreaming applies OAuth passthrough headers while
+// advertising only response codings that Bifrost can decode incrementally.
+func SetPassthroughHeadersForStreaming(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedStreamingContentEncodings)
+}
+
+func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string, supportedEncodings map[string]struct{}) {
 	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
 	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
 	// call-site check would silently forward the caller's credential to all of them.
@@ -1032,13 +1088,25 @@ func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 		if strings.HasPrefix(lower, internalHeaderPrefix) {
 			continue
 		}
-		// Bifrost owns the body it sends, so it owns Content-Type. Dropping it here keeps a
-		// caller value from overriding the JSON content type no matter where callers invoke
-		// this relative to their own SetContentType.
+		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+			continue
+		}
+		// Bifrost owns the body it sends, so a caller cannot override its content type.
 		if lower == "content-type" {
 			continue
 		}
-		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+		if lower == "accept-encoding" {
+			// Filtering must never widen what the upstream may send: an omitted
+			// Accept-Encoding means any coding is acceptable (RFC 9110 12.5.3), so a
+			// caller list that filters down to nothing pins identity instead of
+			// dropping the header. Without this, a streaming caller asking for br
+			// alone would let the upstream answer in br, which DecompressStreamBody
+			// cannot decode, and the SSE parser would see raw compressed bytes.
+			if supported := filterSupportedAcceptEncodings(values, supportedEncodings); len(supported) > 0 {
+				req.Header.Set(k, strings.Join(supported, ", "))
+			} else {
+				req.Header.Set(k, "identity")
+			}
 			continue
 		}
 		for i, v := range values {
@@ -1609,6 +1677,36 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	return compact.Bytes(), nil
 }
 
+// startPhaseSpan opens a nil-safe internal child span marking a Bifrost overhead
+// phase (request marshalling, response parsing) so the log detail view can attribute
+// core overhead. Both returns are nil when no trace is active; EndSpan is nil-safe,
+// so callers guard only on the tracer. StartSpanID avoids a per-span context alloc.
+func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
+// response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
+// request-side conversion so total conversion time is attributed together, instead of
+// the response half folding into core. Symmetric to the request path: response-parse
+// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
+// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "convertor")
+}
+
+// StartResponseParseSpan opens the "response-parse" overhead phase span for providers
+// that unmarshal the response body directly (e.g. Bedrock Converse) rather than through
+// HandleProviderResponseCtx. Nil-safe: returns a nil tracer when no trace is active.
+func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "response-parse")
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
@@ -1617,17 +1715,32 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
+		// The converting path splits into two non-overlapping overhead phases so their
+		// costs are attributed separately (and never double-counted): "convertor" for
+		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
+		// encode. The raw-body passthrough branch does neither.
+		ct, chdl := startPhaseSpan(ctx, "convertor")
 		convertedBody, err := requestConverter()
 		if err != nil {
+			if ct != nil {
+				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+		}
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
 		}
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
+		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
 		// Indenting is removed to reduce data on wire
 		jsonBody, err := MarshalProviderRequest(convertedBody)
 		if err != nil {
+			if mt != nil {
+				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
@@ -1638,9 +1751,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				// tool schemas and other order-sensitive JSON structures.
 				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
+					if mt != nil {
+						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+					}
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
+		}
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
 		return jsonBody, nil
 	} else {
@@ -1837,6 +1956,31 @@ func EnrichError(
 	return bifrostErr
 }
 
+// HandleProviderResponseCtx is HandleProviderResponse with a context, so the JSON
+// parse is timed as the "response-parse" overhead phase for the log detail view.
+// Used at the primary completion call sites (chat / responses / text) where parse
+// time is on the latency hot path; the ctx-less HandleProviderResponse remains for
+// the many secondary sites (files, batches, containers) whose parse time is not
+// worth a span and simply folds into the "core" bucket.
+func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
+		// Inspect the named bifrostErr so a failed parse ends the span as an error
+		// instead of appearing as successful overhead work.
+		defer func() {
+			if bifrostErr != nil {
+				msg := "response parse failed"
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					msg = bifrostErr.Error.Message
+				}
+				t.EndSpan(h, schemas.SpanStatusError, msg)
+				return
+			}
+			t.EndSpan(h, schemas.SpanStatusOk, "")
+		}()
+	}
+	return HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+}
+
 // HandleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
@@ -1976,33 +2120,79 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 }
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
-// It returns a copy of the body to avoid race conditions when the response is released
-// back to fasthttp's buffer pool. Uses pooled gzip readers to reduce GC pressure.
+// It returns an owned body to avoid races when the response is released back to
+// fasthttp's buffer pool. Content codings are decoded in reverse application order,
+// as required by RFC 9110, using the shared pooled readers.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
-	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	if strings.Contains(contentEncoding, "gzip") {
-		body := resp.Body()
-		if len(body) == 0 {
-			return nil, nil
-		}
-
-		reader := bytes.NewReader(body)
-		gz, err := AcquireGzipReader(reader)
-		if err != nil {
-			return nil, err
-		}
-		defer ReleaseGzipReader(gz)
-
-		decompressed, err := io.ReadAll(gz)
-		if err != nil {
-			return nil, err
-		}
-		return decompressed, nil
-	}
-	// Copy the body to avoid race conditions when response is released back to pool
 	body := resp.Body()
-	result := make([]byte, len(body))
-	copy(result, body)
+	if len(body) == 0 {
+		return nil, nil
+	}
+
+	result := append([]byte(nil), body...)
+	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return result, nil
+	}
+
+	encodings := strings.Split(contentEncoding, ",")
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := strings.TrimSpace(encodings[i])
+		reader := bytes.NewReader(result)
+
+		// Release on the Acquire error paths too: zstd.NewReader's contract is to
+		// return the decoder alongside its error, so a bare return could drop one
+		// from the pool. The gzip and deflate constructors return nil there, where
+		// Release is a no-op.
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "x-gzip":
+			gz, err := AcquireGzipReader(reader)
+			if err != nil {
+				ReleaseGzipReader(gz)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(gz)
+			ReleaseGzipReader(gz)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "deflate":
+			fr, err := AcquireFlateReader(reader)
+			if err != nil {
+				ReleaseFlateReader(fr)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(fr)
+			ReleaseFlateReader(fr)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "br":
+			br := AcquireBrotliReader(reader)
+			var err error
+			result, err = io.ReadAll(br)
+			ReleaseBrotliReader(br)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "zstd":
+			dec, err := AcquireZstdDecoder(reader)
+			if err != nil {
+				ReleaseZstdDecoder(dec)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(dec)
+			ReleaseZstdDecoder(dec)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+	}
+
 	return result, nil
 }
 
@@ -2543,7 +2733,11 @@ func ProcessAndSendResponse(
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	// Time the send: a block here is the transport/client failing to drain (downstream
+	// backpressure), which the overhead breakdown attributes separately from Bifrost CPU.
+	sendStart := time.Now()
 	GateSendChunk(ctx, streamResponse, responseChan)
+	schemas.AddStreamBackpressure(ctx, time.Since(sendStart))
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -3618,6 +3812,7 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Stamp now the stream has drained; the handler returned long ago. Before the
 	// guard below so it still runs when there is no deferred span.
 	ctx.StampUpstreamLatency()
+	ctx.StampStreamOverhead()
 
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
@@ -3640,7 +3835,6 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
 	if ttftNs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)              // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk
 		tracer.SetAttribute(handle, schemas.AttrTimeToFirstChunk, float64(ttftNs)/1e9) // spec: seconds
 	}
 	if chunkCount > 0 {

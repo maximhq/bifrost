@@ -1,6 +1,12 @@
 package runware
 
-import schemas "github.com/maximhq/bifrost/core/schemas"
+import (
+	"slices"
+	"strings"
+
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	schemas "github.com/maximhq/bifrost/core/schemas"
+)
 
 // runware3DImageInputIsArray records, per 3D model, whether the input image goes into
 // inputs.images[] (true) or inputs.image (false). The split is per-model and comes from Runware's
@@ -236,4 +242,121 @@ func runwareVideoInputFormFor(caps schemas.ModelCaps) runwareVideoInputForm {
 		return runwareVideoInputFrameImages
 	}
 	return runwareVideoInputForms[caps.Model()]
+}
+
+// runwareModelSearchPageSize is above the documented maximum of 100, which Runware nonetheless
+// honours. It is deliberate: a modelSearch page costs ~10-20s regardless of size, so paging the
+// curated catalog at 100 would mean five sequential round trips and blow the request deadline,
+// while 500 fetches the whole set in one.
+const runwareModelSearchPageSize = 500
+
+// runwareCuratedSource limits a catalog sweep to Runware's first-party models. The unfiltered
+// catalog is dominated by community LoRA uploads (~273k of ~320k) that no Bifrost route targets.
+const runwareCuratedSource = "curated"
+
+// ToBifrostListModelsResponse converts Runware catalog pages to a Bifrost list response. The AIR is
+// the model identifier every inference task keys off, so it becomes the Bifrost model ID.
+func ToBifrostListModelsResponse(
+	models []RunwareModel,
+	providerKey schemas.ModelProvider,
+	allowedModels schemas.WhiteList,
+	blacklistedModels schemas.BlackList,
+	aliases schemas.KeyAliases,
+	unfiltered bool,
+) *schemas.BifrostListModelsResponse {
+	bifrostResponse := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0, len(models)),
+	}
+
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
+	}
+
+	for _, model := range models {
+		if model.AIR == "" {
+			continue
+		}
+		for _, result := range pipeline.FilterModel(model.AIR) {
+			bifrostModel := schemas.Model{
+				ID: string(providerKey) + "/" + result.ResolvedID,
+			}
+			if model.Name != "" {
+				bifrostModel.Name = &model.Name
+			}
+			if model.Comment != "" {
+				bifrostModel.Description = &model.Comment
+			}
+			if model.Creator != nil {
+				if owner := model.Creator.Name; owner != "" {
+					bifrostModel.OwnedBy = &owner
+				} else if owner := model.Creator.ID; owner != "" {
+					bifrostModel.OwnedBy = &owner
+				}
+			}
+			if model.AddedUnixTimestamp > 0 {
+				bifrostModel.Created = &model.AddedUnixTimestamp
+			}
+			// Runware describes a model's shape with capability tags rather than modality lists, so
+			// the input/output modalities are derived from its "io:<from>-to-<to>" entries.
+			if architecture := runwareModelArchitecture(model); architecture != nil {
+				bifrostModel.Architecture = architecture
+			}
+			if result.AliasValue != "" {
+				bifrostModel.Alias = &result.AliasValue
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
+		}
+	}
+
+	return bifrostResponse
+}
+
+// runwareModelArchitecture derives modality lists from a model's io: capability tags. Returns nil
+// when the entry declares none, so the field stays absent rather than empty.
+func runwareModelArchitecture(model RunwareModel) *schemas.Architecture {
+	inputs := map[string]bool{}
+	outputs := map[string]bool{}
+	for _, capability := range model.Capabilities {
+		pair, ok := strings.CutPrefix(capability, "io:")
+		if !ok {
+			continue
+		}
+		from, to, found := strings.Cut(pair, "-to-")
+		if !found {
+			continue
+		}
+		inputs[from] = true
+		outputs[to] = true
+	}
+	if len(inputs) == 0 && len(outputs) == 0 && model.Architecture == "" {
+		return nil
+	}
+	architecture := &schemas.Architecture{
+		InputModalities:  sortedKeys(inputs),
+		OutputModalities: sortedKeys(outputs),
+	}
+	if model.Architecture != "" {
+		architecture.Tokenizer = &model.Architecture
+	}
+	return architecture
+}
+
+func sortedKeys(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }

@@ -16,8 +16,10 @@ import (
 	"gorm.io/gorm"
 )
 
-type EntityWiseBudgets map[string][]*configstoreTables.TableBudget
-type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
+type (
+	EntityWiseBudgets    map[string][]*configstoreTables.TableBudget
+	EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
+)
 
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
@@ -3412,14 +3414,12 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 	}
 
 	// --- Model-level (global scope), all four tiers incl. provider/all-models wildcards ---
-	if model != "" {
-		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-			addModelConfigIDs(mc)
-		}
+	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
+		addModelConfigIDs(mc)
 	}
 
 	// --- User-scoped model configs (user / AP path) ---
-	if userID != "" && model != "" {
+	if userID != "" {
 		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeUser, userID, model, providerStr) {
 			addModelConfigIDs(mc)
 		}
@@ -3429,11 +3429,9 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 	if virtualKey != "" {
 		if vk, exists := gs.GetVirtualKey(ctx, virtualKey); exists && vk != nil {
 			// VK-scoped model configs (provider-level + all-models wildcards).
-			if model != "" {
-				for _, scope := range nonGlobalModelConfigScopeChain(vk) {
-					for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
-						addModelConfigIDs(mc)
-					}
+			for _, scope := range nonGlobalModelConfigScopeChain(vk) {
+				for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
+					addModelConfigIDs(mc)
 				}
 			}
 			for _, id := range gs.collectBudgetIDsFromMemory(ctx, vk, provider) {

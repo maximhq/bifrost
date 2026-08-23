@@ -131,6 +131,43 @@ func TestToRunwareImageEditRequest_RemoveBackgroundSettings(t *testing.T) {
 	}
 }
 
+// The imageInference branch promotes the same two nested objects the tool tasks do. It matters for
+// multipart callers, who can only deliver them as a JSON string: providerSettings is how the
+// vendor-specific knobs reach these models, and a string there is not the object Runware expects.
+func TestToRunwareImageEditRequest_ImageInferenceSettings(t *testing.T) {
+	req := upscaleEditRequest(map[string]interface{}{
+		"settings":         `{"returnOnlyMask":true}`,
+		"providerSettings": `{"google":{"personGeneration":"allow_adult"}}`,
+		"unrelated":        "keep-me",
+	})
+	req.Model = "google:4@1"
+	req.Params.Type = nil
+	req.Input.Prompt = "make the teapot blue"
+
+	out, err := ToRunwareImageEditRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.TaskType != taskTypeImageInference {
+		t.Fatalf("taskType = %q, want %q", out.TaskType, taskTypeImageInference)
+	}
+	if out.Settings["returnOnlyMask"] != true {
+		t.Fatalf("settings = %+v, want returnOnlyMask=true", out.Settings)
+	}
+	if out.ProviderSettings["google"] == nil {
+		t.Fatalf("providerSettings = %+v, want a google entry", out.ProviderSettings)
+	}
+	if _, ok := out.ExtraParams["settings"]; ok {
+		t.Fatalf("settings must be consumed, not re-sent verbatim: %+v", out.ExtraParams)
+	}
+	if _, ok := out.ExtraParams["providerSettings"]; ok {
+		t.Fatalf("providerSettings must be consumed, not re-sent verbatim: %+v", out.ExtraParams)
+	}
+	if out.ExtraParams["unrelated"] != "keep-me" {
+		t.Fatalf("unrecognised extra params must pass through, got %+v", out.ExtraParams)
+	}
+}
+
 // A settings object supplied by a JSON caller is used as-is, without a string round-trip.
 func TestToRunwareImageEditRequest_UpscaleSettingsObject(t *testing.T) {
 	out, err := ToRunwareImageEditRequest(upscaleEditRequest(map[string]interface{}{
@@ -753,5 +790,53 @@ func TestToRunwareImageGenerationRequest_InputImagesSkipsEmpty(t *testing.T) {
 	}
 	if blank.SeedImage != nil || blank.Inputs != nil {
 		t.Fatalf("all-empty input_images must leave no input key, got seedImage=%v inputs=%+v", blank.SeedImage, blank.Inputs)
+	}
+}
+
+// Input images are normalized the way the other image providers normalize theirs: bare base64 is
+// wrapped into a data URI, malformed URLs are rejected, and Runware's own asset UUIDs survive —
+// those carry no scheme, so a generic URL sanitizer would otherwise reject them.
+func TestRunwareImageReference(t *testing.T) {
+	const bareBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	for _, tc := range []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{"asset uuid preserved", "2f670f32-dece-4c44-aef0-e62b52ca7d55", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"https untouched", "https://example.com/a.jpg", "https://example.com/a.jpg", false},
+		{"data uri untouched", "data:image/png;base64,iVBORw0KGgo=", "data:image/png;base64,iVBORw0KGgo=", false},
+		{"bare base64 wrapped", bareBase64, "data:image/png;base64," + bareBase64, false},
+		{"whitespace trimmed", "  2f670f32-dece-4c44-aef0-e62b52ca7d55  ", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"empty yields empty", "   ", "", false},
+		{"malformed data url errors", "data:garbage", "", true},
+		{"disallowed scheme errors", "ftp://example.com/a.jpg", "", true},
+	} {
+		got, err := runwareImageReference(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: expected an error, got %q", tc.name, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The generation path rejects a malformed reference rather than forwarding it for Runware to
+// reject, matching how replicate and runway handle input_images.
+func TestToRunwareImageGenerationRequest_InputImagesRejectsMalformed(t *testing.T) {
+	_, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "runware:101@1",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{InputImages: []string{"ftp://example.com/a.jpg"}},
+	})
+	if err == nil {
+		t.Fatalf("expected an error for a disallowed scheme")
 	}
 }

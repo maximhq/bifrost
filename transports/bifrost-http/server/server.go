@@ -1305,7 +1305,7 @@ func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxA
 func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
 	observabilityPlugins := s.CollectObservabilityPlugins()
 	// Always update the tracing middleware, even with empty slice, to clear stale plugins
-	s.TracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
+	s.TracingMiddleware.SetObservabilityPlugins(observabilityPlugins, s.CollectObservabilityLimits())
 }
 
 // ReloadPricingManager reloads the pricing manager
@@ -2633,7 +2633,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Initializing tracer with embedded streaming accumulator
 	traceStore := tracing.NewTraceStore(60*time.Minute, logger)
 	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
-	tracer.SetObservabilityPlugins(observabilityPlugins)
+	tracer.SetObservabilityPlugins(observabilityPlugins, s.CollectObservabilityLimits())
 	s.Client.SetTracer(tracer)
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an

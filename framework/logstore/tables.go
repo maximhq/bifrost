@@ -169,6 +169,18 @@ func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// OverheadBucket is one slice of the Bifrost overhead, attributed to a span (or
+// group of spans) by self-time: the span's own wall duration minus the wall
+// duration of its direct children. Self-times across the whole span tree are
+// non-overlapping and sum to the root duration, so summing the overhead-side
+// buckets gives an independent measure of overhead that does not rely on the
+// upstream socket accumulator. DurationUs is microseconds (overhead runs small).
+type OverheadBucket struct {
+	Name       string  `json:"name"` // e.g. "key.selection", "plugin.governance", "mcp", "core"
+	Kind       string  `json:"kind"` // originating span kind, for grouping/coloring
+	DurationUs float64 `json:"duration_us"`
+}
+
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
@@ -244,6 +256,7 @@ type Log struct {
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
 	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown       string    `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
 	// Denormalized cost split for per-category quota aggregation. input + output +
 	// additional reconcile to the cost column. Additional holds internal sidecar
@@ -312,7 +325,7 @@ type Log struct {
 	// object-storage offload and content-hidden rows.
 	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
 
-	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier: "priority" / "flex" / "default"
+	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
 
@@ -354,6 +367,7 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	OverheadBreakdownParsed     []OverheadBucket                        `gorm:"-" json:"overhead_breakdown,omitempty"`
 	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
@@ -724,6 +738,16 @@ func (l *Log) SerializeFields() error {
 		l.AttemptTrail = ""
 	}
 
+	if len(l.OverheadBreakdownParsed) > 0 {
+		if data, err := sonic.Marshal(l.OverheadBreakdownParsed); err != nil {
+			return err
+		} else {
+			l.OverheadBreakdown = string(data)
+		}
+	} else {
+		l.OverheadBreakdown = ""
+	}
+
 	if l.MetadataParsed != nil {
 		data, err := sonic.Marshal(l.MetadataParsed)
 		if err != nil {
@@ -1050,6 +1074,12 @@ func (l *Log) DeserializeFields() error {
 	if l.AttemptTrail != "" {
 		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
 			l.AttemptTrailParsed = nil
+		}
+	}
+
+	if l.OverheadBreakdown != "" {
+		if err := sonic.Unmarshal([]byte(l.OverheadBreakdown), &l.OverheadBreakdownParsed); err != nil {
+			l.OverheadBreakdownParsed = nil
 		}
 	}
 
