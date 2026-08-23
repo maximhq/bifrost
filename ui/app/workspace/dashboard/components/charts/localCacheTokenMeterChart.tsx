@@ -26,8 +26,12 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 	// than an empty placeholder that looks like a broken panel.
 	const showGauge = state === "ready" || state === "not-engaged";
 
-	const directPct = totalRequests > 0 ? clampPercentage((directHits / totalRequests) * 100) : 0;
-	const semanticPct = totalRequests > 0 ? clampPercentage((semanticHits / totalRequests) * 100, 100 - directPct) : 0;
+	// Gated on hasData, not just on totalRequests: "not-engaged" can still carry a
+	// non-nil counter when only one of the pair is missing, and drawing that as a
+	// hit segment would contradict the summary, which reads "--" because nothing
+	// was measured. Every non-ready state renders the neutral arc alone.
+	const directPct = hasData && totalRequests > 0 ? clampPercentage((directHits / totalRequests) * 100) : 0;
+	const semanticPct = hasData && totalRequests > 0 ? clampPercentage((semanticHits / totalRequests) * 100, 100 - directPct) : 0;
 	const valueData = [
 		{ name: "direct", value: directPct },
 		{ name: "semantic", value: semanticPct },
@@ -92,8 +96,8 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 											</button>
 										</TooltipTrigger>
 										<TooltipContent side="top">
-											No request in this window reached the local cache. It engages only when the semantic cache plugin is enabled and the
-											request carries an x-bf-cache-key header, or the plugin sets a default_cache_key.
+											No cache activity was recorded in this window. The local cache engages only when the semantic cache plugin is enabled
+											and the request carries an x-bf-cache-key header, or the plugin sets a default_cache_key.
 										</TooltipContent>
 									</Tooltip>
 								</div>
