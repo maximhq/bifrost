@@ -223,3 +223,57 @@ func TestPassthroughStreamUsageCacheLessEventAfterAuthoritativeIsIgnored(t *test
 		t.Errorf("reversed order: prompt tokens = %d, want %d", rev, wantPrompt)
 	}
 }
+
+// A message_start can carry a prompt-scale input_tokens together with a PARTIALLY known cache_read
+// — the shape #5510's hierarchical-cache explanation predicts, where the final split is not settled
+// when message_start is emitted. That frame clears any authority test, so max-merging input_tokens
+// and cache_read independently keeps the prompt-scale figure and adds the final cache_read on top,
+// reproducing the original double-count. Latching input_tokens from the event with the largest
+// cache total instead takes the two numbers from the same frame.
+func TestPassthroughStreamUsagePartiallyKnownCacheOnMessageStart(t *testing.T) {
+	const (
+		partialStart = `{"type":"message_start","message":{"id":"msg_p","type":"message",` +
+			`"role":"assistant","model":"kimi-k3","content":[],"usage":{"input_tokens":173306,` +
+			`"cache_creation_input_tokens":0,"cache_read_input_tokens":5000,"output_tokens":0}}}`
+		partialDelta = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+			`"usage":{"input_tokens":250,"cache_creation_input_tokens":0,` +
+			`"cache_read_input_tokens":173056,"output_tokens":166}}`
+	)
+	const wantPrompt = 250 + 173056
+
+	got, gotOut := observePassthroughUsage(t, partialStart, partialDelta)
+	if got != wantPrompt {
+		t.Errorf("prompt tokens = %d, want %d (inflated by %d — message_start.input_tokens kept "+
+			"alongside the final cache_read)", got, wantPrompt, got-wantPrompt)
+	}
+	if gotOut != 166 {
+		t.Errorf("completion tokens = %d, want 166", gotOut)
+	}
+	if rev, _ := observePassthroughUsage(t, partialDelta, partialStart); rev != wantPrompt {
+		t.Errorf("reversed order: prompt tokens = %d, want %d", rev, wantPrompt)
+	}
+}
+
+// When two authoritative events report the SAME cache total, the smaller input_tokens wins. The
+// opposite tie-break selects the prompt-scale frame, which is the value this whole split exists to
+// distrust: here it would latch 50000 and report 99000.
+func TestPassthroughStreamUsageTieBreakPrefersSmallerInputTokens(t *testing.T) {
+	const (
+		tieStart = `{"type":"message_start","message":{"id":"msg_t","type":"message",` +
+			`"role":"assistant","model":"claude-opus-5","content":[],` +
+			`"usage":{"input_tokens":50000,"cache_creation":{"ephemeral_5m_input_tokens":49000},` +
+			`"output_tokens":0}}}`
+		tieDelta = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+			`"usage":{"input_tokens":1000,"cache_creation_input_tokens":49000,` +
+			`"cache_creation":{"ephemeral_5m_input_tokens":49000},"output_tokens":20}}`
+	)
+	const wantPrompt = 1000 + 49000
+
+	got, _ := observePassthroughUsage(t, tieStart, tieDelta)
+	if got != wantPrompt {
+		t.Errorf("prompt tokens = %d, want %d", got, wantPrompt)
+	}
+	if rev, _ := observePassthroughUsage(t, tieDelta, tieStart); rev != wantPrompt {
+		t.Errorf("reversed order: prompt tokens = %d, want %d", rev, wantPrompt)
+	}
+}
