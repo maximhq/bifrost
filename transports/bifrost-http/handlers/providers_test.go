@@ -899,6 +899,126 @@ func TestListModelDetails_IncludesPricing(t *testing.T) {
 	}
 }
 
+func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	togetherGLM := "zai-org/GLM-5.2"
+	azureGLM := "FW-GLM-5.2"
+	tests := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		model       string
+		alias       *schemas.AliasConfig
+		pricingJSON string
+		inputCost   float64
+		outputCost  float64
+		cacheCost   float64
+	}{
+		{
+			name:     "Together catalog provider",
+			provider: schemas.ModelProvider("together"),
+			model:    "deepseek-ai/DeepSeek-V4-Flash-0731",
+			pricingJSON: `{"together_ai/deepseek-ai/DeepSeek-V4-Flash-0731": {
+				"provider": "together_ai", "mode": "chat",
+				"input_cost_per_token": 0.00000014, "output_cost_per_token": 0.00000028,
+				"cache_read_input_token_cost": 0.00000003
+			}}`,
+			inputCost:  0.00000014,
+			outputCost: 0.00000028,
+			cacheCost:  0.00000003,
+		},
+		{
+			name:     "Together alias",
+			provider: schemas.ModelProvider("together"),
+			model:    "glm-5-2",
+			alias:    &schemas.AliasConfig{ModelID: togetherGLM, ModelName: &togetherGLM},
+			pricingJSON: `{"together_ai/zai-org/GLM-5.2": {
+				"provider": "together_ai", "mode": "chat",
+				"input_cost_per_token": 0.0000014, "output_cost_per_token": 0.0000044,
+				"cache_read_input_token_cost": 0.00000026
+			}}`,
+			inputCost:  0.0000014,
+			outputCost: 0.0000044,
+			cacheCost:  0.00000026,
+		},
+		{
+			name:     "Azure alias",
+			provider: schemas.Azure,
+			model:    "glm-5-2",
+			alias:    &schemas.AliasConfig{ModelID: "glm-5-2", ModelName: &azureGLM},
+			pricingJSON: `{"azure/glm-5-2": {
+				"provider": "azure", "mode": "chat", "input_cost_per_token": 9
+			}, "azure/FW-GLM-5.2": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.00000154, "output_cost_per_token": 0.00000484,
+				"cache_read_input_token_cost": 0.00000015
+			}}`,
+			inputCost:  0.00000154,
+			outputCost: 0.00000484,
+			cacheCost:  0.00000015,
+		},
+		{
+			name:     "Azure alias with empty model name",
+			provider: schemas.Azure,
+			model:    "glm-5-2-empty-name",
+			alias:    &schemas.AliasConfig{ModelID: azureGLM, ModelName: schemas.Ptr("")},
+			pricingJSON: `{"azure/FW-GLM-5.2": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.00000154, "output_cost_per_token": 0.00000484,
+				"cache_read_input_token_cost": 0.00000015
+			}}`,
+			inputCost:  0.00000154,
+			outputCost: 0.00000484,
+			cacheCost:  0.00000015,
+		},
+		{
+			name:     "Azure alias falls back to alias key",
+			provider: schemas.Azure,
+			model:    "gpt-4o",
+			alias:    &schemas.AliasConfig{ModelID: "my-deployment-123"},
+			pricingJSON: `{"azure/gpt-4o": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.0000025, "output_cost_per_token": 0.00001,
+				"cache_read_input_token_cost": 0.00000025
+			}}`,
+			inputCost:  0.0000025,
+			outputCost: 0.00001,
+			cacheCost:  0.00000025,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}}
+			if test.alias != nil {
+				key.Aliases = schemas.KeyAliases{test.model: *test.alias}
+			}
+			catalog := modelCatalogForPricingJSON(t, []byte(test.pricingJSON))
+			catalog.SetKeyConfigForProvider(test.provider, []schemas.Key{key})
+			h := providerHandlerForTest(test.provider, []schemas.Key{key}, []string{test.model}, []string{test.model})
+			h.inMemoryStore.ModelCatalog = catalog
+
+			resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider="+string(test.provider)+"&limit=100")
+			if resp.Total != 1 || len(resp.Models) != 1 {
+				t.Fatalf("expected one model, got %#v", resp.Models)
+			}
+			model := resp.Models[0]
+			if model.Provider != string(test.provider) {
+				t.Fatalf("expected runtime provider %s, got %q", test.provider, model.Provider)
+			}
+			if model.InputCostPerToken == nil || *model.InputCostPerToken != test.inputCost {
+				t.Fatalf("expected input cost %g, got %#v", test.inputCost, model.InputCostPerToken)
+			}
+			if model.OutputCostPerToken == nil || *model.OutputCostPerToken != test.outputCost {
+				t.Fatalf("expected output cost %g, got %#v", test.outputCost, model.OutputCostPerToken)
+			}
+			if model.CacheReadCost == nil || *model.CacheReadCost != test.cacheCost {
+				t.Fatalf("expected cache read cost %g, got %#v", test.cacheCost, model.CacheReadCost)
+			}
+		})
+	}
+}
+
 // gpt4oPricingJSON is the base catalog fixture shared by the override tests.
 const gpt4oPricingJSON = `{
 	"gpt-4o": {
