@@ -19620,6 +19620,99 @@ func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
 }
 
 // =============================================================================
+// AddProviderKey / UpdateProviderKey ErrAlreadyExists Tests
+// =============================================================================
+//
+// parseGormError (framework/configstore/rdb.go) names the constraint that
+// actually fired — e.g. the key-name unique index vs. the key-ID unique index —
+// in its wrapped error message. Config.AddProviderKey/UpdateProviderKey used to
+// discard that message and return a bare ErrAlreadyExists, so the constraint
+// detail never reached the handler's warn log. These tests pin that the
+// original message survives the collapse.
+
+// mockConfigStoreAddProviderKey is a ConfigStore mock that allows controlling CreateProviderKey behavior.
+type mockConfigStoreAddProviderKey struct {
+	MockConfigStore
+	createProviderKeyErr error
+}
+
+func (m *mockConfigStoreAddProviderKey) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	if m.createProviderKeyErr != nil {
+		return m.createProviderKeyErr
+	}
+	return m.MockConfigStore.CreateProviderKey(ctx, provider, key, tx...)
+}
+
+func TestAddProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	// Simulates parseGormError's message for a key-ID unique-index hit, distinct
+	// from the generic "already exists" the collapse used to leave behind.
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreAddProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		createProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.AddProviderKey(context.Background(), "test-provider", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// mockConfigStoreUpdateProviderKey is a ConfigStore mock that allows controlling UpdateProviderKey behavior.
+type mockConfigStoreUpdateProviderKey struct {
+	MockConfigStore
+	updateProviderKeyErr error
+}
+
+func (m *mockConfigStoreUpdateProviderKey) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	if m.updateProviderKeyErr != nil {
+		return m.updateProviderKeyErr
+	}
+	return m.MockConfigStore.UpdateProviderKey(ctx, provider, keyID, key, tx...)
+}
+
+func TestUpdateProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreUpdateProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		updateProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {Keys: []schemas.Key{{ID: "key-1", Value: *schemas.NewSecretVar("test-key")}}},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.UpdateProviderKey(context.Background(), "test-provider", "key-1", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// =============================================================================
 // RemoveProvider Tests
 // =============================================================================
 
