@@ -512,10 +512,11 @@ func (s *fakeRedisSearchServer) lastSearch() []string {
 }
 
 // commandHasSortByClause reports whether SORTBY appears as a clause rather than as a
-// projected field name. valkey-search rejects sorting on the KNN alias, not returning it
-// (probes B and E on the live server), so a fake that failed on the literal anywhere would
-// also fail a retry that merely projects a field called "SORTBY". The sort clause always
-// precedes RETURN in the command GetNearest builds; projected names always follow it.
+// projected field name or as some other caller-supplied value. valkey-search rejects
+// sorting on the KNN alias, not returning it (probes B and E on the live server), so a
+// fake that failed on the literal anywhere would also fail a retry that merely projects a
+// field called "SORTBY". Matching the pair the way the real parser does keeps that honest
+// for the namespace too, which is positional and precedes RETURN like the sort clause.
 func commandHasSortByClause(command []string) bool {
 	limit := len(command)
 	for i, part := range command {
@@ -524,7 +525,46 @@ func commandHasSortByClause(command []string) bool {
 			break
 		}
 	}
-	return commandContainsArg(command[:limit], "SORTBY")
+	for i := 0; i+1 < limit; i++ {
+		if strings.EqualFold(command[i], "SORTBY") && strings.EqualFold(command[i+1], knnScoreAlias) {
+			return true
+		}
+	}
+	return false
+}
+
+// The fake server is only useful if it fails for the reason the real one does, so pin the
+// three shapes that separate a sort clause from a positional value spelled the same way.
+func TestCommandHasSortByClause(t *testing.T) {
+	const query = "(*)=>[KNN 1 @embedding $vec AS score]"
+
+	tests := []struct {
+		name    string
+		command []string
+		want    bool
+	}{
+		{
+			name:    "sort clause on the KNN alias",
+			command: []string{"FT.SEARCH", TestNamespace, query, "SORTBY", knnScoreAlias, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "cache_key", "DIALECT", "2"},
+			want:    true,
+		},
+		{
+			name:    "namespace named SORTBY, clause already dropped",
+			command: []string{"FT.SEARCH", "SORTBY", query, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "cache_key", "DIALECT", "2"},
+			want:    false,
+		},
+		{
+			name:    "projected field named SORTBY, clause already dropped",
+			command: []string{"FT.SEARCH", TestNamespace, query, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "SORTBY", "DIALECT", "2"},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, commandHasSortByClause(tt.command))
+		})
+	}
 }
 
 func commandArgCount(command []string, arg string) int {
