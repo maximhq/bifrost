@@ -1131,6 +1131,41 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
 }
 
+// TestNetworkConfig_BaseURLEnvSubstitution verifies that base_url supports the
+// "env.VAR_NAME" prefix for resolving the value from an environment variable at
+// unmarshal time, matching the pattern used by Key.Value and CACertPEM (SecretVar).
+func TestNetworkConfig_BaseURLEnvSubstitution(t *testing.T) {
+	t.Run("resolves from environment variable", func(t *testing.T) {
+		t.Setenv("TEST_BIFROST_BASE_URL", "https://custom.internal/v1")
+
+		var decoded NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"env.TEST_BIFROST_BASE_URL"}`), &decoded)
+		require.NoError(t, err)
+		assert.Equal(t, "https://custom.internal/v1", decoded.BaseURL)
+	})
+
+	t.Run("plain URL is left untouched", func(t *testing.T) {
+		var decoded NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"https://example.com/env.not-a-var"}`), &decoded)
+		require.NoError(t, err)
+		assert.Equal(t, "https://example.com/env.not-a-var", decoded.BaseURL, "non-prefixed values must not be expanded, even if they contain \"env.\"")
+	})
+
+	t.Run("missing environment variable errors", func(t *testing.T) {
+		var decoded NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"env.TEST_BIFROST_BASE_URL_DOES_NOT_EXIST"}`), &decoded)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "TEST_BIFROST_BASE_URL_DOES_NOT_EXIST")
+	})
+
+	t.Run("empty value unaffected", func(t *testing.T) {
+		var decoded NetworkConfig
+		err := json.Unmarshal([]byte(`{}`), &decoded)
+		require.NoError(t, err)
+		assert.Equal(t, "", decoded.BaseURL)
+	})
+}
+
 // TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
