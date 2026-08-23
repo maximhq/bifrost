@@ -1016,7 +1016,7 @@ func TestLogStoreParity(t *testing.T) {
 		})
 		t.Run("bulk_update_cost", func(t *testing.T) {
 			runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
-				return s.BulkUpdateCost(ctx, map[string]float64{"p1": 0.9, "p4": 2.9})
+				return s.BulkUpdateCost(ctx, map[string]CostUpdate{"p1": {Total: 0.9, Input: 0.9}, "p4": {Total: 2.9, Input: 2.9}})
 			})
 			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
 				var costs []map[string]any

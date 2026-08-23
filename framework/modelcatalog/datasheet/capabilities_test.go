@@ -237,9 +237,9 @@ func capabilityBoolPtr(v bool) *bool { return &v }
 func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 	for _, id := range []string{"stop", "stop_sequences", "stopSequences"} {
 		t.Run(id, func(t *testing.T) {
-			parsed := &modelParametersParseResult{ModelParameters: []struct {
-				ID string `json:"id"`
-			}{{ID: id}}}
+			parsed := &schemas.ModelCapabilities{
+				ModelParameters: []schemas.ModelParameterDescriptor{{ID: id}},
+			}
 			if got := extractSupportedParams(parsed); !slices.Contains(got, "stop") {
 				t.Errorf("model_parameters id %q must yield supported param \"stop\", got %v", id, got)
 			}
@@ -252,25 +252,23 @@ func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 // yield both web_search (responses-path tool) and web_search_options (chat-path
 // param), so the compat plugin's drop checks match either way.
 func TestExtractSupportedParams_WebSearch(t *testing.T) {
-	webSearchParam := []struct {
-		ID string `json:"id"`
-	}{{ID: "web_search"}}
+	webSearchParam := []schemas.ModelParameterDescriptor{{ID: "web_search"}}
 
 	cases := []struct {
 		name   string
-		parsed *modelParametersParseResult
+		parsed *schemas.ModelCapabilities
 	}{
 		{
 			name:   "web_search model parameter",
-			parsed: &modelParametersParseResult{ModelParameters: webSearchParam},
+			parsed: &schemas.ModelCapabilities{ModelParameters: webSearchParam},
 		},
 		{
 			name:   "supports_web_search flag",
-			parsed: &modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(true)},
+			parsed: &schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(true)},
 		},
 		{
 			name: "both set",
-			parsed: &modelParametersParseResult{
+			parsed: &schemas.ModelCapabilities{
 				ModelParameters:   webSearchParam,
 				SupportsWebSearch: capabilityBoolPtr(true),
 			},
@@ -293,10 +291,27 @@ func TestExtractSupportedParams_WebSearch(t *testing.T) {
 // the datasheet declares no web-search support, so the tool is still stripped
 // for models that genuinely lack it.
 func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
-	got := extractSupportedParams(&modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(false)})
+	got := extractSupportedParams(&schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(false)})
 	for _, unexpected := range []string{"web_search", "web_search_options"} {
 		if slices.Contains(got, unexpected) {
 			t.Errorf("expected supported params to omit %q, got %v", unexpected, got)
 		}
+	}
+}
+
+// TestExtractSupportedParams_NoneReasoningEffort guards the
+// supports_none_reasoning_effort flag: compat's dropUnsupportedParams uses it
+// to decide whether to force reasoning.effort to "none" (vs. dropping
+// reasoning entirely) for models that reason by default even when
+// reasoning_effort is omitted.
+func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(true)}); !slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to contain \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(false)}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
 	}
 }

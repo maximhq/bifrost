@@ -52,6 +52,14 @@ func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.
 	}
 }
 
+func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *testing.T) {
+	tier := BifrostServiceTierUltrafast
+	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
+	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierUltrafast {
+		t.Fatalf("service tier = %v, want ultrafast", got.ServiceTier)
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.

@@ -439,24 +439,30 @@ func TestClickHouseBulkUpdateCost(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 
-	updates := map[string]float64{}
+	updates := map[string]CostUpdate{}
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("ch-cost-%d", i)
 		require.NoError(t, store.CreateIfNotExists(ctx, chTestLog(id, ts.Add(time.Duration(i)*time.Millisecond))))
-		updates[id] = float64(i) * 0.1
+		total := float64(i) * 0.1
+		updates[id] = CostUpdate{Total: total, Input: total * 0.6, Output: total * 0.3, Additional: total * 0.1}
 	}
 	// Unknown ids must be ignored, not error.
-	updates["ch-cost-missing"] = 9.9
+	updates["ch-cost-missing"] = CostUpdate{Total: 9.9, Input: 9.9}
 
 	require.NoError(t, store.BulkUpdateCost(ctx, updates))
 	require.NoError(t, store.BulkUpdateCost(ctx, nil)) // no-op
 
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("ch-cost-%d", i)
+		total := float64(i) * 0.1
 		found, err := store.FindByID(ctx, id)
 		require.NoError(t, err)
 		require.NotNil(t, found.Cost, "cost missing for %s", id)
-		assert.InDelta(t, float64(i)*0.1, *found.Cost, 1e-9)
+		assert.InDelta(t, total, *found.Cost, 1e-9)
+		// The per-category split is reprice too, reconciling to the total.
+		assert.InDelta(t, total*0.6, found.InputCost, 1e-9)
+		assert.InDelta(t, total*0.3, found.OutputCost, 1e-9)
+		assert.InDelta(t, total*0.1, found.AdditionalCost, 1e-9)
 		assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", id))
 	}
 }

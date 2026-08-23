@@ -55,7 +55,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
-	params := request.convertGenerationConfigToResponsesParameters()
+	params := request.convertGenerationConfigToResponsesParameters(provider, model)
 
 	// Convert SystemInstruction to system messages first
 	var inputMessages []schemas.ResponsesMessage
@@ -146,7 +146,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, capModel)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, bifrostReq.Provider, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +265,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Create the BifrostResponse with Responses structure
 	bifrostResp := &schemas.BifrostResponsesResponse{
-		ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+		ID:        schemas.Ptr("resp_" + schemas.GetRandomString(50)),
 		CreatedAt: int(time.Now().Unix()),
 		Model:     response.ModelVersion,
 	}
@@ -3254,7 +3254,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			case part.Text != "":
 				// Regular text message
 				msg := schemas.ResponsesMessage{
-					ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+					ID:     schemas.Ptr("msg_" + schemas.GetRandomString(50)),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: schemas.Ptr("completed"),
 					Content: &schemas.ResponsesMessageContent{
@@ -3307,7 +3307,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					Arguments: &argumentsStr,
 				}
 				msg := schemas.ResponsesMessage{
-					ID:                   schemas.Ptr("fc_" + providerUtils.GetRandomString(50)),
+					ID:                   schemas.Ptr("fc_" + schemas.GetRandomString(50)),
 					Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status:               schemas.Ptr("completed"),
@@ -3754,7 +3754,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, capModel string) (GenerationConfig, error) {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -3767,32 +3767,33 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(capModel) {
+	caps := schemas.ResolveModelCaps(provider, capModel)
+	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(capModel)) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(capModel) // Check if model is 3.0+
+		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(capModel)) // thinkingLevel vs thinkingBudget
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			setThinkingBudgetZeroIfSupported(&config, capModel)
+			setThinkingBudgetZeroIfSupported(&config, caps)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				setThinkingBudgetZeroIfSupported(&config, capModel)
+				setThinkingBudgetZeroIfSupported(&config, caps)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(capModel, budget); err != nil {
+				if err := validateThinkingBudget(caps, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -3801,15 +3802,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				if level := effortToThinkingLevel(*params.Reasoning.Effort, capModel); level != "" {
+				if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
 					config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
 				}
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(capModel, maxTokens)
+				budgetRange := getThinkingBudgetRange(caps, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
@@ -4073,12 +4074,148 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
+// isAssistantPrefillMessage reports whether msg is a plain assistant text turn -- the shape
+// Claude Code sends as a prefill, and the only trailing model turn that is safe to drop.
+//
+// Reasoning items and function calls are deliberately excluded even though they also render as
+// role:"model". Gemini's thinking guide requires thought blocks to survive replay verbatim ("You
+// MUST always resend all thought blocks exactly as they were received from the model",
+// https://ai.google.dev/gemini-api/docs/thinking), and a trailing function call is a turn the
+// caller still owes a functionResponse for -- neither is a prefill, and silently deleting either
+// would corrupt the history rather than repair it.
+func isAssistantPrefillMessage(msg *schemas.ResponsesMessage) bool {
+	if msg.Role == nil || *msg.Role != schemas.ResponsesInputMessageRoleAssistant {
+		return false
+	}
+	if msg.ResponsesToolMessage != nil || msg.ResponsesReasoning != nil {
+		return false
+	}
+	if msg.Type != nil && *msg.Type != schemas.ResponsesMessageTypeMessage {
+		return false
+	}
+	// The type and the standalone-reasoning check above are not sufficient: a turn typed
+	// "message" can still smuggle thought history in through its content blocks. A
+	// reasoning block becomes Part{Thought: true}, and a plain TEXT block carrying a
+	// signature becomes Part.ThoughtSignature -- both in convertContentBlockToGeminiPart.
+	// Either one makes the turn history Gemini requires replayed verbatim, not a prefill.
+	//
+	// So the allowance is a whitelist rather than a blacklist: only unsigned text blocks
+	// qualify, and any other block type (reasoning, refusal, compaction, fallback, image,
+	// file) disqualifies the turn. Erring this way costs at most an untrimmed turn --
+	// which Gemini answers with the 400 the caller already had -- while the opposite
+	// error silently deletes history and is unrecoverable.
+	if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Signature != nil {
+				return false
+			}
+			switch block.Type {
+			case schemas.ResponsesInputMessageContentBlockTypeText,
+				schemas.ResponsesOutputMessageContentTypeText:
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// trimTrailingAssistantPrefill drops the trailing run of assistant prefill turns so the
+// conversation ends on a user turn. Returns messages unchanged when the model declares prefill
+// support via the datasheet (ModelCaps.SupportsAssistantPrefill), which no Gemini model does
+// today -- the hook exists so a future model can opt back in without a code change.
+func trimTrailingAssistantPrefill(messages []schemas.ResponsesMessage, caps schemas.ModelCaps) []schemas.ResponsesMessage {
+	if caps.SupportsAssistantPrefill(false) {
+		return messages
+	}
+	trimmed := len(messages)
+	for trimmed > 0 && isAssistantPrefillMessage(&messages[trimmed-1]) {
+		trimmed--
+	}
+	return messages[:trimmed]
+}
+
+// inlineGeminiSystemReminder renders a mid-conversation role:"system" turn as a user turn wrapped
+// in the <system-reminder> envelope Claude Code uses, keeping it at its original position in the
+// conversation.
+//
+// Gemini has no message-level system role -- Content.role must be "user" or "model" -- so such a
+// turn has to become one or the other. The alternative, hoisting it into systemInstruction, is
+// what this replaces: systemInstruction renders ahead of every message, so a reminder that
+// arrives at turn 40 is presented as though it had been said at turn 0, and growing that block
+// mid-conversation invalidates the cached prefix behind it. This mirrors Bedrock's
+// convertBifrostSystemReminderToBedrockUserMessage and the native Anthropic fallback in
+// inlineMidConversationSystem, both of which measured the hoist as a prompt-cache collapse.
+//
+// The trade is the same one those converters accepted: a user turn is not the operator channel a
+// system turn is, so instruction adherence is weaker. The text originates from the caller's own
+// system role, so nothing attacker-controlled is laundered by the change.
+//
+// Returns nil when the message yields no text, so the caller skips the append.
+func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSchemes ...string) (*Content, error) {
+	if msg.Content == nil {
+		return nil, nil
+	}
+
+	wrap := func(text string) string {
+		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	}
+
+	content := &Content{Role: "user"}
+	// ContentStr and ContentBlocks are mutually exclusive sources: whenever ContentStr is
+	// non-nil it is the sole source, matching convertBifrostSystemReminderToBedrockUserMessage.
+	// Gating the block loop on a non-EMPTY string instead would let a caller that set
+	// ContentStr to "" fall through and have its blocks read as well, emitting the reminder
+	// from a source the caller did not select.
+	if msg.Content.ContentStr != nil {
+		if *msg.Content.ContentStr != "" {
+			content.Parts = append(content.Parts, &Part{Text: wrap(*msg.Content.ContentStr)})
+		}
+	} else {
+		for _, block := range msg.Content.ContentBlocks {
+			part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert system message content block: %w", err)
+			}
+			if part == nil {
+				continue
+			}
+			// Only text is wrapped; a non-text block (image, file) has no envelope to carry and is
+			// passed through as-is rather than dropped.
+			if part.Text != "" {
+				part.Text = wrap(part.Text)
+			}
+			content.Parts = append(content.Parts, part)
+		}
+	}
+
+	if len(content.Parts) == 0 {
+		return nil, nil
+	}
+	return content, nil
+}
+
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}
 
 	isVertex := provider == schemas.Vertex
+	caps := schemas.ResolveModelCaps(provider, model)
+
+	// Gemini rejects a conversation whose final turn is role:"model" -- generateContent answers
+	// 400 with "Please ensure that multiturn requests ends with a user role or a function
+	// response". Content.role is documented as "Must be either 'user' or 'model'", and Gemini
+	// exposes no assistant-prefill mechanism to continue from, so a trailing model turn has no
+	// valid meaning on this wire at all.
+	//
+	// Claude Code routinely ends its message array with an assistant prefill, so /anthropic
+	// traffic pointed at Gemini/Vertex fails on every such turn. Bedrock trims the same shape in
+	// ToBedrockResponsesRequest; this is that trim for Gemini. The gate differs: Bedrock keys on
+	// IsAnthropicModelFamily because a Bedrock target may be a Claude model, which is never true
+	// here, so the default is a flat false and only a datasheet record can turn it back on.
+	messages = trimTrailingAssistantPrefill(messages, caps)
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -4126,7 +4263,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	// According to Gemini docs, all function responses must be in a single message
 	var pendingFunctionResponseParts []*Part
 
+	// Set once the leading system prompt ends (first non-system message). Only the leading run is
+	// hoisted into systemInstruction; a system turn that arrives after the conversation has
+	// started is inlined in place instead -- see inlineGeminiSystemReminder.
+	seenNonSystemMessage := false
+
 	for i, msg := range messages {
+		isSystemMessage := msg.Role != nil &&
+			(*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper)
+		// Recorded before the branches below, all of which `continue`, so a reasoning or tool
+		// item still closes the leading system run.
+		if !isSystemMessage {
+			seenNonSystemMessage = true
+		}
+
 		// Standalone reasoning messages carry the model's thought blocks. Their
 		// SIGNATURE is picked up by the look-ahead on the preceding function
 		// call, so only the text is emitted here - sending the signature again
@@ -4169,8 +4319,31 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			continue
 		}
 
-		// Handle system messages separately
-		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		// A mid-conversation system turn is inlined at its original position as a user turn.
+		// Hoisting it would move it ahead of the whole conversation and invalidate the cached
+		// prefix behind it.
+		if isSystemMessage && seenNonSystemMessage {
+			inlined, err := inlineGeminiSystemReminder(&msg, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, nil, err
+			}
+			if inlined != nil {
+				// Flush first: the reminder is a user turn of its own and must not be filed
+				// behind function responses that precede it.
+				if len(pendingFunctionResponseParts) > 0 {
+					contents = append(contents, Content{
+						Parts: pendingFunctionResponseParts,
+						Role:  "user",
+					})
+					pendingFunctionResponseParts = nil
+				}
+				contents = append(contents, *inlined)
+			}
+			continue
+		}
+
+		// Handle the leading system prompt separately
+		if isSystemMessage {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -4330,7 +4503,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						//   - Gemini Developer API: do NOT emit $ref — the API rejects it
 						//     ("does not match to a display_name", a known upstream bug). The model
 						//     still reads the media directly from parts.
-						supportsMultimodalToolOutput := isGemini3Plus(model)
+						supportsMultimodalToolOutput := caps.SupportsMultimodalToolOutput(isGemini3Plus(model))
 						var textParts []string
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil && *block.Text != "" {

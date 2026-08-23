@@ -73,6 +73,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				ocr: true,
 				ocr_stream: true,
 				video_generation: true,
+				video_edit: true,
 				video_retrieve: true,
 				video_download: true,
 				video_delete: true,
@@ -132,13 +133,13 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 
 	return (
 		<>
-			<SheetHeader className="flex shrink-0 flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+			<SheetHeader className="flex shrink-0 flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 				<SheetTitle>Add Custom Provider</SheetTitle>
 				<SheetDescription>Enter the details of your custom provider.</SheetDescription>
 			</SheetHeader>
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col">
-					<div className="min-h-0 flex-1 space-y-4 px-8 pb-4">
+					<div className="min-h-0 flex-1 space-y-4 px-4 pb-4 md:px-8">
 						<FormField
 							control={form.control}
 							name="name"
@@ -261,7 +262,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							disabled={!hasProviderCreateAccess}
 						/>
 					</div>
-					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-4 py-4 md:px-8">
 						<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
 							Cancel
 						</Button>

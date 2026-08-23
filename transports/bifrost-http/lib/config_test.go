@@ -376,7 +376,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1740,6 +1740,43 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 }
 
 func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
+// Batch jobs
+func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
 	return nil
 }
 
@@ -18789,7 +18826,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	})
 
 	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
-		invalidDBSync := int64(0)
+		invalidDBSync := int64(-1)
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                     10,
 			MCPLibraryURL:          &defaultMCPLibraryURL,
@@ -18800,6 +18837,36 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.True(t, needsDBUpdate)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	// 0 is the air-gapped opt-out (modelcatalog.MCPLibrarySyncDisabled), not
+	// corruption: it must survive a resolve untouched instead of being
+	// backfilled with the default, or a disabled deployment would silently
+	// resume dialing the default catalog endpoint on the next boot.
+	t.Run("mcp library disabled db interval is honoured", func(t *testing.T) {
+		disabled := modelcatalog.MCPLibrarySyncDisabled
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &disabled,
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library disabled file interval is honoured", func(t *testing.T) {
+		disabled := modelcatalog.MCPLibrarySyncDisabled
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibrarySyncInterval: &disabled,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {

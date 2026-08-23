@@ -92,6 +92,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -184,23 +185,24 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		if message.ResponsesReasoning != nil {
-			isGptOss := strings.Contains(capModel, "gpt-oss")
-			isReasoning := isOpenAIReasoningModel(capModel)
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
-			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
+			// Models that read reasoning from summary[] have nothing to gain from a
+			// reasoning-only message carrying content blocks alone, so skip it.
 			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
 			// these models don't produce encrypted reasoning — any encrypted content is cross-provider
 			// (e.g., Gemini ThoughtSignatures) and cannot be decrypted by OpenAI.
 			if len(message.ResponsesReasoning.Summary) == 0 &&
 				message.Content != nil &&
 				len(message.Content.ContentBlocks) > 0 &&
-				!isGptOss &&
+				!usesContentBlocks &&
 				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
 				continue
 			}
 
-			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
-			if len(message.ResponsesReasoning.Summary) > 0 && isGptOss &&
+			// Models that read reasoning from content blocks need the summaries rewritten as blocks
+			if len(message.ResponsesReasoning.Summary) > 0 && usesContentBlocks &&
 				(message.Content == nil || len(message.Content.ContentBlocks) == 0) {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
@@ -242,7 +244,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// caller's input.
 				if message.Content != nil {
 					switch {
-					case !isGptOss:
+					case !usesContentBlocks:
 						// Summary and encrypted_content already carry everything OpenAI will accept.
 						message.Content = nil
 					case message.Content.ContentStr != nil:
@@ -304,6 +306,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
@@ -319,13 +322,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
+				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, capModel, DefaultCompletionMaxTokens)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
@@ -344,42 +347,27 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// Strip reasoning_effort only for the models known to reject it; current-generation
 			// models (grok-4.5, grok-4.6, grok-4.20-*) accept it.
 			if bifrostReq.Provider == schemas.XAI &&
-				schemas.IsGrokReasoningModel(capModel) &&
-				!schemas.SupportsGrokReasoningEffort(capModel) {
+				caps.FieldUnsupported(schemas.FieldReasoningEffort,
+					schemas.IsGrokReasoningModel(capModel) && !schemas.SupportsGrokReasoningEffort(capModel)) {
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(capModel) {
+			if bifrostReq.Provider == schemas.OpenAI && !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
 		}
 
-		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it
-		// GPT-5.x accept top_p when reasoning.effort is "none" (defaults to "none" when omitted)
-		if isOpenAIReasoningModel(capModel) {
-			stripTopP := true
-			_, parsedModel := schemas.ParseModelString(capModel, schemas.OpenAI)
-			modelLower := strings.ToLower(parsedModel)
-			effort := ""
-			if req.ResponsesParameters.Reasoning != nil &&
-				req.ResponsesParameters.Reasoning.Effort != nil {
-				effort = *req.ResponsesParameters.Reasoning.Effort
-			}
-			// GPT-5.x: reasoning defaults to "none" when omitted, and top_p is allowed in that case
-			// Exception: -pro and -codex variants always reason (no "none" mode), so top_p must be stripped
-			if strings.HasPrefix(modelLower, "gpt-5.") &&
-				(effort == "" || effort == "none") &&
-				!strings.Contains(modelLower, "-pro") &&
-				!strings.Contains(modelLower, "-codex") {
-				stripTopP = false
-			}
-			if stripTopP {
-				req.ResponsesParameters.TopP = nil
-			}
+		effort := ""
+		if req.ResponsesParameters.Reasoning != nil &&
+			req.ResponsesParameters.Reasoning.Effort != nil {
+			effort = *req.ResponsesParameters.Reasoning.Effort
+		}
+		if topPUnsupported(caps, capModel, effort) {
+			req.ResponsesParameters.TopP = nil
 		}
 	}
 
@@ -426,6 +414,40 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 
 	return req
+}
+
+// topPUnsupported reports whether the model rejects top_p. The datasheet can mark
+// it unsupported outright, or conditionally via "when_effort_none" — accepted only
+// while reasoning is off. The fallback is name detection: OpenAI reasoning models
+// (o1/o3 series) reject it, except GPT-5.x while effort is "none", which is the
+// default when omitted. The -pro and -codex variants always reason, so they always
+// strip. Gated on the OpenAI-family name rather than caps.SupportsReasoning: this
+// asks whether the API rejects top_p, which is not the same question for xAI/Groq.
+func topPUnsupported(caps schemas.ModelCaps, model, effort string) bool {
+	effortIsNone := effort == "" || effort == schemas.ReasoningEffortNone
+	// An outright unsupported_fields entry outranks the conditional label: the
+	// row rejects the field whatever the effort. Probed with a false fallback so
+	// only an explicit true short-circuits.
+	if caps.FieldUnsupported(schemas.FieldTopP, false) {
+		return true
+	}
+	if caps.FieldCondition(schemas.FieldTopP) == schemas.ConditionWhenEffortNone {
+		return !effortIsNone
+	}
+
+	fallback := true
+	if !IsOpenAIReasoningModel(model) {
+		fallback = false
+	} else {
+		_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+		modelLower := strings.ToLower(parsedModel)
+		if strings.Contains(modelLower, "gpt-5.") && effortIsNone &&
+			!strings.Contains(modelLower, "-pro") &&
+			!strings.Contains(modelLower, "-codex") {
+			fallback = false
+		}
+	}
+	return caps.FieldUnsupported(schemas.FieldTopP, fallback)
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support

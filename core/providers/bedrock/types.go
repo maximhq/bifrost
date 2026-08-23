@@ -896,10 +896,11 @@ type BedrockMetadataEvent struct {
 
 // BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
 type BedrockTitanEmbeddingRequest struct {
-	InputText   string                 `json:"inputText"`            // Required: Text to embed
-	Dimensions  *int                   `json:"dimensions,omitempty"` // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
-	Normalize   *bool                  `json:"normalize,omitempty"`  // Optional: normalize the embedding
-	ExtraParams map[string]interface{} `json:"-"`
+	InputText      string                 `json:"inputText"`                // Required: Text to embed
+	Dimensions     *int                   `json:"dimensions,omitempty"`     // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
+	Normalize      *bool                  `json:"normalize,omitempty"`      // Optional: normalize the embedding
+	EmbeddingTypes []string               `json:"embeddingTypes,omitempty"` // Optional: "float" and/or "binary" (titan-embed-text-v2 only)
+	ExtraParams    map[string]interface{} `json:"-"`
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -909,8 +910,16 @@ func (req *BedrockTitanEmbeddingRequest) GetExtraParams() map[string]interface{}
 
 // BedrockTitanEmbeddingResponse represents a Bedrock Titan embedding response
 type BedrockTitanEmbeddingResponse struct {
-	Embedding           []float64 `json:"embedding"`           // The embedding vector
-	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
+	Embedding           []float64                     `json:"embedding"`                  // The default float embedding vector
+	EmbeddingsByType    *BedrockTitanEmbeddingsByType `json:"embeddingsByType,omitempty"` // Requested float and/or binary vectors
+	InputTextTokenCount int                           `json:"inputTextTokenCount"`        // Number of tokens in input
+}
+
+// BedrockTitanEmbeddingsByType is returned when Titan V2 embeddingTypes is set,
+// and is also how the native invoke response re-emits those representations.
+type BedrockTitanEmbeddingsByType struct {
+	Float  []float64 `json:"float,omitempty"`
+	Binary []int8    `json:"binary,omitempty"`
 }
 
 // BedrockCohereEmbeddingContentBlock represents a single content block in a mixed input
@@ -932,6 +941,11 @@ type BedrockCohereEmbeddingInput struct {
 
 // BedrockCohereEmbeddingRequest represents a Bedrock Cohere embedding request.
 // Unlike the direct Cohere API, Bedrock does not accept a "model" field in the body.
+
+// BedrockCohereInputTypeSearchDocument is the input_type applied when a caller omits
+// one. AWS requires the field and defines no default.
+const BedrockCohereInputTypeSearchDocument = "search_document"
+
 type BedrockCohereEmbeddingRequest struct {
 	InputType       string                        `json:"input_type"`                 // Required
 	Texts           []string                      `json:"texts,omitempty"`            // text-only inputs
@@ -958,6 +972,17 @@ type BedrockCohereEmbeddingResponse struct {
 	Embeddings   json.RawMessage `json:"embeddings"`
 	ResponseType string          `json:"response_type"`
 	Texts        []string        `json:"texts,omitempty"`
+}
+
+// BedrockCohereEmbeddingsByType is the "embeddings_by_type" object, used both when
+// parsing the provider response and when re-emitting it on the native invoke route.
+type BedrockCohereEmbeddingsByType struct {
+	Float   [][]float32 `json:"float,omitempty"`
+	Base64  []string    `json:"base64,omitempty"`
+	Int8    [][]int8    `json:"int8,omitempty"`
+	Uint8   [][]int32   `json:"uint8,omitempty"` // int32 avoids []byte→base64 JSON issue
+	Binary  [][]int8    `json:"binary,omitempty"`
+	Ubinary [][]int32   `json:"ubinary,omitempty"` // int32 avoids []byte→base64 JSON issue
 }
 
 const TaskTypeTextImage = "TEXT_IMAGE"
@@ -1339,14 +1364,15 @@ type BedrockInvokeRequest struct {
 
 	// ==================== EMBEDDINGS ====================
 
-	InputText       string                        `json:"inputText,omitempty"`        // Titan embed
-	Texts           []string                      `json:"texts,omitempty"`            // Cohere embed
-	InputType       *string                       `json:"input_type,omitempty"`       // Cohere embed
-	Normalize       *bool                         `json:"normalize,omitempty"`        // Titan embed v2
-	Dimensions      *int                          `json:"dimensions,omitempty"`       // Titan embed v2
-	EmbeddingTypes  []string                      `json:"embedding_types,omitempty"`  // Cohere embed: ["float","int8","uint8","binary","ubinary"]
-	OutputDimension *int                          `json:"output_dimension,omitempty"` // Cohere embed: 256, 512, 1024, 1536
-	Inputs          []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // Cohere embed: mixed text+image inputs
+	InputText           string                        `json:"inputText,omitempty"`        // Titan embed
+	Texts               []string                      `json:"texts,omitempty"`            // Cohere embed
+	InputType           *string                       `json:"input_type,omitempty"`       // Cohere embed
+	Normalize           *bool                         `json:"normalize,omitempty"`        // Titan embed v2
+	Dimensions          *int                          `json:"dimensions,omitempty"`       // Titan embed v2
+	EmbeddingTypes      []string                      `json:"embedding_types,omitempty"`  // Cohere embed: ["float","int8","uint8","binary","ubinary"]
+	TitanEmbeddingTypes []string                      `json:"embeddingTypes,omitempty"`   // Titan V2 embed: ["float","binary"]
+	OutputDimension     *int                          `json:"output_dimension,omitempty"` // Cohere embed: 256, 512, 1024, 1536
+	Inputs              []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // Cohere embed: mixed text+image inputs
 
 	// ==================== INTERNAL ====================
 	Stream      bool                   `json:"-"`
@@ -1360,13 +1386,25 @@ type BedrockCohereRMessage struct {
 }
 
 // BedrockInvokeEmbeddingResp is the Titan single-embedding invoke response format.
+// Embedding is omitted when only non-float representations were requested, matching
+// AWS, which drops the field for a binary-only embeddingTypes.
 type BedrockInvokeEmbeddingResp struct {
-	Embedding           []float32 `json:"embedding"`
-	InputTextTokenCount int       `json:"inputTextTokenCount"`
+	// float64 matches both the precision Titan actually returns and the type used
+	// under embeddingsByType, so the two copies of the float vector agree.
+	Embedding           []float64                     `json:"embedding,omitempty"`
+	EmbeddingsByType    *BedrockTitanEmbeddingsByType `json:"embeddingsByType,omitempty"`
+	InputTextTokenCount int                           `json:"inputTextTokenCount"`
 }
 
 // BedrockInvokeCohereEmbeddingResp is the Cohere multi-embedding invoke response format.
 type BedrockInvokeCohereEmbeddingResp struct {
 	Embeddings   [][]float32 `json:"embeddings"`
 	ResponseType string      `json:"response_type"`
+}
+
+// BedrockInvokeCohereTypedEmbeddingResp is the Cohere invoke response format once
+// embedding_types is set and Bedrock switches to the typed envelope.
+type BedrockInvokeCohereTypedEmbeddingResp struct {
+	Embeddings   BedrockCohereEmbeddingsByType `json:"embeddings"`
+	ResponseType string                        `json:"response_type"`
 }

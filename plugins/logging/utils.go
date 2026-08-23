@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -828,6 +829,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		ServiceTier:           result.ServiceTier,
 		CacheDebug:            result.CacheDebug,
 		GuardrailDebug:        result.GuardrailDebug,
 		Cost:                  result.Cost,
@@ -905,4 +907,15 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
 	}
 	return sb.String()
+}
+
+func stringSlicePtr(values []string) *string {
+	if len(values) == 0 {
+		return nil
+	}
+	out, err := sonic.MarshalString(values)
+	if err != nil {
+		return nil
+	}
+	return &out
 }

@@ -385,11 +385,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -423,18 +423,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-					const d = new Date(virtualKey.expires_at);
-					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-				})()
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-						id: b.id,
-						max_limit: b.max_limit,
-						reset_duration: b.reset_duration ?? "1M",
-						reset_config: b.reset_config,
-					}))
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration ?? "1M",
+							reset_config: b.reset_config,
+						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -619,7 +619,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Build a request rate-limit payload from the form's rate-limit fields. Returns the field
 	// values when a limit is set, {} to clear an existing rate limit (removal), or undefined.
 	const normalizeRateLimit = (
-		rl: { token_max_limit?: number; token_reset_duration?: string; request_max_limit?: number; request_reset_duration?: string } | undefined,
+		rl:
+			| { token_max_limit?: number; token_reset_duration?: string; request_max_limit?: number; request_reset_duration?: string }
+			| undefined,
 		hadExisting: boolean,
 	) => {
 		const hasToken = rl?.token_max_limit !== undefined;
@@ -1054,7 +1056,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => handleClose()}
 			>
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -1065,7 +1067,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="grow space-y-4 px-8">
+						<div className="grow space-y-4 px-4 md:px-8">
 							{isManagedByProfile && (
 								<>
 									<Alert variant="info">
@@ -1777,9 +1779,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															fallbackOption={
 																field.value
 																	? {
-																		value: field.value,
-																		label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																	}
+																			value: field.value,
+																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																		}
 																	: null
 															}
 															disabled={isTeamLocked}
@@ -1807,10 +1809,10 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															fallbackOption={
 																field.value
 																	? {
-																		value: field.value,
-																		label:
-																			field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
-																	}
+																			value: field.value,
+																			label:
+																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																		}
 																	: null
 															}
 															triggerClassName="h-9"
@@ -1839,9 +1841,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															fallbackOption={
 																field.value
 																	? {
-																		value: field.value,
-																		label: field.value === assignedUserId ? assignedUserLabel : field.value,
-																	}
+																			value: field.value,
+																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																		}
 																	: null
 															}
 															triggerClassName="h-9"
@@ -1906,12 +1908,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							</AlertDialogContent>
 						</AlertDialog>
 						{isEditing && virtualKey?.config_hash && (
-							<div className="px-8">
+							<div className="px-4 md:px-8">
 								<ConfigSyncAlert className="mt-2" />
 							</div>
 						)}
 						{/* Form Footer */}
-						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-between gap-2">
 								{isEditing ? (
 									<Button

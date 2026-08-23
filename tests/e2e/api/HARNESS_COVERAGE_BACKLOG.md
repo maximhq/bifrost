@@ -77,12 +77,12 @@ Sources:
 - [ ] **Image generation** (`POST /v1/images/generations`)
 - [ ] **Image edit** (`POST /v1/images/edits`)
 - [ ] **Image variation** (`POST /v1/images/variations`)
-- [ ] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`)
+- [x] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`): OpenAI/Anthropic covered in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` — upload input file (OpenAI only), create, retrieve, cancel, all asserted. Gemini native batch (`/genai/v1beta/models/{model}:batchGenerateContent` + `/genai/v1beta/batches`) covered separately in folder `55. Gemini Native Batch API` — create/list/retrieve/cancel, inline requests (no file upload needed). Vertex batch covered in folder `11c. Vertex Batches`. Azure batch (via `/openai/v1/batches` with `provider:"azure"` / `?provider=azure`, no dedicated route - reuses the OpenAI drop-in with inline `requests` auto-uploaded server-side) and Bedrock batch create/retrieve/cancel (`/bedrock/model-invocation-job*`, needs an S3 bucket + IAM role_arn not yet in the harness env) remain uncovered. Settled cost/pricing not covered here (async, no test hook for the sweeper) - see `plugins/logging/costfidelity_test.go` / `framework/batchaccounting/*_test.go` for that.
 - [ ] **Files API** (`POST /v1/files`, etc.)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Containers API** (`POST /v1/containers` for code-interpreter sandboxes)
 - [ ] **Videos API** (`POST /v1/videos` for Sora)
-- [ ] **Rerank** (`POST /v1/rerank`)
+- [x] **Rerank** (`POST /v1/rerank`) - folder 56, cross-provider across cohere/bedrock/vertex
 
 ---
 
@@ -160,7 +160,7 @@ Sources:
 ### Other endpoints
 
 - [ ] **Token counting** (`POST /v1/messages/count_tokens`)
-- [ ] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results)
+- [~] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results): create/retrieve/cancel/list asserted in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` and `Anthropic Backlog`; `results` (post-settlement) not covered - requires a completed batch, no fast test path (sweeper poll is real-time, hard-coded 1 min interval)
 - [ ] **Files API** (`POST /v1/files`, list, retrieve, delete, content)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Text Completions API** (legacy `POST /v1/complete`)
@@ -198,7 +198,7 @@ Sources:
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
 - [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
-- [ ] **Direct invoke** with Cohere-native provider body
+- [x] **Direct invoke** with Cohere-native embedding body — folder 58.C (PR #6335)
 - [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
 - [ ] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop)
 
@@ -221,17 +221,22 @@ Sources:
 Bedrock is the only provider carrying two incompatible embedding envelopes behind one name.
 `DetermineEmbeddingModelType` picks between them by substring match on the model id, so the same
 `/v1/embeddings` request behaves differently depending on whether the id contains `titan` or
-`cohere`. There is no embedding route on the `/bedrock` drop-in: `/bedrock/model/{id}/invoke`
-converts to Converse and then to Responses, so Bedrock embeddings are reachable only via
-`/v1/embeddings`, `/openai/v1/embeddings`, `/genai/.../:embedContent` and `/cohere/v2/embed`.
+`cohere`. Native InvokeModel embeddings are available through `/bedrock/model/{id}/invoke`,
+with `/langchain/model/{id}/invoke` providing the same route plus LangChain compatibility.
+Normalized embeddings remain available through `/v1/embeddings`, `/openai/v1/embeddings`,
+`/genai/.../:embedContent` and `/cohere/v2/embed`.
 
 - [x] **Titan V2 baseline** (`inputText`, one vector out, `inputTextTokenCount` to usage) - folder 53.A1
 - [x] **Titan `dimensions`** (1024 default | 512 | 256) - folder 53.A2
 - [x] **Titan array-input collapse** (no batch shape; Bifrost joins with `" \n"`, returns 1 vector) - folder 53.A3
 - [x] **Titan `normalize`** (default true; proven via L2 norm of the returned vector) - folder 53.A4 / 53.A5
 - [x] **Titan `embeddingTypes`** (camelCase; `embeddingsByType` recovered through `x-bf-send-back-raw-response`) - folder 53.A6
+- [x] **Titan native InvokeModel typed envelopes** (`binary` alone and `float` + `binary`) — folder 58.A / 58.B (PR #6335)
 - [x] **Cohere v4 `input_type`** (required by AWS; both the native `/cohere/v2/embed` route and `extra_params`) - folder 53.B1 / 53.B4
 - [x] **Cohere v4 `embedding_types`** (`embeddings_by_type` int8 parse branch) - folder 53.B2
+- [x] **Cohere v4 native InvokeModel typed envelope** (`float`, `int8`, `uint8`, `binary`, `ubinary`) — folder 58.C (PR #6335)
+- [x] **LangChain Cohere singular `embedding` alias** while preserving native plural `embeddings` — folder 58.D (PR #6335)
+- [x] **Normalized Titan dual representations without raw-response leakage** — folder 58.E (PR #6335)
 - [x] **Cohere v4 array input** (one vector per text, the arity divergence against Titan) - folder 53.B5
 - [x] **Cohere v4 `output_dimension`** (256 | 512 | 1024 | 1536) - folder 53.B6 / 53.D4
 - [x] **Usage backfill from `X-Amzn-Bedrock-Input-Token-Count`** (Cohere embed omits usage from the body; #3917) - folder 53.B7

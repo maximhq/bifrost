@@ -153,6 +153,7 @@ const (
 	ImageEditStreamRequest         RequestType = "image_edit_stream"
 	ImageVariationRequest          RequestType = "image_variation"
 	VideoGenerationRequest         RequestType = "video_generation"
+	VideoEditRequest               RequestType = "video_edit"
 	VideoRetrieveRequest           RequestType = "video_retrieve"
 	VideoDownloadRequest           RequestType = "video_download"
 	VideoDeleteRequest             RequestType = "video_delete"
@@ -299,6 +300,7 @@ const (
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
+	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
@@ -357,6 +359,7 @@ const (
 	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyMCPInboundBearer                    BifrostContextKey = "bifrost-mcp-inbound-bearer"         // string (the caller's validated identity-provider token, used as the subject of delegated token exchange; set by the upstream auth layer - DO NOT SET THIS MANUALLY. SECURITY: live credential - never log its value)
 	BifrostContextKeyQueryScope                          BifrostContextKey = "bifrost-query-scope"                // configstore.QueryScope (func that mutates a query; set by upstream wrapper - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyDimensionScope                      BifrostContextKey = "bifrost-dimension-scope"            // queryscope.DimensionScope (bounds the VALUES of a grouping dimension; set by upstream wrapper - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // DEPRECATED: replaced by BifrostContextKeyQueryScope. Will be removed once all callers migrate.
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
@@ -541,6 +544,7 @@ type BifrostRequest struct {
 	ImageEditRequest             *BifrostImageEditRequest
 	ImageVariationRequest        *BifrostImageVariationRequest
 	VideoGenerationRequest       *BifrostVideoGenerationRequest
+	VideoEditRequest             *BifrostVideoEditRequest
 	VideoRetrieveRequest         *BifrostVideoRetrieveRequest
 	VideoDownloadRequest         *BifrostVideoDownloadRequest
 	VideoListRequest             *BifrostVideoListRequest
@@ -615,6 +619,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ImageVariationRequest.Provider, br.ImageVariationRequest.Model, br.ImageVariationRequest.Fallbacks
 	case br.VideoGenerationRequest != nil:
 		return br.VideoGenerationRequest.Provider, br.VideoGenerationRequest.Model, br.VideoGenerationRequest.Fallbacks
+	case br.VideoEditRequest != nil:
+		return br.VideoEditRequest.Provider, br.VideoEditRequest.Model, br.VideoEditRequest.Fallbacks
 	case br.VideoRetrieveRequest != nil:
 		return br.VideoRetrieveRequest.Provider, "", nil
 	case br.VideoDownloadRequest != nil:
@@ -766,6 +772,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ImageVariationRequest.Provider = provider
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Provider = provider
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Provider = provider
 	case br.VideoRetrieveRequest != nil:
 		br.VideoRetrieveRequest.Provider = provider
 	case br.VideoDownloadRequest != nil:
@@ -819,6 +827,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageVariationRequest.Model = model
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Model = model
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Model = model
 	case br.BatchCreateRequest != nil:
 		if br.BatchCreateRequest.Model != nil {
 			br.BatchCreateRequest.Model = new(model)
@@ -874,6 +884,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ImageVariationRequest.Fallbacks = fallbacks
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Fallbacks = fallbacks
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -915,6 +927,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ImageVariationRequest.RawRequestBody = rawRequestBody
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.RawRequestBody = rawRequestBody
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.RawRequestBody = rawRequestBody
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.RawRequestBody = rawRequestBody
 	case br.CachedContentCreateRequest != nil:
@@ -1714,13 +1728,19 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed string     `json:"resolved_model_used,omitempty"`
-	Latency           int64      `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency *int64 `json:"upstream_latency,omitempty"`
+	// OverheadLatency is Bifrost's own cost (total minus UpstreamLatency), in ms.
+	// Not serialized (json:"-"): at response time it can only be an estimate, since
+	// serializing this response is itself overhead. The authoritative value is
+	// stamped on the trace and logged at completion; this is only the untraced
+	// fallback. Nil means unknown.
+	OverheadLatency           *int64                 `json:"-"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
@@ -1734,8 +1754,8 @@ type BifrostResponseExtraFields struct {
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string     `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string                `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {

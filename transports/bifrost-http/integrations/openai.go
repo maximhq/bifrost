@@ -1465,6 +1465,39 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// edit video endpoint
+	for _, path := range []string{
+		"/v1/videos/edits",
+		"/videos/edits",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoEditRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIVideoEditRequest{}
+			},
+			RequestParser: parseOpenAIVideoEditRequest,
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoEditReq, ok := req.(*openai.OpenAIVideoEditRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoEditRequest: openai.ToBifrostVideoEditRequest(videoEditReq),
+					}, nil
+				}
+				return nil, errors.New("invalid video edit request type")
+			},
+			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
 	// list videos endpoint
 	for _, path := range []string{
 		"/v1/videos",
@@ -3416,6 +3449,106 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 	}
 
 	return nil
+}
+
+// parseOpenAIVideoEditRequest is a RequestParser for /v1/videos/edits. The documented encoding is
+// JSON, carrying the source as a reference: {"prompt": "...", "video": {"id": "video_123"}}. It
+// also accepts multipart, which is the only way to upload a source file — and what the official
+// OpenAI SDKs send unconditionally, flattening the reference form to a "video[id]" field.
+func parseOpenAIVideoEditRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	videoEditReq, ok := req.(*openai.OpenAIVideoEditRequest)
+	if !ok {
+		return errors.New("invalid request type for video edit")
+	}
+
+	if !strings.HasPrefix(strings.ToLower(string(ctx.Request.Header.ContentType())), "multipart/form-data") {
+		rawBody := ctx.Request.Body()
+		if len(rawBody) == 0 {
+			return errors.New("request body is required")
+		}
+		if err := sonic.Unmarshal(rawBody, videoEditReq); err != nil {
+			return err
+		}
+		if videoEditReq.Prompt == "" {
+			return errors.New("prompt field is required")
+		}
+		if videoEditReq.Video.ID == "" {
+			return errors.New("video.id is required when the source video is not uploaded")
+		}
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, videoEditReq.Video.ID)
+		return nil
+	}
+
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return err
+	}
+
+	promptValues := form.Value["prompt"]
+	if len(promptValues) == 0 || promptValues[0] == "" {
+		return errors.New("prompt field is required")
+	}
+	videoEditReq.Prompt = promptValues[0]
+
+	if modelValues := form.Value["model"]; len(modelValues) > 0 {
+		videoEditReq.Model = modelValues[0]
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		videoEditReq.Fallbacks = fallbackValues
+	}
+
+	if videoFiles := form.File["video"]; len(videoFiles) > 0 {
+		f, err := videoFiles[0].Open()
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		fileData, err := io.ReadAll(f)
+		if err != nil {
+			return err
+		}
+		videoEditReq.Video.Bytes = fileData
+		// An uploaded source carries no ID, so the query parameter or header is the only hint.
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, "")
+		return nil
+	}
+
+	if idValues := form.Value["video[id]"]; len(idValues) > 0 && idValues[0] != "" {
+		videoEditReq.Video.ID = idValues[0]
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, videoEditReq.Video.ID)
+		return nil
+	}
+
+	return errors.New("a video file or video[id] field is required")
+}
+
+// resolveOpenAIVideoEditProvider picks the provider for a video edit from the routing hints the
+// request carries. The official SDKs send no model on this route, so without these a request that
+// uploads its source has nothing to route on. An empty result leaves resolution to the model.
+func resolveOpenAIVideoEditProvider(ctx *fasthttp.RequestCtx, videoID string) schemas.ModelProvider {
+	for _, candidate := range []string{
+		string(ctx.QueryArgs().Peek("provider")),
+		string(ctx.Request.Header.Peek("x-model-provider")),
+		videoIDProviderSuffix(videoID),
+	} {
+		if candidate != "" {
+			return schemas.ModelProvider(candidate)
+		}
+	}
+	return ""
+}
+
+// videoIDProviderSuffix returns the provider a video ID is scoped to, if it carries one. The suffix
+// counts only when it names a real provider, so an ID that merely contains a colon is left alone.
+func videoIDProviderSuffix(videoID string) string {
+	idx := strings.LastIndex(videoID, ":")
+	if idx <= 0 || idx == len(videoID)-1 {
+		return ""
+	}
+	if suffix := videoID[idx+1:]; schemas.IsKnownProvider(suffix) {
+		return suffix
+	}
+	return ""
 }
 
 // parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests

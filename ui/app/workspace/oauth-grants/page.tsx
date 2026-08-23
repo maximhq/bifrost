@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetOAuth2GrantsQuery, useRevokeOAuth2GrantMutation } from "@/lib/store";
@@ -93,14 +94,9 @@ export default function OAuthGrantsPage() {
 		<div className="flex h-full flex-col">
 			<RevokeGrantDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)} onConfirm={confirmRevoke} />
 
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">OAuth Grants</h2>
-					<p className="text-muted-foreground text-sm">
-						Active downstream OAuth grants issued to MCP clients that connected via the OAuth consent flow.
-					</p>
-				</div>
-			</div>
+			<PageTitle title="OAuth Grants">
+				Active downstream OAuth grants issued to MCP clients that connected via the OAuth consent flow.
+			</PageTitle>
 
 			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
@@ -144,14 +140,14 @@ export default function OAuthGrantsPage() {
 	// No grants at all and no active filters/search: render full-width without
 	// the filter sidebar, mirroring the MCP clients/sessions onboarding state.
 	if (!isLoading && totalCount === 0 && !hasActiveFilters) {
-		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">{content}</div>;
+		return <div className="mx-auto flex h-[calc(var(--app-content-viewport)_-_50px)] w-full max-w-7xl flex-col p-4 md:p-0">{content}</div>;
 	}
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			<div className="bg-background flex h-full w-full grow gap-3">
 				<OAuthGrantsFilterSidebar filters={filters} onFiltersChange={setFilters} />
-				<div className="bg-card h-full w-full overflow-hidden rounded-l-md">
+				<div className="bg-card h-full w-full overflow-hidden rounded-md border">
 					<div className="flex h-full flex-col p-4">{content}</div>
 				</div>
 			</div>

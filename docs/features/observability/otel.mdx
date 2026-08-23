@@ -137,6 +137,8 @@ Because all requests in a session share one trace, very long-lived sessions prod
 
 To send a session ID, pass the [`x-bf-session-id`](/providers/request-options) header on each request you want grouped together.
 
+Requests from a coding harness need no Bifrost-specific header: when `x-bf-session-id` is absent, Bifrost adopts the harness's own session header (Claude Code, Codex CLI, and OpenCode are recognized). That populates `session.id` on every request in the run; enable `group_traces_by_session` to collapse the run into a single trace. See [Coding Harness Headers](/providers/request-options#session-stickiness-session-id) for the full list.
+
 ---
 
 ## Setup

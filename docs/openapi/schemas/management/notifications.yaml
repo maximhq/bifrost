@@ -1,0 +1,128 @@
+# Dashboard Notification Schemas
+
+NotificationSeverity:
+  type: string
+  description: Visual weight the dashboard gives the notification.
+  enum:
+    - info
+    - success
+    - warning
+    - error
+
+NotificationAudience:
+  type: string
+  description: |
+    Who the notification reaches. `all` is every dashboard user; `roles` limits
+    it to the listed RBAC roles, enforced on both the list endpoint and the
+    WebSocket fan-out.
+  enum:
+    - all
+    - roles
+
+NotificationInput:
+  type: object
+  description: |
+    A notification to publish. IDs and both timestamps are assigned by the
+    server and cannot be supplied.
+  required:
+    - audience
+    - severity
+    - title
+    - message
+  properties:
+    audience:
+      $ref: '#/NotificationAudience'
+    role_ids:
+      type: array
+      description: |
+        Required when `audience` is `roles`, and must be empty otherwise.
+        Duplicates are removed and the list is sorted before it is stored.
+      items:
+        type: integer
+        format: int64
+        minimum: 1
+    severity:
+      $ref: '#/NotificationSeverity'
+    title:
+      type: string
+      description: Trimmed before validation.
+      minLength: 1
+      maxLength: 160
+    message:
+      type: string
+      description: Trimmed before validation.
+      minLength: 1
+      maxLength: 4000
+    action_label:
+      type: string
+      description: |
+        Label for the notification's action. Must be supplied together with
+        `action_path`, or not at all.
+    action_path:
+      type: string
+      description: |
+        Dashboard-internal absolute path the action opens, for example
+        `/workspace/providers`. Absolute URLs, host-relative `//` paths, and
+        anything not starting with `/` are rejected, so a notification cannot
+        be used to send users off-site.
+      pattern: '^/(?!/).*'
+
+Notification:
+  type: object
+  description: A persisted dashboard notification.
+  required:
+    - id
+    - audience
+    - severity
+    - title
+    - message
+    - created_at
+    - expires_at
+  properties:
+    id:
+      type: string
+      format: uuid
+    audience:
+      $ref: '#/NotificationAudience'
+    role_ids:
+      type: array
+      items:
+        type: integer
+        format: int64
+    severity:
+      $ref: '#/NotificationSeverity'
+    title:
+      type: string
+    message:
+      type: string
+    action_label:
+      type: string
+    action_path:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    expires_at:
+      type: string
+      format: date-time
+      description: |
+        Always 30 days after `created_at`. Expired rows are pruned hourly and
+        are not returned once pruned.
+
+NotificationList:
+  type: object
+  description: |
+    A page of notifications, newest first, already filtered to what the caller's
+    role may see.
+  required:
+    - notifications
+  properties:
+    notifications:
+      type: array
+      items:
+        $ref: '#/Notification'
+    next_cursor:
+      type: string
+      description: |
+        Opaque cursor for the next page. Absent when there are no further
+        results. Pass it back as the `cursor` query parameter.

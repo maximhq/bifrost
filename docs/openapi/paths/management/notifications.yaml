@@ -1,0 +1,86 @@
+# Dashboard Notifications API
+
+notifications:
+  get:
+    operationId: listNotifications
+    summary: List dashboard notifications
+    description: |
+      Returns notifications the caller is entitled to see, newest first.
+      Notifications addressed to `all` are visible to everyone; those addressed
+      to `roles` are only returned when the caller holds one of the listed
+      roles. A local admin sees every notification.
+
+      Read and dismissed state is not stored server-side, so every caller sees
+      the full page regardless of what they have already opened.
+    tags:
+      - Notifications
+    parameters:
+      - name: limit
+        in: query
+        required: false
+        description: |
+          Notifications per page. Values above the server page size of 50 are
+          clamped down to it.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 50
+      - name: cursor
+        in: query
+        required: false
+        description: The `next_cursor` from a previous response.
+        schema:
+          type: string
+    responses:
+      '200':
+        description: A page of notifications
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/notifications.yaml#/NotificationList'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+  post:
+    operationId: createNotification
+    summary: Publish a dashboard notification
+    description: |
+      Persists a notification and pushes it over the dashboard WebSocket to
+      every connected client the audience covers.
+
+      Administrators only. Reading is open to any authenticated user because a
+      caller only ever receives rows their role already entitles them to, but a
+      single publish reaches every dashboard user on the deployment, so it is
+      restricted to the local admin. On a deployment with dashboard auth
+      disabled every request is treated as local admin.
+
+      Notifications expire 30 days after creation and are pruned hourly.
+    tags:
+      - Notifications
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/notifications.yaml#/NotificationInput'
+    responses:
+      '201':
+        description: Notification published and broadcast
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/notifications.yaml#/Notification'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []

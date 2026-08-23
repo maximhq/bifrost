@@ -2762,6 +2762,56 @@ func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
 	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
 }
 
+func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testing.T) {
+	// Regression test for pricingSyncUpdateColumns: a column present on
+	// TableModelPricing but missing from that explicit update-column list
+	// would insert fine on the first sync (Create writes every column) but
+	// silently revert to null on the second sync (ON CONFLICT DO UPDATE only
+	// touches listed columns).
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{
+			Model:                               "prunaai/p-image-upscale",
+			Provider:                            "replicate",
+			Mode:                                "image_generation",
+			OutputCostPerImage:                  cost(0.005),
+			OutputCostPerImageAbove4Megapixels:  cost(0.01),
+			OutputCostPerImageAbove8Megapixels:  cost(0.02),
+			OutputCostPerImageAbove16Megapixels: cost(0.04),
+			OutputCostPerImageAbove32Megapixels: cost(0.06),
+			OutputCostPerImageAbove64Megapixels: cost(0.12),
+		},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	// Re-upsert the same row (simulating the next scheduled datasheet sync)
+	// with a changed tier value to exercise the ON CONFLICT update path.
+	pricing[0].OutputCostPerImageAbove16Megapixels = cost(0.05)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.OutputCostPerImageAbove4Megapixels)
+	require.NotNil(t, row.OutputCostPerImageAbove8Megapixels)
+	require.NotNil(t, row.OutputCostPerImageAbove16Megapixels)
+	require.NotNil(t, row.OutputCostPerImageAbove32Megapixels)
+	require.NotNil(t, row.OutputCostPerImageAbove64Megapixels)
+	assert.InDelta(t, 0.01, *row.OutputCostPerImageAbove4Megapixels, 1e-9)
+	assert.InDelta(t, 0.02, *row.OutputCostPerImageAbove8Megapixels, 1e-9)
+	assert.InDelta(t, 0.05, *row.OutputCostPerImageAbove16Megapixels, 1e-9) // survived resync with the updated value
+	assert.InDelta(t, 0.06, *row.OutputCostPerImageAbove32Megapixels, 1e-9)
+	assert.InDelta(t, 0.12, *row.OutputCostPerImageAbove64Megapixels, 1e-9)
+}
+
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelParameters{}))
@@ -3632,4 +3682,102 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync guards the ON CONFLICT DO UPDATE
+// column list. Create() writes every column, so a first sync looks correct even when a field is
+// missing from pricingSyncUpdateColumns - the value only disappears on the next resync of an
+// existing row, which is 24h later in production.
+func TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := tables.TableModelPricing{Model: "rerank-v3.5", Provider: "cohere", Mode: "rerank"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.InputCostPerQuery = cost(0.002)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "rerank-v3.5" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.InputCostPerQuery, "input_cost_per_query missing from pricingSyncUpdateColumns")
+	assert.Equal(t, 0.002, *found.InputCostPerQuery)
+}
+
+// TestUpsertModelPricesBatch_SizeQualityImageColumnsSurviveResync pins the
+// ON CONFLICT DO UPDATE path: a column missing from pricingSyncUpdateColumns is
+// written on the initial Create but silently dropped on every later sync of an
+// existing row.
+func TestUpsertModelPricesBatch_SizeQualityImageColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	// First sync: the row exists with none of the new rates set.
+	row := tables.TableModelPricing{Model: "gpt-image-1", Provider: "openai", Mode: "image_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	// Second sync of the same row now carries them, exercising the update path.
+	row.OutputCostPerImageAbove1024x1536Pixels = cost(0.001)
+	row.OutputCostPerImageAbove1536x1024Pixels = cost(0.002)
+	row.OutputCostPerImageAbove1024x1024PixelsLowQuality = cost(0.003)
+	row.OutputCostPerImageAbove1024x1536PixelsLowQuality = cost(0.004)
+	row.OutputCostPerImageAbove1536x1024PixelsLowQuality = cost(0.005)
+	row.OutputCostPerImageAbove1024x1024PixelsMediumQuality = cost(0.006)
+	row.OutputCostPerImageAbove1024x1536PixelsMediumQuality = cost(0.007)
+	row.OutputCostPerImageAbove1536x1024PixelsMediumQuality = cost(0.008)
+	row.OutputCostPerImageAbove1024x1024PixelsHighQuality = cost(0.009)
+	row.OutputCostPerImageAbove1024x1536PixelsHighQuality = cost(0.010)
+	row.OutputCostPerImageAbove1536x1024PixelsHighQuality = cost(0.011)
+	row.OutputCostPerImageAbove1024x1024PixelsStandardQuality = cost(0.012)
+	row.OutputCostPerImageAbove1024x1536PixelsStandardQuality = cost(0.013)
+	row.OutputCostPerImageAbove1536x1024PixelsStandardQuality = cost(0.014)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	updated := got[0]
+
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1536Pixels, "OutputCostPerImageAbove1024x1536Pixels was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.001, *updated.OutputCostPerImageAbove1024x1536Pixels, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024Pixels, "OutputCostPerImageAbove1536x1024Pixels was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.002, *updated.OutputCostPerImageAbove1536x1024Pixels, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1024PixelsLowQuality, "OutputCostPerImageAbove1024x1024PixelsLowQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.003, *updated.OutputCostPerImageAbove1024x1024PixelsLowQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1536PixelsLowQuality, "OutputCostPerImageAbove1024x1536PixelsLowQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.004, *updated.OutputCostPerImageAbove1024x1536PixelsLowQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsLowQuality, "OutputCostPerImageAbove1536x1024PixelsLowQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.005, *updated.OutputCostPerImageAbove1536x1024PixelsLowQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1024PixelsMediumQuality, "OutputCostPerImageAbove1024x1024PixelsMediumQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.006, *updated.OutputCostPerImageAbove1024x1024PixelsMediumQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1536PixelsMediumQuality, "OutputCostPerImageAbove1024x1536PixelsMediumQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.007, *updated.OutputCostPerImageAbove1024x1536PixelsMediumQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsMediumQuality, "OutputCostPerImageAbove1536x1024PixelsMediumQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.008, *updated.OutputCostPerImageAbove1536x1024PixelsMediumQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1024PixelsHighQuality, "OutputCostPerImageAbove1024x1024PixelsHighQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.009, *updated.OutputCostPerImageAbove1024x1024PixelsHighQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1536PixelsHighQuality, "OutputCostPerImageAbove1024x1536PixelsHighQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.010, *updated.OutputCostPerImageAbove1024x1536PixelsHighQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsHighQuality, "OutputCostPerImageAbove1536x1024PixelsHighQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.011, *updated.OutputCostPerImageAbove1536x1024PixelsHighQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1024PixelsStandardQuality, "OutputCostPerImageAbove1024x1024PixelsStandardQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.012, *updated.OutputCostPerImageAbove1024x1024PixelsStandardQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1024x1536PixelsStandardQuality, "OutputCostPerImageAbove1024x1536PixelsStandardQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.013, *updated.OutputCostPerImageAbove1024x1536PixelsStandardQuality, 1e-9)
+	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, "OutputCostPerImageAbove1536x1024PixelsStandardQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
+	assert.InDelta(t, 0.014, *updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, 1e-9)
 }

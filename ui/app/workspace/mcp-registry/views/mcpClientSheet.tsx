@@ -250,13 +250,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -264,18 +264,18 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -301,13 +301,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -315,18 +315,18 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
@@ -405,9 +405,9 @@ export default function MCPClientSheet({
 				? undefined
 				: oauthScopesRaw.trim()
 					? oauthScopesRaw
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean)
+							.split(",")
+							.map((s) => s.trim())
+							.filter(Boolean)
 					: [];
 			// Only rotate when the user actually changed a field, and never
 			// alongside a disable (the backend rejects that combination
@@ -424,9 +424,9 @@ export default function MCPClientSheet({
 			const shouldUpdateTokenExchange = supportsTokenExchangeCredentialUpdate && tokenExchangeCredentialsDirty;
 			const tokenExchangeScopes = tokenExchangeScopesRaw.trim()
 				? tokenExchangeScopesRaw
-					.split(",")
-					.map((s) => s.trim())
-					.filter(Boolean)
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
 				: [];
 			await updateMCPClient({
 				id: mcpClient.config.client_id,
@@ -450,31 +450,33 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: oauthScopes,
-							resource: data.oauth_config?.resource || undefined,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+								authorize_url: data.oauth_config?.authorize_url || undefined,
+								token_url: data.oauth_config?.token_url || undefined,
+								registration_url: data.oauth_config?.registration_url || undefined,
+								scopes: oauthScopes,
+								resource: data.oauth_config?.resource || undefined,
+							}
 						: undefined,
 					token_exchange: shouldUpdateTokenExchange
 						? {
-							audience: data.token_exchange?.audience?.trim() || "",
-							use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
-							client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? { value: "", ref: "" }),
-							client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
-							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-							scopes: tokenExchangeScopes,
-						}
+								audience: data.token_exchange?.audience?.trim() || "",
+								use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
+								client_id: data.token_exchange?.use_idp_credentials
+									? undefined
+									: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
+								client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
+								authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+								scopes: tokenExchangeScopes,
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -602,7 +604,7 @@ export default function MCPClientSheet({
 		<>
 			<Sheet open onOpenChange={(open) => !open && onClose()}>
 				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
-					<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<SheetHeader className="w-full p-0 px-4 py-4 md:px-8" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<div className="flex w-full items-center justify-between">
 							<div className="space-y-2">
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -635,7 +637,7 @@ export default function MCPClientSheet({
 					</SheetHeader>
 					<Form {...form}>
 						<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-							<div className="min-h-0 flex-1 overflow-y-auto px-8">
+							<div className="min-h-0 flex-1 overflow-y-auto px-4 md:px-8">
 								<Tabs value={selectedTab} onValueChange={setSelectedTab} className="w-full">
 									<div className="bg-card sticky top-0 z-10 pb-4">
 										<TabsList>
@@ -705,7 +707,7 @@ export default function MCPClientSheet({
 													<span className="font-mono break-all">
 														{mcpClient.config.connection_type === "stdio"
 															? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-															"-"
+																"-"
 															: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 																? mcpClient.config.connection_string.ref
 																: mcpClient.config.connection_string?.value || "-"}
@@ -724,7 +726,7 @@ export default function MCPClientSheet({
 																	return [name, valueParts.join("=")];
 																}),
 															)}
-															onChange={() => { }}
+															onChange={() => {}}
 															fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 															valuePlaceholder="—"
 															label=""
@@ -838,20 +840,22 @@ export default function MCPClientSheet({
 																	</FormItem>
 																)}
 															/>
-															{needsSessionStickinessDirty && (
-																<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-																	<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-																	<p>
-																		Toggling this takes effect immediately on save:{" "}
-																		{needsSessionStickiness
-																			? "the shared connection will be opened now."
-																			: "the existing shared connection will be closed now."}
-																	</p>
-																</div>
-															)}
 														</>
 													)}
 											</div>
+											{/* Sits outside the bordered row group: it's a consequence of the
+											    toggle above, not another setting row. */}
+											{needsSessionStickinessDirty && (
+												<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+													<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+													<p>
+														Toggling this takes effect immediately on save:{" "}
+														{needsSessionStickiness
+															? "the shared connection will be opened now."
+															: "the existing shared connection will be closed now."}
+													</p>
+												</div>
+											)}
 										</div>
 
 										<DottedSeparator />
@@ -961,8 +965,6 @@ export default function MCPClientSheet({
 												/>
 											</div>
 										</div>
-
-										<DottedSeparator />
 
 										<FormField
 											control={form.control}
@@ -1096,9 +1098,9 @@ export default function MCPClientSheet({
 																onBlur={() => {
 																	const parsed = allowedExtraHeadersRaw.trim()
 																		? allowedExtraHeadersRaw
-																			.split(",")
-																			.map((h) => h.trim())
-																			.filter(Boolean)
+																				.split(",")
+																				.map((h) => h.trim())
+																				.filter(Boolean)
 																		: [];
 																	field.onChange(parsed);
 																	field.onBlur();
@@ -1229,7 +1231,8 @@ export default function MCPClientSheet({
 																		useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
 																		useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
 																		useIdPCredentialsRequiredWarning={
-																			isEntraIdp && "Your identity provider is Microsoft Entra ID - a dedicated application might not be available, switch to Identity provider application."
+																			isEntraIdp &&
+																			"Your identity provider is Microsoft Entra ID - a dedicated application might not be available, switch to Identity provider application."
 																		}
 																		useIdPCredentialsTestId="mcpclient-input-token-exchange-use-idp-credentials"
 																		clientIdLabel="Exchange Client ID"
@@ -1714,7 +1717,7 @@ export default function MCPClientSheet({
 								</Tabs>
 							</div>
 
-							<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
+							<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 								<Button type="button" variant="outline" onClick={onClose}>
 									Cancel
 								</Button>

@@ -156,14 +156,14 @@ export default function MCPServersPage() {
 	// Onboarding empty state: no servers at all and no active filters/search.
 	// Render full-width without the filter sidebar (the table renders the CTA).
 	if (totalCount === 0 && !filtersActive && !debouncedSearch && !urlState.server) {
-		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">{table}</div>;
+		return <div className="mx-auto flex h-[calc(var(--app-content-viewport)_-_50px)] w-full max-w-7xl flex-col">{table}</div>;
 	}
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			<div className="bg-background flex h-full w-full grow gap-3">
 				<MCPClientsFilterSidebar filters={filters} onFiltersChange={setFilters} />
-				<div className="bg-card h-full w-full overflow-hidden rounded-l-md">
+				<div className="bg-card h-full w-full overflow-hidden rounded-md border">
 					<div className="flex h-full flex-col p-4">{table}</div>
 				</div>
 			</div>

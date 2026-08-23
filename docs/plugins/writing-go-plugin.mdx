@@ -492,13 +492,40 @@ Both methods are inert rather than fatal when no model catalog is wired - `GetMo
 
 <Tabs>
   <Tab title="v1.5.x+">
+#### `HTTPTransportPreAuthHook(ctx, req)` <sup>v2.0+</sup>
+
+**HTTP transport only.** Intercepts requests BEFORE the transport authenticates them, so anything this
+hook changes is what authentication sees. Implement it only when the plugin's job is to supply or
+translate a credential:
+- Derive a virtual key from an upstream identity header
+- Rewrite or normalise an `Authorization` header before it is validated
+- Reject a request outright with a custom response
+- Native .so plugins join the phase by exporting an `HTTPTransportPreAuthHook` symbol
+
+Key points:
+- Receives serializable `*HTTPRequest` (not raw fasthttp)
+- Carries the same request shape as `HTTPTransportPreHook` - headers, query, path params and body - and the same mutations apply, so a hook can move between the two phases by renaming
+- Modifying `req.Method` or `req.Path` fails the request with `409`
+- Return `(nil, nil)` to continue to authentication, request modifications applied
+- Return `(*HTTPResponse, nil)` to short-circuit with response
+- Return `(nil, error)` to short-circuit with error
+- No post-hook counterpart: `HTTPTransportPostHook` pairs with `HTTPTransportPreHook`, and a request rejected by authentication runs neither
+
 #### `HTTPTransportPreHook(ctx, req)`
 
-**HTTP transport only.** Intercepts requests BEFORE they enter Bifrost core. Use this to:
+**HTTP transport only.** Intercepts requests BEFORE they enter Bifrost core and AFTER the transport has
+authenticated them, so the resolved caller identity is already on `ctx`. Use this to:
 - Modify request headers, body, or query params in-place
 - Short-circuit with a custom response
 - Store values in `BifrostContext` for use in other hooks
 - Works with both native .so and WASM plugins
+
+<Warning>
+**Changed in v2.0.** This hook used to run before authentication. A credential written here is now set
+too late to be authenticated against - move that work to `HTTPTransportPreAuthHook`. Nothing errors
+either way: where authentication rejects the request this hook never runs, and where it permits the
+request the hook runs and its header still reaches components downstream of it.
+</Warning>
 
 Key points:
 - Receives serializable `*HTTPRequest` (not raw fasthttp)

@@ -3,7 +3,7 @@ title: "Migrating to v2.0.0"
 description: "Breaking changes and migration instructions for the v2.0.0 release"
 ---
 
-v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF) and closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured. This page covers the two breaking changes introduced by that hardening, starting in `2.0.0-prerelease3`, and how to migrate.
+v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, and moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request. This page covers the four breaking changes in this release and how to migrate.
 
 <Note>
 **Running Bifrost Enterprise?** This page covers the OSS behavior only. See the [Enterprise v2.0.0 Migration Guide](/enterprise/migration-guides/v2.0.0) for how these changes interact with SCIM-based authentication.
@@ -87,6 +87,161 @@ Starting in `2.0.0-prerelease3`, creating or updating a custom-path plugin requi
 
 ---
 
+## Breaking Change 3: Governance APIs Moved to the `/api/governance` Namespace
+
+Governance APIs now use the same `/api/governance/*` namespace in Bifrost Open Source and Bifrost Enterprise. Shared resources have one path and one wire contract; Enterprise installs edition-specific handlers and adds relationship routes beneath the same resources.
+
+**What changed:** governance resources that were served from top-level paths (`/api/teams`, `/api/users`, `/api/roles`, `/api/audit-logs`, and others) moved under `/api/governance`. Team and User list endpoints also switched to `limit`/`offset` pagination on their canonical paths.
+
+**Who is affected:** any API client, script, Postman collection, or UI caller that talks to governance endpoints directly.
+
+**How to fix it:** move callers to the canonical paths in the mapping table below, and update Team/User list pagination parameters.
+
+### Compatibility window
+
+Legacy Enterprise paths remain executable aliases for one complete GA release. Aliases execute the same handler directly, including mutating requests, and return:
+
+- `Deprecation: true`
+- `Link: </api/governance/...>; rel="successor-version"` ([RFC 5829](https://www.rfc-editor.org/rfc/rfc5829))
+
+Alias use is also logged as structured telemetry. Migrate first-party and external clients during this window. The aliases are planned for removal in the following major release.
+
+To find alias traffic in your own clients, check responses for the presence of the `Deprecation` header and follow the `successor-version` link to the path you should call instead.
+
+<Warning>
+The former user-governance policy paths conflict with canonical User CRUD. They do not have compatibility aliases. Move `POST /api/governance/users` and `PUT|DELETE /api/governance/users/{user_id}` policy calls to `/api/governance/users/{user_id}/governance` when upgrading.
+</Warning>
+
+### Endpoint mapping
+
+| Legacy path | Canonical path |
+|---|---|
+| `/api/teams` | `/api/governance/teams` |
+| `/api/teams/{id}` | `/api/governance/teams/{team_id}` |
+| `/api/teams/{id}/members` | `/api/governance/teams/{team_id}/members` |
+| `/api/teams/{id}/members/{userId}` | `/api/governance/teams/{team_id}/members/{user_id}` |
+| `/api/teams/{id}/customers` | `/api/governance/teams/{team_id}/customers` |
+| `/api/teams/{id}/customers/{customerId}` | `/api/governance/teams/{team_id}/customers/{customer_id}` |
+| `/api/customers/{id}/teams` | `/api/governance/customers/{customer_id}/teams` |
+| `/api/users` | `/api/governance/users` |
+| `/api/users/{id}` | `/api/governance/users/{user_id}` |
+| `/api/users/{id}/teams` | `/api/governance/users/{user_id}/teams` |
+| `/api/users/{id}/role` | `/api/governance/users/{user_id}/role` |
+| `/api/users/me/permissions` | `/api/governance/users/me/permissions` |
+| `/api/users/email/{email}` | `/api/governance/users/email/{email}` |
+| `/api/users/email/{email}/virtual-keys` | `/api/governance/users/email/{email}/virtual-keys` |
+| `/api/virtual-keys/{vk_id}/users` | `/api/governance/virtual-keys/{vk_id}/users` |
+| `/api/virtual-keys/{vk_id}/users/{user_id}` | `/api/governance/virtual-keys/{vk_id}/users/{user_id}` |
+| `/api/users/{id}/virtual-keys` | `/api/governance/users/{user_id}/virtual-keys` |
+| `/api/access-profiles` | `/api/governance/access-profiles` |
+| `/api/access-profiles/{id}/*` | `/api/governance/access-profiles/{profile_id}/*` |
+| `/api/users/{id}/access-profiles/*` | `/api/governance/users/{user_id}/access-profiles/*` |
+| `/api/roles` | `/api/governance/rbac/roles` |
+| `/api/roles/{id}` | `/api/governance/rbac/roles/{role_id}` |
+| `/api/roles/{id}/permissions` | `/api/governance/rbac/roles/{role_id}/permissions` |
+| `/api/resources` | `/api/governance/rbac/resources` |
+| `/api/operations` | `/api/governance/rbac/operations` |
+| `/api/permissions` | `/api/governance/rbac/permissions` |
+| `/api/audit-logs` | `/api/governance/audit-logs` |
+| `/api/audit-logs/filterdata` | `/api/governance/audit-logs/filterdata` |
+| `/api/audit-logs/export` | `/api/governance/audit-logs/export` |
+| `/api/audit-logs/{id}` | `/api/governance/audit-logs/{id}` |
+| `/api/audit-logs/{id}/verify` | `/api/governance/audit-logs/{id}/verify` |
+| `POST /api/governance/users` (policy) | `POST /api/governance/users/{user_id}/governance` |
+| `PUT|DELETE /api/governance/users/{user_id}` (policy) | `PUT|DELETE /api/governance/users/{user_id}/governance` |
+
+Business Unit URLs were already under `/api/governance/business-units`; only OpenAPI path-parameter names were standardized.
+
+### Permissions
+
+Canonical paths require the same RBAC resource and operation as the legacy alias they replace. Moving a client, script, or API key to a canonical path never requires regranting a permission, and no role loses access on upgrade. This parity is enforced by a test over the mapping table above, so it holds for every row.
+
+One deliberate exception: listing the virtual keys attached to a user is now gated on `VirtualKeys` rather than `Users`, on both the canonical `/api/governance/users/{user_id}/virtual-keys` and its legacy alias. This endpoint returns virtual-key material, and its siblings under `/api/governance/virtual-keys/{vk_id}/users` were already gated on `VirtualKeys`. Callers that read it with a `Users`-only role or API key need `VirtualKeys:View` added.
+
+<Note>
+The user-level policy endpoints under `/api/governance/users/{user_id}/governance` keep the `UserProvisioning` resource they had when they lived on `/api/governance/users`. They have no compatibility alias, so grant parity here comes from the resource mapping rather than from an alias.
+</Note>
+
+### Pagination changes
+
+Canonical Team and User list APIs use `limit` and zero-based `offset`, and return `count`, `total_count`, `limit`, and `offset`. Legacy aliases continue accepting `page` and preserve their former response envelopes during the compatibility window.
+
+```http
+GET /api/governance/teams?limit=20&offset=40
+GET /api/governance/users?limit=20&offset=40
+```
+
+Audit logs are unchanged: `/api/governance/audit-logs` keeps the one-based `page` and `limit` parameters and the response envelope it served on `/api/audit-logs`. Only the path moved.
+
+### Team customer semantics
+
+The canonical Team `customer_id` field retains the Open Source budget-hierarchy meaning. Enterprise many-to-many customer attachments use the relationship endpoints under `/api/governance/teams/{team_id}/customers`. Do not use the scalar `customer_id` field to represent Enterprise many-to-many membership.
+
+---
+
+## Breaking Change 4: `HTTPTransportPreHook` Now Runs After Authentication
+
+**What changed:** the plugin HTTP transport pipeline gained a phase. `HTTPTransportPreAuthHook` now runs *before* the transport's authentication middlewares, and `HTTPTransportPreHook` — which used to hold that position — runs *after* them.
+
+```
+before:  HTTPTransportPreHook → auth → handler
+after:   HTTPTransportPreAuthHook → auth → HTTPTransportPreHook → handler
+```
+
+**Who is affected:** any custom plugin that writes a credential from `HTTPTransportPreHook` — a virtual key on `x-bf-vk`, an `Authorization` header, an `x-api-key` — typically to derive one from an upstream identity header.
+
+<Warning>
+**Whether this breaks the plugin depends on what authenticates inference in your deployment, and neither outcome reports an error.**
+
+- **Authentication rejects the request** — Enterprise with an identity provider configured and `enforce_auth_on_inference` enabled. Authentication runs first, so `HTTPTransportPreHook` never executes and the credential is never written.
+- **Authentication permits the request** — every Open Source deployment, because inference auth is a deliberate pass-through, and Enterprise without an identity provider. The hook still runs, and the header it writes is still visible to components downstream of it, so governance validates the key and the plugin keeps working.
+
+The second case is why this can look deployment-specific: the same plugin binary keeps working on one gateway and stops on another. In both cases the credential is now written after the point that authenticates it, so move that work to `HTTPTransportPreAuthHook` — the only phase where a credential is guaranteed to be in place before authentication reads it.
+</Warning>
+
+**How to fix it:** rename the function. `HTTPTransportPreAuthHook` receives the same `*HTTPRequest` — headers, query, path params and body — and applies the same mutations, so nothing inside the hook body changes.
+
+**Before** (v1.x — credential injected from the pre-hook):
+```go
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+**After** (v2.0 — same body, new phase):
+```go
+func HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+A plugin may export both hooks; they are independent phases. `HTTPTransportPreAuthHook` runs once per request. `HTTPTransportPreHook` runs once per request too, but only for requests that reach it: a pre-auth hook that short-circuits, or authentication rejecting the request, skips it.
+
+**Plugins that do not touch credentials need no behavioural change** — and gain something. Because authentication has already run, `HTTPTransportPreHook` now sees the resolved caller identity on `ctx`. They do still need the new method to compile, as the Note below explains.
+
+Two differences between the phases are worth knowing:
+
+| | `HTTPTransportPreAuthHook` | `HTTPTransportPreHook` |
+|---|---|---|
+| Runs for a request authentication rejects | Yes | No |
+| Post-hook counterpart | None | `HTTPTransportPostHook` |
+
+A plugin that must observe *every* request, including rejected ones, should not rely on `HTTPTransportPreHook` for that bookkeeping.
+
+<Note>
+`HTTPTransportPreAuthHook` is part of the `HTTPTransportPlugin` interface, so Go plugins compiled against v2.0 must define it. Plugins with nothing to do before authentication return `(nil, nil)`. Native `.so` plugins are unaffected unless they opt in: the symbol is looked up optionally, and a plugin that never exports it is skipped by the phase.
+</Note>
+
+See the [Plugin Migration Guide](/plugins/migration-guide) for the full hook contract.
+
+---
+
 ## Migration Checklist
 
 <Steps>
@@ -100,5 +255,25 @@ For any internal URL found above, add the host (or its CIDR) to `server.plugin_d
 
 <Step title="Confirm dashboard auth is configured before creating a custom-path plugin">
 If dashboard auth is disabled or unconfigured, `POST /api/plugins` and `PUT /api/plugins/{name}` will now reject any request that sets a custom `path`. Enable dashboard authentication first if you need to register a plugin with a custom binary path.
+</Step>
+
+<Step title="Move credential work in custom plugins to `HTTPTransportPreAuthHook`">
+Grep your plugins for writes to `x-bf-vk`, `Authorization`, `x-api-key`, `x-goog-api-key`, or `api-key` inside `HTTPTransportPreHook`. Any you find must move to `HTTPTransportPreAuthHook` — the rename is the whole migration, and the failure mode if you miss one is silent.
+</Step>
+
+<Step title="Move governance API callers to canonical `/api/governance` paths">
+Update API clients, scripts, Postman collections, and UI callers using the [endpoint mapping](#endpoint-mapping). On Enterprise, upgrade so it installs its Team read handler before Open Source route registration.
+</Step>
+
+<Step title="Replace `page` with `offset` on canonical Team and User list requests">
+Canonical Team and User list endpoints use `limit` and zero-based `offset`. Audit logs are unchanged and keep one-based `page`.
+</Step>
+
+<Step title="Grant `VirtualKeys:View` where a user's virtual keys are read">
+Any role or API key that reads `/api/governance/users/{user_id}/virtual-keys` with only `Users` permission needs `VirtualKeys:View` added (see [Permissions](#permissions)).
+</Step>
+
+<Step title="Monitor deprecated-route telemetry until alias traffic reaches zero">
+Legacy governance paths remain executable aliases for one complete GA release and return a `Deprecation` header. They are planned for removal in the following major release.
 </Step>
 </Steps>

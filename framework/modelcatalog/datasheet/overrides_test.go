@@ -471,6 +471,33 @@ func TestPatchPricing_CostPerRequestZero(t *testing.T) {
 	assert.Equal(t, 0.0, *patched.CostPerRequest)
 }
 
+func TestPatchPricing_MegapixelImageTiers(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "prunaai/p-image-upscale",
+		Provider: "replicate",
+		Mode:     "image_generation",
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerImageAbove4Megapixels:  bifrost.Ptr(0.01),
+		OutputCostPerImageAbove8Megapixels:  bifrost.Ptr(0.02),
+		OutputCostPerImageAbove16Megapixels: bifrost.Ptr(0.04),
+		OutputCostPerImageAbove32Megapixels: bifrost.Ptr(0.06),
+		OutputCostPerImageAbove64Megapixels: bifrost.Ptr(0.12),
+	})
+
+	require.NotNil(t, patched.OutputCostPerImageAbove4Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove8Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove16Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove32Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove64Megapixels)
+	assert.Equal(t, 0.01, *patched.OutputCostPerImageAbove4Megapixels)
+	assert.Equal(t, 0.02, *patched.OutputCostPerImageAbove8Megapixels)
+	assert.Equal(t, 0.04, *patched.OutputCostPerImageAbove16Megapixels)
+	assert.Equal(t, 0.06, *patched.OutputCostPerImageAbove32Megapixels)
+	assert.Equal(t, 0.12, *patched.OutputCostPerImageAbove64Megapixels)
+}
+
 func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	s := newTestStore()
 
@@ -958,4 +985,62 @@ func TestCatalogPricingOverrides_ReturnsDeepCopies(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, priced.InputCostPerToken)
 	assert.Equal(t, 3.0, *priced.InputCostPerToken, "runtime pricing must survive a caller mutating a catalog result")
+}
+
+func TestPatchPricing_InputCostPerQuery(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "rerank-v3.5",
+		Provider: "cohere",
+		Mode:     "rerank",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	})
+
+	require.NotNil(t, patched.InputCostPerQuery)
+	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
+}
+
+func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-image-1",
+		Provider: "openai",
+		Mode:     "image_generation",
+		OutputCostPerImageAbove1024x1024PixelsHighQuality: bifrost.Ptr(0.133),
+		OutputCostPerImageAbove1024x1536Pixels:            bifrost.Ptr(0.013),
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerImageAbove1024x1536Pixels:                bifrost.Ptr(0.015),
+		OutputCostPerImageAbove1536x1024Pixels:                bifrost.Ptr(0.016),
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   bifrost.Ptr(0.034),
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   bifrost.Ptr(0.05),
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   bifrost.Ptr(0.05),
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     bifrost.Ptr(0.2),
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     bifrost.Ptr(0.2),
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: bifrost.Ptr(0.013),
+	})
+
+	assert.Equal(t, 0.015, *patched.OutputCostPerImageAbove1024x1536Pixels)
+	assert.Equal(t, 0.016, *patched.OutputCostPerImageAbove1536x1024Pixels)
+	assert.Equal(t, 0.009, *patched.OutputCostPerImageAbove1024x1024PixelsLowQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1024x1536PixelsLowQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1536x1024PixelsLowQuality)
+	assert.Equal(t, 0.034, *patched.OutputCostPerImageAbove1024x1024PixelsMediumQuality)
+	assert.Equal(t, 0.05, *patched.OutputCostPerImageAbove1024x1536PixelsMediumQuality)
+	assert.Equal(t, 0.05, *patched.OutputCostPerImageAbove1536x1024PixelsMediumQuality)
+	assert.Equal(t, 0.2, *patched.OutputCostPerImageAbove1024x1536PixelsHighQuality)
+	assert.Equal(t, 0.2, *patched.OutputCostPerImageAbove1536x1024PixelsHighQuality)
+	assert.Equal(t, 0.009, *patched.OutputCostPerImageAbove1024x1024PixelsStandardQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1024x1536PixelsStandardQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1536x1024PixelsStandardQuality)
+
+	// Unpatched fields keep their base values.
+	assert.Equal(t, 0.133, *patched.OutputCostPerImageAbove1024x1024PixelsHighQuality)
 }

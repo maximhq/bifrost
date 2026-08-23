@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
@@ -2665,4 +2666,117 @@ func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTopPGateReadsDatasheet covers the datasheet side of the top_p strip.
+// top_p is the field the schema deliberately leaves untyped because its verdict
+// can be conditional, so both unsupported_fields and
+// conditionally_unsupported_fields have to drive it.
+func TestTopPGateReadsDatasheet(t *testing.T) {
+	t.Run("name_fallback_strips_for_reasoning_model", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "o3")
+		require.True(t, topPUnsupported(caps, "o3", "high"))
+		require.False(t, topPUnsupported(caps, "gpt-4o", ""))
+	})
+
+	t.Run("name_fallback_keeps_gpt5x_while_effort_none", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.4")
+		require.False(t, topPUnsupported(caps, "gpt-5.4", ""))
+		require.True(t, topPUnsupported(caps, "gpt-5.4", "high"))
+		require.True(t, topPUnsupported(caps, "gpt-5.4-pro", ""), "-pro always reasons")
+	})
+
+	t.Run("conditional_label_drives_both_directions", func(t *testing.T) {
+		const model = "some-conditional-reasoner"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTopP: schemas.ConditionWhenEffortNone,
+			},
+		})
+
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.False(t, topPUnsupported(caps, model, ""), "allowed while reasoning is off")
+		require.False(t, topPUnsupported(caps, model, "none"))
+		require.True(t, topPUnsupported(caps, model, "low"), "rejected once reasoning is on")
+	})
+
+	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
+		const model = "o3-with-top-p"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldTopP: false},
+		})
+		require.False(t, topPUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), model, "high"),
+			"an explicit false must beat the reasoning-model name check")
+	})
+}
+
+// TestReasoningContentBlocksGateReadsDatasheet covers the datasheet side of the
+// reasoning-shape gate. The gpt-oss name fallback is covered by
+// TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip and the Summary→blocks
+// conversion test; these pin that a record drives it on a model whose name says
+// otherwise, in both directions.
+func TestReasoningContentBlocksGateReadsDatasheet(t *testing.T) {
+	reasoningOnly := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{},
+		},
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text: schemas.Ptr("reasoning text"),
+			}},
+		},
+	}
+	summaryOnly := schemas.ResponsesMessage{
+		ID:     schemas.Ptr("msg-1"),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr("completed"),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{
+				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				Text: "a summary",
+			}},
+		},
+	}
+
+	convert := func(t *testing.T, model string, msg schemas.ResponsesMessage) []schemas.ResponsesMessage {
+		t.Helper()
+		result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: []schemas.ResponsesMessage{msg},
+		})
+		require.NotNil(t, result)
+		return result.Input.OpenAIResponsesRequestInputArray
+	}
+
+	t.Run("record_opts_a_non_oss_name_into_content_blocks", func(t *testing.T) {
+		const model = "some-content-block-reasoner"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsReasoningContentBlocks: new(true),
+		})
+
+		require.Len(t, convert(t, model, reasoningOnly), 1,
+			"a content-block model must keep reasoning-only messages")
+
+		out := convert(t, model, summaryOnly)
+		require.Len(t, out, 1)
+		require.NotNil(t, out[0].Content)
+		require.Len(t, out[0].Content.ContentBlocks, 1, "summaries must be rewritten as content blocks")
+	})
+
+	t.Run("record_opts_an_oss_name_out_of_content_blocks", func(t *testing.T) {
+		const model = "gpt-oss-summary-variant"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsReasoningContentBlocks: new(false),
+		})
+
+		require.Empty(t, convert(t, model, reasoningOnly),
+			"a summary model must skip reasoning-only content-block messages despite the gpt-oss name")
+
+		out := convert(t, model, summaryOnly)
+		require.Len(t, out, 1)
+		require.Nil(t, out[0].Content, "summaries must stay as summaries")
+	})
 }

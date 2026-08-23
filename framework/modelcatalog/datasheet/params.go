@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -125,7 +124,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 	var data []byte
 
 	if parsed.Scheme == "file" {
-		data, err = os.ReadFile(filePathFromURL(parsed))
+		data, err = os.ReadFile(FilePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
@@ -164,8 +163,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // applyModelParameters parses the raw model-parameters JSON and updates:
 //   - supportedResponseTypes (per-model normalized output types)
 //   - supportedParams (per-model accepted request parameter names)
-//   - the provider-utils ModelParams cache (max_output_tokens,
-//     vertex_multi_region_only)
+//   - the provider-utils model capability cache
 //
 // Models with no useful info contribute nothing — the indexes are wholly
 // replaced under mu.Lock so readers see either the pre- or post-sync state,
@@ -173,29 +171,36 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // bootstrap callers can distinguish "DB had rows but all malformed" from
 // "DB had usable rows".
 func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int {
-	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
 	newResponseTypes := make(map[string][]string, len(paramsData))
 	newParamsIndex := make(map[string][]string, len(paramsData))
 	applied := 0
 
 	for model, rawData := range paramsData {
-		var parsed modelParametersParseResult
-		if err := json.Unmarshal(rawData, &parsed); err != nil {
+		// One parse per row. ModelCapabilities covers the whole row: the flags
+		// providers read on the request path, and the endpoint/parameter surface
+		// the derived indexes below are built from.
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal(rawData, &caps); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("model-parameters-sync: skipping malformed parameters for model %s: %v", model, err)
 			}
 			continue
 		}
-		applied++
+		// A zero-value record contributes nothing to any index, and
+		// LoadModelCapabilities rejects it later anyway. Counting it would let a
+		// feed of empty rows clear the capability cache with nothing to refill it.
+		if !IsEmptyModelCapabilities(&caps) {
+			applied++
+		}
 
-		outputs := make([]string, 0, len(parsed.SupportedEndpoints))
-		for _, endpoint := range parsed.SupportedEndpoints {
+		outputs := make([]string, 0, len(caps.SupportedEndpoints))
+		for _, endpoint := range caps.SupportedEndpoints {
 			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" && !slices.Contains(outputs, normalized) {
 				outputs = append(outputs, normalized)
 			}
 		}
-		if parsed.Mode != nil {
-			if normalized := normalizeModeToOutputType(*parsed.Mode); normalized != "" && !slices.Contains(outputs, normalized) {
+		if caps.Mode != nil {
+			if normalized := normalizeModeToOutputType(*caps.Mode); normalized != "" && !slices.Contains(outputs, normalized) {
 				outputs = append(outputs, normalized)
 			}
 		}
@@ -218,19 +223,25 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 			newResponseTypes[model] = outputs
 		}
 
-		if supported := extractSupportedParams(&parsed); len(supported) > 0 {
+		if supported := extractSupportedParams(&caps); len(supported) > 0 {
 			newParamsIndex[model] = supported
 		}
 
-		var p struct {
-			MaxOutputTokens *int `json:"max_output_tokens"`
+	}
+
+	// A feed with nothing usable changes nothing: the derived indexes and the
+	// capability cache move together, or neither moves. Swapping the indexes
+	// while the guard below keeps the cache would leave the two describing
+	// different sheets — supportedParams feeds the compat parameter allowlist
+	// and the qualified-key suffix index, so an empty swap silently strips both
+	// while capability records still answer from the previous sheet.
+	//
+	// Every pod reloads from here on the gossip hook.
+	if applied == 0 {
+		if s.logger != nil {
+			s.logger.Warn("model-parameters-sync: no parseable records, keeping existing model parameters and capabilities")
 		}
-		if err := json.Unmarshal(rawData, &p); err == nil && (p.MaxOutputTokens != nil || parsed.VertexMultiRegionOnly != nil) {
-			modelParamsEntries[model] = providerUtils.ModelParams{
-				MaxOutputTokens:         p.MaxOutputTokens,
-				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
-			}
-		}
+		return applied
 	}
 
 	s.mu.Lock()
@@ -238,10 +249,63 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	s.supportedParams = newParamsIndex
 	s.mu.Unlock()
 
-	if len(modelParamsEntries) > 0 {
-		providerUtils.BulkSetModelParams(modelParamsEntries)
+	// Anything cached against the previous sheet — records and "no such model"
+	// alike — has to be re-resolved.
+	if s.onModelParametersApplied != nil {
+		s.onModelParametersApplied()
 	}
 	return applied
+}
+
+// SetOnModelParametersApplied registers a callback fired after a model-parameters
+// reload lands. The catalog uses it to drop capability records built from the
+// previous sheet; keeping it a hook means the sync path does not need to know
+// what caches exist above it.
+func (s *Store) SetOnModelParametersApplied(fn func()) {
+	s.onModelParametersApplied = fn
+}
+
+// LoadModelCapabilities resolves a runtime (provider, model) pair to its
+// capability record by reading datasheet rows out of the DB. It is the loader
+// behind the provider-utils capability cache, and it owns the key translation
+// that cache deliberately knows nothing about: the datasheet keys rows by a raw,
+// often provider-prefixed name ("azure/gpt-5.1-chat") while callers ask by bare
+// model plus provider.
+//
+// A row only answers for a model when its own provider matches, so an OpenAI
+// request for "o1" can never be served the "azure/o1" row.
+//
+// Returns (nil, nil) when nothing matches — the cache remembers that, so an
+// unknown model is looked up once rather than on every capability check. A
+// store failure returns an error instead, which keeps the caller from caching
+// "no capabilities" for a model whose row exists but was unreachable.
+func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.ModelProvider, model string) (*schemas.ModelCapabilities, error) {
+	if s.configStore == nil || model == "" {
+		return nil, nil
+	}
+	candidates := s.modelParameterCandidates(model)
+	for _, candidate := range candidates {
+		row, err := s.configStore.GetModelParametersByModel(ctx, candidate)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("load capabilities for %s/%s: %w", provider, candidate, err)
+		}
+		if row == nil {
+			continue
+		}
+		rowProvider := gjson.Get(row.Data, "provider").String()
+		if rowProvider == "" || normalizeProvider(rowProvider) != string(provider) {
+			continue
+		}
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal([]byte(row.Data), &caps); err != nil || IsEmptyModelCapabilities(&caps) {
+			continue
+		}
+		return &caps, nil
+	}
+	return nil, nil
 }
 
 // GetModelParametersByModel reads a single model-parameter row from the DB.
@@ -317,7 +381,16 @@ func (s *Store) modelParameterCandidates(model string) []string {
 		}
 	}
 	s.mu.RUnlock()
-	slices.Sort(qualified)
+	// Fewest path segments first, so the plain "azure/gpt-5.1-chat" is preferred
+	// over regional and vendor-path variants like "azure/eu/gpt-5.1-chat" — a
+	// caller naming the bare model means the plain row. Ties break
+	// lexicographically so resolution is the same on every pod.
+	slices.SortFunc(qualified, func(a, b string) int {
+		if n := strings.Count(a, "/") - strings.Count(b, "/"); n != 0 {
+			return n
+		}
+		return strings.Compare(a, b)
+	})
 	for _, key := range qualified {
 		add(key)
 	}

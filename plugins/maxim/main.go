@@ -4,6 +4,7 @@ package maxim
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +163,12 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 // GetName returns the name of the plugin.
 func (plugin *Plugin) GetName() string {
 	return PluginName
+}
+
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*Plugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // HTTPTransportPreHook is not used for this plugin
@@ -515,6 +522,27 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	return req, nil, nil
 }
 
+// addLatencyTags forwards Bifrost's upstream/overhead latency split onto the Maxim
+// generation and trace as tags. Maxim has no native field for the breakdown, so
+// tags are the channel, matching how model and dimensions are forwarded. A nil
+// value is left unreported so absent stays distinct from zero.
+func addLatencyTags(logger *logging.Logger, generationID, traceID string, upstreamMs, overheadMs *int64) {
+	add := func(key string, v *int64) {
+		if v == nil {
+			return
+		}
+		val := strconv.FormatInt(*v, 10)
+		if generationID != "" {
+			logger.AddTagToGeneration(generationID, key, val)
+		}
+		if traceID != "" {
+			logger.AddTagToTrace(traceID, key, val)
+		}
+	}
+	add("upstream_latency_ms", upstreamMs)
+	add("overhead_latency_ms", overheadMs)
+}
+
 // PostLLMHook is called after a request has been processed by Bifrost.
 // It completes the request trace by:
 // - Adding response data to the generation if a generation ID exists
@@ -566,9 +594,28 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	var reqHeaders map[string]string
 	if len(plugin.requestHeaders) > 0 {
 		allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-		reqHeaders = schemas.FilterHeaders(allHeaders, plugin.requestHeaders)
+		// Maxim captures from ctx directly (not trace.RequestHeaders), so redact
+		// credential-bearing headers here before forwarding them as tags.
+		reqHeaders = schemas.RedactSensitiveHeaders(schemas.FilterHeaders(allHeaders, plugin.requestHeaders))
 	}
 	hasReqHeaders := len(reqHeaders) > 0
+
+	// Bifrost's latency breakdown (time on provider sockets vs Bifrost's own cost),
+	// stamped onto ExtraFields before post-hooks run. Copied out here so the
+	// goroutine can forward them as tags without racing a reused context or result.
+	var upstreamLatencyMs, overheadLatencyMs *int64
+	if result != nil {
+		if ef := result.GetExtraFields(); ef != nil {
+			if v := ef.UpstreamLatency; v != nil {
+				u := *v
+				upstreamLatencyMs = &u
+			}
+			if v := ef.OverheadLatency; v != nil {
+				o := *v
+				overheadLatencyMs = &o
+			}
+		}
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -702,6 +749,8 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 		if hasTraceID && traceID != "" && modelTag != "" {
 			logger.AddTagToTrace(traceID, "model", string(modelTag))
 		}
+		// Forward Bifrost's upstream/overhead latency split, matching the logs UI.
+		addLatencyTags(logger, generationID, traceID, upstreamLatencyMs, overheadLatencyMs)
 		// add configured request headers as tags (prefixed to avoid colliding with other tags)
 		if hasReqHeaders {
 			for key, value := range reqHeaders {

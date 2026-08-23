@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -153,7 +154,9 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && canReconnect && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"}
+						disabled={
+							client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"
+						}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -561,10 +564,16 @@ export default function MCPClientsTable({
 
 	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
+	// Rendered on the empty branch too, not just the populated one: PageTitle
+	// draws nothing inline, and leaving it out drops the topbar to the
+	// route-derived fallback, which for this route reads "MCP Registry".
+	const pageTitle = <PageTitle title="MCP Server Catalog">Manage servers that can connect to the MCP Tools endpoint.</PageTitle>;
+
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
+				{pageTitle}
 				{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
 				<MCPServersEmptyState onAddClick={handleCreate} canCreate={hasCreateMCPClientAccess} />
 			</>
@@ -723,8 +732,8 @@ export default function MCPClientsTable({
 							</p>
 							{exchangeVerifyClient?.state === "pending_verification" ? (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose
-									tokens are exchanged automatically on every request.
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+									are exchanged automatically on every request.
 								</p>
 							) : (
 								<p className="text-muted-foreground/80 text-xs">
@@ -765,34 +774,105 @@ export default function MCPClientsTable({
 				</DialogContent>
 			</Dialog>
 
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
-					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
-				</div>
-				<div className="flex gap-2">
-					<MCPUsageGuideSheet />
-					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
-						<Link to="/workspace/mcp-registry/library">
-							<Box />
-							<span className="hidden sm:inline">Library</span>
-						</Link>
-					</Button>
-					<Button
-						onClick={handleCreate}
-						disabled={!hasCreateMCPClientAccess}
-						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
-						className="h-8 gap-2"
-					>
-						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
-					</Button>
-				</div>
-			</div>
+			{/* Mirrors OAuth2Authorizer's confirm-step layout (icon header, muted
+			    info box, outline-cancel + default-continue footer) so token_exchange
+			    reverification reads as the same kind of admin-credential action,
+			    not a destructive one. */}
+			<Dialog
+				open={!!exchangeVerifyClient}
+				onOpenChange={(next) => {
+					// Keep the dialog open (with a spinner) for the duration of the
+					// verify call itself, so there's visible feedback while the
+					// backend does the token exchange + live connect + tools/list
+					// round trip, instead of closing immediately on "Continue" and
+					// leaving nothing on screen until the toast lands.
+					if (!next && !(exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id))) {
+						setExchangeVerifyClient(null);
+					}
+				}}
+			>
+				<DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
+					<DialogHeader className="border-b px-5 py-4 text-left">
+						<div className="flex items-start gap-3">
+							<IconWrap
+								variant={
+									exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? "info" : "muted"
+								}
+								icon={
+									exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
+										<Loader2 className="size-4 animate-spin" />
+									) : (
+										<KeyRound className="size-4" />
+									)
+								}
+							/>
+							<div className="min-w-0 space-y-0.5">
+								<DialogTitle className="text-sm leading-snug font-medium">
+									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
+								</DialogTitle>
+								<DialogDescription className="text-xs leading-relaxed">
+									{exchangeVerifyClient?.state === "pending_verification"
+										? "Establish Bifrost's discovery credential using your identity."
+										: "Renew Bifrost's own discovery credential using your identity."}
+								</DialogDescription>
+							</div>
+						</div>
+					</DialogHeader>
+					<div className="space-y-3 px-5 py-4">
+						<InfoBox icon={<KeyRound className="size-4" />}>
+							<p>
+								This exchanges your own signed-in identity to{" "}
+								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
+								<strong>{exchangeVerifyClient?.config.name}</strong>.
+							</p>
+							{exchangeVerifyClient?.state === "pending_verification" ? (
+								<p className="text-muted-foreground/80 text-xs">
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+									are exchanged automatically on every request.
+								</p>
+							) : (
+								<p className="text-muted-foreground/80 text-xs">
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
+									running it any time is safe.
+								</p>
+							)}
+						</InfoBox>
+						<div className="flex justify-end gap-2">
+							<Button
+								size="sm"
+								variant="outline"
+								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
+								onClick={() => setExchangeVerifyClient(null)}
+								data-testid="verify-exchange-cancel-btn"
+							>
+								Cancel
+							</Button>
+							<Button
+								size="sm"
+								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
+								onClick={async () => {
+									if (!exchangeVerifyClient) return;
+									const client = exchangeVerifyClient;
+									await handleVerifyExchange(client);
+									setExchangeVerifyClient(null);
+								}}
+								data-testid="verify-exchange-confirm-btn"
+							>
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
+									<Loader2 className="size-3.5 animate-spin" />
+								) : null}
+								Continue
+							</Button>
+						</div>
+					</div>
+				</DialogContent>
+			</Dialog>
 
-			{/* Toolbar: Search */}
-			<div className="mb-4 flex items-center gap-3">
+			{/* Toolbar: Search + Actions */}
+			<div className="mb-4 flex flex-wrap items-center gap-3">
+				{pageTitle}
+
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -816,15 +896,32 @@ export default function MCPClientsTable({
 						<X className="size-3" />
 					</Button>
 				)}
+
+				<div className="flex gap-2 sm:ml-auto">
+					<MCPUsageGuideSheet />
+					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
+						{/* The label is hidden below sm, leaving a bare icon. */}
+						<Link to="/workspace/mcp-registry/library" aria-label="MCP server library">
+							<Box />
+							<span className="hidden sm:inline">Library</span>
+						</Link>
+					</Button>
+					<Button
+						onClick={handleCreate}
+						disabled={!hasCreateMCPClientAccess}
+						data-testid="create-mcp-client-btn"
+						aria-label="New MCP Server"
+						className="h-8 gap-2"
+					>
+						<Plus />
+						<span className="hidden sm:inline">New MCP Server</span>
+					</Button>
+				</div>
 			</div>
 
 			<div className="flex grow flex-col overflow-hidden">
 				<div className="mb-2 grow overflow-hidden rounded-sm border">
-					<Table
-						data-testid="mcp-clients-table"
-						containerClassName="h-full overflow-auto"
-						className="w-full min-w-[1516px] table-fixed"
-					>
+					<Table data-testid="mcp-clients-table" containerClassName="h-full overflow-auto" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[260px] font-semibold">Name</TableHead>
@@ -874,18 +971,31 @@ export default function MCPClientsTable({
 							) : (
 								mcpClients.map((c: MCPClient) => {
 									const canReconnect = canReconnectMCPClient(c.config);
-									const enabledToolsCount =
-										c.state == "healthy"
-											? c.config.tools_to_execute?.includes("*")
-												? c.tools?.length
-												: (c.config.tools_to_execute?.length ?? 0)
-											: 0;
-									const autoExecuteToolsCount =
-										c.state == "healthy"
-											? c.config.tools_to_auto_execute?.includes("*")
-												? c.tools?.length
-												: (c.config.tools_to_auto_execute?.length ?? 0)
-											: 0;
+									// Tool counts come from the last successful discovery, which is
+									// deliberately retained across a failed connection check, so an
+									// "unstable" (or degraded/needs_reauth) client still has a real
+									// tool list to report. Gate on the list itself rather than on
+									// "healthy" so only the states that genuinely have no discovered
+									// tools (pending_verification, error, a disabled shared client)
+									// fall back to a dash.
+									//
+									// Both lists are matched against the discovered names: nothing
+									// prunes a tool name from the config when the upstream server
+									// stops exposing it, so an unfiltered length can exceed the
+									// number of tools that actually exist. Auto-execute is further
+									// narrowed to the enabled set, mirroring canAutoExecuteTool,
+									// which requires a tool to pass tools_to_execute first.
+									const discoveredToolNames = new Set(c.tools?.map((tool) => tool.name) ?? []);
+									const enabledToolNames = c.config.tools_to_execute?.includes("*")
+										? discoveredToolNames
+										: new Set((c.config.tools_to_execute ?? []).filter((name) => discoveredToolNames.has(name)));
+									const autoExecuteToolNames = c.config.tools_to_auto_execute?.includes("*")
+										? enabledToolNames
+										: new Set((c.config.tools_to_auto_execute ?? []).filter((name) => enabledToolNames.has(name)));
+									const toolCount = discoveredToolNames.size;
+									const hasDiscoveredTools = toolCount > 0;
+									const enabledToolsCount = enabledToolNames.size;
+									const autoExecuteToolsCount = autoExecuteToolNames.size;
 									return (
 										<TableRow key={c.config.client_id} className="group hover:bg-muted/50 transition-colors">
 											<TableCell className="font-medium">
@@ -900,17 +1010,12 @@ export default function MCPClientsTable({
 											</TableCell>
 											<TableCell data-testid="mcp-client-auth-type">{getAuthTypeDisplay(c.config.auth_type)}</TableCell>
 											<TableCell data-testid="mcp-client-auth-scope">{getAuthScopeDisplay(c.config.auth_type)}</TableCell>
-											<TableCell>
-												<Badge
-													className={
-														c.state == "healthy"
-															? c.config.is_code_mode_client
-																? "bg-green-100 text-green-800"
-																: "bg-gray-100 text-gray-800"
-															: ""
-													}
-												>
-													{c.state == "healthy" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
+											<TableCell data-testid="mcp-client-code-mode">
+												{/* Pure config, valid whatever the connection state is: a server
+												    that can't be reached right now is still configured for code
+												    mode or not. */}
+												<Badge className={c.config.is_code_mode_client ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
+													{c.config.is_code_mode_client ? "Enabled" : "Disabled"}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
@@ -920,19 +1025,19 @@ export default function MCPClientsTable({
 														? `${c.vk_configs.length} ${c.vk_configs.length === 1 ? "VK" : "VKs"}`
 														: "None"}
 											</TableCell>
-											<TableCell>
-												{c.state == "healthy" ? (
+											<TableCell data-testid="mcp-client-enabled-tools">
+												{hasDiscoveredTools ? (
 													<>
-														{enabledToolsCount}/{c.tools?.length}
+														{enabledToolsCount}/{toolCount}
 													</>
 												) : (
 													"-"
 												)}
 											</TableCell>
-											<TableCell>
-												{c.state == "healthy" ? (
+											<TableCell data-testid="mcp-client-auto-execute-tools">
+												{hasDiscoveredTools ? (
 													<>
-														{autoExecuteToolsCount}/{c.tools?.length}
+														{autoExecuteToolsCount}/{toolCount}
 													</>
 												) : (
 													"-"

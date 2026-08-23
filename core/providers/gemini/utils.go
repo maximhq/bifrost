@@ -22,30 +22,82 @@ import (
 
 var defaultGeminiImageURLSchemes = []string{"http", "https"}
 
-// isGemini3Plus returns true if the model is Gemini 3.0 or higher
-// Uses simple string operations for hot path performance
+// isGemini3Plus returns true if the model is Gemini 3.0 or higher.
+// Uses simple string operations for hot path performance.
 func isGemini3Plus(model string) bool {
-	// Convert to lowercase for case-insensitive comparison
 	model = strings.ToLower(model)
-
-	// Find "gemini-" prefix
 	idx := strings.Index(model, "gemini-")
 	if idx == -1 {
 		return false
 	}
-
-	// Get the part after "gemini-"
 	afterPrefix := model[idx+7:] // len("gemini-") = 7
 	if len(afterPrefix) == 0 {
 		return false
 	}
-
-	// Check first character - must be a digit, and '3' or higher for 3.0+
 	firstChar := afterPrefix[0]
 	if firstChar < '0' || firstChar > '9' {
 		return false
 	}
 	return firstChar >= '3'
+}
+
+// ---- Name-based capability defaults ----
+//
+// Used when the datasheet publishes no row for a (provider, model) pair. Every
+// caps gate in this package passes one of these as its fallback, so the whole
+// compatibility layer lives here and is deletable once the feed carries data.
+
+// defaultSupportsReasoning matches Gemini models with a thinking surface:
+// explicitly-named thinking models, the 2.5 series, and 3.0+.
+func defaultSupportsReasoning(model string) bool {
+	modelLower := strings.ToLower(model)
+	if strings.Contains(modelLower, "thinking") || strings.Contains(modelLower, "gemini-2.5") {
+		return true
+	}
+	return isGemini3Plus(model)
+}
+
+// defaultCanDisableReasoning: Gemini 2.5 Pro rejects a zero thinking budget, so
+// the config has to be omitted rather than explicitly disabled.
+func defaultCanDisableReasoning(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
+}
+
+
+// defaultEffortControl is the thinkingLevel surface for Gemini 3+, taken from
+// the per-model rung table below. nil for models that take a budget instead,
+// which is what tells callers to convert an effort into thinkingBudget.
+func defaultEffortControl(model string) *schemas.EffortControl {
+	if !isGemini3Plus(model) {
+		return nil
+	}
+	// No Renames: the rung set is authoritative and NormalizeReasoningEffort
+	// clamps onto it, so "medium" on a low/high model lands on "high" without a
+	// second mechanism saying the same thing.
+	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
+}
+
+// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
+// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
+var geminiBudgetRanges = []struct {
+	prefix   string
+	min, max int
+}{
+	{"gemini-2.5-flash-lite", 512, 24576},
+	{"gemini-2.5-pro", 128, 32768},
+	{"gemini-2.5-flash", 0, 24576},
+}
+
+// defaultBudgetControl returns the published thinking-budget range, or nil when
+// the model publishes none and validation should be skipped.
+func defaultBudgetControl(model string) *schemas.BudgetControl {
+	modelLower := strings.ToLower(model)
+	for _, entry := range geminiBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
+		}
+	}
+	return nil
 }
 
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
@@ -268,7 +320,8 @@ func clampThinkingLevel(level string, model string) string {
 	return best
 }
 
-func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
+func setThinkingBudgetZeroIfSupported(config *GenerationConfig, caps schemas.ModelCaps) {
+	model := caps.Model()
 	// Gemini 3 cannot turn thinking off. Depth is controlled by thinkingLevel and the
 	// floor is the model's lowest supported rung, so a "none" effort clamps to that rung
 	// instead of zeroing the budget. Sending thinkingBudget:0 here used the pre-3.0
@@ -285,7 +338,7 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
 		config.ThinkingConfig.ThinkingLevel = schemas.Ptr(lowestThinkingLevel(model))
 		return
 	}
-	if !canDisableThinkingWithBudget(model) {
+	if !caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
 		config.ThinkingConfig = nil
 		return
 	}
@@ -296,74 +349,59 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
 	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 }
 
-// effortToThinkingLevel converts reasoning effort to a Gemini ThinkingLevel string,
-// clamped to the levels the target model implements. Returns "" for "none", which
+// effortToThinkingLevel converts reasoning effort to a Gemini ThinkingLevel,
+// clamped to the rungs the target model implements. Returns "" for "none", which
 // callers handle through setThinkingBudgetZeroIfSupported instead.
-func effortToThinkingLevel(effort string, model string) string {
-	var desired string
-	switch effort {
-	case "none":
+//
+// The rung set comes from the datasheet when it publishes one, otherwise from
+// geminiThinkingLevelSupport below; NormalizeReasoningEffort does the clamping,
+// snapping to the nearest supported rung and breaking ties upward.
+func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
+	if effort == schemas.ReasoningEffortNone {
 		return "" // Empty string for no thinking
-	case "minimal":
-		desired = "minimal"
-	case "low":
-		desired = "low"
-	case "medium":
-		desired = "medium"
-	case "high", "xhigh", "max":
-		desired = "high"
-	default:
-		desired = "medium"
 	}
-	return clampThinkingLevel(desired, model)
+	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model()))
 }
 
-func getThinkingBudgetRange(model string, defaultMaxTokens int) thinkingBudgetRange {
-	modelLower := strings.ToLower(model)
-	for _, entry := range thinkingBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			return entry.r
-		}
-	}
-	// Fallback for unknown thinking-capable models
-	return thinkingBudgetRange{Min: DefaultReasoningMinBudget, Max: defaultMaxTokens}
+func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
+	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, defaultBudgetControl(caps.Model()))
+	return thinkingBudgetRange{Min: min, Max: max}
 }
 
 // validateThinkingBudget returns an error if the explicit thinking budget is outside the
-// model's allowed range. Budget 0 (disable) and -1 (dynamic) are always valid.
-// Models not present in thinkingBudgetRanges are skipped — limits are only enforced
-// for models whose ranges are explicitly known.
-func validateThinkingBudget(model string, budget int) error {
-	if budget == 0 || budget == DynamicReasoningBudget {
-		return nil // 0 = disable thinking, -1 = dynamic
+// model's allowed range. Budget 0 (disable) is always valid; -1 (dynamic) is valid unless
+// a datasheet row says otherwise. Models with no known range are skipped — limits are only
+// enforced when the datasheet or the static fallback publishes one.
+func validateThinkingBudget(caps schemas.ModelCaps, budget int) error {
+	if budget == 0 {
+		return nil // disable thinking
+	}
+	if budget == DynamicReasoningBudget {
+		if caps.SupportsDynamicReasoningBudget(true) {
+			return nil
+		}
+		return fmt.Errorf("thinking budget -1 (dynamic) is not supported for model %s", caps.Model())
 	}
 	if budget < 0 {
 		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
 	}
-	modelLower := strings.ToLower(model)
-
-	var budgetRange thinkingBudgetRange
-	found := false
-	for _, entry := range thinkingBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			budgetRange = entry.r
-			found = true
-			break
-		}
-	}
-	if !found {
+	min, max, ok := caps.ReasoningBudgetRange(0, defaultBudgetControl(caps.Model()))
+	if !ok {
 		return nil // skip validation
 	}
-	if budget < budgetRange.Min {
-		return fmt.Errorf("thinking budget %d is below the minimum of %d for model %s", budget, budgetRange.Min, model)
+	if budget < min {
+		return fmt.Errorf("thinking budget %d is below the minimum of %d for model %s", budget, min, caps.Model())
 	}
-	if budget > budgetRange.Max {
-		return fmt.Errorf("thinking budget %d exceeds the maximum of %d for model %s", budget, budgetRange.Max, model)
+	if budget > max {
+		return fmt.Errorf("thinking budget %d exceeds the maximum of %d for model %s", budget, max, caps.Model())
 	}
 	return nil
 }
 
-func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
+// capModel is the provider-stripped model used for catalog and capability
+// lookups; r.Model keeps the wire form, which still carries the prefix some
+// checks below rely on.
+func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters(provider schemas.ModelProvider, capModel string) *schemas.ResponsesParameters {
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
@@ -395,11 +433,11 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		}
 
 		// Determine max tokens for conversions
-		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
-		budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
+		budgetRange := getThinkingBudgetRange(schemas.ResolveModelCaps(provider, capModel), maxTokens)
 
 		// Priority: Budget first (if present), then Level
 		if config.ThinkingConfig.ThinkingBudget != nil {
@@ -1265,7 +1303,7 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) (GenerationConfig, error) {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, provider schemas.ModelProvider, model string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -1301,32 +1339,33 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		config.FrequencyPenalty = &penalty
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(model) {
+	caps := schemas.ResolveModelCaps(provider, model)
+	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(model)) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(model) // Check if model is 3.0+
+		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(model)) // thinkingLevel vs thinkingBudget
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			setThinkingBudgetZeroIfSupported(&config, model)
+			setThinkingBudgetZeroIfSupported(&config, caps)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				setThinkingBudgetZeroIfSupported(&config, model)
+				setThinkingBudgetZeroIfSupported(&config, caps)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(model, budget); err != nil {
+				if err := validateThinkingBudget(caps, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -1335,15 +1374,15 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				if level := effortToThinkingLevel(*params.Reasoning.Effort, model); level != "" {
+				if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
 					config.ThinkingConfig.ThinkingLevel = &level
 				}
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, model, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(model, maxTokens)
+				budgetRange := getThinkingBudgetRange(caps, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
@@ -1406,7 +1445,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
 	if len(params.Tools) > 0 &&
 		config.ResponseMIMEType == "application/json" &&
-		!isGemini3Plus(model) {
+		!caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
 		config.ResponseMIMEType = ""
 		config.ResponseJSONSchema = nil
 	}
