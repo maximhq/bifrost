@@ -704,7 +704,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// (verified live 2026-08-23).
 					if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
 						SupportsProviderEffort(bifrostReq.Provider, capModel) {
-						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
 						if bifrostReq.Provider == schemas.Alibaba {
 							anthropicReq.Thinking = nil
 						}
@@ -715,7 +715,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
-					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, effort)
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
 				} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
 					// Opus 4.5: native effort + budget_tokens thinking.
 					// z.ai (GLM-5.2+) takes the same shape — the mount maps the
@@ -723,7 +723,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// effort + thinking_budget together and engages thinking
 					// itself from the effort value, so the effort is forwarded
 					// alone there (verified live 2026-08-23).
-					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, effort)
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
 					if bifrostReq.Provider != schemas.Alibaba {
 						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 						if err != nil {

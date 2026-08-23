@@ -189,14 +189,18 @@ type ProviderFeatureSupport struct {
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
-	// OutputConfigEffort marks non-Anthropic Anthropic-compatible mounts whose vendor
-	// documents output_config.effort as an accepted extension field. Anthropic's own
+	// OutputConfigEffort marks non-Anthropic Anthropic-compatible mounts that honor
+	// output_config.effort as an extension field. Anthropic's own
 	// support stays model-gated via SupportsEffortParameter; this flag covers vendors
-	// whose mounts accept (and server-side map) the field for specific model families —
-	// see providerSupportsEffortModel for the per-vendor model scope.
-	// Cites: Z = https://docs.z.ai/guides/capabilities/thinking (GLM-5.2+),
-	// Q = https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
-	// (qwen3.8-max, hosted glm-5.2, deepseek-v4-pro/flash).
+	// whose mounts accept (and, where documented, server-side map) the field for
+	// specific model families — see providerSupportsEffortModel for the per-vendor
+	// model scope.
+	// Cites: Z = https://docs.z.ai/guides/capabilities/thinking (GLM-5.2+ — documented
+	// there); Q = https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
+	// (mount shape). Note Q documents NO effort field on the Anthropic mount — Model
+	// Studio honors output_config.effort as an undocumented passthrough to its
+	// OpenAI-dialect backend, whose per-model reasoning_effort ladder is documented
+	// on the Model Studio model page (live-verified 2026-08-23).
 	OutputConfigEffort bool
 }
 
@@ -367,11 +371,14 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		OutputConfigEffort:  true,
 		InterleavedThinking: true,
 	},
-	// Alibaba — Model Studio's /apps/anthropic mount documents output_config.effort
-	// for qwen3.8-max (xhigh/medium/low; max,high→xhigh), hosted glm-5.2 and
-	// deepseek-v4-pro/flash (high/max; low,medium→high, xhigh→max). The vendor maps
-	// out-of-enum values itself, so values pass through verbatim; the model scope is
-	// enforced in providerSupportsEffortModel. Cite: Q (verified 2026-08-16).
+	// Alibaba — Model Studio's /apps/anthropic mount documents no effort field
+	// (its API page omits output_config.effort entirely); the field is nonetheless
+	// honored live: the mount proxies Messages to its OpenAI-dialect backend, which
+	// validates output_config.effort against the per-model reasoning_effort ladder
+	// documented on the Model Studio model page — it does NOT map out-of-enum values
+	// server-side (max 400s). Bifrost forwards the field with the per-model clamp in
+	// clampAlibabaMountEffortForModel; the model scope is enforced in
+	// providerSupportsEffortModel. Empirical contract, live-verified 2026-08-23.
 	schemas.Alibaba: {
 		OutputConfigEffort: true,
 	},

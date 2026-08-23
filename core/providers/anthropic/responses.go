@@ -4188,7 +4188,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					// Preserve a co-present effort — these models support
 					// output_config.effort, and the budget is otherwise dropped.
 					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
 					}
 				} else {
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
@@ -4214,7 +4214,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					// (verified live 2026-08-23).
 					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
 						SupportsProviderEffort(bifrostReq.Provider, capModel) {
-						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
 						if bifrostReq.Provider == schemas.Alibaba {
 							anthropicReq.Thinking = nil
 						}
@@ -4229,7 +4229,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				// SupportsProviderEffort: vendor mounts (z.ai, Model Studio) keep the
 				// field for their documented families too.
 				if SupportsProviderEffort(bifrostReq.Provider, capModel) {
-					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, MapBifrostEffortToAnthropic(native.Effort))
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(native.Effort))
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil {
@@ -4239,7 +4239,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
-							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, effort)
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
 						} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
 							// Opus 4.5: native effort + budget_tokens thinking.
 							// z.ai (GLM-5.2+) takes the same shape — the mount maps
@@ -4247,7 +4247,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// rejects effort + thinking_budget together and engages
 							// thinking itself from the effort value, so the effort is
 							// forwarded alone there (verified live 2026-08-23).
-							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, effort)
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
 							if bifrostReq.Provider != schemas.Alibaba {
 								budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 								if err != nil {
@@ -4288,7 +4288,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						// to signal reasoning-off, so restore it from what they sent.
 						if native, ok := anthropicNativeEffortFrom(ctx); ok && native.Effort != "" &&
 							SupportsProviderEffort(bifrostReq.Provider, capModel) {
-							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, MapBifrostEffortToAnthropic(native.Effort))
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(native.Effort))
 						}
 					}
 				}

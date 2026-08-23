@@ -23,13 +23,15 @@ import (
 //   - Alibaba Cloud Model Studio /apps/anthropic (schemas.Alibaba):
 //     output_config.effort documented for qwen3.8-max, hosted glm-5.2 and
 //     deepseek-v4-pro/flash. The mount does NOT map out-of-enum values
-//     server-side: it validates the field against its internal chat-completions
-//     reasoning_effort enum (none/minimal/low/medium/high/xhigh) and 400s on
-//     anything else ("'reasoning_effort' must be one of: ...", verified live
-//     2026-08-23), so the gateway clamps max→xhigh itself and forwards the rest
-//     verbatim. The mount also rejects effort and thinking_budget set together
-//     and engages thinking on its own from the effort value, so a forwarded
-//     effort travels alone (no synthesized thinking field).
+//     server-side: it validates the field against the per-model
+//     reasoning_effort enum and 400s on anything else ("'reasoning_effort'
+//     must be one of: ...", verified live 2026-08-23), so the gateway emits
+//     only each family's officially valid values (see
+//     clampAlibabaMountEffortForModel for the per-model matrix; vendor API
+//     docs supplied 2026-08-23). The mount also rejects effort and
+//     thinking_budget set together and engages thinking on its own from the
+//     effort value, so a forwarded effort travels alone (no synthesized
+//     thinking field).
 //     Source: https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
 //   - Kimi /anthropic (schemas.Kimi): unofficial empirical contract
 //     (MoonshotAI/Kimi-K2#129) — no effort equivalent documented, so effort
@@ -277,11 +279,17 @@ func TestZhipuAnthropicMount_EffortDroppedBelowGLM52(t *testing.T) {
 
 // TestAlibabaAnthropicMount_EffortRoundTrip covers the Model Studio families
 // with documented effort support. The mount validates the value against its
-// chat-completions reasoning_effort enum (none/minimal/low/medium/high/xhigh)
-// and rejects out-of-enum values instead of mapping them server-side (verified
+// per-model reasoning_effort enum instead of mapping it server-side (verified
 // live 2026-08-23: a forwarded "max" drew "'reasoning_effort' must be one of:
-// 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"), so the gateway clamps
-// max→xhigh and everything in the enum passes through verbatim.
+// ..."), so the gateway emits only each family's officially valid values
+// (vendor API docs supplied 2026-08-23; see clampAlibabaMountEffortForModel):
+//
+//   - qwen3.8-max: valid xhigh/medium/low; max clamps to xhigh.
+//   - glm-5.2/5.1/5 and non-dated deepseek-v4-pro/flash: valid high/max;
+//     xhigh→max, low/medium→high, minimal/none→low.
+//   - glm-5.3+: valid max/high/low; xhigh→max, medium→high, minimal/none→low.
+//   - deepseek-v4-pro-0813 / deepseek-v4-flash-0731: valid max/high/low;
+//     xhigh/medium→high, minimal/none→low.
 func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -291,10 +299,29 @@ func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 		{"qwen3.8-max", "medium", "medium"},
 		{"qwen3.8-max", "low", "low"},
 		{"qwen3.8-max", "max", "xhigh"}, // out of the mount enum; gateway clamps to the top tier
-		{"glm-5.2", "max", "xhigh"},
-		{"glm-5.2", "low", "low"},
-		{"deepseek-v4-pro", "max", "xhigh"},
-		{"deepseek-v4-flash-0731", "xhigh", "xhigh"},
+		{"glm-5.2", "max", "max"},
+		{"glm-5.2", "xhigh", "max"},
+		{"glm-5.2", "high", "high"},
+		{"glm-5.2", "low", "high"},
+		{"glm-5.2", "medium", "high"},
+		// "minimal" is covered in TestClampAlibabaMountEffortForModel: the
+		// conversion pre-maps minimal→low (MapBifrostEffortToAnthropic) before
+		// the clamp runs, so on this wire path it lands on "high" — the
+		// clamp's own minimal→low rule applies to raw/native bodies.
+		{"glm-5.3", "max", "max"},
+		{"glm-5.3", "high", "high"},
+		{"glm-5.3", "low", "low"},
+		{"glm-5.3", "xhigh", "max"},
+		{"glm-5.3", "medium", "high"},
+		{"glm-5.3", "none", "low"},
+		{"deepseek-v4-pro", "max", "max"},
+		{"deepseek-v4-pro", "xhigh", "max"},
+		{"deepseek-v4-pro-0813", "max", "max"},
+		{"deepseek-v4-pro-0813", "xhigh", "high"},
+		{"deepseek-v4-flash-0731", "medium", "high"},
+		// Case variants: provider-prefixed / mixed-case model strings.
+		{"ZHIPU/GLM-5.3", "xhigh", "max"},
+		{"alibaba/glm-5.2", "max", "max"},
 	}
 	for _, tc := range supported {
 		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
@@ -327,6 +354,84 @@ func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 				assert.Nil(t, out.OutputConfig.Effort, "%s has no documented effort support on Model Studio", model)
 			}
 		})
+	}
+}
+
+// TestClampAlibabaMountEffortForModel pins the full per-model clamp matrix on
+// the alibaba Anthropic mount directly (vendor API docs supplied 2026-08-23).
+// Every output is an officially valid value for the model family — the mount
+// validates against its per-model enum instead of mapping server-side.
+func TestClampAlibabaMountEffortForModel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model  string
+		effort string
+		want   string
+	}{
+		// qwen3.8-max: max→xhigh, everything else verbatim (unchanged).
+		{"qwen3.8-max", "max", "xhigh"},
+		{"qwen3.8-max", "xhigh", "xhigh"},
+		{"qwen3.8-max", "high", "high"},
+		{"qwen3.8-max", "low", "low"},
+		// glm-5.2/5.1: valid high/max; xhigh→max, low/medium→high, minimal/none→low.
+		{"glm-5.2", "max", "max"},
+		{"glm-5.2", "xhigh", "max"},
+		{"glm-5.2", "high", "high"},
+		{"glm-5.2", "low", "high"},
+		{"glm-5.2", "medium", "high"},
+		{"glm-5.2", "minimal", "low"},
+		{"glm-5.2", "none", "low"},
+		{"glm-5.1", "max", "max"},
+		{"glm-5.1", "xhigh", "max"},
+		// glm-5.3+: valid max/high/low; xhigh→max, medium→high, minimal/none→low.
+		{"glm-5.3", "max", "max"},
+		{"glm-5.3", "high", "high"},
+		{"glm-5.3", "low", "low"},
+		{"glm-5.3", "xhigh", "max"},
+		{"glm-5.3", "medium", "high"},
+		{"glm-5.3", "minimal", "low"},
+		{"glm-5.3", "none", "low"},
+		// Non-dated deepseek-v4: same family as glm-5.2 (valid high/max).
+		{"deepseek-v4-pro", "max", "max"},
+		{"deepseek-v4-pro", "xhigh", "max"},
+		{"deepseek-v4-pro", "low", "high"},
+		{"deepseek-v4-flash", "medium", "high"},
+		// Dated snapshots: valid max/high/low; xhigh/medium→high, minimal/none→low.
+		{"deepseek-v4-pro-0813", "max", "max"},
+		{"deepseek-v4-pro-0813", "high", "high"},
+		{"deepseek-v4-pro-0813", "low", "low"},
+		{"deepseek-v4-pro-0813", "xhigh", "high"},
+		{"deepseek-v4-pro-0813", "medium", "high"},
+		{"deepseek-v4-pro-0813", "minimal", "low"},
+		{"deepseek-v4-flash-0731", "max", "max"},
+		{"deepseek-v4-flash-0731", "xhigh", "high"},
+		{"deepseek-v4-flash-0731", "medium", "high"},
+		{"deepseek-v4-flash-0731", "none", "low"},
+		// Case variants: provider-prefixed / mixed-case model strings.
+		{"ZHIPU/GLM-5.3", "xhigh", "max"},
+		{"ZHIPU/GLM-5.3", "medium", "high"},
+		{"alibaba/glm-5.2", "max", "max"},
+		{"alibaba/glm-5.2", "low", "high"},
+		// Anything else verbatim — kimi-k3 never reaches the clamp (its effort
+		// is stripped upstream by the provider effort gate).
+		{"kimi-k3", "max", "max"},
+		{"qwen3.7-plus", "max", "max"},
+		{"MiniMax-M2.5", "xhigh", "xhigh"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			assert.Equal(t, tc.want, clampAlibabaMountEffortForModel(tc.model, tc.effort),
+				"clampAlibabaMountEffortForModel(%s, %s)", tc.model, tc.effort)
+		})
+	}
+
+	// The provider gate: only the alibaba profile clamps; zhipu forwards
+	// verbatim (Coding Plan maps out-of-scale values server-side).
+	assert.Equal(t, "max", clampAlibabaMountEffortFor(schemas.Alibaba, "glm-5.3", "xhigh"))
+	for _, provider := range []schemas.ModelProvider{schemas.Zhipu, schemas.Kimi, schemas.Anthropic} {
+		assert.Equal(t, "xhigh", clampAlibabaMountEffortFor(provider, "glm-5.3", "xhigh"),
+			"provider %s must not clamp (verbatim rule preserved)", provider)
 	}
 }
 
@@ -586,7 +691,8 @@ func TestStripUnsupportedAnthropicFields_ProviderEffort(t *testing.T) {
 		{"zhipu glm-5.2[1m] keeps", schemas.Zhipu, "glm-5.2[1m]", true, "max"},
 		{"zhipu glm-4.7 strips", schemas.Zhipu, "glm-4.7", false, ""},
 		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true, "xhigh"},
-		{"alibaba deepseek keeps", schemas.Alibaba, "deepseek-v4-pro", true, "xhigh"},
+		{"alibaba glm-5.2 keeps", schemas.Alibaba, "glm-5.2", true, "max"},
+		{"alibaba deepseek keeps", schemas.Alibaba, "deepseek-v4-pro", true, "max"},
 		{"alibaba qwen3.7 strips", schemas.Alibaba, "qwen3.7-plus", false, ""},
 		{"kimi strips", schemas.Kimi, "kimi-k3", false, ""},
 		{"anthropic haiku strips", schemas.Anthropic, "claude-haiku-4-5", false, ""},
@@ -605,7 +711,8 @@ func TestStripUnsupportedAnthropicFields_ProviderEffort(t *testing.T) {
 				require.NotNil(t, req.OutputConfig.Effort)
 				// z.ai maps out-of-scale values server-side, so max stays
 				// verbatim there; Model Studio rejects out-of-enum values, so
-				// the strip pass clamps max→xhigh for the alibaba profile.
+				// the strip pass clamps to each family's officially valid
+				// values for the alibaba profile.
 				assert.Equal(t, tc.wantEffort, *req.OutputConfig.Effort)
 			} else if req.OutputConfig != nil {
 				assert.Nil(t, req.OutputConfig.Effort)
@@ -683,6 +790,8 @@ func TestStripUnsupportedFieldsFromRawBody_ProviderEffort(t *testing.T) {
 	}{
 		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true, "max"},
 		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true, "xhigh"},
+		{"alibaba glm-5.2 keeps max", schemas.Alibaba, "glm-5.2", true, "max"},
+		{"alibaba prefixed glm-5.3 keeps max", schemas.Alibaba, "ZHIPU/GLM-5.3", true, "max"},
 		{"alibaba qwen3-max strips", schemas.Alibaba, "qwen3-max", false, ""},
 		{"kimi strips", schemas.Kimi, "kimi-k2.6", false, ""},
 	}

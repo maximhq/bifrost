@@ -262,10 +262,11 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		}
 	}
 	// Model Studio clamp: the alibaba mount validates a surviving effort value
-	// against its chat-completions enum instead of mapping it server-side (see
-	// clampAlibabaMountEffort), so max lands as xhigh on the typed path too.
+	// against its per-model chat-completions enum instead of mapping it
+	// server-side (see clampAlibabaMountEffortForModel), so each family's
+	// officially valid values are emitted on the typed path too.
 	if provider == schemas.Alibaba && req.OutputConfig != nil && req.OutputConfig.Effort != nil {
-		req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffort(*req.OutputConfig.Effort))
+		req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortForModel(model, *req.OutputConfig.Effort))
 	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
@@ -671,11 +672,11 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	}
 
 	// Model Studio clamp — mirrors the typed path: a surviving effort value is
-	// mapped onto the mount's chat-completions enum (max→xhigh) instead of
+	// mapped onto the mount's per-model chat-completions enum instead of
 	// being forwarded into a vendor 400.
 	if provider == schemas.Alibaba {
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
-			if clamped := clampAlibabaMountEffort(e.String()); clamped != e.String() {
+			if clamped := clampAlibabaMountEffortForModel(model, e.String()); clamped != e.String() {
 				jsonBody, err = providerUtils.SetJSONField(jsonBody, "output_config.effort", clamped)
 				if err != nil {
 					return nil, fmt.Errorf("clamp raw output_config.effort on the model studio mount: %w", err)
@@ -1223,19 +1224,67 @@ func zhipuThinkingBudget(effort *string, maxTokens int) int {
 	return budget
 }
 
-// clampAlibabaMountEffort maps an effort value onto the enum Model Studio's
-// Anthropic mount accepts. The mount proxies Messages to chat-completions
+// clampAlibabaMountEffortForModel maps an effort value onto the officially
+// valid reasoning_effort enum Model Studio's Anthropic mount accepts for a
+// given model family. The mount proxies Messages to chat-completions
 // internally (errors surface with a chatcmpl-* id) and validates
-// output_config.effort against the reasoning_effort ladder there —
-// none/minimal/low/medium/high/xhigh — rejecting out-of-enum values outright
-// ("'reasoning_effort' must be one of: 'none', 'minimal', 'low', 'medium',
-// 'high', 'xhigh'") instead of mapping them server-side. max is the one
-// Bifrost effort value outside that enum, so it clamps down to xhigh; every
-// other value forwards verbatim. Verified live 2026-08-23 against
-// token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic (qwen3.8-max).
-func clampAlibabaMountEffort(effort string) string {
-	if effort == "max" {
-		return "xhigh"
+// output_config.effort against the per-model reasoning_effort ladder —
+// rejecting out-of-enum values outright ("'reasoning_effort' must be one of:
+// ...") instead of mapping them server-side, so the gateway emits only
+// officially valid values itself. Per the vendor API docs (supplied
+// 2026-08-23; authoritative):
+//
+//   - qwen3.8-max: valid xhigh/medium/low. max→xhigh; every other value
+//     forwards verbatim.
+//   - GLM-5.3+ (the revision that narrowed the enum; the vendor's matrix
+//     groups kimi-k3 here, but it never reaches this function — see below):
+//     valid max/high/low. xhigh→max, medium→high, minimal→low, none→low.
+//   - glm-5.2/glm-5.1/glm-5: valid high/max. xhigh→max, low→high,
+//     medium→high, minimal→low, none→low.
+//   - deepseek-v4-pro-0813 / deepseek-v4-flash-0731 (dated snapshots): valid
+//     max/high/low. xhigh→high, medium→high, minimal→low, none→low.
+//   - deepseek-v4-pro / deepseek-v4-flash (non-dated): same as the GLM-5.2
+//     family (valid high/max).
+//   - Anything else: verbatim. kimi-k3 never reaches here — its effort is
+//     stripped upstream by providerSupportsEffortModel.
+func clampAlibabaMountEffortForModel(model, effort string) string {
+	m := bareModelName(model)
+	switch {
+	case strings.HasPrefix(m, "qwen3.8-max"):
+		if effort == "max" {
+			return "xhigh"
+		}
+		return effort
+	case strings.HasPrefix(m, "deepseek-v4-pro-0813"), strings.HasPrefix(m, "deepseek-v4-flash-0731"):
+		switch effort {
+		case "xhigh", "medium":
+			return "high"
+		case "minimal", "none":
+			return "low"
+		}
+		return effort
+	case glm5Minor(m) >= 3:
+		switch effort {
+		case "xhigh":
+			return "max"
+		case "medium":
+			return "high"
+		case "minimal", "none":
+			return "low"
+		}
+		return effort
+	case glm5Minor(m) >= 0,
+		strings.HasPrefix(m, "deepseek-v4-pro"),
+		strings.HasPrefix(m, "deepseek-v4-flash"):
+		switch effort {
+		case "xhigh":
+			return "max"
+		case "low", "medium":
+			return "high"
+		case "minimal", "none":
+			return "low"
+		}
+		return effort
 	}
 	return effort
 }
@@ -1248,14 +1297,17 @@ func clampAlibabaMountEffort(effort string) string {
 //     Coding Plan Anthropic mount out-of-scale values are mapped server-side
 //     (GLM-5.3: none/minimal/low→low, medium/high→high, xhigh/max→max), so any
 //     Bifrost effort value is safe to forward verbatim.
-//   - Alibaba: Model Studio documents effort for qwen3.8-max, hosted glm-5.2+
-//     and deepseek-v4-pro/flash. Unlike z.ai, the mount does NOT map
-//     out-of-enum values server-side — it 400s on them (see
-//     clampAlibabaMountEffort) — so the gateway clamps max→xhigh at every
-//     emission site and forwards the rest verbatim.
+//   - Alibaba: the mount's API page documents no effort field at all (see Q in
+//     types.go); live verification (2026-08-23) shows the mount proxies Messages
+//     to its OpenAI-dialect backend, which validates output_config.effort against
+//     the per-model reasoning_effort ladder documented on the Model Studio model
+//     page — it does NOT map out-of-enum values server-side (max 400s). The
+//     gateway therefore clamps to each family's valid values
+//     (clampAlibabaMountEffortForModel) at every emission site.
 //
-// Cites: Z/Q on the OutputConfigEffort flag (types.go), verified 2026-08-16;
-// alibaba enum rejection verified live 2026-08-23.
+// Cites: Z on the OutputConfigEffort flag (types.go); the alibaba mount is an
+// empirical contract (live-verified 2026-08-23); per-model matrix from the
+// vendor model-page docs supplied 2026-08-23.
 func providerSupportsEffortModel(provider schemas.ModelProvider, model string) bool {
 	m := bareModelName(model)
 	switch provider {
@@ -1651,20 +1703,21 @@ func MapBifrostEffortToAnthropic(effort string) string {
 
 // setEffortOnOutputConfig merges the effort value into the request's OutputConfig,
 // preserving any existing Format field (used for structured outputs). Provider-aware:
-// the alibaba mount rejects out-of-enum effort values (clampAlibabaMountEffort), so
-// max is clamped to xhigh here before the value lands on the wire.
-func setEffortOnOutputConfig(req *AnthropicMessageRequest, provider schemas.ModelProvider, effort string) {
+// the alibaba mount rejects out-of-enum effort values (clampAlibabaMountEffortForModel),
+// so the value is clamped to the model family's officially valid enum before it lands
+// on the wire.
+func setEffortOnOutputConfig(req *AnthropicMessageRequest, provider schemas.ModelProvider, model, effort string) {
 	if req.OutputConfig == nil {
 		req.OutputConfig = &AnthropicOutputConfig{}
 	}
-	req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortFor(provider, effort))
+	req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortFor(provider, model, effort))
 }
 
 // clampAlibabaMountEffortFor is the provider-gated form of
-// clampAlibabaMountEffort: only the alibaba profile remaps the value.
-func clampAlibabaMountEffortFor(provider schemas.ModelProvider, effort string) string {
+// clampAlibabaMountEffortForModel: only the alibaba profile remaps the value.
+func clampAlibabaMountEffortFor(provider schemas.ModelProvider, model, effort string) string {
 	if provider == schemas.Alibaba {
-		return clampAlibabaMountEffort(effort)
+		return clampAlibabaMountEffortForModel(model, effort)
 	}
 	return effort
 }
