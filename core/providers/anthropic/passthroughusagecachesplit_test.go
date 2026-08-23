@@ -1,6 +1,10 @@
 package anthropic
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // Anthropic-dialect upstreams do not agree on what message_start.usage.input_tokens means.
 // Anthropic itself documents it as EXCLUDING the cache counters, so input + cache_read +
@@ -82,6 +86,20 @@ func observePassthroughUsage(t *testing.T, events ...string) (prompt, completion
 		}
 	}
 	return last.p, last.c
+}
+
+// promptDetails replays the events and returns the final PromptTokensDetails, for the cases that
+// assert on the cache breakdown rather than only on the totals.
+func promptDetails(t *testing.T, events ...string) *schemas.ChatPromptTokensDetails {
+	t.Helper()
+	var acc AnthropicPassthroughStreamUsage
+	var last *schemas.ChatPromptTokensDetails
+	for _, e := range events {
+		if u := acc.ObserveEvent([]byte(e)); u != nil && u.LLMUsage != nil {
+			last = u.LLMUsage.PromptTokensDetails
+		}
+	}
+	return last
 }
 
 func TestPassthroughStreamUsageQwenDoesNotDoubleCountCachedPrompt(t *testing.T) {
@@ -178,8 +196,9 @@ func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
 			`"output_tokens":20}}`
 	)
 	// message_delta is authoritative via its ephemeral breakdown, so input_tokens is 1000, not the
-	// prompt-scale 50000. cache_creation_input_tokens is absent, so it contributes 0 to the sum.
-	const wantPrompt = 1000
+	// prompt-scale 50000. cache_creation_input_tokens is absent, so the 49000-token breakdown IS
+	// the cache-creation total and must be counted — dropping it silently undercounts the prompt.
+	const wantPrompt = 1000 + 49000
 
 	got, gotOut := observePassthroughUsage(t, breakdownOnlyStart, breakdownOnlyDelta)
 	if got != wantPrompt {
@@ -188,6 +207,17 @@ func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
 	}
 	if gotOut != 20 {
 		t.Errorf("completion tokens = %d, want 20", gotOut)
+	}
+	// the breakdown must survive into the cache-write details, not just the total
+	if d := promptDetails(t, breakdownOnlyStart, breakdownOnlyDelta); d == nil {
+		t.Error("prompt token details = nil, want cache-write details carrying the breakdown")
+	} else {
+		if d.CachedWriteTokens != 49000 {
+			t.Errorf("cached write tokens = %d, want 49000", d.CachedWriteTokens)
+		}
+		if d.CachedWriteTokenDetails == nil || d.CachedWriteTokenDetails.CachedWriteTokens5m != 49000 {
+			t.Errorf("cached write 5m breakdown = %+v, want 49000", d.CachedWriteTokenDetails)
+		}
 	}
 	// order-independent, like every other case here
 	if rev, _ := observePassthroughUsage(t, breakdownOnlyDelta, breakdownOnlyStart); rev != wantPrompt {

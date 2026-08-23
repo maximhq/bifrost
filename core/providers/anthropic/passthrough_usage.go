@@ -36,7 +36,14 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 	if au == nil {
 		return nil
 	}
-	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
+	// cache_creation is the 5m/1h split OF cache_creation_input_tokens, so it is a breakdown and
+	// not an addend — fall back to it only when the top-level counter is absent, or a frame that
+	// carries both would be double-counted.
+	cacheCreation := au.CacheCreationInputTokens
+	if cacheCreation == 0 {
+		cacheCreation = au.CacheCreation.Ephemeral5mInputTokens + au.CacheCreation.Ephemeral1hInputTokens
+	}
+	totalInput := au.InputTokens + au.CacheReadInputTokens + cacheCreation
 	total := totalInput + au.OutputTokens
 	if total == 0 {
 		return nil
@@ -48,10 +55,10 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		TotalTokens:      total,
 	}
 
-	if au.CacheReadInputTokens > 0 || au.CacheCreationInputTokens > 0 {
+	if au.CacheReadInputTokens > 0 || cacheCreation > 0 {
 		details := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  au.CacheReadInputTokens,
-			CachedWriteTokens: au.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if au.CacheCreation.Ephemeral5mInputTokens > 0 || au.CacheCreation.Ephemeral1hInputTokens > 0 {
 			details.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
