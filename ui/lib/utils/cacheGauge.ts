@@ -4,9 +4,9 @@ import type { LogStats } from "@/lib/types/logs";
  * Rendering state for the local (semantic) cache gauge.
  *
  * - `no-data` - nothing to report: no stats payload, or no requests in the window.
- * - `not-engaged` - the window has requests, but none of them reached the cache,
- *   so the API omitted the hit counters entirely. This is distinct from a 0% hit
- *   rate: the cache was never consulted, rather than consulted and missed.
+ * - `not-engaged` - the window has requests, but the API reported no hit counters
+ *   at all. This is distinct from a 0% hit rate: nothing was measured, rather
+ *   than measured as zero.
  * - `ready` - the API reported hit counters, so the gauge can be drawn.
  */
 export type LocalCacheGaugeState = "no-data" | "not-engaged" | "ready";
@@ -41,6 +41,12 @@ function toCount(value: number | null | undefined): number {
  * (requests carry no `x-bf-cache-key` and no `default_cache_key` is set).
  * That case is reported as `not-engaged` so the UI can say so explicitly
  * instead of showing an empty-state placeholder.
+ *
+ * The counters are also left nil when the cache-hit aggregation query itself
+ * fails - the logstore logs a warning and returns nil rather than an error - and
+ * the payload cannot distinguish that from a window nothing engaged. So
+ * `not-engaged` means "no cache activity was reported", and the UI wording stays
+ * observational rather than asserting that no request hit the cache.
  */
 export function resolveLocalCacheGauge(data: LogStats | null | undefined): LocalCacheGauge {
 	const directHits = toCount(data?.direct_cache_hits);
@@ -53,7 +59,8 @@ export function resolveLocalCacheGauge(data: LogStats | null | undefined): Local
 	}
 
 	// Either counter being absent means the window carried no cache telemetry at
-	// all; the logstore only populates them as a pair.
+	// all; the logstore only populates them as a pair, and leaves both nil when
+	// the aggregation query fails.
 	if (data.direct_cache_hits == null || data.semantic_cache_hits == null) {
 		return { ...base, state: "not-engaged" };
 	}

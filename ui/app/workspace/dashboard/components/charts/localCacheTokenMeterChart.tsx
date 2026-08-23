@@ -70,9 +70,11 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 					)}
 				</div>
 				{showGauge && (
-					<div data-testid={hasData ? undefined : "local-cache-meter-not-engaged"}>
+					<div data-testid="local-cache-meter-summary" data-state={state}>
 						<div className="flex flex-col items-center pt-1 leading-none">
-							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
+							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">
+								{hasData ? `${percentage.toFixed(1)}%` : "--"}
+							</div>
 							{hasData ? (
 								<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
 							) : (
@@ -90,29 +92,29 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 											</button>
 										</TooltipTrigger>
 										<TooltipContent side="top">
-											Requests bypass the cache unless they carry an x-bf-cache-key header, or the semantic cache plugin sets a
-											default_cache_key.
+											No request in this window reached the local cache. It engages only when the semantic cache plugin is enabled and the
+											request carries an x-bf-cache-key header, or the plugin sets a default_cache_key.
 										</TooltipContent>
 									</Tooltip>
 								</div>
 							)}
 						</div>
-						{hasData ? (
-							<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
-								<span className="flex items-center gap-1.5">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
-									<span className="text-primary">Direct: {directHits}</span>
-								</span>
-								<span className="flex items-center gap-1.5">
-									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
-									<span className="text-primary">Semantic: {semanticHits}</span>
-								</span>
-							</div>
-						) : (
-							<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
-								<span className="text-muted-foreground">{formatCompactNumber(totalRequests)} requests, none used the cache</span>
-							</div>
-						)}
+						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
+							{hasData ? (
+								<>
+									<span className="flex items-center gap-1.5">
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
+										<span className="text-primary">Direct: {directHits}</span>
+									</span>
+									<span className="flex items-center gap-1.5">
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
+										<span className="text-primary">Semantic: {semanticHits}</span>
+									</span>
+								</>
+							) : (
+								<span className="text-muted-foreground">{formatCompactNumber(totalRequests)} requests, no cache activity recorded</span>
+							)}
+						</div>
 					</div>
 				)}
 			</div>
