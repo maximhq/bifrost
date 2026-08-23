@@ -99,7 +99,7 @@ The two Kimi platforms use separate keys that are **not interchangeable** — an
 | Kimi Open Platform, China | `https://api.moonshot.cn/v1` |
 | Kimi Code (subscription) | `https://api.kimi.com/coding/v1` |
 
-The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL.
+The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL. The derivation is idempotent: a `base_url` already ending in `/anthropic` (the mount itself) is used as-is rather than getting the suffix appended a second time.
 
 Model IDs differ per platform: the Open Platform serves catalog IDs (`kimi-k3`, `kimi-k2.6`, `kimi-k2.7-code`, …), while Kimi Code serves stable aliases (`k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`) whose backing model can be upgraded server-side.
 

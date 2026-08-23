@@ -61,8 +61,15 @@ func isKnownKimiHost(base string) bool {
 //     /coding/v1 — keeps its configured path and gets /anthropic appended, so a
 //     proxy's URL shape is never silently rewritten; users on exotic hosts can
 //     always create a second provider instance with an explicit base URL.
+//
+// Idempotent: a base that already ends with the mount suffix is returned unchanged —
+// use_anthropic_endpoints with a base_url set to the mount itself must not append
+// /anthropic a second time.
 func deriveAnthropicBaseURL(openAIBaseURL string) string {
 	base := strings.TrimRight(openAIBaseURL, "/")
+	if strings.HasSuffix(base, openPlatformAnthropicMount) {
+		return base
+	}
 	if !isKnownKimiHost(base) {
 		return base + openPlatformAnthropicMount
 	}

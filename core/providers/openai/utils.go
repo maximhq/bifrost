@@ -90,6 +90,10 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 // ladder is shared by every OpenAI-dialect provider, so non-OpenAI families
 // supporting the tier are recognised here too — otherwise their "xhigh" is
 // downgraded to "high" before the provider-specific compat pass ever runs.
+// qwen3.8-max's OpenAI-compatible enum tops out at xhigh
+// (none/minimal/low/medium/high/xhigh; the vendor 400'd "max" until ~2026-08-22),
+// so publishing xhigh here lets the shared normalizer clamp a requested "max"
+// down to xhigh instead of forwarding a value the vendor only lately tolerates.
 func acceptsXHighEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	if schemas.SupportsGrokXHighReasoningEffort(modelLower) {
@@ -103,7 +107,8 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-5.3-codex") ||
 		strings.Contains(modelLower, "gpt-5.4") ||
 		strings.Contains(modelLower, "gpt-5.5") ||
-		strings.Contains(modelLower, "gpt-5.6")
+		strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "qwen3.8-max")
 }
 
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:
@@ -127,7 +132,9 @@ func acceptsMinimalEffort(model string) bool {
 }
 
 // acceptsMaxEffort reports models that natively accept "max" effort
-// (e.g. GPT-5.6, DeepSeek V4, GLM-5.2+).
+// (e.g. GPT-5.6, DeepSeek V4, GLM-5.2+). qwen3.8-max is NOT here: its
+// OpenAI-compatible enum tops out at xhigh, and the gateway clamps a requested
+// "max" down to xhigh via the ladder published by acceptsXHighEffort.
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
@@ -135,8 +142,7 @@ func acceptsMaxEffort(model string) bool {
 		isGLM52OrLater(modelLower) ||
 		strings.Contains(modelLower, "kimi-k3") ||
 		// Kimi Code stable aliases for Kimi K3 (k3, k3-256k).
-		modelLower == "k3" || strings.HasPrefix(modelLower, "k3-") ||
-		strings.Contains(modelLower, "qwen3.8-max")
+		modelLower == "k3" || strings.HasPrefix(modelLower, "k3-")
 }
 
 // glm5Minor returns the GLM-5.x minor revision of a (lowercased) model name,

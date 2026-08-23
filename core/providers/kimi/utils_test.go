@@ -63,6 +63,20 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			wantBase:     "//api.kimi.com/v1/anthropic",
 			wantMessages: "//api.kimi.com/v1/anthropic/v1/messages",
 		},
+		{
+			// use_anthropic_endpoints with a base_url already set to the mount
+			// itself must not append /anthropic a second time.
+			name:         "Open Platform Anthropic mount as base is idempotent",
+			openAIBase:   "https://api.moonshot.ai/anthropic",
+			wantBase:     "https://api.moonshot.ai/anthropic",
+			wantMessages: "https://api.moonshot.ai/anthropic/v1/messages",
+		},
+		{
+			name:         "custom base already ending in /anthropic keeps its path",
+			openAIBase:   "https://proxy.example.com/anthropic",
+			wantBase:     "https://proxy.example.com/anthropic",
+			wantMessages: "https://proxy.example.com/anthropic/v1/messages",
+		},
 	}
 
 	for _, tt := range tests {

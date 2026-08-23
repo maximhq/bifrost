@@ -2266,7 +2266,11 @@ func TestToOpenAIChatRequest_ZhipuReasoningRouting(t *testing.T) {
 
 // Alibaba Model Studio honors reasoning_effort only on qwen3.8-max and hosted
 // DeepSeek-V4 / GLM-5 series; all other models reject it (thinking is controlled
-// via enable_thinking / thinking_budget extra params there).
+// via enable_thinking / thinking_budget extra params there). qwen3.8-max's
+// OpenAI-compatible ladder tops out at xhigh (vendor enum: none/minimal/low/
+// medium/high/xhigh — the vendor 400'd "max" until ~2026-08-22), so the gateway
+// forwards xhigh verbatim and clamps max down to xhigh via the shared
+// normalizer.
 func TestToOpenAIChatRequest_AlibabaReasoningRouting(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
 	defer cancel()
@@ -2277,10 +2281,16 @@ func TestToOpenAIChatRequest_AlibabaReasoningRouting(t *testing.T) {
 		effort     string
 		wantEffort *string
 	}{
-		{name: "qwen3.8-max keeps max", model: "qwen3.8-max", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "qwen3.8-max keeps xhigh", model: "qwen3.8-max", effort: "xhigh", wantEffort: schemas.Ptr("xhigh")},
+		{name: "qwen3.8-max clamps max to xhigh", model: "qwen3.8-max", effort: "max", wantEffort: schemas.Ptr("xhigh")},
+		{name: "qwen3.8-max keeps high", model: "qwen3.8-max", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "qwen3.8-max keeps medium", model: "qwen3.8-max", effort: "medium", wantEffort: schemas.Ptr("medium")},
 		{name: "qwen3.8-max maps minimal to low", model: "qwen3.8-max", effort: "minimal", wantEffort: schemas.Ptr("low")},
+		{name: "prefixed qwen3.8-max keeps xhigh", model: "alibaba/qwen3.8-max", effort: "xhigh", wantEffort: schemas.Ptr("xhigh")},
+		{name: "prefixed qwen3.8-max clamps max to xhigh", model: "alibaba/qwen3.8-max", effort: "max", wantEffort: schemas.Ptr("xhigh")},
 		{name: "qwen3.8-max-preview keeps medium", model: "qwen3.8-max-preview", effort: "medium", wantEffort: schemas.Ptr("medium")},
 		{name: "hosted deepseek-v4-pro keeps high", model: "deepseek-v4-pro", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "hosted deepseek-v4-pro keeps max", model: "deepseek-v4-pro", effort: "max", wantEffort: schemas.Ptr("max")},
 		{name: "hosted glm-5.2 keeps max", model: "glm-5.2", effort: "max", wantEffort: schemas.Ptr("max")},
 		{name: "hosted glm-5.1 keeps high", model: "glm-5.1", effort: "high", wantEffort: schemas.Ptr("high")},
 		{name: "hosted glm-5.3 keeps max", model: "glm-5.3", effort: "max", wantEffort: schemas.Ptr("max")},

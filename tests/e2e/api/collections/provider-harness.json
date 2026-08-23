@@ -136487,6 +136487,112 @@
       ]
     },
     {
+      "name": "58. Alibaba qwen3.8-max reasoning_effort xhigh top tier (PR #6054)",
+      "description": "PR #6054: qwen3.8-max on the Model Studio OpenAI-compatible mount natively accepts reasoning_effort none/minimal/low/medium/high/xhigh and 400'd \"max\" until ~2026-08-22 (vendor error: 'reasoning_effort' must be one of...). The gateway originally published the ladder [low, medium, high, max], so both a requested \"xhigh\" and \"max\" hit the wire as \"max\". The ladder now tops out at xhigh: xhigh forwards verbatim and max clamps down to xhigh via the shared effort normalizer (chat + responses paths). Chat completions do not reliably echo the effort, so the cases pin the absence of the vendor enum 400 and, when the vendor does echo, that it shows xhigh.",
+      "item": [
+        {
+          "name": "alibaba/qwen3.8-max /v1/chat/completions reasoning_effort=xhigh forwarded as the top tier (2xx, no enum 400) - PR #6054",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"alibaba/qwen3.8-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('qwen3.8-max xhigh: 2xx (a 400 means the effort value was mangled before the wire)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('qwen3.8-max xhigh: no vendor reasoning_effort enum 400', function () {",
+                  "  pm.expect(pm.response.text().indexOf(\"'reasoning_effort' must be one of\"), 'vendor rejected the effort: ' + pm.response.text()).to.eql(-1);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('qwen3.8-max xhigh: echo consistent with xhigh when present', function () {",
+                  "  if (r.reasoning_effort) { pm.expect(r.reasoning_effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "  if (r.reasoning && r.reasoning.effort) { pm.expect(r.reasoning.effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alibaba/qwen3.8-max /v1/chat/completions reasoning_effort=max clamped to xhigh on the wire (2xx) - PR #6054",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"alibaba/qwen3.8-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('qwen3.8-max max: 2xx (a 400 means the effort value was mangled before the wire)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('qwen3.8-max max: no vendor reasoning_effort enum 400', function () {",
+                  "  pm.expect(pm.response.text().indexOf(\"'reasoning_effort' must be one of\"), 'vendor rejected the effort: ' + pm.response.text()).to.eql(-1);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('qwen3.8-max max: echo consistent with xhigh when present', function () {",
+                  "  if (r.reasoning_effort) { pm.expect(r.reasoning_effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "  if (r.reasoning && r.reasoning.effort) { pm.expect(r.reasoning.effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "58. Typed embedding envelopes and SDK alias (PR #6335)",
       "item": [
         {

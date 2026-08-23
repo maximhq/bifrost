@@ -38,6 +38,18 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			openAIBase:   "https://proxy.example.com/zhipu",
 			wantMessages: "https://proxy.example.com/zhipu/anthropic/v1/messages",
 		},
+		{
+			// use_anthropic_endpoints with a base_url already set to the mount
+			// itself must not append /anthropic a second time.
+			name:         "Anthropic mount as base is idempotent",
+			openAIBase:   "https://api.z.ai/api/anthropic",
+			wantMessages: "https://api.z.ai/api/anthropic/v1/messages",
+		},
+		{
+			name:         "Anthropic mount as base with trailing slash is idempotent",
+			openAIBase:   "https://open.bigmodel.cn/api/anthropic/",
+			wantMessages: "https://open.bigmodel.cn/api/anthropic/v1/messages",
+		},
 	}
 
 	for _, tt := range tests {

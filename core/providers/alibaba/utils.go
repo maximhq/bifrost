@@ -47,8 +47,15 @@ const (
 //
 // Any other base URL falls back to appending /apps/anthropic; users on exotic hosts
 // can always create a second provider instance with an explicit base URL.
+//
+// Idempotent: a base that already ends with the mount suffix is returned unchanged —
+// use_anthropic_endpoints with a base_url set to the mount itself must not append
+// /apps/anthropic a second time.
 func deriveAnthropicBaseURL(openAIBaseURL string) string {
 	base := strings.TrimRight(openAIBaseURL, "/")
+	if strings.HasSuffix(base, anthropicMount) {
+		return base
+	}
 	if strings.HasSuffix(base, compatibleModeSuffix) {
 		return strings.TrimSuffix(base, compatibleModeSuffix) + anthropicMount
 	}

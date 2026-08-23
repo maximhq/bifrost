@@ -53,6 +53,18 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			openAIBase:   "https://proxy.example.com/qwen",
 			wantMessages: "https://proxy.example.com/qwen/apps/anthropic/v1/messages",
 		},
+		{
+			// use_anthropic_endpoints with a base_url already set to the mount
+			// itself must not append /apps/anthropic a second time.
+			name:         "Token Plan host with the Anthropic mount as base is idempotent",
+			openAIBase:   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+			wantMessages: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
+		},
+		{
+			name:         "Anthropic mount as base with trailing slash is idempotent",
+			openAIBase:   "https://dashscope-intl.aliyuncs.com/apps/anthropic/",
+			wantMessages: "https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages",
+		},
 	}
 
 	for _, tt := range tests {

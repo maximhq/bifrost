@@ -100,7 +100,7 @@ General API keys and GLM Coding Plan keys are **not interchangeable**. The defau
 | GLM Coding Plan, international | `https://api.z.ai/api/coding/paas/v4` |
 | GLM Coding Plan, China | `https://open.bigmodel.cn/api/coding/paas/v4` |
 
-The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL (Coding Plan hosts derive their Anthropic mount; the General API has no Anthropic mount).
+The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL (Coding Plan hosts derive their Anthropic mount; the General API has no Anthropic mount). The derivation is idempotent: a `base_url` already ending in `/anthropic` (the mount itself) is used as-is rather than getting the suffix appended a second time.
 
 <Warning>
 The GLM Coding Plan is a subscription intended for interactive coding tools; routing general gateway traffic through it may breach the vendor's terms of service. When a plan lapses, Coding-Plan-only models (e.g. glm-5.2 on the Anthropic mount) fail with a clean vendor 429 until the subscription is renewed.

@@ -261,6 +261,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// Model Studio clamp: the alibaba mount validates a surviving effort value
+	// against its chat-completions enum instead of mapping it server-side (see
+	// clampAlibabaMountEffort), so max lands as xhigh on the typed path too.
+	if provider == schemas.Alibaba && req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+		req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffort(*req.OutputConfig.Effort))
+	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
 	//
@@ -660,6 +666,20 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+
+	// Model Studio clamp — mirrors the typed path: a surviving effort value is
+	// mapped onto the mount's chat-completions enum (max→xhigh) instead of
+	// being forwarded into a vendor 400.
+	if provider == schemas.Alibaba {
+		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+			if clamped := clampAlibabaMountEffort(e.String()); clamped != e.String() {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "output_config.effort", clamped)
+				if err != nil {
+					return nil, fmt.Errorf("clamp raw output_config.effort on the model studio mount: %w", err)
+				}
 			}
 		}
 	}
@@ -1203,6 +1223,23 @@ func zhipuThinkingBudget(effort *string, maxTokens int) int {
 	return budget
 }
 
+// clampAlibabaMountEffort maps an effort value onto the enum Model Studio's
+// Anthropic mount accepts. The mount proxies Messages to chat-completions
+// internally (errors surface with a chatcmpl-* id) and validates
+// output_config.effort against the reasoning_effort ladder there —
+// none/minimal/low/medium/high/xhigh — rejecting out-of-enum values outright
+// ("'reasoning_effort' must be one of: 'none', 'minimal', 'low', 'medium',
+// 'high', 'xhigh'") instead of mapping them server-side. max is the one
+// Bifrost effort value outside that enum, so it clamps down to xhigh; every
+// other value forwards verbatim. Verified live 2026-08-23 against
+// token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic (qwen3.8-max).
+func clampAlibabaMountEffort(effort string) string {
+	if effort == "max" {
+		return "xhigh"
+	}
+	return effort
+}
+
 // providerSupportsEffortModel scopes output_config.effort to the model families
 // each non-Anthropic vendor documents on its Anthropic-compatible mount. It only
 // runs for providers whose ProviderFeatures entry sets OutputConfigEffort.
@@ -1211,11 +1248,14 @@ func zhipuThinkingBudget(effort *string, maxTokens int) int {
 //     Coding Plan Anthropic mount out-of-scale values are mapped server-side
 //     (GLM-5.3: none/minimal/low→low, medium/high→high, xhigh/max→max), so any
 //     Bifrost effort value is safe to forward verbatim.
-//   - Alibaba: Model Studio documents effort for qwen3.8-max (xhigh/medium/low;
-//     max,high→xhigh), hosted glm-5.2+ and deepseek-v4-pro/flash (high/max;
-//     low,medium→high, xhigh→max). Same server-side mapping, same verbatim rule.
+//   - Alibaba: Model Studio documents effort for qwen3.8-max, hosted glm-5.2+
+//     and deepseek-v4-pro/flash. Unlike z.ai, the mount does NOT map
+//     out-of-enum values server-side — it 400s on them (see
+//     clampAlibabaMountEffort) — so the gateway clamps max→xhigh at every
+//     emission site and forwards the rest verbatim.
 //
-// Cites: Z/Q on the OutputConfigEffort flag (types.go), verified 2026-08-16.
+// Cites: Z/Q on the OutputConfigEffort flag (types.go), verified 2026-08-16;
+// alibaba enum rejection verified live 2026-08-23.
 func providerSupportsEffortModel(provider schemas.ModelProvider, model string) bool {
 	m := bareModelName(model)
 	switch provider {
@@ -1610,12 +1650,23 @@ func MapBifrostEffortToAnthropic(effort string) string {
 }
 
 // setEffortOnOutputConfig merges the effort value into the request's OutputConfig,
-// preserving any existing Format field (used for structured outputs).
-func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
+// preserving any existing Format field (used for structured outputs). Provider-aware:
+// the alibaba mount rejects out-of-enum effort values (clampAlibabaMountEffort), so
+// max is clamped to xhigh here before the value lands on the wire.
+func setEffortOnOutputConfig(req *AnthropicMessageRequest, provider schemas.ModelProvider, effort string) {
 	if req.OutputConfig == nil {
 		req.OutputConfig = &AnthropicOutputConfig{}
 	}
-	req.OutputConfig.Effort = &effort
+	req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortFor(provider, effort))
+}
+
+// clampAlibabaMountEffortFor is the provider-gated form of
+// clampAlibabaMountEffort: only the alibaba profile remaps the value.
+func clampAlibabaMountEffortFor(provider schemas.ModelProvider, effort string) string {
+	if provider == schemas.Alibaba {
+		return clampAlibabaMountEffort(effort)
+	}
+	return effort
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.

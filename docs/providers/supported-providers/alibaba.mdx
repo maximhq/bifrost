@@ -102,7 +102,7 @@ Keys, regions, and billing modes are **paired** — a key only works against the
 | Workspace-dedicated host | `https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1` |
 | Token Plan (Singapore) | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` |
 
-The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL.
+The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL. The derivation is idempotent: a `base_url` already ending in `/apps/anthropic` (the mount itself) is used as-is rather than getting the suffix appended a second time.
 
 <Warning>
 Subscription plans (Token Plan, Coding Plan) are billed for interactive AI coding/agent tools and use an **exact, case-sensitive model allowlist** — model IDs must match the plan catalog exactly or the request 404s. Routing general gateway traffic through plan endpoints may breach the vendor's terms of service.
@@ -123,7 +123,7 @@ If neither is set, requests fall back to the OpenAI-compatible endpoints.
 
 **Parameter surface on the Anthropic mount** (verified against the vendor docs 2026-08-16):
 
-- `output_config.effort` is forwarded for **qwen3.8-max** (`xhigh`/`medium`/`low`; `max`,`high`→`xhigh`), **hosted glm-5.2+**, and **deepseek-v4-pro/flash** (`high`/`max`; `low`,`medium`→`high`, `xhigh`→`max`) — Model Studio maps out-of-enum values server-side, so any Bifrost effort value is passed through verbatim. For all other models the field is stripped.
+- `output_config.effort` is forwarded for **qwen3.8-max**, **hosted glm-5.2+**, and **deepseek-v4-pro/flash**. The mount does not map out-of-enum values server-side — it validates the value against its internal `reasoning_effort` enum (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`) and rejects anything else — so the gateway clamps `max`→`xhigh` itself and forwards every other value verbatim. The mount also rejects `output_config.effort` and `thinking.budget_tokens` set together (`'reasoning_effort' and 'thinking_budget' cannot be set simultaneously`) and engages thinking on its own from the effort value, so when an effort is set Bifrost sends the effort alone and omits the `thinking` field. (Verified live 2026-08-23.) For all other models the field is stripped.
 - `thinking: {"type": "enabled"|"disabled", "budget_tokens": N}`, `output_config.format` (JSON Schema structured output), `cache_control` (ephemeral prompt caching), image/video content blocks, `tools`, `tool_choice` (`auto`/`any`/`none`/`tool`), `top_p`, `top_k`, `stop_sequences`, and `metadata.user_id` pass through. Note the mount's `temperature` range is **[0, 2)** and its `max_tokens` semantics differ per model family (qwen3.8-max and deepseek-v4-* count reply + chain-of-thought together).
 - Anthropic-only extensions (`speed`, `inference_geo`, `service_tier`, `container`, `mcp_servers`, `context_management`, `output_config.task_budget`) are stripped — the mount does not accept them.
 
@@ -195,8 +195,8 @@ Bifrost sets the correct header automatically based on the resolved endpoint mod
 
 ### Reasoning Parameter
 
-- **Default (OpenAI-compatible):** `reasoning_effort` is forwarded only for the models that accept it (qwen3.8-max, hosted DeepSeek-V4 series, hosted GLM-5 series) and stripped for all others — thinking on the remaining hybrid models is controlled via the `enable_thinking` / `thinking_budget` extra params instead. Note that forced `tool_choice` (`"required"` or a pinned function) is rejected by the vendor while thinking is enabled on hybrid models.
-- **`use_anthropic_endpoints: true`:** Reasoning/thinking parameters are mapped through the Anthropic converters (`reasoning` → `thinking`), the same as the [Anthropic provider](/providers/supported-providers/anthropic#1-chat-completions).
+- **Default (OpenAI-compatible):** `reasoning_effort` is forwarded only for the models that accept it (qwen3.8-max, hosted DeepSeek-V4 series, hosted GLM-5 series) and stripped for all others — thinking on the remaining hybrid models is controlled via the `enable_thinking` / `thinking_budget` extra params instead. qwen3.8-max's native ladder tops out at `xhigh` (vendor enum: `none`/`minimal`/`low`/`medium`/`high`/`xhigh`), so the gateway forwards `xhigh` as the top tier and clamps `max`→`xhigh` itself (the vendor 400'd `max` until ~2026-08-22, so it is never forwarded); `minimal` maps to `low`. Note that forced `tool_choice` (`"required"` or a pinned function) is rejected by the vendor while thinking is enabled on hybrid models.
+- **`use_anthropic_endpoints: true`:** Reasoning/thinking parameters are mapped through the Anthropic converters (`reasoning` → `thinking`), the same as the [Anthropic provider](/providers/supported-providers/anthropic#1-chat-completions), with one mount-specific rule: an effort value travels alone as `output_config.effort` (clamped `max`→`xhigh`) with no synthesized `thinking` field — the mount rejects the two together and engages thinking itself from the effort value.
 
 ### Extra Parameters
 
@@ -255,7 +255,7 @@ Text embeddings through the OpenAI-compatible `/embeddings` endpoint (`text-embe
 
 <Accordion title="Anthropic-Compatible Base URL Derivation">
 **Severity**: Low
-**Behavior**: The Anthropic-compatible base URL is derived from the configured OpenAI-compatible base URL (legacy hosts, workspace-dedicated hosts, and plan hosts are all recognized)
+**Behavior**: The Anthropic-compatible base URL is derived from the configured OpenAI-compatible base URL (legacy hosts, workspace-dedicated hosts, and plan hosts are all recognized; a base already ending in the mount suffix is returned unchanged)
 **Impact**: A completely custom OpenAI-compatible host that matches none of the known shapes may not derive a valid Anthropic mount URL
 **Code**: `deriveAnthropicBaseURL` in `core/providers/alibaba/utils.go`
 </Accordion>

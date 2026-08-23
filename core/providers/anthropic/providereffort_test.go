@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -20,9 +21,15 @@ import (
 //     on forced-thinking GLM-4.7, so the field is omitted instead.
 //     Source: https://docs.z.ai/guides/capabilities/thinking
 //   - Alibaba Cloud Model Studio /apps/anthropic (schemas.Alibaba):
-//     output_config.effort documented for qwen3.8-max (xhigh/medium/low;
-//     max,high→xhigh), hosted glm-5.2 and deepseek-v4-pro/flash (high/max;
-//     low,medium→high, xhigh→max). Vendor maps out-of-enum values server-side.
+//     output_config.effort documented for qwen3.8-max, hosted glm-5.2 and
+//     deepseek-v4-pro/flash. The mount does NOT map out-of-enum values
+//     server-side: it validates the field against its internal chat-completions
+//     reasoning_effort enum (none/minimal/low/medium/high/xhigh) and 400s on
+//     anything else ("'reasoning_effort' must be one of: ...", verified live
+//     2026-08-23), so the gateway clamps max→xhigh itself and forwards the rest
+//     verbatim. The mount also rejects effort and thinking_budget set together
+//     and engages thinking on its own from the effort value, so a forwarded
+//     effort travels alone (no synthesized thinking field).
 //     Source: https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
 //   - Kimi /anthropic (schemas.Kimi): unofficial empirical contract
 //     (MoonshotAI/Kimi-K2#129) — no effort equivalent documented, so effort
@@ -269,18 +276,25 @@ func TestZhipuAnthropicMount_EffortDroppedBelowGLM52(t *testing.T) {
 }
 
 // TestAlibabaAnthropicMount_EffortRoundTrip covers the Model Studio families
-// with documented effort support; the vendor maps out-of-enum values itself,
-// so the value must pass through verbatim.
+// with documented effort support. The mount validates the value against its
+// chat-completions reasoning_effort enum (none/minimal/low/medium/high/xhigh)
+// and rejects out-of-enum values instead of mapping them server-side (verified
+// live 2026-08-23: a forwarded "max" drew "'reasoning_effort' must be one of:
+// 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"), so the gateway clamps
+// max→xhigh and everything in the enum passes through verbatim.
 func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	supported := []struct{ model, effort string }{
-		{"qwen3.8-max", "high"},
-		{"qwen3.8-max", "max"}, // vendor maps max→xhigh; passthrough is intentional
-		{"glm-5.2", "max"},
-		{"glm-5.2", "low"}, // vendor maps low→high
-		{"deepseek-v4-pro", "max"},
-		{"deepseek-v4-flash-0731", "xhigh"}, // vendor maps xhigh→max
+	supported := []struct{ model, effort, want string }{
+		{"qwen3.8-max", "xhigh", "xhigh"},
+		{"qwen3.8-max", "high", "high"},
+		{"qwen3.8-max", "medium", "medium"},
+		{"qwen3.8-max", "low", "low"},
+		{"qwen3.8-max", "max", "xhigh"}, // out of the mount enum; gateway clamps to the top tier
+		{"glm-5.2", "max", "xhigh"},
+		{"glm-5.2", "low", "low"},
+		{"deepseek-v4-pro", "max", "xhigh"},
+		{"deepseek-v4-flash-0731", "xhigh", "xhigh"},
 	}
 	for _, tc := range supported {
 		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
@@ -292,9 +306,10 @@ func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 
 			require.NotNil(t, out.OutputConfig, "output_config was dropped on the alibaba mount")
 			require.NotNil(t, out.OutputConfig.Effort)
-			assert.Equal(t, tc.effort, *out.OutputConfig.Effort)
-			// Alibaba treats an absent thinking field as the model default, so
-			// nothing is synthesized here.
+			assert.Equal(t, tc.want, *out.OutputConfig.Effort)
+			// Alibaba treats an absent thinking field as the model default and
+			// rejects effort + thinking_budget together, so nothing is
+			// synthesized alongside a forwarded effort.
 			assert.Nil(t, out.Thinking)
 		})
 	}
@@ -313,6 +328,103 @@ func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAlibabaAnthropicMount_OpenAIDialectResponsesEffort covers the other
+// half of the alibaba mount: when an Anthropic-protocol request is served
+// through the OpenAI-compatible surface, the effort flows into a native
+// /responses call whose reasoning.effort runs through the shared OpenAI-dialect
+// ladder. qwen3.8-max tops out at xhigh there (vendor enum: none/minimal/low/
+// medium/high/xhigh), so xhigh forwards verbatim and max clamps down to xhigh —
+// unlike the Anthropic mount above, the gateway, not the vendor, does the
+// mapping.
+func TestAlibabaAnthropicMount_OpenAIDialectResponsesEffort(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ effort, want string }{
+		{"xhigh", "xhigh"},
+		{"max", "xhigh"},
+		{"high", "high"},
+	} {
+		t.Run(tc.effort, func(t *testing.T) {
+			ctx := providerEffortTestCtx(t)
+			bifrostReq := anthropicInbound("qwen3.8-max", schemas.Ptr(tc.effort), nil).ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			bifrostReq.Provider = schemas.Alibaba
+
+			out := openai.ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, out)
+			require.NotNil(t, out.ResponsesParameters.Reasoning, "reasoning was dropped on the alibaba responses path")
+			require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+			assert.Equal(t, tc.want, *out.ResponsesParameters.Reasoning.Effort)
+		})
+	}
+}
+
+// TestAlibabaChatPath_EffortAloneNoSynthesizedThinking is the direct chat-with-
+// toggle regression (verified live 2026-08-23): a chat request carrying
+// reasoning_effort routed through use_anthropic_endpoints used to emit BOTH
+// thinking:{enabled,budget_tokens} (budget derived from the effort) and
+// output_config.effort, and the mount answered 400 ("'reasoning_effort' and
+// 'thinking_budget' cannot be set simultaneously"). The effort-only shape works
+// — the vendor engages thinking itself from the effort value — so the effort
+// travels alone. Covers the effort-only input and the co-present
+// reasoning.max_tokens + effort input (the mount's constraint is field-level,
+// not input-path-level), plus the max→xhigh clamp on the same path.
+func TestAlibabaChatPath_EffortAloneNoSynthesizedThinking(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		effort  string
+		budget  *int
+		wantEff string
+	}{
+		{name: "effort only, high", effort: "high", wantEff: "high"},
+		{name: "effort only, xhigh", effort: "xhigh", wantEff: "xhigh"},
+		{name: "effort only, max clamps to xhigh", effort: "max", wantEff: "xhigh"},
+		{name: "co-present reasoning.max_tokens, high", effort: "high", budget: schemas.Ptr(32000), wantEff: "high"},
+		{name: "co-present reasoning.max_tokens, max clamps to xhigh", effort: "max", budget: schemas.Ptr(32000), wantEff: "xhigh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Alibaba,
+				Model:    "qwen3.8-max",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 1+1?")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: schemas.Ptr(128000),
+					Reasoning:           &schemas.ChatReasoning{Effort: &tc.effort, MaxTokens: tc.budget},
+				},
+			}
+
+			out, err := ToAnthropicChatRequest(providerEffortTestCtx(t), bifrostReq)
+			require.NoError(t, err)
+
+			require.NotNil(t, out.OutputConfig, "chat-path effort was dropped on the alibaba mount")
+			require.NotNil(t, out.OutputConfig.Effort)
+			assert.Equal(t, tc.wantEff, *out.OutputConfig.Effort)
+			assert.Nil(t, out.Thinking, "the alibaba mount rejects effort + thinking_budget together; the effort must travel alone")
+		})
+	}
+}
+
+// TestAlibabaAnthropicMount_NoEffortNoOutputConfig pins the existing no-effort
+// behavior: without an effort knob nothing is forwarded and nothing synthesized.
+func TestAlibabaAnthropicMount_NoEffortNoOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("qwen3.8-max", nil, nil).ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider = schemas.Alibaba
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	if out.OutputConfig != nil {
+		assert.Nil(t, out.OutputConfig.Effort, "no effort was requested; none may be forwarded")
+	}
+	assert.Nil(t, out.Thinking, "no reasoning signal was given; the model default applies")
 }
 
 // TestKimiAnthropicMount_EffortStripped pins the fail-closed behavior: Kimi's
@@ -464,20 +576,21 @@ func TestStripUnsupportedAnthropicFields_ProviderEffort(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		model    string
-		kept     bool
+		name       string
+		provider   schemas.ModelProvider
+		model      string
+		kept       bool
+		wantEffort string
 	}{
-		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true},
-		{"zhipu glm-5.2[1m] keeps", schemas.Zhipu, "glm-5.2[1m]", true},
-		{"zhipu glm-4.7 strips", schemas.Zhipu, "glm-4.7", false},
-		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true},
-		{"alibaba deepseek keeps", schemas.Alibaba, "deepseek-v4-pro", true},
-		{"alibaba qwen3.7 strips", schemas.Alibaba, "qwen3.7-plus", false},
-		{"kimi strips", schemas.Kimi, "kimi-k3", false},
-		{"anthropic haiku strips", schemas.Anthropic, "claude-haiku-4-5", false},
-		{"anthropic opus keeps", schemas.Anthropic, "claude-opus-4-6", true},
+		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true, "max"},
+		{"zhipu glm-5.2[1m] keeps", schemas.Zhipu, "glm-5.2[1m]", true, "max"},
+		{"zhipu glm-4.7 strips", schemas.Zhipu, "glm-4.7", false, ""},
+		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true, "xhigh"},
+		{"alibaba deepseek keeps", schemas.Alibaba, "deepseek-v4-pro", true, "xhigh"},
+		{"alibaba qwen3.7 strips", schemas.Alibaba, "qwen3.7-plus", false, ""},
+		{"kimi strips", schemas.Kimi, "kimi-k3", false, ""},
+		{"anthropic haiku strips", schemas.Anthropic, "claude-haiku-4-5", false, ""},
+		{"anthropic opus keeps", schemas.Anthropic, "claude-opus-4-6", true, "max"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -490,6 +603,10 @@ func TestStripUnsupportedAnthropicFields_ProviderEffort(t *testing.T) {
 			if tc.kept {
 				require.NotNil(t, req.OutputConfig, "output_config was stripped for %s/%s", tc.provider, tc.model)
 				require.NotNil(t, req.OutputConfig.Effort)
+				// z.ai maps out-of-scale values server-side, so max stays
+				// verbatim there; Model Studio rejects out-of-enum values, so
+				// the strip pass clamps max→xhigh for the alibaba profile.
+				assert.Equal(t, tc.wantEffort, *req.OutputConfig.Effort)
 			} else if req.OutputConfig != nil {
 				assert.Nil(t, req.OutputConfig.Effort)
 			}
@@ -558,15 +675,16 @@ func TestStripUnsupportedFieldsFromRawBody_ProviderEffort(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		model    string
-		kept     bool
+		name       string
+		provider   schemas.ModelProvider
+		model      string
+		kept       bool
+		wantEffort string
 	}{
-		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true},
-		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true},
-		{"alibaba qwen3-max strips", schemas.Alibaba, "qwen3-max", false},
-		{"kimi strips", schemas.Kimi, "kimi-k2.6", false},
+		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true, "max"},
+		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true, "xhigh"},
+		{"alibaba qwen3-max strips", schemas.Alibaba, "qwen3-max", false, ""},
+		{"kimi strips", schemas.Kimi, "kimi-k2.6", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -576,7 +694,7 @@ func TestStripUnsupportedFieldsFromRawBody_ProviderEffort(t *testing.T) {
 			got := providerUtils.GetJSONField(out, "output_config.effort")
 			if tc.kept {
 				require.True(t, got.Exists(), "raw output_config.effort was stripped for %s/%s", tc.provider, tc.model)
-				assert.Equal(t, "max", got.String())
+				assert.Equal(t, tc.wantEffort, got.String())
 			} else {
 				assert.False(t, got.Exists(), "raw output_config.effort must be stripped for %s/%s", tc.provider, tc.model)
 			}

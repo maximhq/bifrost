@@ -404,10 +404,13 @@ func (req *OpenAIChatRequest) applyZhipuReasoning(capModel string) {
 }
 
 // applyAlibabaReasoning keeps reasoning_effort only for the Model Studio models
-// that honor it: qwen3.8-max (low/medium/xhigh; the vendor auto-maps
-// max/high→xhigh, minimal→low, none→thinking off) and hosted DeepSeek-V4 / GLM-5
-// series (high/max). Every other model rejects the field — thinking there is
-// controlled via the enable_thinking / thinking_budget extra params instead.
+// that honor it: qwen3.8-max and hosted DeepSeek-V4 / GLM-5 series. On the
+// OpenAI-compatible mount qwen3.8-max's native enum tops out at xhigh
+// (none/minimal/low/medium/high/xhigh — the vendor 400'd "max" until ~2026-08-22),
+// so the shared normalizer (which runs before this pass) forwards xhigh verbatim,
+// clamps max down to xhigh, and maps minimal→low; it does not rely on any
+// vendor-side auto-mapping. Every other model rejects the field — thinking there
+// is controlled via the enable_thinking / thinking_budget extra params instead.
 func (req *OpenAIChatRequest) applyAlibabaReasoning(capModel string) {
 	if req.ChatParameters.Reasoning == nil {
 		return
