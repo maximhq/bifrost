@@ -186,8 +186,9 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //   - The prefix is stripped and the remainder becomes the dimension key.
 //   - Example: 'x-bf-dim-environment' with value 'production' stores {"environment": "production"}.
 //
-// 1a. Prometheus Headers (x-bf-prom-*) [DEPRECATED — use x-bf-dim-* instead]:
-//   - All headers prefixed with 'x-bf-prom-' are still accepted for backward compatibility.
+// 1a. Prometheus Headers (x-bf-prom-*) [REMOVED — use x-bf-dim-* instead]:
+//   - No longer consumed by anything. Still swallowed here so they neither leak
+//     into unified dimensions nor get forwarded to the provider.
 //
 // 2. Maxim Tracing Headers (x-bf-maxim-*):
 //   - Specifically handles 'x-bf-maxim-traceID' and 'x-bf-maxim-generationID'
@@ -363,8 +364,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
-			// x-bf-prom-* is Prometheus-only and must not flow into unified dimensions
-			// (logs/OTEL/Maxim/etc). Prometheus plugin reads headers directly.
+			// x-bf-prom-* is a removed legacy prefix. Swallow it so it neither flows
+			// into unified dimensions (logs/OTEL/Maxim/etc) nor is forwarded upstream.
 			return true
 		}
 		// Checking for maxim headers

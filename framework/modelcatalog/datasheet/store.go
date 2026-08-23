@@ -161,7 +161,7 @@ func (s *Store) MarkSynced(t time.Time) {
 // Get returns the raw pricing row for (model, provider, requestType) or nil.
 // Useful for callers that need exact pricing without override resolution.
 func (s *Store) Get(model string, provider schemas.ModelProvider, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
-	key := makeKey(model, string(provider), normalizeRequestType(requestType))
+	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row, ok := s.pricingData[key]
@@ -177,6 +177,7 @@ func (s *Store) Get(model string, provider schemas.ModelProvider, requestType sc
 func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	catalogProvider := normalizeProvider(string(provider))
 	for _, mode := range []schemas.RequestType{
 		schemas.TextCompletionRequest,
 		schemas.ChatCompletionRequest,
@@ -191,7 +192,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
 	} {
-		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
@@ -207,6 +208,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 func (s *Store) GetCapabilityEntry(model string, provider schemas.ModelProvider) *Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	provider = schemas.ModelProvider(normalizeProvider(string(provider)))
 
 	if entry := s.capabilityEntryForExactUnsafe(model, provider); entry != nil {
 		return entry
@@ -470,6 +472,9 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 
 	for _, pricing := range s.pricingData {
 		normalized := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+		if normalized == "together_ai" {
+			normalized = "together"
+		}
 		if providerModels[normalized] == nil {
 			providerModels[normalized] = make(map[string]struct{})
 		}

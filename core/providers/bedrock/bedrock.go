@@ -3205,8 +3205,8 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
-	sendBackRawRequest := provider.sendBackRawRequest
-	sendBackRawResponse := provider.sendBackRawResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3254,8 +3254,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	var bedrockResp BedrockBatchJobResponse
-	if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr2 != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr2, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// AWS CreateModelInvocationJob only returns jobArn, not status or other details.
@@ -3272,7 +3273,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			InputFileID: inputFileID,
 			Status:      schemas.BatchStatusValidating,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawRequest:  rawRequest,
+				RawResponse: rawResponse,
 			},
 		}, nil
 	}
@@ -3285,7 +3288,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		Status:      retrieveResp.Status,
 		CreatedAt:   retrieveResp.CreatedAt,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawRequest:  rawRequest,
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -3562,8 +3567,9 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		var bedrockResp BedrockBatchJobResponse
-		if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr2 != nil {
+			lastErr = bifrostErr2
 			continue
 		}
 
@@ -3582,7 +3588,8 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			Status:   ToBifrostBatchStatus(bedrockResp.Status),
 			Metadata: metadata,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawResponse: rawResponse,
 			},
 		}
 
@@ -3815,6 +3822,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 				Latency: fileContentResp.ExtraFields.Latency,
 			},
 		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			batchResultsResp.ExtraFields.RawResponse = results
+		}
 		if len(parseErrors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseErrors
 		}
@@ -3850,6 +3860,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = allResults
+	}
 	if len(allParseErrors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = allParseErrors
 	}
