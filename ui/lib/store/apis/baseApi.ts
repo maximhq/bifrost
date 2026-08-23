@@ -185,6 +185,7 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"AccessProfiles",
+		"Projects",
 		"BusinessUnits",
 		"PromptDeployments",
 		"AuthType",

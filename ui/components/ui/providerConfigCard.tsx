@@ -43,7 +43,7 @@ export interface ProviderConfigCardValue {
 	keyIds: string[];
 	budgets: ProviderConfigBudgetLine[];
 	rateLimit?: ProviderConfigRateLimit | null;
-	/** Only rendered when `showModelBudgets` is set (Access Profile only). */
+	/** Only rendered when `showModelBudgets` is set. */
 	modelBudgets?: ProviderConfigModelBudget[];
 }
 
@@ -61,7 +61,7 @@ interface ProviderConfigCardBaseProps {
 	iconProvider: ProviderIconType;
 	/** Keys available for this provider. `null` = still loading (keep section visible). */
 	providerKeys: ProviderKeyInfo[] | null;
-	/** Renders the per-model budgets tree (Access Profile). Off for Virtual Keys. */
+	/** Renders the per-model budgets tree when `showModelBudgets` is enabled. */
 	showModelBudgets?: boolean;
 	/** Read-only global provider cap shown on the Provider budget row (Access Profile). */
 	globalProviderCap?: { max_limit: number; reset_duration?: string };
