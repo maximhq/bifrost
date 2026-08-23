@@ -19,13 +19,13 @@ export const useGetAuthTypeQuery = (
 // widget's enterprise-only "configure SCIM" step is always considered
 // incomplete (the step itself is hidden in OSS via IS_ENTERPRISE).
 // Element type mirrors the fields OSS consumers read off the enterprise
-// response (e.g. onboarding's `provider.enabled` gate); `unknown` elements
-// force every consumer into a per-site cast.
+// response (onboarding's `provider.enabled` gate, the MCP registry sheets'
+// `name` fallback label) so no consumer needs a per-site cast.
 export const useGetSCIMProvidersQuery = (
 	_args?: undefined,
 	_opts?: { skip?: boolean },
 ): {
-	data: { enabled: boolean }[] | undefined;
+	data: { enabled: boolean; name?: string }[] | undefined;
 	isLoading: boolean;
 	isError: boolean;
 	error: null;

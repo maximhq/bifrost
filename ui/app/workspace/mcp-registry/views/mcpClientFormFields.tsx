@@ -374,7 +374,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 	// exchange-client requirement is enforced server-side at create; a missing
 	// tokenExchangeClient section surfaces as the create error.
 	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
-	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
+	const enabledScimProvider = scimProviders?.find((p) => p.enabled);
 	const idpConfigured = !!enabledScimProvider;
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the
 	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
