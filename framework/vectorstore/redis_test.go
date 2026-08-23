@@ -460,7 +460,7 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 			s.ftSearchCalls++
 			s.lastSearchArgs = append([]string(nil), command...)
 			shouldError := s.ftSearchCalls <= s.searchErrors
-			sortByRejected := s.rejectSortBy && commandContainsArg(command, "SORTBY")
+			sortByRejected := s.rejectSortBy && commandHasSortByClause(command)
 			searchHit := s.searchHit
 			s.mu.Unlock()
 
@@ -509,6 +509,32 @@ func (s *fakeRedisSearchServer) lastSearch() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.lastSearchArgs...)
+}
+
+// commandHasSortByClause reports whether SORTBY appears as a clause rather than as a
+// projected field name. valkey-search rejects sorting on the KNN alias, not returning it
+// (probes B and E on the live server), so a fake that failed on the literal anywhere would
+// also fail a retry that merely projects a field called "SORTBY". The sort clause always
+// precedes RETURN in the command GetNearest builds; projected names always follow it.
+func commandHasSortByClause(command []string) bool {
+	limit := len(command)
+	for i, part := range command {
+		if strings.EqualFold(part, "RETURN") {
+			limit = i
+			break
+		}
+	}
+	return commandContainsArg(command[:limit], "SORTBY")
+}
+
+func commandArgCount(command []string, arg string) int {
+	count := 0
+	for _, part := range command {
+		if strings.EqualFold(part, arg) {
+			count++
+		}
+	}
+	return count
 }
 
 func commandContainsArg(command []string, arg string) bool {
@@ -668,6 +694,70 @@ func TestRedisStore_GetNearest_RetriesWithoutSortByWhenAliasRejected(t *testing.
 	assert.False(t, commandContainsArg(lastSearch, "SORTBY"), "retry must drop SORTBY: %v", lastSearch)
 	assert.True(t, commandContainsArg(lastSearch, "RETURN"), "retry must keep the RETURN clause: %v", lastSearch)
 	assert.True(t, commandContainsArg(lastSearch, "DIALECT"), "retry must keep DIALECT: %v", lastSearch)
+}
+
+// The compat retry drops the SORTBY clause by position, not by searching args for the
+// literal. namespace and the RETURN field names share that slice, so a caller-supplied
+// value equal to "SORTBY" would otherwise be mistaken for the clause and take the
+// argument after it with it, sending a malformed command. No caller in this repo passes
+// such a field - GetNearest is exported, so this guards the API rather than a live path.
+func TestRedisStore_GetNearest_RetryKeepsSelectFieldNamedSortBy(t *testing.T) {
+	server := newFakeValkeySearchServer(t)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: schemas.Duration(time.Second),
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := store.GetNearest(ctx, TestNamespace, []float32{0.1, 0.2, 0.3}, nil, []string{"SORTBY"}, 0.5, 1)
+	require.NoError(t, err)
+
+	ftSearchCalls, _ := server.stats()
+	require.Equal(t, 2, ftSearchCalls, "expected the SORTBY query, then one retry without it")
+
+	lastSearch := server.lastSearch()
+	// The sort clause is gone, but the projected field of the same name survives.
+	assert.Equal(t, 1, commandArgCount(lastSearch, "SORTBY"), "only the sort clause should be dropped: %v", lastSearch)
+	// A scanning strip would have eaten LIMIT as the sort clause's field value.
+	assert.True(t, commandContainsArg(lastSearch, "LIMIT"), "retry must keep the LIMIT clause: %v", lastSearch)
+	assert.Equal(t, []string{"RETURN", "2", knnScoreAlias, "SORTBY", "LIMIT"}, returnClause(lastSearch),
+		"RETURN must still declare and carry both projected fields: %v", lastSearch)
+}
+
+// returnClause slices out RETURN, its declared count, that many field names, and the
+// argument that follows, so a test can assert the projection survived intact.
+func returnClause(command []string) []string {
+	for i, part := range command {
+		if !strings.EqualFold(part, "RETURN") || i+1 >= len(command) {
+			continue
+		}
+		n, err := strconv.Atoi(command[i+1])
+		if err != nil || i+2+n >= len(command) {
+			return command[i:]
+		}
+		return command[i : i+3+n]
+	}
+	return nil
 }
 
 func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testing.T) {
