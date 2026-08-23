@@ -196,7 +196,7 @@ const (
 // total spend. idCol is an internal constant.
 func isBucketedDimension(idCol string) bool {
 	switch idCol {
-	case "team_id", "business_unit_id", "customer_id", "user_id", "virtual_key_id":
+	case "team_id", "business_unit_id", "customer_id", "user_id", "virtual_key_id", "project_id":
 		return true
 	}
 	return false
@@ -1264,6 +1264,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
+		"project_id", "project_name",
 		"user_agent", "app",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
@@ -4119,6 +4120,8 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"user_name":          {},
 	"business_unit_id":   {},
 	"business_unit_name": {},
+	"project_id":         {},
+	"project_name":       {},
 }
 
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.

@@ -188,6 +188,7 @@ const (
 	filterDimCustomers      = "customers"
 	filterDimUsers          = "users"
 	filterDimBusinessUnits  = "business_units"
+	filterDimProjects       = "projects"
 	filterDimMetadataKeys   = "metadata_keys"
 )
 
@@ -204,7 +205,7 @@ var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
 	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
-	filterDimBusinessUnits, filterDimMetadataKeys,
+	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
@@ -650,6 +651,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -914,6 +918,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1151,6 +1158,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1368,11 +1378,11 @@ func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.Reques
 func parseDimension(ctx *fasthttp.RequestCtx) (logstore.HistogramDimension, bool) {
 	dim := logstore.HistogramDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent")
 		return "", false
 	}
 	if !logstore.ValidHistogramDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent", dim))
 		return "", false
 	}
 	return dim, true
@@ -1497,11 +1507,11 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, user")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent")
 		return
 	}
 	if !logstore.ValidRankingDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, user", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent", dim))
 		return
 	}
 
@@ -1522,13 +1532,15 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 
 // dashboardRankingDimensions is the fixed set of dimensions returned in the
 // consolidated dashboard payload, mirroring the dimension-ranking tabs on the
-// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit).
+// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit,
+// Project).
 var dashboardRankingDimensions = []logstore.RankingDimension{
 	logstore.RankingDimensionTeam,
 	logstore.RankingDimensionUser,
 	logstore.RankingDimensionVirtualKey,
 	logstore.RankingDimensionCustomer,
 	logstore.RankingDimensionBusinessUnit,
+	logstore.RankingDimensionProject,
 }
 
 const dashboardMCPTopToolsLimit = 10
@@ -1771,6 +1783,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		customers      []logging.KeyPair
 		users          []logging.KeyPair
 		businessUnits  []logging.KeyPair
+		projects       []logging.KeyPair
 		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
@@ -1936,6 +1949,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
+	if _, ok := want[filterDimProjects]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableProjects(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			projects = result
+			mu.Unlock()
+			return nil
+		})
+	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		g.Go(func() error {
 			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query)
@@ -2087,6 +2112,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimBusinessUnits]; ok {
 		payload[filterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[filterDimProjects]; ok {
+		payload[filterDimProjects] = projects
 	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		if metadataKeys == nil {
