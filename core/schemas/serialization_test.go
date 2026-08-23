@@ -1133,8 +1133,10 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 }
 
 // TestNetworkConfig_BaseURLEnvReference verifies that base_url accepts an
-// "env.VAR_NAME" reference and resolves it the same way ca_cert_pem already
-// does, via SecretVar (see NetworkConfig.UnmarshalJSON). Addresses #6119.
+// "env.VAR_NAME" reference, resolves it via SecretVar (see
+// NetworkConfig.UnmarshalJSON), and that re-marshaling emits the original
+// reference rather than the resolved literal (see MarshalJSON). Addresses
+// #6119; the round-trip assertion addresses the follow-up review on #6435.
 func TestNetworkConfig_BaseURLEnvReference(t *testing.T) {
 	// t.Setenv saves and restores whatever this var held before the test,
 	// unlike a bare os.Setenv + defer os.Unsetenv (which would clobber a
@@ -1149,11 +1151,21 @@ func TestNetworkConfig_BaseURLEnvReference(t *testing.T) {
 
 	assert.Equal(t, "https://proxy.example.internal/v1", decoded.BaseURL,
 		"base_url should resolve an env.* reference the same way ca_cert_pem does")
+
+	remarshaled, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.Contains(t, string(remarshaled), `"base_url":"env.TEST_BIFROST_BASE_URL"`,
+		"re-marshaling must emit the original reference, not the resolved URL -- "+
+			"otherwise a DB round-trip or API response bakes in the literal and a "+
+			"later env var change is never picked up")
+	assert.NotContains(t, string(remarshaled), "proxy.example.internal",
+		"the resolved URL must never appear in serialized output")
 }
 
 // TestNetworkConfig_BaseURLPlainURLUnaffected verifies that a literal base_url
 // (the overwhelmingly common case) passes through unchanged -- the env/vault
-// resolution in UnmarshalJSON must not touch ordinary URLs.
+// resolution in UnmarshalJSON must not touch ordinary URLs -- and that it
+// round-trips as itself (no reference to preserve).
 func TestNetworkConfig_BaseURLPlainURLUnaffected(t *testing.T) {
 	data := []byte(`{"base_url":"https://api.example.com/v1"}`)
 
@@ -1162,12 +1174,23 @@ func TestNetworkConfig_BaseURLPlainURLUnaffected(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://api.example.com/v1", decoded.BaseURL)
+
+	remarshaled, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.Contains(t, string(remarshaled), `"base_url":"https://api.example.com/v1"`)
 }
 
 // TestNetworkConfig_BaseURLUnsetEnvReference verifies that referencing an env
-// var that isn't set resolves to empty (matching every other SecretVar-backed
-// field's behavior -- e.g. ca_cert_pem -- rather than leaving the literal
-// "env.VAR_NAME" string in place, which would silently become an invalid URL).
+// var that isn't set leaves BaseURL as the unresolved reference itself,
+// rather than "" (which providers downstream treat as "use the public
+// default" -- see e.g. openai.go, cerebras.go -- turning a typo into a
+// silent misroute) and rather than a hard UnmarshalJSON error (which would
+// propagate through TableProvider's GORM AfterFind hook and, per
+// GetProvidersConfig's error handling, drop every other DB-configured
+// provider along with this one -- see the comment in UnmarshalJSON). Landing
+// on the unresolved reference string means the provider fails loudly on its
+// own first real request, exactly like an invalid literal base_url always
+// has, scoped to this provider alone.
 func TestNetworkConfig_BaseURLUnsetEnvReference(t *testing.T) {
 	// t.Setenv has no unset counterpart, so guarantee-unset-and-restore by
 	// hand: only touch/clean up the var if it actually had a prior value.
@@ -1183,8 +1206,70 @@ func TestNetworkConfig_BaseURLUnsetEnvReference(t *testing.T) {
 	var decoded NetworkConfig
 	err := json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
+	assert.Equal(t, "env.TEST_BIFROST_BASE_URL_UNSET", decoded.BaseURL)
+}
 
-	assert.Equal(t, "", decoded.BaseURL)
+// TestNetworkConfig_BaseURLReferenceResolvesToNonURL verifies that a secret
+// reference whose resolved value is not an http(s) URL never has that
+// resolved value stored anywhere -- not in BaseURL, and (via the round-trip
+// check below) not in re-marshaled output either. Without this, "base_url":
+// "env.OPENAI_API_KEY" would resolve at parse time and later be readable
+// verbatim through the provider API (NetworkConfig.MarshalJSON), turning
+// base_url into an arbitrary env-var read primitive. Unmarshal must not
+// error here either (see TestNetworkConfig_BaseURLUnsetEnvReference for why)
+// -- BaseURL instead becomes the unresolved reference, same as an unset var.
+func TestNetworkConfig_BaseURLReferenceResolvesToNonURL(t *testing.T) {
+	t.Setenv("TEST_BIFROST_BASE_URL_SECRET", "sk-not-a-url-this-is-a-secret")
+
+	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL_SECRET"}`)
+
+	var decoded NetworkConfig
+	err := json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+	assert.Equal(t, "env.TEST_BIFROST_BASE_URL_SECRET", decoded.BaseURL,
+		"the resolved secret must never be stored in BaseURL")
+
+	remarshaled, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.NotContains(t, string(remarshaled), "sk-not-a-url-this-is-a-secret",
+		"the resolved secret must never appear in serialized output")
+}
+
+// TestNetworkConfig_BaseURLNeverErrorsOnUnmarshal is a root-cause guard, not
+// a duplicate of the tests above: NetworkConfig.UnmarshalJSON also runs
+// inside TableProvider's GORM AfterFind hook (framework/configstore), where
+// an error from one row's AfterFind gets surfaced by GetProvidersConfig as a
+// failure for the *entire* batch a Find() call loaded, discarding every
+// other successfully-loaded provider along with the broken one (confirmed
+// against a real gorm.io/driver/sqlite instance -- AfterFind is invoked per
+// row and its error propagates to the query's aggregate .Error, while the
+// caller has no way to tell "this row's hook failed" from "the whole query
+// failed"). So base_url specifically must never cause UnmarshalJSON to
+// return an error, no matter how malformed the reference is -- unlike every
+// other field on NetworkConfig, which is free to fail loudly since none of
+// them are read from a live secret at parse time. This iterates adversarial
+// inputs directly against that invariant instead of relying on the two
+// specific cases above to keep covering it if UnmarshalJSON changes later.
+func TestNetworkConfig_BaseURLNeverErrorsOnUnmarshal(t *testing.T) {
+	t.Setenv("TEST_BIFROST_BASE_URL_ADVERSARIAL", "not-a-url-either")
+
+	cases := []string{
+		`{"base_url":"https://api.example.com/v1"}`,
+		`{"base_url":"env.TEST_BIFROST_BASE_URL_ADVERSARIAL"}`,
+		`{"base_url":"env.TEST_BIFROST_BASE_URL_DOES_NOT_EXIST"}`,
+		`{"base_url":"env."}`,
+		`{"base_url":"env.$BAD"}`,
+		`{"base_url":"vault."}`,
+		`{"base_url":"vault.some/path"}`,
+		`{"base_url":""}`,
+		`{"base_url":"not a url at all"}`,
+		`{}`,
+	}
+	for _, data := range cases {
+		var decoded NetworkConfig
+		err := json.Unmarshal([]byte(data), &decoded)
+		assert.NoError(t, err, "input %s must never fail UnmarshalJSON", data)
+	}
 }
 
 // TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds
