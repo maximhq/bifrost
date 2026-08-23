@@ -846,7 +846,7 @@ func parseSearchResultDocument(resultItem interface{}, namespace string, selectF
 	}
 
 	for fieldName, fieldValue := range attrs {
-		if fieldName == "score" {
+		if fieldName == knnScoreAlias {
 			searchResult.Properties[fieldName] = fieldValue
 			if scoreFloat, ok := toFloat64(fieldValue); ok {
 				searchResult.Score = &scoreFloat
@@ -1155,13 +1155,17 @@ const knnScoreAlias = "score"
 //	RediSearch:    "Unexpected argument `SORTBY`"
 //	valkey-search: "Index field `score` does not exist"
 //
+// The valkey-search match is anchored on the whole backticked phrase rather
+// than on the alias appearing anywhere, so an unrelated missing field whose
+// name merely contains the alias (`llm_scores`) is not mistaken for it.
+//
 // Retrying without SORTBY is safe either way: KNN results are already ordered
 // by distance, so a false positive costs one extra round trip, never accuracy.
 func isKNNSortByUnsupported(errMsg string) bool {
 	if strings.Contains(errMsg, "unexpected argument `sortby`") || strings.Contains(errMsg, "unexpected argument sortby") {
 		return true
 	}
-	return strings.Contains(errMsg, knnScoreAlias) && strings.Contains(errMsg, "does not exist")
+	return strings.Contains(errMsg, "index field `"+knnScoreAlias+"`") && strings.Contains(errMsg, "does not exist")
 }
 
 // GetNearest retrieves the nearest chunks from the Redis vector store.
@@ -1224,6 +1228,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 		errMsg := strings.ToLower(result.Err().Error())
 		// Some Valkey implementations reject SORTBY in KNN search (already distance-ordered).
 		if isKNNSortByUnsupported(errMsg) {
+			s.logger.Debug(fmt.Sprintf("FT.SEARCH SORTBY fallback triggered for namespace %s: %s", namespace, result.Err()))
 			compatArgs := make([]interface{}, 0, len(args)-2)
 			for i := 0; i < len(args); i++ {
 				if i+1 < len(args) && args[i] == "SORTBY" {

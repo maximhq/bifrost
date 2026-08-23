@@ -354,12 +354,33 @@ func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to configure Redis TLS CA certificate")
 }
 
+// Fixture for the single document newFakeValkeySearchServer serves. The
+// distance is what FT.SEARCH puts in the KNN alias; GetNearest reports
+// 1 - distance as the similarity, so 0.2 surfaces as a Score of 0.8.
+const (
+	fakeHitDocID    = "doc-sortby"
+	fakeHitDistance = "0.2"
+	fakeHitCacheKey = "session-sortby"
+)
+
+// resp2SearchHit encodes a one-document RESP2 FT.SEARCH reply:
+// [total, docID, [field, value, ...]].
+func resp2SearchHit(docID, distance, cacheKey string) string {
+	bulk := func(v string) string { return fmt.Sprintf("$%d\r\n%s\r\n", len(v), v) }
+	return "*3\r\n:1\r\n" + bulk(docID) +
+		"*4\r\n" + bulk(knnScoreAlias) + bulk(distance) + bulk("cache_key") + bulk(cacheKey)
+}
+
 type fakeRedisSearchServer struct {
 	listener     net.Listener
 	searchErrors int
 	// rejectSortBy makes FT.SEARCH fail the way valkey-search does when SORTBY
 	// names the KNN result alias instead of an indexed attribute.
 	rejectSortBy bool
+	// searchHit makes an accepted FT.SEARCH return one document carrying the
+	// KNN alias, so callers can assert on a parsed SearchResult rather than
+	// only on the fact that a retry was issued.
+	searchHit bool
 
 	mu             sync.Mutex
 	ftSearchCalls  int
@@ -376,7 +397,7 @@ func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchSe
 // rejects any FT.SEARCH carrying SORTBY and serves the rest normally.
 func newFakeValkeySearchServer(t *testing.T) *fakeRedisSearchServer {
 	t.Helper()
-	return startFakeRedisSearchServer(t, &fakeRedisSearchServer{rejectSortBy: true})
+	return startFakeRedisSearchServer(t, &fakeRedisSearchServer{rejectSortBy: true, searchHit: true})
 }
 
 func startFakeRedisSearchServer(t *testing.T, server *fakeRedisSearchServer) *fakeRedisSearchServer {
@@ -440,6 +461,7 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 			s.lastSearchArgs = append([]string(nil), command...)
 			shouldError := s.ftSearchCalls <= s.searchErrors
 			sortByRejected := s.rejectSortBy && commandContainsArg(command, "SORTBY")
+			searchHit := s.searchHit
 			s.mu.Unlock()
 
 			switch {
@@ -447,6 +469,8 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 				_, _ = writer.WriteString("-Index field `score` does not exist\r\n")
 			case shouldError:
 				_, _ = writer.WriteString("-Invalid query\r\n")
+			case searchHit:
+				_, _ = writer.WriteString(resp2SearchHit(TestNamespace+":"+fakeHitDocID, fakeHitDistance, fakeHitCacheKey))
 			default:
 				_, _ = writer.WriteString("*1\r\n:0\r\n")
 			}
@@ -567,6 +591,16 @@ func TestIsKNNSortByUnsupported(t *testing.T) {
 			want:   false,
 		},
 		{
+			name:   "field name merely containing the alias is not the alias",
+			errMsg: "index field `llm_scores` does not exist",
+			want:   false,
+		},
+		{
+			name:   "alias outside an index-field phrase is not a sortby problem",
+			errMsg: "property `score` is not sortable and does not exist here",
+			want:   false,
+		},
+		{
 			name:   "unrelated search error",
 			errMsg: "invalid query",
 			want:   false,
@@ -618,7 +652,14 @@ func TestRedisStore_GetNearest_RetriesWithoutSortByWhenAliasRejected(t *testing.
 
 	results, err := store.GetNearest(ctx, TestNamespace, []float32{0.1, 0.2, 0.3}, nil, nil, 0.5, 1)
 	require.NoError(t, err, "the rejected SORTBY should be retried, not surfaced")
-	assert.Empty(t, results)
+
+	// The retry must survive parsing, not merely be issued: the document the
+	// fake serves has to come back with the KNN alias resolved into Score.
+	require.Len(t, results, 1, "the retry's document should be parsed and returned")
+	assert.Equal(t, fakeHitDocID, results[0].ID)
+	assert.Equal(t, fakeHitCacheKey, results[0].Properties["cache_key"])
+	require.NotNil(t, results[0].Score, "Properties[%q] should populate Score", knnScoreAlias)
+	assert.InDelta(t, 0.8, *results[0].Score, 0.000001, "Score is the similarity 1 - distance")
 
 	ftSearchCalls, _ := server.stats()
 	assert.Equal(t, 2, ftSearchCalls, "expected the SORTBY query, then one retry without it")
