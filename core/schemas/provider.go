@@ -18,6 +18,8 @@ const (
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
+	DefaultStreamReadBufferSizeKB     = 64    // Default stream read buffer size in KB (64KB)
+	MaxStreamReadBufferSizeKB         = 16384 // Upper bound for stream read buffer size in KB (16MB); the buffer is allocated per stream, so an unbounded value is a memory hazard
 	DefaultStreamIdleTimeoutInSeconds = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 	DefaultKeepAliveTimeoutInSeconds  = 30  // Idle keep-alive for pooled connections — how long an idle connection is kept for reuse before being closed
 	DefaultMaxConnsPerHost            = 5000
@@ -69,6 +71,7 @@ type NetworkConfig struct {
 	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`  // Idle keep-alive for pooled connections; set below the upstream server's keep-alive to avoid reusing connections it has already closed. Default: 30s
+	StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`     // Stream read buffer size in KB (0 = use default 64KB)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
@@ -95,6 +98,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
+		StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
@@ -116,6 +120,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.CACertPEM = alias.CACertPEM
 	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
 	nc.KeepAliveTimeoutInSeconds = alias.KeepAliveTimeoutInSeconds
+	nc.StreamReadBufferSizeKB = alias.StreamReadBufferSizeKB
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.HTTP2PingIntervalInSeconds = alias.HTTP2PingIntervalInSeconds
@@ -190,6 +195,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
+		StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
@@ -208,6 +214,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		InsecureSkipVerify:         nc.InsecureSkipVerify,
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
 		KeepAliveTimeoutInSeconds:  nc.KeepAliveTimeoutInSeconds,
+		StreamReadBufferSizeKB:     nc.StreamReadBufferSizeKB,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		HTTP2PingIntervalInSeconds: nc.HTTP2PingIntervalInSeconds,
@@ -242,6 +249,21 @@ var DefaultNetworkConfig = NetworkConfig{
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
 	KeepAliveTimeoutInSeconds:      DefaultKeepAliveTimeoutInSeconds,
 	MaxConnsPerHost:                DefaultMaxConnsPerHost,
+	StreamReadBufferSizeKB:         DefaultStreamReadBufferSizeKB,
+}
+
+// StreamReadBufferSize returns the stream read buffer size in bytes.
+// The buffer is allocated per stream, so an out-of-range value is clamped
+// rather than honoured: 0 or less falls back to the default, and anything above
+// MaxStreamReadBufferSizeKB is capped.
+func (nc *NetworkConfig) StreamReadBufferSize() int {
+	if nc.StreamReadBufferSizeKB <= 0 {
+		return DefaultStreamReadBufferSizeKB * 1024
+	}
+	if nc.StreamReadBufferSizeKB > MaxStreamReadBufferSizeKB {
+		return MaxStreamReadBufferSizeKB * 1024
+	}
+	return nc.StreamReadBufferSizeKB * 1024
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -605,6 +627,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
 	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
 		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
+	}
+
+	if config.NetworkConfig.StreamReadBufferSizeKB <= 0 {
+		config.NetworkConfig.StreamReadBufferSizeKB = DefaultStreamReadBufferSizeKB
 	}
 
 	// Clamp before the seconds-to-time.Duration conversion in the Bedrock
