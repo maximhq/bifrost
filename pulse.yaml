@@ -10,6 +10,7 @@ services:
     kill_timeout: 10s
     proxy:
       addr: ":${PORT:-8080}"
+      write_timeout: 900s
     healthcheck:
       path: /health
       interval: 2s

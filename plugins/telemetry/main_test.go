@@ -350,3 +350,66 @@ func TestPushGatewayPushesBifrostButNotRuntimeCollectors(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestApplyCustomLabels covers applyCustomLabels' resolution behavior: values
+// sourced from x-bf-dim-* dimensions, values from a direct typed context key,
+// and dimension precedence when both are present. Header-level exclusion of the
+// removed x-bf-prom-* prefix is enforced upstream in the HTTP transport, not here.
+func TestApplyCustomLabels(t *testing.T) {
+	tests := []struct {
+		name         string
+		customLabels []string
+		dimensions   map[string]string
+		typedKeys    map[string]string // set via ctx.SetValue(BifrostContextKey(k), v)
+		want         map[string]string
+	}{
+		{
+			name:         "resolves from dimensions",
+			customLabels: []string{"environment"},
+			dimensions:   map[string]string{"environment": "production"},
+			want:         map[string]string{"environment": "production"},
+		},
+		{
+			name:         "resolves from direct typed context key",
+			customLabels: []string{"tenant"},
+			typedKeys:    map[string]string{"tenant": "acme"},
+			want:         map[string]string{"tenant": "acme"},
+		},
+		{
+			name:         "dimension takes precedence over typed key",
+			customLabels: []string{"region"},
+			dimensions:   map[string]string{"region": "us-east-1"},
+			typedKeys:    map[string]string{"region": "eu-west-1"},
+			want:         map[string]string{"region": "us-east-1"},
+		},
+		{
+			name:         "label absent from all sources is not emitted",
+			customLabels: []string{"missing"},
+			want:         map[string]string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+			if tt.dimensions != nil {
+				ctx.SetValue(schemas.BifrostContextKeyDimensions, tt.dimensions)
+			}
+			for k, v := range tt.typedKeys {
+				ctx.SetValue(schemas.BifrostContextKey(k), v)
+			}
+
+			p := &PrometheusPlugin{customLabels: tt.customLabels}
+			got := map[string]string{}
+			p.applyCustomLabels(ctx, got)
+
+			if len(got) != len(tt.want) {
+				t.Fatalf("label count = %d, want %d (got %v)", len(got), len(tt.want), got)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("label %q = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}

@@ -44,16 +44,22 @@ image-edit:
     operationId: imageEdit
     summary: Edit an image
     description: |
-      Edits an image using a text prompt and optional mask. Request must be sent as multipart/form-data
-      with at least `model`, `prompt` (unless `type` is `background_removal`), and `image` (or `image[]`).
+      Edits an image using a text prompt and optional mask. Accepts either `application/json` (sources
+      as URLs or base64 under `images`) or `multipart/form-data` (to upload the image as `image` or
+      `image[]`). Requires at least `model`, one image, and `prompt` - the latter except for the
+      operation types driven purely by the input image, e.g. `background_removal`. Only the JSON body
+      preserves the types of provider-native extra params; multipart carries every value as a string.
     tags:
     - Images
     requestBody:
       required: true
       content:
-        multipart/form-data:
+        application/json:
           schema:
             $ref: '../../schemas/inference/images.yaml#/ImageEditRequest'
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditMultipartRequest'
     responses:
       '200':
         description: |

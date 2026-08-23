@@ -2592,9 +2592,10 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	// Parse the batch job response
 	var geminiResp GeminiBatchJobResponse
-	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
-		provider.logger.Error("gemini batch create unmarshal error: " + err.Error())
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	rawRequest, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &geminiResp, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr2 != nil {
+		provider.logger.Error("gemini batch create unmarshal error: " + bifrostErr2.Error.Message)
+		return nil, providerUtils.SetErrorLatency(bifrostErr2, latency)
 	}
 	// Check for metadata
 	if geminiResp.Metadata == nil {
@@ -2646,7 +2647,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			Failed:    failedCount,
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawRequest:  rawRequest,
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -2871,8 +2874,9 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	}
 
 	var geminiResp GeminiBatchJobResponse
-	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &geminiResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr2 != nil {
+		return nil, bifrostErr2
 	}
 
 	var completedCount, failedCount int
@@ -2901,7 +2905,8 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Failed:    failedCount,
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -3337,6 +3342,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = results
+	}
 	if len(parseErrors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = parseErrors
 	}

@@ -1187,6 +1187,26 @@ func (m *MCPManager) DisableClient(id string) (retErr error) {
 	return nil
 }
 
+// isEnableable reports whether EnableClient has work to do for this entry.
+//
+// State == Disabled is the ordinary case. The second clause covers a client
+// whose stored config still says disabled while its runtime state has moved
+// on — the two can disagree after a partially-applied enable, and enabling
+// must stay possible so they reconverge rather than wedging on
+// "is not disabled (current state: unstable)".
+//
+// A dial failure during enable is deliberately NOT represented by leaving the
+// entry Unstable-but-enabled: EnableClient parks it back at Disabled state
+// (keeping ExecutionConfig.Disabled=false so the checker keeps retrying and
+// the persisted row stays enabled), precisely so this guard keeps matching
+// and the admin can retry immediately.
+func isEnableable(clientState *schemas.MCPClientState) bool {
+	if clientState.State == schemas.MCPConnectionStateDisabled {
+		return true
+	}
+	return clientState.ExecutionConfig != nil && clientState.ExecutionConfig.Disabled
+}
+
 // EnableClient re-enables a previously disabled MCP client by reconnecting it
 // and restarting its health monitor and tool syncer.
 //
@@ -1202,7 +1222,17 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	if clientState.State != schemas.MCPConnectionStateDisabled {
+	// Checked before isEnableable rather than folded into it: a Disabled
+	// entry is enableable on its state alone, so the predicate deliberately
+	// admits one with no config (see its nil-config cases). Everything past
+	// this point dereferences the config — the un-disable below, the name in
+	// the error just under it, the dial itself — so a missing one is a
+	// per-client error here, not a nil panic further in.
+	if clientState.ExecutionConfig == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s has no execution config", id)
+	}
+	if !isEnableable(clientState) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
 	}
@@ -1231,7 +1261,13 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	if clientState.State != schemas.MCPConnectionStateDisabled {
+	// Re-checked on the re-read for the same reason as above: the entry can
+	// have been replaced while this call waited for the exclusive guard.
+	if clientState.ExecutionConfig == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s has no execution config", id)
+	}
+	if !isEnableable(clientState) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
 	}
@@ -1257,11 +1293,26 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	}
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
-		// Connection failed — leave the entry as Disconnected so the health monitor can
-		// recover it, but only if the client has not been disabled in the meantime, and
-		// don't clobber NeedsReauth: connectToMCPClient already classified this failure
-		// as a dead OAuth2 credential (under its own lock, above), and a generic
-		// Disconnected here would silently erase that more specific signal.
+		// The connection failed, but the enable itself stands:
+		// ExecutionConfig.Disabled stays false and a checker is started below,
+		// so the client keeps trying to come up on its own and the caller
+		// keeps its persisted disabled=false (see ErrMCPEnableConnectFailed).
+		//
+		// State goes back to Disabled rather than Unstable. Unstable would
+		// wedge the client: isEnableable would stop matching, so every retry
+		// of this same enable is rejected with "is not disabled (current
+		// state: unstable)" — with no way out short of a restart. Disabled is
+		// also the more truthful badge for a client that never came up, and
+		// it keeps the admin's toggle and the state agreeing.
+		//
+		// NeedsReauth is preserved: connectToMCPClient already classified
+		// this failure as a dead OAuth2 credential (under its own lock,
+		// above), which is a more specific and more actionable signal than
+		// Disabled. Unlike the Disabled case, this one is deliberately not
+		// re-enableable — isEnableable rejects needs_reauth on both clauses
+		// (the config is un-disabled by now), because retrying the dial with
+		// the same dead credential cannot succeed. The way out is
+		// reauthorization, not another enable.
 		m.mu.Lock()
 		alreadyDisabled := false
 		if cs, exists := m.clientMap[id]; exists {
@@ -1271,7 +1322,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			case schemas.MCPConnectionStateNeedsReauth:
 				// preserve as-is
 			default:
-				cs.State = schemas.MCPConnectionStateUnstable
+				cs.State = schemas.MCPConnectionStateDisabled
 			}
 		}
 		m.mu.Unlock()
@@ -1286,7 +1337,11 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			m.checkerManager.StartChecking(checker)
 		}
 
-		return fmt.Errorf("failed to connect MCP client '%s': %w", configCopy.Name, err)
+		// %w twice: callers match ErrMCPEnableConnectFailed to decide whether
+		// to keep the persisted disabled=false (they must), while the
+		// underlying dial error stays readable so the admin sees why it
+		// failed rather than a bare "enable failed".
+		return fmt.Errorf("%w for '%s': %w", ErrMCPEnableConnectFailed, configCopy.Name, err)
 	}
 
 	m.logger.Debug("%s MCP client '%s' enabled successfully", MCPLogPrefix, configCopy.Name)
@@ -1315,6 +1370,23 @@ func (m *MCPManager) RequiresPerCallConnection(config *schemas.MCPClientConfig) 
 // the DB and silently discards the change. Wrapped via %w so errors.Is still
 // finds it under the caller-facing message.
 var ErrMCPSharedConnectFailedAfterUpdate = errors.New("mcp client fields updated, but establishing the shared connection failed")
+
+// ErrMCPEnableConnectFailed signals that EnableClient already un-disabled the
+// client (ExecutionConfig.Disabled is false and a connection checker is
+// retrying) before its first dial failed. The runtime state is parked back at
+// Disabled — not Unstable, which would wedge every subsequent enable against
+// isEnableable — except for a dead OAuth2 credential, which keeps the more
+// specific NeedsReauth. Callers that persist disabled=false to a store before
+// calling EnableClient (see the HTTP update handler) must NOT roll that row
+// back on this specific error: the client is genuinely enabled and retrying in
+// the background, so a rolled-back row would say disabled while the runtime
+// keeps reconnecting, and a restart would then silently re-disable a client
+// the admin turned on.
+// The failure is reported to the caller either way — it just isn't a reason
+// to undo the enable. Mirrors ErrMCPSharedConnectFailedAfterUpdate's contract
+// for the update path. Wrapped via %w so errors.Is finds it under the
+// caller-facing message.
+var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing its connection failed")
 
 // UpdateClient updates an existing MCP client's configuration and refreshes its tool list.
 // It updates the client's execution config with new settings and retrieves updated tools

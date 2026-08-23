@@ -2796,6 +2796,20 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_image_medium_quality",
 	"output_cost_per_image_high_quality",
 	"output_cost_per_image_auto_quality",
+	"output_cost_per_image_above_1024_and_1536_pixels",
+	"output_cost_per_image_above_1536_and_1024_pixels",
+	"output_cost_per_image_above_1024_and_1024_pixels_low_quality",
+	"output_cost_per_image_above_1024_and_1536_pixels_low_quality",
+	"output_cost_per_image_above_1536_and_1024_pixels_low_quality",
+	"output_cost_per_image_above_1024_and_1024_pixels_medium_quality",
+	"output_cost_per_image_above_1024_and_1536_pixels_medium_quality",
+	"output_cost_per_image_above_1536_and_1024_pixels_medium_quality",
+	"output_cost_per_image_above_1024_and_1024_pixels_high_quality",
+	"output_cost_per_image_above_1024_and_1536_pixels_high_quality",
+	"output_cost_per_image_above_1536_and_1024_pixels_high_quality",
+	"output_cost_per_image_above_1024x1024_pixels_standard_quality",
+	"output_cost_per_image_above_1024x1536_pixels_standard_quality",
+	"output_cost_per_image_above_1536x1024_pixels_standard_quality",
 	"input_cost_per_image_token",
 	"output_cost_per_image_token",
 	// Costs - Audio/Video
@@ -6628,6 +6642,35 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 		return fmt.Errorf("failed to delete shared oauth tokens by config id: %w", result.Error)
 	}
 	return nil
+}
+
+// GetSharedOauthTokensByConfigIDs is GetSharedOauthTokenByConfigID's batch
+// counterpart: resolves the auth_mode='shared' token row for each of the
+// given oauth config IDs in one query, keyed by OauthConfigID. Applies the
+// same active-first, most-recently-updated ordering, so a stale duplicate
+// row can't shadow the live one. Not filtered by status; configs with no
+// shared row are absent from the map.
+func (s *RDBConfigStore) GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	if len(oauthConfigIDs) == 0 {
+		return map[string]*tables.TableMCPOauthToken{}, nil
+	}
+	var tokens []tables.TableMCPOauthToken
+	if err := s.DB().WithContext(ctx).
+		Where("oauth_config_id IN ? AND auth_mode = ?", oauthConfigIDs, "shared").
+		Order("CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC").
+		Find(&tokens).Error; err != nil {
+		return nil, fmt.Errorf("failed to batch-get shared oauth tokens: %w", err)
+	}
+	// The ordering above puts the preferred row for each config first, so the
+	// first write per key wins and later duplicates are dropped.
+	result := make(map[string]*tables.TableMCPOauthToken, len(tokens))
+	for i := range tokens {
+		if _, seen := result[tokens[i].OauthConfigID]; seen {
+			continue
+		}
+		result[tokens[i].OauthConfigID] = &tokens[i]
+	}
+	return result, nil
 }
 
 // GetAdminOauthTokenByMCPClientID resolves the single retained admin-mode

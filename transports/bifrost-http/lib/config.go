@@ -2253,15 +2253,15 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 			changed = true
 		}
 	} else if mcpCfg.ToolSyncInterval > 0 {
-		if mcpCfg.ToolSyncInterval%time.Second != 0 {
+		if mcpCfg.ToolSyncInterval%time.Minute != 0 {
 			logger.Warn(
-				"ignoring mcp.tool_sync_interval %q: must be a whole number of seconds",
+				"ignoring mcp.tool_sync_interval %q: must be a whole number of minutes",
 				mcpCfg.ToolSyncInterval.String(),
 			)
 		} else {
-			syncSeconds := int(mcpCfg.ToolSyncInterval / time.Second)
-			if config.ClientConfig.MCPToolSyncInterval != syncSeconds {
-				config.ClientConfig.MCPToolSyncInterval = syncSeconds
+			syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
+			if config.ClientConfig.MCPToolSyncInterval != syncMinutes {
+				config.ClientConfig.MCPToolSyncInterval = syncMinutes
 				changed = true
 			}
 		}
@@ -6256,7 +6256,10 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 				return ErrNotFound
 			}
 			if errors.Is(err, configstore.ErrAlreadyExists) {
-				return ErrAlreadyExists
+				// Wrap rather than discard: parseGormError's message names the
+				// constraint that actually fired (key name vs. key ID), which a bare
+				// ErrAlreadyExists would otherwise erase from the warn log below.
+				return fmt.Errorf("%w: %w", ErrAlreadyExists, err)
 			}
 			return fmt.Errorf("failed to create provider key in store: %w", err)
 		}
@@ -6328,7 +6331,10 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 				return ErrNotFound
 			}
 			if errors.Is(err, configstore.ErrAlreadyExists) {
-				return ErrAlreadyExists
+				// Wrap rather than discard: parseGormError's message names the
+				// constraint that actually fired (key name vs. key ID), which a bare
+				// ErrAlreadyExists would otherwise erase from the warn log below.
+				return fmt.Errorf("%w: %w", ErrAlreadyExists, err)
 			}
 			return fmt.Errorf("failed to update provider key in store: %w", err)
 		}
@@ -6712,7 +6718,15 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 			}
 		} else {
 			if err := c.client.EnableMCPClient(id); err != nil {
-				c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				// A dial failure is not a failed enable: the runtime has the
+				// client un-disabled with a checker retrying, so reverting
+				// this copy would make it disagree with both the runtime and
+				// the caller's persisted row (see ErrMCPEnableConnectFailed).
+				// Any other error means the enable itself did not happen, so
+				// the revert still applies there.
+				if !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
+					c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				}
 				return fmt.Errorf("failed to enable MCP client: %w", err)
 			}
 		}
