@@ -24,7 +24,11 @@ func TestBifrostResponsesStreamResponseOmitsEmptyItem(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: marshal: %v", typ, err)
 		}
-		if strings.Contains(string(encoded), `"item"`) {
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
+		}
+		if _, ok := decoded["item"]; ok {
 			t.Errorf("%s: event without item serializes an item field:\n%s", typ, encoded)
 		}
 	}
@@ -41,9 +45,58 @@ func TestBifrostResponsesStreamResponseOmitsEmptyItem(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: marshal: %v", typ, err)
 		}
-		if !strings.Contains(string(encoded), `"item":{"id":"msg_1"`) {
-			t.Errorf("%s: lost item object:\n%s", typ, encoded)
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
 		}
+		itemJSON, ok := decoded["item"]
+		if !ok {
+			t.Errorf("%s: lost item object:\n%s", typ, encoded)
+			continue
+		}
+		var item ResponsesMessage
+		if err := json.Unmarshal(itemJSON, &item); err != nil {
+			t.Fatalf("%s: unmarshal item: %v", typ, err)
+		}
+		if item.ID == nil || *item.ID != "msg_1" {
+			t.Errorf("%s: unexpected item payload: %#v", typ, item)
+		}
+	}
+}
+
+func TestBifrostResponsesStreamResponseLogProbsScopedToApplicableEvents(t *testing.T) {
+	created := &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCreated, SequenceNumber: 0}
+	encoded, err := MarshalSorted(created)
+	if err != nil {
+		t.Fatalf("created: marshal: %v", err)
+	}
+	var createdDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &createdDecoded); err != nil {
+		t.Fatalf("created: unmarshal encoded event: %v", err)
+	}
+	if _, ok := createdDecoded["logprobs"]; ok {
+		t.Fatalf("created: unexpected logprobs field: %s", encoded)
+	}
+
+	delta := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputTextDelta}).WithDefaults()
+	encoded, err = MarshalSorted(delta)
+	if err != nil {
+		t.Fatalf("output_text.delta: marshal: %v", err)
+	}
+	var deltaDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &deltaDecoded); err != nil {
+		t.Fatalf("output_text.delta: unmarshal encoded event: %v", err)
+	}
+	logprobsJSON, ok := deltaDecoded["logprobs"]
+	if !ok {
+		t.Fatalf("output_text.delta: missing logprobs field: %s", encoded)
+	}
+	var logprobs []ResponsesOutputMessageContentTextLogProb
+	if err := json.Unmarshal(logprobsJSON, &logprobs); err != nil {
+		t.Fatalf("output_text.delta: unmarshal logprobs: %v", err)
+	}
+	if logprobs == nil || len(logprobs) != 0 {
+		t.Fatalf("output_text.delta: expected empty logprobs array, got %#v", logprobs)
 	}
 }
 

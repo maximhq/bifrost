@@ -3767,6 +3767,21 @@ type BifrostResponsesStreamResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+// MarshalJSON omits event-scoped fields that are nil so strict Responses
+// clients do not see explicit nulls on unrelated event types. Some event types
+// still intentionally emit empty arrays after WithDefaults populates them.
+func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
+	type alias BifrostResponsesStreamResponse
+	encoded, err := json.Marshal(alias(resp))
+	if err != nil {
+		return nil, err
+	}
+	if resp.LogProbs == nil && gjson.GetBytes(encoded, "logprobs").Exists() {
+		return sjson.DeleteBytes(encoded, "logprobs")
+	}
+	return encoded, nil
+}
+
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
 	if resp == nil {
 		return nil
