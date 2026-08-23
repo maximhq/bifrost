@@ -133,7 +133,9 @@ type AnthropicPassthroughStreamUsage struct {
 	//
 	// Tie-break on equal cache totals prefers the SMALLER input_tokens, because the premise of this
 	// whole split is that the prompt-scale value is the untrustworthy one. For a compliant upstream
-	// input_tokens does not vary across frames, so the tie-break never fires there. Note the test is on the VALUES, not on whether the fields were present: Kimi sends
+	// input_tokens does not vary across frames, so the tie-break never fires there.
+	//
+	// The test is on the VALUES, not on whether the fields were present: Kimi sends
 	// "cache_read_input_tokens": 0 explicitly on message_start, so a presence check would wrongly
 	// trust that frame. authSeen keeps the merge order-independent.
 	//
