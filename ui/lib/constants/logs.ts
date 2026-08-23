@@ -100,6 +100,12 @@ export const RequestTypes = [
 	"batch_cancel",
 	"batch_delete",
 	"batch_results",
+	// File operations
+	"file_upload",
+	"file_list",
+	"file_retrieve",
+	"file_delete",
+	"file_content",
 	// Container operations
 	"container_create",
 	"container_list",

@@ -539,6 +539,12 @@ type ConfigStore interface {
 	// of the given MCP client IDs in one query, keyed by MCPClientID. Not
 	// filtered by status; clients with no admin row are absent from the map.
 	GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error)
+	// GetSharedOauthTokensByConfigIDs is GetSharedOauthTokenByConfigID's batch
+	// counterpart: resolves the shared-mode token row for each of the given
+	// oauth config IDs in one query, keyed by OauthConfigID. Same
+	// active-first ordering, so a stale duplicate can't shadow the live row.
+	// Not filtered by status; configs with no shared row are absent.
+	GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error)
 	// PromoteSharedOauthTokenToAdmin transactionally installs the config's
 	// fresh shared-mode token as the retained admin-mode discovery credential
 	// for mcpClientID: if an admin row already exists its credential fields

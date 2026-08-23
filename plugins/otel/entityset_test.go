@@ -26,7 +26,7 @@ func TestEntitySetFromAttrs_MixedAnyKeepsAlignment(t *testing.T) {
 		schemas.AttrBifrostTeamIDs:   []any{"a1", 42, "c3"},
 		schemas.AttrBifrostTeamNames: []any{"Alpha", "Bogus", "Gamma"},
 	}
-	ids, names := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
+	ids, names := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
 	if ids != "a1,c3" || names != "Alpha,Gamma" {
 		t.Errorf("got (%q,%q), want (\"a1,c3\",\"Alpha,Gamma\")", ids, names)
 	}
