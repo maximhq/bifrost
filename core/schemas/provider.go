@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -181,6 +182,11 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
+// envVarNamePattern matches valid POSIX environment variable names: a letter
+// or underscore followed by letters, digits, or underscores. No whitespace,
+// no other punctuation.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // resolveEnvString resolves an "env.VAR_NAME"-prefixed string to the named
 // environment variable's value, mirroring the plain-string env resolution
 // SecretVar performs for other fields (e.g. Key.Value, CACertPEM). The check
@@ -192,9 +198,8 @@ func resolveEnvString(value, fieldName string) (string, error) {
 	if !ok {
 		return value, nil
 	}
-	envKey = strings.TrimSpace(envKey)
-	if envKey == "" {
-		return "", fmt.Errorf("%s: environment variable name missing in %q", fieldName, value)
+	if !envVarNamePattern.MatchString(envKey) {
+		return "", fmt.Errorf("%s: invalid environment variable name %q; must match %s", fieldName, envKey, envVarNamePattern.String())
 	}
 	envValue, ok := os.LookupEnv(envKey)
 	if !ok {

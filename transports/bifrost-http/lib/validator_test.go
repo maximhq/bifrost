@@ -342,6 +342,25 @@ func TestValidateConfigSchema_ProviderKey_MissingWeight(t *testing.T) {
 // Governance Budget Required Fields Tests
 // =============================================================================
 
+func TestValidateConfigSchema_NetworkConfig_BaseURL_EnvReference(t *testing.T) {
+	// "env.VAR_NAME" must pass schema validation (format:"uri" is a hint,
+	// not an enforced assertion, here) so that NetworkConfig.UnmarshalJSON
+	// gets a chance to resolve it. See github.com/maximhq/bifrost#6119.
+	validConfig := `{
+		"providers": {
+			"vllm-local": {
+				"keys": [{"name": "vllm-key", "value": "dummy", "weight": 1.0}],
+				"network_config": {"base_url": "env.VLLM_BASE_URL"}
+			}
+		}
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected \"env.VLLM_BASE_URL\" base_url to pass schema validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_Budget_Valid(t *testing.T) {
 	// Valid budget with all required fields: id, max_limit, reset_duration
 	validConfig := `{

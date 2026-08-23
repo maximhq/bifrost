@@ -1164,6 +1164,27 @@ func TestNetworkConfig_BaseURLEnvSubstitution(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "", decoded.BaseURL)
 	})
+
+	invalidCases := []struct {
+		name  string
+		value string
+	}{
+		{"empty variable name", "env."},
+		{"internal whitespace", "env. TEST_BIFROST_BASE_URL"},
+		{"leading whitespace in name", "env. TEST"},
+		{"hyphen in name", "env.TEST-BIFROST-BASE-URL"},
+		{"dot in name", "env.TEST.BIFROST"},
+		{"starts with digit", "env.1TEST"},
+	}
+	for _, tc := range invalidCases {
+		t.Run("rejects malformed reference: "+tc.name, func(t *testing.T) {
+			var decoded NetworkConfig
+			data, err := json.Marshal(map[string]string{"base_url": tc.value})
+			require.NoError(t, err)
+			err = json.Unmarshal(data, &decoded)
+			require.Error(t, err, "expected %q to be rejected as an invalid env reference", tc.value)
+		})
+	}
 }
 
 // TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds

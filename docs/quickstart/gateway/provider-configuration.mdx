@@ -406,8 +406,8 @@ curl --location 'http://localhost:8080/api/providers' \
   standard providers, it's optional and overrides the default endpoint.
   `base_url` also accepts an `env.VARIABLE_NAME` reference (e.g.
   `"base_url": "env.VLLM_BASE_URL"`), resolved from the environment at
-  startup — useful for keeping `config.json` committed while the endpoint
-  varies per environment.
+  configuration load time — useful for keeping `config.json` committed while
+  the endpoint varies per environment.
 </Note>
 
 ### Private Network Access
