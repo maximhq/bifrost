@@ -95,8 +95,13 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 // AnthropicPassthroughStreamUsage incrementally merges /v1/messages stream usage across events
 // without retaining the response body. Anthropic splits usage: message_start nests it under
 // message.usage (input, cache tokens incl. 5m/1h split, service_tier), while message_delta has
-// it at the top level (final output). Taking the max of each field across events combines them
-// order-independently — the same merge the native Anthropic stream does (anthropic.go).
+// it at the top level (final output). Every field except input_tokens is combined by taking the
+// max across events, which is order-independent. input_tokens is the exception — see the
+// looseInput/authInput note below — because its meaning varies by upstream.
+//
+// Note this is NOT the same merge as the native Anthropic stream: accumulateAnthropicResponsesUsage
+// (anthropic.go) still takes an unconditional max of input_tokens and therefore still has the
+// double-count this type fixes. That is tracked separately as #5354 / PR #5355.
 type AnthropicPassthroughStreamUsage struct {
 	combined AnthropicUsage
 	seen     bool
@@ -114,8 +119,17 @@ type AnthropicPassthroughStreamUsage struct {
 	// input_tokens; one without them is only a fallback, used until an authoritative event turns
 	// up. Note the test is on the VALUES, not on whether the fields were present: Kimi sends
 	// "cache_read_input_tokens": 0 explicitly on message_start, so a presence check would wrongly
-	// trust that frame. authSeen keeps the merge order-independent, and nothing here ever lowers a
-	// value, so upstreams that already report correctly are unaffected.
+	// trust that frame. authSeen keeps the merge order-independent.
+	//
+	// Monotonicity is a property of the two accumulators, not of what is emitted: looseInput and
+	// authInput never decrease, but the emitted combined.InputTokens does drop — from the loose
+	// figure to the authoritative one — on the event where authSeen first flips. That is safe here
+	// because StreamPassthrough (core/providers/utils/passthrough_stream.go) keeps the LAST non-nil
+	// observation and the authoritative message_delta is last, so the billed figure is the
+	// authoritative one. A client that disconnects between message_start and message_delta is
+	// billed the loose figure, which is exactly the pre-fix behaviour. Upstreams that already
+	// report correctly never populate the loose bucket ahead of an authoritative event, so they
+	// are unaffected.
 	looseInput int
 	authInput  int
 	authSeen   bool
@@ -141,7 +155,8 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 
 	a.seen = true
 	c := &a.combined
-	if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
+	if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 ||
+		u.CacheCreation.Ephemeral5mInputTokens > 0 || u.CacheCreation.Ephemeral1hInputTokens > 0 {
 		a.authSeen = true
 		if u.InputTokens > a.authInput {
 			a.authInput = u.InputTokens

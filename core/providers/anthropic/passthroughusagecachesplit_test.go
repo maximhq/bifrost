@@ -162,3 +162,64 @@ func TestPassthroughStreamUsageNoCacheCountersFallsBackToLooseInput(t *testing.T
 		t.Errorf("prompt tokens = %d, want 500", p)
 	}
 }
+
+// An upstream may report cache creation only as the ephemeral breakdown, without the top-level
+// cache_creation_input_tokens. Anthropic documents cache_creation as the 5m/1h split OF that
+// total, so such a frame is still cache-aware and must be treated as authoritative for
+// input_tokens. Deciding authority on the two top-level counters alone misread it as cache-less
+// and fell back to the prompt-scale figure.
+func TestPassthroughStreamUsageBreakdownOnlyFrameIsAuthoritative(t *testing.T) {
+	const (
+		breakdownOnlyStart = `{"type":"message_start","message":{"id":"msg_b","type":"message",` +
+			`"role":"assistant","model":"claude-opus-5","content":[],` +
+			`"usage":{"input_tokens":50000,"output_tokens":0}}}`
+		breakdownOnlyDelta = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+			`"usage":{"input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":49000},` +
+			`"output_tokens":20}}`
+	)
+	// message_delta is authoritative via its ephemeral breakdown, so input_tokens is 1000, not the
+	// prompt-scale 50000. cache_creation_input_tokens is absent, so it contributes 0 to the sum.
+	const wantPrompt = 1000
+
+	got, gotOut := observePassthroughUsage(t, breakdownOnlyStart, breakdownOnlyDelta)
+	if got != wantPrompt {
+		t.Errorf("prompt tokens = %d, want %d (breakdown-only frame misread as cache-less, "+
+			"so the prompt-scale message_start figure was kept)", got, wantPrompt)
+	}
+	if gotOut != 20 {
+		t.Errorf("completion tokens = %d, want 20", gotOut)
+	}
+	// order-independent, like every other case here
+	if rev, _ := observePassthroughUsage(t, breakdownOnlyDelta, breakdownOnlyStart); rev != wantPrompt {
+		t.Errorf("reversed order: prompt tokens = %d, want %d", rev, wantPrompt)
+	}
+}
+
+// Pins the intended answer when an authoritative event is followed by a cache-less event carrying
+// a LARGER input_tokens. Once any cache-aware event has been seen, its input_tokens wins and the
+// cache-less figure is discarded — here 8931, where an unconditional max would report 9181.
+//
+// No captured frame triggers this: Anthropic's own minimal message_delta carries no input_tokens
+// at all, and every deviating upstream observed so far sends its cache-aware split LAST. The case
+// is pinned so the intent is explicit rather than incidental, and so #5355 adopts the same rule.
+func TestPassthroughStreamUsageCacheLessEventAfterAuthoritativeIsIgnored(t *testing.T) {
+	const (
+		authFirst = `{"type":"message_start","message":{"id":"msg_c","type":"message",` +
+			`"role":"assistant","model":"k3","content":[],` +
+			`"usage":{"input_tokens":0,"cache_read_input_tokens":8931,"output_tokens":0}}}`
+		looseAfter = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+			`"usage":{"input_tokens":250,"output_tokens":16}}`
+	)
+	const wantPrompt = 0 + 8931
+
+	got, gotOut := observePassthroughUsage(t, authFirst, looseAfter)
+	if got != wantPrompt {
+		t.Errorf("prompt tokens = %d, want %d", got, wantPrompt)
+	}
+	if gotOut != 16 {
+		t.Errorf("completion tokens = %d, want 16", gotOut)
+	}
+	if rev, _ := observePassthroughUsage(t, looseAfter, authFirst); rev != wantPrompt {
+		t.Errorf("reversed order: prompt tokens = %d, want %d", rev, wantPrompt)
+	}
+}
