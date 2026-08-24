@@ -321,9 +321,11 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 
 			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
 				// RFC 8414 §3.3 and OIDC Discovery §4.3 require the returned
-				// issuer to exactly match the issuer used for discovery. The direct
-				// issuer URL is a legacy fallback, however, and may be a guessed
-				// MCP server origin rather than an authorization-server issuer.
+				// issuer to exactly match the issuer used for discovery. Deliberately
+				// compare the serialized values without URI normalization, including
+				// scheme and host case. The direct issuer URL is a legacy fallback,
+				// however, and may be a guessed MCP server origin rather than an
+				// authorization-server issuer.
 				if metadata.Issuer != canonicalIssuer && candidateURL != canonicalIssuer {
 					issuerMismatchErr = fmt.Errorf("authorization-server metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, canonicalIssuer)
 					logger.Warn("[OAuth Discovery] %v", issuerMismatchErr)
