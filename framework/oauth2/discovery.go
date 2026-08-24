@@ -253,7 +253,11 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 // fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
 // Implements RFC 8414 discovery
 func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMetadata, error) {
-	base, path := splitURL(issuer)
+	// RFC 8414 §3.1 requires removal of a terminating slash before the
+	// well-known path is inserted. Use the same normalized issuer when
+	// validating the metadata issuer (RFC 8414 §3.3).
+	canonicalIssuer := strings.TrimSuffix(issuer, "/")
+	base, path := splitURL(canonicalIssuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
 	}
@@ -268,7 +272,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		candidateURLs = append(candidateURLs,
 			fmt.Sprintf("%s/.well-known/oauth-authorization-server/%s", base, path),
 			fmt.Sprintf("%s/.well-known/openid-configuration/%s", base, path),
-			strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration",
+			canonicalIssuer+"/.well-known/openid-configuration",
 		)
 	} else {
 		candidateURLs = append(candidateURLs,
@@ -279,7 +283,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 
 	// Legacy compatibility fallback for authorization servers that publish
 	// metadata directly at the issuer URL. This is not part of MCP discovery.
-	candidateURLs = append(candidateURLs, strings.TrimSuffix(issuer, "/"))
+	candidateURLs = append(candidateURLs, canonicalIssuer)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -311,8 +315,8 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 				// issuer to exactly match the issuer used for discovery. Without
 				// this, metadata published by another issuer on the same host could
 				// be accepted for a path-bearing issuer.
-				if metadata.Issuer != issuer {
-					logger.Debug(fmt.Sprintf("[OAuth Discovery] Metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, issuer))
+				if metadata.Issuer != canonicalIssuer {
+					logger.Debug(fmt.Sprintf("[OAuth Discovery] Metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, canonicalIssuer))
 					continue
 				}
 

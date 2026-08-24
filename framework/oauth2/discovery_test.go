@@ -83,3 +83,49 @@ func TestFetchSingleAuthServerMetadata_RejectsMismatchedIssuer(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, metadata)
 }
+
+func TestFetchSingleAuthServerMetadata_NormalizesTrailingSlashForPathIssuer(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	var requestedPaths []string
+	var canonicalIssuer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		if r.URL.Path != "/.well-known/oauth-authorization-server/tenant1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"` + canonicalIssuer + `","authorization_endpoint":"https://issuer.example/authorize"}`))
+	}))
+	defer server.Close()
+	canonicalIssuer = server.URL + "/tenant1"
+
+	metadata, err := fetchSingleAuthServerMetadata(context.Background(), canonicalIssuer+"/")
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, canonicalIssuer, metadata.Issuer)
+	assert.Equal(t, []string{"/.well-known/oauth-authorization-server/tenant1"}, requestedPaths)
+}
+
+func TestFetchSingleAuthServerMetadata_NormalizesTrailingSlashForRootIssuer(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	var requestedPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		if r.URL.Path != "/.well-known/oauth-authorization-server" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","authorization_endpoint":"https://issuer.example/authorize"}`))
+	}))
+	defer server.Close()
+
+	metadata, err := fetchSingleAuthServerMetadata(context.Background(), server.URL+"/")
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, server.URL, metadata.Issuer)
+	assert.Equal(t, []string{"/.well-known/oauth-authorization-server"}, requestedPaths)
+}
