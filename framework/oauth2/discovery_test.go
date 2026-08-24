@@ -129,3 +129,22 @@ func TestFetchSingleAuthServerMetadata_NormalizesTrailingSlashForRootIssuer(t *t
 	assert.Equal(t, server.URL, metadata.Issuer)
 	assert.Equal(t, []string{"/.well-known/oauth-authorization-server"}, requestedPaths)
 }
+
+func TestFetchSingleAuthServerMetadata_LegacyDirectIssuerFallbackAllowsDifferentIssuer(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"https://auth.example/tenant-a","authorization_endpoint":"https://issuer.example/authorize"}`))
+	}))
+	defer server.Close()
+
+	metadata, err := fetchSingleAuthServerMetadata(context.Background(), server.URL+"/mcp")
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, "https://auth.example/tenant-a", metadata.Issuer)
+}
