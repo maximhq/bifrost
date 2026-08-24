@@ -451,7 +451,19 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		return
 	}
 	respAttrs := PopulateResponseAttributes(resp)
+	// A cancelled stream arrives here with an accumulated response whose usage
+	// is missing the final chunk, so its aggregate token counts read zero. When
+	// the error carries the authoritative BilledUsage, drop those zeros from
+	// the response side: PopulateErrorAttributes gates its own emissions on
+	// > 0, so a zero stamped here would survive the merge and turn "not
+	// recorded" into a false zero on the span.
+	billed := err != nil && err.ExtraFields.BilledUsage != nil
 	for k, v := range respAttrs {
+		if billed && (k == schemas.AttrInputTokens || k == schemas.AttrOutputTokens || k == schemas.AttrTotalTokens) {
+			if n, ok := v.(int); ok && n == 0 {
+				continue
+			}
+		}
 		if k == schemas.AttrFinishReasons {
 			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
 			span.SetAttribute(schemas.AttrFinishReasons, v)
