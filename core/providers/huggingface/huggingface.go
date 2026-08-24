@@ -554,12 +554,9 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 	}
 
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
-		reqBody, err := ToHuggingFaceChatCompletionRequest(request)
+		reqBody, err := ToHuggingFaceChatCompletionStreamRequest(request)
 		if err != nil {
 			return nil, err
-		}
-		if reqBody != nil {
-			reqBody.Stream = schemas.Ptr(true)
 		}
 		return reqBody, nil
 	}

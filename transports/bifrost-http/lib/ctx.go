@@ -250,6 +250,18 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //	// session stickiness, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
+	// "transport-context" overhead phase: building the request-scoped BifrostContext —
+	// child-context alloc, request-id resolution, and the full request-header iteration
+	// that populates dimensions/tags/mcp-header maps. It runs inside the root http.request
+	// span but on no phase span, so it would otherwise fold into the residual "core"
+	// bucket. The tracer + root span live on the fasthttp ctx (set by TracingMiddleware),
+	// so this parents to the root span. Nil-safe when no trace is active.
+	if t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && t != nil {
+		if _, h := t.StartSpanID(ctx, "transport-context", schemas.SpanKindInternal); h != nil {
+			defer t.EndSpan(h, schemas.SpanStatusOk, "")
+		}
+	}
+
 	var matcher *HeaderMatcher
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false

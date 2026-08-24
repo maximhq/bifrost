@@ -1257,6 +1257,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
+		"batch_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
