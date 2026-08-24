@@ -406,7 +406,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamIdleTimeout, 9*time.Minute)
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
 Model: "gpt-4o-mini",
 Input: messages,
