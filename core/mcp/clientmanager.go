@@ -1059,7 +1059,17 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 		m.mu.Unlock()
 		return
 	}
-	maps.Copy(client.ToolMap, tools)
+	// Replace the tool set wholesale, mirroring connectToMCPClient's swap and
+	// the checker's writeBackTools: every caller passes a complete discovery
+	// result, and merging into the existing map would keep tools the upstream
+	// has since removed alive in memory (and on the hosted /mcp surface) while
+	// the DB, persisted from the passed-in set via the tools-change callback,
+	// has already dropped them.
+	if tools == nil {
+		tools = make(map[string]schemas.ChatTool)
+	}
+	precomputeToolSerialization(tools)
+	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
 	client.State = schemas.MCPConnectionStateHealthy
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
@@ -1687,7 +1697,17 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStatePendingVerification {
 				cs.ExecutionConfig = newConfig
 				if len(newConfig.DiscoveredTools) > 0 {
-					maps.Copy(cs.ToolMap, newConfig.DiscoveredTools)
+					// Replace, not merge, mirroring AddClient's own restore:
+					// the persisted DiscoveredTools are the complete set, and
+					// a pending_verification entry holds no tools of its own
+					// worth keeping anyway. Copied into a fresh map so the
+					// entry never aliases the config's own map.
+					restored := make(map[string]schemas.ChatTool, len(newConfig.DiscoveredTools))
+					for toolName, tool := range newConfig.DiscoveredTools {
+						_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
+						restored[toolName] = tool
+					}
+					cs.ToolMap = restored
 					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
 				}
 				cs.State = schemas.MCPConnectionStateHealthy
