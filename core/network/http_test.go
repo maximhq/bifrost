@@ -29,63 +29,63 @@ func TestStaleConnectionRetryIfErr(t *testing.T) {
 			name:      "retries on whitespace error (first attempt)",
 			err:       fmt.Errorf(`error when reading response headers: cannot find whitespace in the first line of response "217\r\ndata: ..."`),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on connection reset by peer",
 			err:       fmt.Errorf("read tcp 10.0.0.1:54321->10.0.0.2:443: read: connection reset by peer"),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on io.EOF (server closed connection)",
 			err:       io.EOF,
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on wrapped io.EOF",
 			err:       fmt.Errorf("read response: %w", io.EOF),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on unexpected EOF",
 			err:       io.ErrUnexpectedEOF,
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on wrapped unexpected EOF",
 			err:       fmt.Errorf("read response: %w", io.ErrUnexpectedEOF),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on broken pipe (write to closed connection)",
 			err:       fmt.Errorf("write tcp 10.0.0.1:53374->10.0.0.2:30000: write: broken pipe"),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on use of closed network connection",
 			err:       fmt.Errorf("read tcp 10.0.0.1:53374->10.0.0.2:443: use of closed network connection"),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on server closed connection",
 			err:       fmt.Errorf("server closed connection before returning the first response byte"),
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
@@ -97,14 +97,14 @@ func TestStaleConnectionRetryIfErr(t *testing.T) {
 			name:      "retries on fasthttp.ErrConnectionClosed sentinel",
 			err:       fasthttp.ErrConnectionClosed,
 			attempts:  1,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
 			name:      "retries on second stale-connection attempt",
 			err:       io.EOF,
 			attempts:  2,
-			wantReset: true,
+			wantReset: false,
 			wantRetry: true,
 		},
 		{
@@ -181,7 +181,9 @@ func TestStaleConnectionRetryWithTTLMismatch(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "data: {\"message\": \"ok\", \"request\": %d}\n\n", requestCount.Load())
+		if _, err := fmt.Fprintf(w, "data: {\"message\": \"ok\", \"request\": %d}\n\n", requestCount.Load()); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	server.Config.IdleTimeout = serverIdleTimeout
 	server.Start()
@@ -320,7 +322,9 @@ func TestMaxConnDurationForcesReconnection(t *testing.T) {
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
+		if _, err := fmt.Fprint(w, "ok"); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateNew {
@@ -460,7 +464,9 @@ func TestMaxConnWaitTimeoutAlignedWithReadTimeout(t *testing.T) {
 		// Hold the connection for 3 seconds to simulate a slow provider
 		time.Sleep(3 * time.Second)
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
+		if _, err := fmt.Fprint(w, "ok"); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
