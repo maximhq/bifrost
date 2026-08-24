@@ -89,6 +89,35 @@ func TestBifrostResponsesOutputItemAddedDefaultsMessageContentToArray(t *testing
 	if source.Item.Content != nil {
 		t.Fatal("normalizing output_item.added mutated the source message content")
 	}
+
+	existingBlock := ResponsesMessageContentBlock{
+		Type: ResponsesOutputMessageContentTypeText,
+		Text: Ptr("already present"),
+	}
+	existingContent := &ResponsesMessageContent{
+		ContentBlocks: []ResponsesMessageContentBlock{existingBlock},
+	}
+	sourceWithContent := &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeOutputItemAdded,
+		Item: &ResponsesMessage{
+			ID:      Ptr("msg_2"),
+			Type:    &itemType,
+			Role:    Ptr(ResponsesInputMessageRoleAssistant),
+			Content: existingContent,
+		},
+	}
+
+	normalizedWithContent := sourceWithContent.WithDefaults()
+	if normalizedWithContent.Item.Content != existingContent {
+		t.Fatal("normalizing output_item.added replaced existing message content")
+	}
+	if sourceWithContent.Item.Content != existingContent {
+		t.Fatal("normalizing output_item.added mutated the source message content")
+	}
+	blocks := normalizedWithContent.Item.Content.ContentBlocks
+	if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "already present" {
+		t.Fatalf("expected existing message content to be preserved, got %#v", blocks)
+	}
 }
 
 // Cursor (and other Chat Completions clients) send function tools nested under
