@@ -33655,8 +33655,17 @@
                       "  var hasSystem = msgs.some(function (m) { return m.role === 'system'; });",
                       "  pm.expect(hasSystem, 'messages: ' + msgsS).to.be.false;",
                       "});",
-                      "pm.test('system instruction inlined as a <system-reminder> user turn', function () {",
-                      "  pm.expect(msgsS.indexOf('<system-reminder>'), 'messages missing system-reminder: ' + msgsS).to.be.above(-1);",
+                      "pm.test('system instruction inlined into a user turn verbatim', function () {",
+                      "  var inlined = msgs.some(function (m) {",
+                      "    return m.role === 'user' &&",
+                      "      JSON.stringify(m).indexOf('<system-reminder>') !== -1 &&",
+                      "      JSON.stringify(m).indexOf('From now on, answer in one word.') !== -1;",
+                      "  });",
+                      "  pm.expect(inlined, 'messages: ' + msgsS).to.be.true;",
+                      "});",
+                      "pm.test('payload-less function_call produces no assistant turn', function () {",
+                      "  var hasAssistant = msgs.some(function (m) { return m.role === 'assistant'; });",
+                      "  pm.expect(hasAssistant, 'messages: ' + msgsS).to.be.false;",
                       "});"
                     ]
                   }

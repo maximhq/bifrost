@@ -638,8 +638,12 @@ func TestRoundTrip_B5_MidConvFollowedByToolOutput_NotForwarded(t *testing.T) {
 			t.Fatalf("msg[%d] forwarded as role:system; role seq = %q", i, roleSeq(outMsgs))
 		}
 	}
-	if got := textBlocks(outSystem); len(got) != 1 {
-		t.Logf("system blocks = %d (fallback applied, not native)", len(got))
+	// Fallback applied: the mid-conv system text must survive in the fallback
+	// output — inlined into a user turn, not hoisted — and the top-level system
+	// must remain the only top-level block.
+	assertInlined(t, outMsgs, outSystem, "From now on, be concise.")
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want only the top-level system", got)
 	}
 }
 
@@ -668,11 +672,20 @@ func TestRoundTrip_B6_MidConvFollowedByPayloadlessFunctionCall_NotForwarded(t *t
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
-	outMsgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrost, true, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8"))
+	outMsgs, outSystem := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrost, true, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8"))
 
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Fatalf("msg[%d] forwarded as role:system; role seq = %q (a payload-less function_call emits no assistant turn — [user, system, user] is a 400)", i, roleSeq(outMsgs))
+		}
+	}
+	// The system text must survive the fallback — inlined into a user turn,
+	// not hoisted — and the payload-less function_call must not materialize
+	// an assistant turn anywhere in the output.
+	assertInlined(t, outMsgs, outSystem, "be concise")
+	for i, m := range outMsgs {
+		if m.Role == AnthropicMessageRoleAssistant {
+			t.Errorf("msg[%d] is an assistant turn; a payload-less function_call emits no tool_use and must not materialize one (roles = %q)", i, roleSeq(outMsgs))
 		}
 	}
 }
