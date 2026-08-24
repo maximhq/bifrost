@@ -90,6 +90,25 @@ func TestFetchSingleAuthServerMetadata_RejectsMismatchedIssuer(t *testing.T) {
 	assert.ErrorContains(t, err, "authorization-server metadata issuer mismatch")
 }
 
+func TestFetchSingleAuthServerMetadata_RejectsMetadataWithoutIssuer(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-authorization-server/tenant/prod/oidc" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"authorization_endpoint":"https://issuer.example/authorize","token_endpoint":"https://issuer.example/token"}`))
+	}))
+	defer server.Close()
+
+	metadata, err := fetchSingleAuthServerMetadata(context.Background(), server.URL+"/tenant/prod/oidc")
+	require.Error(t, err)
+	assert.Nil(t, metadata)
+	assert.ErrorContains(t, err, "authorization-server metadata issuer mismatch")
+}
+
 func TestFetchSingleAuthServerMetadata_NormalizesTrailingSlashForPathIssuer(t *testing.T) {
 	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
 
