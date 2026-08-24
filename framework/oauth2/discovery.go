@@ -23,6 +23,8 @@ type OAuthMetadata struct {
 	RegistrationURL  *string  `json:"registration_endpoint,omitempty"`
 	ScopesSupported  []string `json:"scopes_supported,omitempty"`
 	Resource         string   `json:"resource,omitempty"`
+	// Required by RFC 8414 and OIDC Discovery metadata; omitempty is retained
+	// for legacy metadata documents that omit it.
 	Issuer           string   `json:"issuer,omitempty"`
 	ResponseTypes    []string `json:"response_types_supported,omitempty"`
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
