@@ -5429,7 +5429,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			stopRequestTimeout()
 			return primaryResult, primaryErr
 		}
-		return wrapStreamForRequestTimeout(primaryResult, stopRequestTimeout), nil
+		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -5491,7 +5491,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			bifrost.logger.Debug("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
-			return wrapStreamForRequestTimeout(result, stopRequestTimeout), nil
+			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout), nil
 		}
 
 		// End span with error status

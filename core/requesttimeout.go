@@ -44,7 +44,15 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func()) {
 // still be reading chunks long after handleStreamRequest itself has
 // returned, and the deadline must keep the whole stream, not just its setup,
 // in scope.
-func wrapStreamForRequestTimeout(ch chan *schemas.BifrostStreamChunk, stop func()) chan *schemas.BifrostStreamChunk {
+//
+// The forwarding send also selects on ctx.Done(): a consumer that abandons
+// the stream (e.g. an SDK caller returning on its own ctx cancellation
+// instead of finishing the range loop) would otherwise leave `out <- chunk`
+// blocked forever, so close(out)/stop() would never run. Once cancelled, the
+// goroutine stops trying to forward and instead just drains ch to
+// exhaustion -- discarding chunks instead of leaving the producer blocked
+// writing into ch -- before running its deferred cleanup.
+func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func()) chan *schemas.BifrostStreamChunk {
 	if ch == nil {
 		stop()
 		return ch
@@ -54,7 +62,13 @@ func wrapStreamForRequestTimeout(ch chan *schemas.BifrostStreamChunk, stop func(
 		defer close(out)
 		defer stop()
 		for chunk := range ch {
-			out <- chunk
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				for range ch {
+				}
+				return
+			}
 		}
 	}()
 	return out
