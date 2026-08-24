@@ -199,32 +199,6 @@ func isValidAudioBase64Payload(data string) bool {
 	return err == nil && len(decoded) > 0
 }
 
-// supportsThinkingConfig returns true if the model supports ThinkingConfig.
-// Only specific Gemini models support thinking:
-// - gemini-*-thinking models (e.g., gemini-2.0-flash-thinking)
-// - gemini-2.5-* models
-// - gemini-3.* and higher models
-func supportsThinkingConfig(model string) bool {
-	modelLower := strings.ToLower(model)
-
-	// Check for explicit "thinking" in model name
-	if strings.Contains(modelLower, "thinking") {
-		return true
-	}
-
-	// Check for gemini-2.5-* models
-	if strings.Contains(modelLower, "gemini-2.5") {
-		return true
-	}
-
-	// Check for Gemini 3.0+ models
-	return isGemini3Plus(model)
-}
-
-func canDisableThinkingWithBudget(model string) bool {
-	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
-}
-
 // geminiThinkingLevels is the thinkingLevel ladder ordered from least to most
 // thinking. Source: https://ai.google.dev/api/generate-content#ThinkingLevel
 var geminiThinkingLevels = []string{"minimal", "low", "medium", "high"}
@@ -329,7 +303,7 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, caps schemas.Mod
 	// functions, which surfaced as tools being advertised but never called.
 	// Docs: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
 	//       https://ai.google.dev/gemini-api/docs/function-calling#thinking
-	if isGemini3Plus(model) {
+	if caps.SupportsReasoningEffort(isGemini3Plus(model)) {
 		if config.ThinkingConfig == nil {
 			config.ThinkingConfig = &GenerationConfigThinkingConfig{}
 		}

@@ -2378,6 +2378,7 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 //   - GET /metrics: For Prometheus metrics
 func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	var err error
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRuntimeVersion, s.Version)
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
