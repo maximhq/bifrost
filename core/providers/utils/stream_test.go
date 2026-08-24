@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,4 +315,127 @@ func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	if err.Error.Code == nil || *err.Error.Code != "limit_burst_rate" {
 		t.Errorf("unexpected error code: %v", err.Error.Code)
 	}
+}
+
+func TestStreamThroughputGuard_HealthyStreamPreservesChunkOrder(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- chatStreamChunk("first-" + strings.Repeat("a", 122))
+	stream <- chatStreamChunk("second-" + strings.Repeat("b", 121))
+	stream <- chatStreamChunk("tail")
+	close(stream)
+
+	wrapped, _, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 1000,
+		ProbeWindowInSeconds:             1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("healthy stream rejected: %v", bifrostErr)
+	}
+	var content strings.Builder
+	for chunk := range wrapped {
+		content.WriteString(*chunk.BifrostChatResponse.Choices[0].Delta.Content)
+	}
+	want := "first-" + strings.Repeat("a", 122) + "second-" + strings.Repeat("b", 121) + "tail"
+	if got := content.String(); got != want {
+		t.Fatalf("stream content = %q, want %q", got, want)
+	}
+}
+
+func TestStreamThroughputGuard_RejectsSlowStreamBeforeOutput(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")},
+		}}},
+	}}
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 100000,
+		ProbeWindowInSeconds:             1,
+	})
+	if wrapped != nil {
+		t.Fatal("slow primary output was exposed")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "stream_throughput_below_minimum" {
+		t.Fatalf("unexpected guard error: %+v", bifrostErr)
+	}
+	close(stream)
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("slow stream did not drain")
+	}
+}
+
+func TestStreamThroughputGuard_DetectsErrorAfterLifecycleChunk(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	stream <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+	}}
+	stream <- &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream failed"}}}
+	close(stream)
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 10,
+		ProbeWindowInSeconds:             1,
+	})
+	if wrapped != nil {
+		t.Fatal("lifecycle chunk was exposed before the upstream error")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "upstream failed" {
+		t.Fatalf("unexpected stream error: %+v", bifrostErr)
+	}
+	<-drainDone
+}
+
+func TestStreamThroughputGuard_ShortCompletedStreamIsAllowed(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- chatStreamChunk("ok")
+	close(stream)
+
+	wrapped, _, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 100000,
+		ProbeWindowInSeconds:             1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("short completed stream rejected: %+v", bifrostErr)
+	}
+	chunk, ok := <-wrapped
+	if !ok || chunk == nil || *chunk.BifrostChatResponse.Choices[0].Delta.Content != "ok" {
+		t.Fatalf("short stream chunk = %+v, want ok", chunk)
+	}
+	if _, ok := <-wrapped; ok {
+		t.Fatal("short stream wrapper remained open")
+	}
+}
+
+func TestStreamThroughputGuard_ProbeBufferIsBounded(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, maxStreamProbeChunks)
+	for i := 0; i < maxStreamProbeChunks; i++ {
+		stream <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: i,
+		}}
+	}
+	close(stream)
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 1,
+		ProbeWindowInSeconds:             60,
+	})
+	if wrapped != nil {
+		t.Fatal("buffer-limited probe exposed unverified output")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "stream_throughput_probe_buffer_exceeded" {
+		t.Fatalf("unexpected buffer guard error: %+v", bifrostErr)
+	}
+	<-drainDone
+}
+
+func chatStreamChunk(content string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+		}}},
+	}}
 }

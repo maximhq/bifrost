@@ -192,3 +192,71 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 		t.Fatalf("retried stream content = %q, want %q", content, "hello")
 	}
 }
+
+func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		flusher.Flush()
+		for i := 0; i < 30; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n")
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer primary.Close()
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.StreamThroughputGuard = &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 20,
+		ProbeWindowInSeconds:             1,
+	}
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("fallback stream failed: %s", bifrostErr.Error.Message)
+	}
+	content, errs := drainChatStream(stream)
+	if got := fallbackHits.Load(); got != 1 {
+		t.Fatalf("fallback server hits = %d, want 1", got)
+	}
+	if len(errs) > 0 {
+		t.Fatalf("fallback stream emitted error chunks: %v", errs)
+	}
+	if content != "hello" {
+		t.Fatalf("consumer-visible content = %q, want only fallback content %q", content, "hello")
+	}
+}

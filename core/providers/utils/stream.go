@@ -2,13 +2,21 @@ package utils
 
 import (
 	"context"
+	"fmt"
+	"time"
+	"unicode/utf8"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// CheckFirstStreamChunkForError reads the first chunk from a streaming channel to detect
-// errors returned inside HTTP 200 SSE streams (e.g., providers that send rate limit
-// errors as SSE events instead of HTTP 429).
+const (
+	maxStreamProbeCharacters = 256
+	maxStreamProbeChunks     = 512
+	maxStreamProbeBytes      = 1 << 20
+	minStreamProbeDuration   = 100 * time.Millisecond
+)
+
+// CheckFirstStreamChunkForError probes a stream before exposing its first chunk.
 //
 // If the first chunk is an error, it drains the source channel in the background
 // (so the provider goroutine can exit cleanly) and returns the error for synchronous
@@ -16,9 +24,11 @@ import (
 // once the drain completes — callers must wait on it before releasing any resources
 // (e.g., plugin pipelines) that the provider goroutine's postHookRunner may still reference.
 //
-// If the first chunk is valid data, it returns a wrapped channel that re-emits
-// the first chunk followed by all remaining chunks from the source. drainDone is
-// closed when the wrapper goroutine finishes forwarding the source stream.
+// With a throughput guard, lifecycle and content chunks remain buffered until
+// enough output characters arrive, the stream completes, or the probe rejects
+// the attempt. Without a guard, a valid first chunk commits immediately. A
+// committed stream is returned through a wrapped channel in its original order;
+// drainDone closes when the wrapper finishes forwarding the source stream.
 //
 // If the source channel is closed immediately (empty stream), it returns a
 // nil channel with nil error. drainDone is already closed.
@@ -29,6 +39,7 @@ import (
 func CheckFirstStreamChunkForError(
 	ctx context.Context,
 	stream chan *schemas.BifrostStreamChunk,
+	guardConfig ...*schemas.StreamThroughputGuardConfig,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	firstChunk, ok := <-stream
 	if !ok {
@@ -39,23 +50,79 @@ func CheckFirstStreamChunkForError(
 		return nil, done, nil
 	}
 
-	// Check if first chunk is an error
-	if firstChunk.BifrostError != nil && firstChunk.BifrostError.Error != nil &&
-		(firstChunk.BifrostError.Error.Message != "" || firstChunk.BifrostError.Error.Code != nil || firstChunk.BifrostError.Error.Type != nil) {
-		// Drain source channel to let the provider goroutine exit cleanly
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for range stream {
-			}
-		}()
-		return nil, done, firstChunk.BifrostError
+	if err := streamChunkError(firstChunk); err != nil {
+		return nil, drainStream(stream), err
 	}
 
-	// First chunk is valid data — wrap channel to re-inject it
+	if len(guardConfig) == 0 || guardConfig[0] == nil || guardConfig[0].MinimumOutputCharactersPerSecond <= 0 {
+		return wrapStream(ctx, stream, []*schemas.BifrostStreamChunk{firstChunk})
+	}
+
+	config := guardConfig[0]
+	windowSeconds := config.ProbeWindowInSeconds
+	if windowSeconds <= 0 {
+		windowSeconds = schemas.DefaultStreamThroughputProbeWindowInSeconds
+	}
+	targetCharacters := int64(config.MinimumOutputCharactersPerSecond) * int64(windowSeconds)
+	if targetCharacters > maxStreamProbeCharacters {
+		targetCharacters = maxStreamProbeCharacters
+	}
+	probeDuration := time.Duration(targetCharacters) * time.Second / time.Duration(config.MinimumOutputCharactersPerSecond)
+	if probeDuration < minStreamProbeDuration {
+		probeDuration = minStreamProbeDuration
+	}
+
+	buffered := []*schemas.BifrostStreamChunk{firstChunk}
+	characters := streamChunkCharacters(firstChunk)
+	bufferedBytes := streamChunkSize(firstChunk)
+	if characters >= int(targetCharacters) {
+		return wrapStream(ctx, stream, buffered)
+	}
+	if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
+		return nil, drainStream(stream), newStreamProbeBufferError()
+	}
+
+	timer := time.NewTimer(probeDuration)
+	defer timer.Stop()
+	for {
+		select {
+		case chunk, streamOpen := <-stream:
+			if !streamOpen {
+				return closedBufferedStream(buffered)
+			}
+			if err := streamChunkError(chunk); err != nil {
+				return nil, drainStream(stream), err
+			}
+			buffered = append(buffered, chunk)
+			characters += streamChunkCharacters(chunk)
+			bufferedBytes += streamChunkSize(chunk)
+			if characters >= int(targetCharacters) {
+				return wrapStream(ctx, stream, buffered)
+			}
+			if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
+				return nil, drainStream(stream), newStreamProbeBufferError()
+			}
+		case <-timer.C:
+			return nil, drainStream(stream), newStreamThroughputError(config)
+		case <-ctx.Done():
+			return nil, drainStream(stream), &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   ctx.Err(),
+				},
+			}
+		}
+	}
+}
+
+func wrapStream(ctx context.Context, stream chan *schemas.BifrostStreamChunk, buffered []*schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	done := make(chan struct{})
-	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(stream), 1))
-	wrapped <- firstChunk
+	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(stream), len(buffered), 1))
+	for _, chunk := range buffered {
+		wrapped <- chunk
+	}
 	go func() {
 		defer close(done)
 		defer close(wrapped)
@@ -72,4 +139,137 @@ func CheckFirstStreamChunkForError(
 		}
 	}()
 	return wrapped, done, nil
+}
+
+func closedBufferedStream(buffered []*schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	done := make(chan struct{})
+	wrapped := make(chan *schemas.BifrostStreamChunk, len(buffered))
+	for _, chunk := range buffered {
+		wrapped <- chunk
+	}
+	close(wrapped)
+	close(done)
+	return wrapped, done, nil
+}
+
+func drainStream(stream chan *schemas.BifrostStreamChunk) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range stream {
+		}
+	}()
+	return done
+}
+
+func streamChunkError(chunk *schemas.BifrostStreamChunk) *schemas.BifrostError {
+	if chunk == nil || chunk.BifrostError == nil || chunk.BifrostError.Error == nil {
+		return nil
+	}
+	if chunk.BifrostError.Error.Message == "" && chunk.BifrostError.Error.Code == nil && chunk.BifrostError.Error.Type == nil {
+		return nil
+	}
+	return chunk.BifrostError
+}
+
+func streamChunkCharacters(chunk *schemas.BifrostStreamChunk) int {
+	if chunk == nil {
+		return 0
+	}
+	characters := 0
+	if chunk.BifrostTextCompletionResponse != nil {
+		for _, choice := range chunk.BifrostTextCompletionResponse.Choices {
+			if choice.TextCompletionResponseChoice != nil && choice.Text != nil {
+				characters += utf8.RuneCountInString(*choice.Text)
+			}
+		}
+	}
+	if chunk.BifrostChatResponse != nil {
+		for _, choice := range chunk.BifrostChatResponse.Choices {
+			if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
+				continue
+			}
+			delta := choice.Delta
+			for _, text := range []*string{delta.Content, delta.Refusal, delta.Reasoning} {
+				if text != nil {
+					characters += utf8.RuneCountInString(*text)
+				}
+			}
+			if delta.Reasoning == nil {
+				for _, detail := range delta.ReasoningDetails {
+					for _, text := range []*string{detail.Summary, detail.Text} {
+						if text != nil {
+							characters += utf8.RuneCountInString(*text)
+						}
+					}
+				}
+			}
+			for _, toolCall := range delta.ToolCalls {
+				if toolCall.Function.Name != nil {
+					characters += utf8.RuneCountInString(*toolCall.Function.Name)
+				}
+				characters += utf8.RuneCountInString(toolCall.Function.Arguments)
+			}
+		}
+	}
+	if response := chunk.BifrostResponsesStreamResponse; response != nil {
+		switch response.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			schemas.ResponsesStreamResponseTypeRefusalDelta,
+			schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+			schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDelta,
+			schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta:
+			if response.Delta != nil {
+				characters += utf8.RuneCountInString(*response.Delta)
+			}
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta:
+			if response.Arguments != nil {
+				characters += utf8.RuneCountInString(*response.Arguments)
+			}
+		}
+	}
+	if response := chunk.BifrostTranscriptionStreamResponse; response != nil && response.Delta != nil {
+		characters += utf8.RuneCountInString(*response.Delta)
+	}
+	return characters
+}
+
+func streamChunkSize(chunk *schemas.BifrostStreamChunk) int {
+	if chunk == nil {
+		return 0
+	}
+	data, err := chunk.MarshalJSON()
+	if err != nil {
+		return 0
+	}
+	return len(data)
+}
+
+func newStreamThroughputError(config *schemas.StreamThroughputGuardConfig) *schemas.BifrostError {
+	allowFallbacks := true
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(503),
+		AllowFallbacks: &allowFallbacks,
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(schemas.ProviderConnectionFailed),
+			Code:    schemas.Ptr("stream_throughput_below_minimum"),
+			Message: fmt.Sprintf("%s (%d output characters/second)", schemas.ErrProviderStreamThroughput, config.MinimumOutputCharactersPerSecond),
+		},
+	}
+}
+
+func newStreamProbeBufferError() *schemas.BifrostError {
+	allowFallbacks := true
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(503),
+		AllowFallbacks: &allowFallbacks,
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(schemas.ProviderConnectionFailed),
+			Code:    schemas.Ptr("stream_throughput_probe_buffer_exceeded"),
+			Message: "stream throughput probe buffer limit reached before the provider rate could be verified",
+		},
+	}
 }

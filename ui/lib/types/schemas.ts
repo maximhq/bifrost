@@ -409,6 +409,11 @@ export const modelProviderKeySchema = z
 	);
 
 // Network config schema
+const streamThroughputGuardSchema = z.object({
+	minimum_output_characters_per_second: z.number().int().min(1).max(100000),
+	probe_window_in_seconds: z.number().int().min(1).max(60).optional(),
+});
+
 export const networkConfigSchema = z
 	.object({
 		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
@@ -428,6 +433,7 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		stream_throughput_guard: streamThroughputGuardSchema.optional(),
 		keep_alive_timeout_in_seconds: z
 			.number()
 			.int("Keep-alive timeout must be a whole number of seconds")
@@ -492,6 +498,21 @@ export const networkFormConfigSchema = z
 			.int("Stream idle timeout must be a whole number of seconds")
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		stream_throughput_guard: z
+			.object({
+				minimum_output_characters_per_second: z.coerce
+					.number("Minimum output rate must be a number")
+					.int("Minimum output rate must be a whole number")
+					.min(1, "Minimum output rate must be at least 1 character per second")
+					.max(100000, "Minimum output rate must be at most 100000 characters per second"),
+				probe_window_in_seconds: z.coerce
+					.number("Probe window must be a number")
+					.int("Probe window must be a whole number of seconds")
+					.min(1, "Probe window must be at least 1 second")
+					.max(60, "Probe window must be at most 60 seconds")
+					.optional(),
+			})
 			.optional(),
 		keep_alive_timeout_in_seconds: z.coerce
 			.number("Keep-alive timeout must be a number")
