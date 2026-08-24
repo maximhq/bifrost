@@ -99,6 +99,43 @@ func shouldPreserveAdminPassword(password *schemas.SecretVar) bool {
 	return value == "" || schemas.IsRedactionSentinel(value)
 }
 
+type adminPasswordAction uint8
+
+const (
+	adminPasswordPreserve adminPasswordAction = iota
+	adminPasswordRehashLegacy
+	adminPasswordReplace
+)
+
+// getAdminPasswordAction classifies a submitted credential before any live
+// config mutation. Disabled auth may preserve an unresolved secret for
+// recovery or an external value that still matches the stored bcrypt hash.
+// Historical plaintext credentials are migrated without applying today's
+// policy to an already-installed password.
+func getAdminPasswordAction(submittedPassword, storedPassword *schemas.SecretVar, authEnabled bool) adminPasswordAction {
+	if shouldPreserveAdminPassword(submittedPassword) {
+		return adminPasswordPreserve
+	}
+	if authEnabled || !submittedPassword.IsFromSecret() {
+		return adminPasswordReplace
+	}
+	if submittedPassword.GetValue() == "" {
+		return adminPasswordPreserve
+	}
+	if storedPassword == nil || storedPassword.GetValue() == "" {
+		return adminPasswordReplace
+	}
+
+	matches, err := encrypt.CompareHash(storedPassword.GetValue(), submittedPassword.GetValue())
+	if err == nil && matches {
+		return adminPasswordPreserve
+	}
+	if err != nil && storedPassword.GetValue() == submittedPassword.GetValue() {
+		return adminPasswordRehashLegacy
+	}
+	return adminPasswordReplace
+}
+
 func validateSubmittedAdminPassword(password *schemas.SecretVar) error {
 	if shouldPreserveAdminPassword(password) {
 		return nil
@@ -353,14 +390,33 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+
+	passwordAction := adminPasswordPreserve
+	var preparedAdminPassword *schemas.SecretVar
 	if payload.AuthConfig != nil {
-		// Secret-backed credentials must not block the recovery path when auth is
-		// being disabled, but newly submitted plaintext still must meet policy.
-		shouldValidatePassword := payload.AuthConfig.IsEnabled ||
-			(payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.IsFromSecret())
-		if shouldValidatePassword {
+		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to get auth config from store: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+
+		var storedPassword *schemas.SecretVar
+		if authConfig != nil {
+			storedPassword = authConfig.AdminPassword
+		}
+		passwordAction = getAdminPasswordAction(payload.AuthConfig.AdminPassword, storedPassword, payload.AuthConfig.IsEnabled)
+		if passwordAction == adminPasswordReplace {
 			if err := validateSubmittedAdminPassword(payload.AuthConfig.AdminPassword); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if passwordAction != adminPasswordPreserve {
+			preparedAdminPassword, err = hashAdminPassword(payload.AuthConfig.AdminPassword)
+			if err != nil {
+				logger.Warn("failed to hash password: %v", err)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
 				return
 			}
 		}
@@ -903,14 +959,23 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
-		// Getting current governance config
+		// Refresh immediately before the auth update so password preservation
+		// never uses the earlier validation snapshot.
 		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn("failed to get auth config from store: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
-				return
-			}
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to refresh auth config from store: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+
+		// A legacy rehash is valid only while the latest stored value is still
+		// the plaintext observed during validation. If another request rotated
+		// it in the meantime, preserve that newer credential.
+		effectivePasswordAction := passwordAction
+		if passwordAction == adminPasswordRehashLegacy &&
+			(authConfig == nil || authConfig.AdminPassword == nil ||
+				authConfig.AdminPassword.GetValue() != payload.AuthConfig.AdminPassword.GetValue()) {
+			effectivePasswordAction = adminPasswordPreserve
 		}
 
 		// Check if auth config has changed
@@ -922,10 +987,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
-			// Password is considered changed when it was intentionally submitted —
-			// shouldPreserveAdminPassword() only recognizes admin-password sentinels.
-			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword)
+			// Rehashing historical plaintext preserves the logical credential, so it
+			// does not require signing out existing sessions.
+			passwordChanged := effectivePasswordAction == adminPasswordReplace
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				payload.AuthConfig.AdminUserName.GetValue() != "" &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
@@ -968,49 +1032,33 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
-			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
-				if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
+			if effectivePasswordAction == adminPasswordPreserve {
+				if authConfig == nil || authConfig.AdminPassword == nil || authConfig.AdminPassword.GetValue() == "" {
 					SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 					return
 				}
 				// Assuming that password hasn't been changed
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			} else {
-				// Password has been changed
-				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
-				if err != nil {
-					logger.Warn("failed to hash password: %v", err)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-					return
-				}
-				payload.AuthConfig.AdminPassword = hashedPassword
+				payload.AuthConfig.AdminPassword = preparedAdminPassword
 			}
 			// Save auth config - this handles both first-time creation and updates
-			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
-			if err != nil {
+			if err := h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig); err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) ||
-				(payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "") {
+			if effectivePasswordAction == adminPasswordPreserve {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			} else {
-				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
-				if err != nil {
-					logger.Warn("failed to hash the disabled auth password: %v", err)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-					return
-				}
-				payload.AuthConfig.AdminPassword = hashedPassword
+				payload.AuthConfig.AdminPassword = preparedAdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
 			}
-			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
-			if err != nil {
+			if err := h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig); err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return

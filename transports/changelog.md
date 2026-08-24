@@ -84,7 +84,7 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 ## 🐞 Fixed
 
 - **Admin Password Redaction-Mask Collisions** - Valid admin passwords matching the generic 32-character secret mask are validated and hashed as new credentials instead of preserving the stored password (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
-- **Disabled Auth Password Hashing** - Admin passwords submitted while disabling auth are hashed before persistence instead of being stored in plaintext (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
+- **Disabled Auth Password Validation and Hashing** - New admin passwords, including resolved secret references, are validated and hashed when submitted while disabling auth (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
 - **Structured Output Schema Order** - `response_format` JSON schemas are forwarded byte-for-byte to OpenAI, Anthropic, Bedrock, Gemini and Cohere so the model generates fields in the caller's declared order instead of a re-sorted one (#6235)
 - **Thinking Block Typing on Streams** - Reasoning items carrying both an encrypted payload and a visible summary open as `thinking` blocks instead of `redacted_thinking` (#6292)
 - **Replayed Thinking Blocks via `bedrock/` Prefix** - Content-less `tool_result` blocks are kept, interleaved block order is preserved, `incomplete` maps to `error` on Converse, and pending reasoning is consumed by its owning item, so multi-turn tool use no longer wedges (#6346)

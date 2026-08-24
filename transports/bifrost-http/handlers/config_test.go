@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -19,6 +20,18 @@ type configHandlerTestStore struct {
 	configstore.ConfigStore
 	updateClientConfigCalls int
 	flushSessionsCalls      int
+}
+
+type blockingClientUpdateStore struct {
+	configstore.ConfigStore
+	updateStarted chan struct{}
+	resumeUpdate  chan struct{}
+}
+
+func (s *blockingClientUpdateStore) UpdateClientConfig(ctx context.Context, config *configstore.ClientConfig) error {
+	close(s.updateStarted)
+	<-s.resumeUpdate
+	return s.ConfigStore.UpdateClientConfig(ctx, config)
 }
 
 func (s *configHandlerTestStore) UpdateClientConfig(ctx context.Context, config *configstore.ClientConfig) error {
@@ -395,6 +408,45 @@ func TestUpdateConfig_RejectsWeakAdminPasswordWhileDisablingBeforeConfigMutation
 	assert.Zero(t, store.flushSessionsCalls)
 }
 
+func TestUpdateConfig_RejectsWeakNewSecretPasswordDuringDisabledAuthUpdateBeforeConfigMutation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler, store := newConfigHandlerAuthTest(t)
+
+	oldHash, err := encrypt.Hash("OldPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(oldHash),
+		IsEnabled:     false,
+	}))
+
+	const envName = "BIFROST_TEST_NEW_WEAK_ADMIN_PASSWORD"
+	t.Setenv(envName, "weak")
+	ctx := putConfigCtx(`{
+		"client_config":{"allowed_headers":["X-Mutated"],"log_retention_days":30,"compat":{}},
+		"auth_config":{
+			"admin_username":{"value":"admin"},
+			"admin_password":{"value":"<REDACTED>","ref":"env.` + envName + `","type":"env"},
+			"is_enabled":false
+		}
+	}`)
+	handler.updateConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "auth password must include")
+	assert.Zero(t, store.updateClientConfigCalls)
+	storedClientConfig, err := store.GetClientConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedClientConfig)
+	assert.Equal(t, []string{"X-Existing"}, storedClientConfig.AllowedHeaders)
+	storedAuth, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	assert.False(t, storedAuth.IsEnabled)
+	assert.Equal(t, oldHash, storedAuth.AdminPassword.GetValue())
+	assert.Zero(t, store.flushSessionsCalls)
+}
+
 func TestUpdateConfig_DisablesAuthWithUnresolvedStoredSecretReference(t *testing.T) {
 	SetLogger(&mockLogger{})
 	handler, store := newConfigHandlerAuthTest(t)
@@ -465,6 +517,106 @@ func TestUpdateConfig_DisablesAuthWithBelowPolicyStoredSecretReference(t *testin
 	assert.True(t, passwordMatches)
 }
 
+func TestUpdateConfig_RehashesMatchingLegacyPlaintextSecretPasswordWhileDisabled(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler, store := newConfigHandlerAuthTest(t)
+
+	const (
+		envName        = "BIFROST_TEST_LEGACY_PLAINTEXT_ADMIN_PASSWORD"
+		legacyPassword = "weak"
+	)
+	t.Setenv(envName, legacyPassword)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(legacyPassword),
+		IsEnabled:     false,
+	}))
+
+	ctx := putConfigCtx(`{
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30,"compat":{}},
+		"auth_config":{
+			"admin_username":{"value":"admin"},
+			"admin_password":{"value":"<REDACTED>","ref":"env.` + envName + `","type":"env"},
+			"is_enabled":false
+		}
+	}`)
+	handler.updateConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	storedAuth, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	assert.False(t, storedAuth.IsEnabled)
+	assert.NotEqual(t, legacyPassword, storedAuth.AdminPassword.GetValue())
+	passwordMatches, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), legacyPassword)
+	require.NoError(t, err)
+	assert.True(t, passwordMatches)
+	assert.Zero(t, store.flushSessionsCalls)
+}
+
+func TestUpdateConfig_PreservesPasswordRotatedAfterInitialAuthRead(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler, store := newConfigHandlerAuthTest(t)
+
+	oldHash, err := encrypt.Hash("OldPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(oldHash),
+		IsEnabled:     true,
+	}))
+
+	blockingStore := &blockingClientUpdateStore{
+		ConfigStore:   store,
+		updateStarted: make(chan struct{}),
+		resumeUpdate:  make(chan struct{}),
+	}
+	handler.store.ConfigStore = blockingStore
+	handler.configManager.(*configHandlerTestManager).store = blockingStore
+
+	ctx := putConfigCtx(`{
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30,"compat":{}},
+		"auth_config":{
+			"admin_username":{"value":"admin"},
+			"admin_password":{"value":"<redacted>"},
+			"is_enabled":false
+		}
+	}`)
+	done := make(chan struct{})
+	go func() {
+		handler.updateConfig(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-blockingStore.updateStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("updateConfig did not reach the client-config write")
+	}
+
+	newHash, err := encrypt.Hash("NewPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(newHash),
+		IsEnabled:     true,
+	}))
+	close(blockingStore.resumeUpdate)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("updateConfig did not finish")
+	}
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	storedAuth, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	assert.False(t, storedAuth.IsEnabled)
+	assert.Equal(t, newHash, storedAuth.AdminPassword.GetValue())
+}
+
 func TestUpdateConfig_DisablesAuthAndHashesSubmittedPassword(t *testing.T) {
 	SetLogger(&mockLogger{})
 	handler, store := newConfigHandlerAuthTest(t)
@@ -483,6 +635,45 @@ func TestUpdateConfig_DisablesAuthAndHashesSubmittedPassword(t *testing.T) {
 		"auth_config":{
 			"admin_username":{"value":"admin"},
 			"admin_password":{"value":"` + submittedPassword + `"},
+			"is_enabled":false
+		}
+	}`)
+	handler.updateConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	storedAuth, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	assert.False(t, storedAuth.IsEnabled)
+	assert.NotEqual(t, submittedPassword, storedAuth.AdminPassword.GetValue())
+	assert.NotEqual(t, oldHash, storedAuth.AdminPassword.GetValue())
+	passwordMatches, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), submittedPassword)
+	require.NoError(t, err)
+	assert.True(t, passwordMatches)
+}
+
+func TestUpdateConfig_DisablesAuthAndHashesSubmittedSecretPassword(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler, store := newConfigHandlerAuthTest(t)
+
+	oldHash, err := encrypt.Hash("OldPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(oldHash),
+		IsEnabled:     true,
+	}))
+
+	const (
+		envName           = "BIFROST_TEST_NEW_STRONG_ADMIN_PASSWORD"
+		submittedPassword = "NewPassword1!"
+	)
+	t.Setenv(envName, submittedPassword)
+	ctx := putConfigCtx(`{
+		"client_config":{"allowed_headers":["X-Existing"],"log_retention_days":30,"compat":{}},
+		"auth_config":{
+			"admin_username":{"value":"admin"},
+			"admin_password":{"value":"<REDACTED>","ref":"env.` + envName + `","type":"env"},
 			"is_enabled":false
 		}
 	}`)
