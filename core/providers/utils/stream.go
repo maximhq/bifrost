@@ -254,7 +254,7 @@ func newStreamThroughputError(config *schemas.StreamThroughputGuardConfig) *sche
 		AllowFallbacks: &allowFallbacks,
 		Error: &schemas.ErrorField{
 			Type:    schemas.Ptr(schemas.ProviderConnectionFailed),
-			Code:    schemas.Ptr("stream_throughput_below_minimum"),
+			Code:    schemas.Ptr(schemas.ErrCodeStreamThroughputBelowMinimum),
 			Message: fmt.Sprintf("%s (%d output characters/second)", schemas.ErrProviderStreamThroughput, config.MinimumOutputCharactersPerSecond),
 		},
 	}
@@ -268,7 +268,7 @@ func newStreamProbeBufferError() *schemas.BifrostError {
 		AllowFallbacks: &allowFallbacks,
 		Error: &schemas.ErrorField{
 			Type:    schemas.Ptr(schemas.ProviderConnectionFailed),
-			Code:    schemas.Ptr("stream_throughput_probe_buffer_exceeded"),
+			Code:    schemas.Ptr(schemas.ErrCodeStreamThroughputProbeBufferExceeded),
 			Message: "stream throughput probe buffer limit reached before the provider rate could be verified",
 		},
 	}

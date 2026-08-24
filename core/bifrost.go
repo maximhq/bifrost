@@ -6427,7 +6427,8 @@ func executeRequestWithRetries[T any](
 				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan, throughputGuard)
 				if firstChunkErr != nil {
 					throughputGuardRejected := firstChunkErr.Error != nil && firstChunkErr.Error.Code != nil &&
-						(*firstChunkErr.Error.Code == "stream_throughput_below_minimum" || *firstChunkErr.Error.Code == "stream_throughput_probe_buffer_exceeded")
+						(*firstChunkErr.Error.Code == schemas.ErrCodeStreamThroughputBelowMinimum ||
+							*firstChunkErr.Error.Code == schemas.ErrCodeStreamThroughputProbeBufferExceeded)
 					if throughputGuardRejected && len(streamAttemptCancel) > 0 && streamAttemptCancel[0] != nil {
 						streamAttemptCancel[0]()
 					}

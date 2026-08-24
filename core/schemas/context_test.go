@@ -9,15 +9,18 @@ import (
 )
 
 func TestBifrostContextWithSharedValuesHasIndependentCancellation(t *testing.T) {
+	type sharedValueKey struct{}
+	key := sharedValueKey{}
+
 	root := NewBifrostContext(context.Background(), NoDeadline)
-	root.SetValue("shared", "before")
+	root.SetValue(key, "before")
 
 	attempt, cancelAttempt := NewBifrostContextWithSharedValues(root)
-	if got := attempt.Value("shared"); got != "before" {
+	if got := attempt.Value(key); got != "before" {
 		t.Fatalf("attempt inherited value = %v, want before", got)
 	}
-	attempt.SetValue("shared", "after")
-	if got := root.Value("shared"); got != "after" {
+	attempt.SetValue(key, "after")
+	if got := root.Value(key); got != "after" {
 		t.Fatalf("root shared value = %v, want after", got)
 	}
 

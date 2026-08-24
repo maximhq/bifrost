@@ -356,7 +356,7 @@ func TestStreamThroughputGuard_RejectsSlowStreamBeforeOutput(t *testing.T) {
 	if wrapped != nil {
 		t.Fatal("slow primary output was exposed")
 	}
-	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "stream_throughput_below_minimum" {
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != schemas.ErrCodeStreamThroughputBelowMinimum {
 		t.Fatalf("unexpected guard error: %+v", bifrostErr)
 	}
 	close(stream)
@@ -426,7 +426,7 @@ func TestStreamThroughputGuard_ProbeBufferIsBounded(t *testing.T) {
 	if wrapped != nil {
 		t.Fatal("buffer-limited probe exposed unverified output")
 	}
-	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "stream_throughput_probe_buffer_exceeded" {
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != schemas.ErrCodeStreamThroughputProbeBufferExceeded {
 		t.Fatalf("unexpected buffer guard error: %+v", bifrostErr)
 	}
 	<-drainDone

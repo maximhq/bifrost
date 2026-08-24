@@ -20,6 +20,7 @@ const (
 	DefaultStreamBufferSize                       = 256
 	DefaultStreamIdleTimeoutInSeconds             = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 	DefaultStreamThroughputProbeWindowInSeconds   = 5
+	StreamThroughputCharactersPerSecondLowerBound = 1
 	StreamThroughputCharactersPerSecondUpperBound = 100000
 	StreamThroughputProbeWindowUpperBoundSeconds  = 60
 	DefaultKeepAliveTimeoutInSeconds              = 30 // Idle keep-alive for pooled connections — how long an idle connection is kept for reuse before being closed
@@ -52,6 +53,11 @@ const (
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
 	ErrProviderStreamTruncated      = "provider closed the stream before sending a completion marker (upstream connection ended mid-stream)"
 	ErrProviderStreamThroughput     = "provider stream output throughput remained below the configured minimum"
+)
+
+const (
+	ErrCodeStreamThroughputBelowMinimum        = "stream_throughput_below_minimum"
+	ErrCodeStreamThroughputProbeBufferExceeded = "stream_throughput_probe_buffer_exceeded"
 )
 
 // NetworkConfig represents the network configuration for provider connections.
@@ -616,7 +622,9 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.StreamThroughputGuard.ProbeWindowInSeconds = DefaultStreamThroughputProbeWindowInSeconds
 	}
 	if config.NetworkConfig.StreamThroughputGuard != nil {
-		if config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond > StreamThroughputCharactersPerSecondUpperBound {
+		if config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond < StreamThroughputCharactersPerSecondLowerBound {
+			config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond = StreamThroughputCharactersPerSecondLowerBound
+		} else if config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond > StreamThroughputCharactersPerSecondUpperBound {
 			config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond = StreamThroughputCharactersPerSecondUpperBound
 		}
 		if config.NetworkConfig.StreamThroughputGuard.ProbeWindowInSeconds > StreamThroughputProbeWindowUpperBoundSeconds {

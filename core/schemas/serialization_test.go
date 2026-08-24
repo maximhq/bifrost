@@ -1184,6 +1184,22 @@ func TestProviderConfig_StreamThroughputGuardDefaults(t *testing.T) {
 	assert.Equal(t, StreamThroughputCharactersPerSecondUpperBound, enabled.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond)
 	assert.Equal(t, StreamThroughputProbeWindowUpperBoundSeconds, enabled.NetworkConfig.StreamThroughputGuard.ProbeWindowInSeconds)
 
+	for _, test := range []struct {
+		name string
+		rate int
+	}{
+		{name: "zero", rate: 0},
+		{name: "negative", rate: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := &ProviderConfig{NetworkConfig: NetworkConfig{StreamThroughputGuard: &StreamThroughputGuardConfig{
+				MinimumOutputCharactersPerSecond: test.rate,
+			}}}
+			config.CheckAndSetDefaults()
+			assert.Equal(t, StreamThroughputCharactersPerSecondLowerBound, config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond)
+		})
+	}
+
 	defaultWindow := &ProviderConfig{NetworkConfig: NetworkConfig{StreamThroughputGuard: &StreamThroughputGuardConfig{
 		MinimumOutputCharactersPerSecond: 20,
 	}}}

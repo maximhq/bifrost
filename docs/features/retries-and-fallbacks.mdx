@@ -192,7 +192,11 @@ Configure `stream_throughput_guard` on the primary provider to hold its initial 
 }
 ```
 
+`minimum_output_characters_per_second` is required and must be an integer from 1 to 100,000. `probe_window_in_seconds` is optional, defaults to 5 seconds, and must be an integer from 1 to 60. Unknown fields are rejected.
+
 The guard is disabled when omitted. It applies to streamed text completions, chat completions, and Responses API requests. Bifrost buffers lifecycle and text chunks until the provider emits enough output to pass the configured rate. Healthy streams commit early; if the probe expires first, Bifrost cancels only that provider attempt and uses the existing retry and fallback chain.
+
+The probe target is capped at 256 output characters, and buffered data is capped at 512 chunks or 1 MiB. Probe expiry produces the retryable `stream_throughput_below_minimum` error. Reaching a buffer cap before the rate can be verified produces the retryable `stream_throughput_probe_buffer_exceeded` error. Both paths use the configured retry and fallback chain without exposing the rejected attempt's buffered output.
 
 <Note>
   The threshold is measured in Unicode output characters per second, not

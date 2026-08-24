@@ -94679,6 +94679,7 @@
             "type": "object",
             "description": "Optional pre-commit throughput probe for text streams. Disabled when omitted.",
             "required": ["minimum_output_characters_per_second"],
+            "additionalProperties": false,
             "properties": {
               "minimum_output_characters_per_second": {
                 "type": "integer",
