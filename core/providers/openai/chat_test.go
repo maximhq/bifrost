@@ -1574,6 +1574,48 @@ func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.
 	}
 }
 
+func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+	}{
+		{name: "Go", provider: schemas.OpencodeGo},
+		{name: "Zen", provider: schemas.OpencodeZen},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    "glm-5.3",
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: schemas.Ptr(512),
+				},
+			}
+
+			converted := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), bifrostReq)
+			require.NotNil(t, converted)
+
+			wireJSON, err := json.Marshal(converted)
+			require.NoError(t, err)
+
+			var wire map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wireJSON, &wire))
+			require.Contains(t, wire, "max_tokens")
+			var maxTokens int
+			require.NoError(t, json.Unmarshal(wire["max_tokens"], &maxTokens))
+			require.Equal(t, 512, maxTokens)
+			require.NotContains(t, wire, "max_completion_tokens")
+		})
+	}
+}
+
 // When a conversation switches from Gemini to OpenAI, Gemini's thoughtSignature is
 // embedded in the tool call_id as "<baseID>_ts_<sig>" and can exceed OpenAI's 64-char
 // limit. The chat converter must strip it to the base ID on the wire while leaving the
