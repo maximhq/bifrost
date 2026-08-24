@@ -40,6 +40,36 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 	return sanitized
 }
 
+// ToHuggingFaceChatCompletionStreamRequest builds the streaming variant of the
+// chat request: the same body as the non-streaming path, plus stream and a
+// defaulted stream_options.include_usage.
+//
+// The shared openai.HandleOpenAIChatCompletionStreaming sets include_usage on its
+// own request path, but returns early when a provider supplies a custom request
+// converter, so HuggingFace has to opt in here. Without it the router omits the
+// terminal usage chunk for several inference providers, and the shared accumulator
+// only reads top-level usage, so the stream completes with zero tokens and
+// therefore zero cost. Defaulted rather than forced, so an explicit stream_options
+// from the caller still wins.
+func ToHuggingFaceChatCompletionStreamRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
+	reqBody, err := ToHuggingFaceChatCompletionRequest(bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if reqBody == nil {
+		return nil, nil
+	}
+
+	reqBody.Stream = schemas.Ptr(true)
+	if reqBody.StreamOptions == nil {
+		reqBody.StreamOptions = &schemas.ChatStreamOptions{
+			IncludeUsage: schemas.Ptr(true),
+		}
+	}
+
+	return reqBody, nil
+}
+
 func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, nil
