@@ -14,7 +14,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useDescriptionSlotRef, useMobileFilterSlotRef, useTopbarTitle } from "@/lib/contexts/topbarContext";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useLogoutMutation } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
@@ -90,6 +90,8 @@ export default function Topbar() {
 	const navigate = useNavigate();
 	const [logout] = useLogoutMutation();
 	const { data: coreConfig } = useGetCoreConfigQuery({});
+	// Shares the sidebar's RTK Query cache entry, so this costs no extra request.
+	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
 
@@ -199,6 +201,18 @@ export default function Topbar() {
 								<LogOut className="size-4" strokeWidth={2} />
 								<span>Sign out</span>
 							</DropdownMenuItem>
+						</>
+					)}
+
+					{/* Informational tail row: a Label, not an Item, so it never takes
+					    keyboard focus, highlights, or closes the menu on click. */}
+					{version && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuLabel className="text-muted-foreground flex items-center justify-between gap-2 py-1.5 text-xs font-normal">
+								<span>Version</span>
+								<span className="truncate font-mono">{version}</span>
+							</DropdownMenuLabel>
 						</>
 					)}
 				</DropdownMenuContent>

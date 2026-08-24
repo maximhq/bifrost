@@ -1707,6 +1707,35 @@ func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHa
 	return startPhaseSpan(ctx, "response-parse")
 }
 
+// StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
+// so provider/auth code outside this package can carve its own work out of the residual
+// "core" bucket. name becomes the breakdown bucket; keep it stable and descriptive
+// (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
+func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, name)
+}
+
+// StartScopedPhaseSpan opens a phase span like StartPhaseSpan and additionally installs
+// it as the ACTIVE parent on ctx, so phase spans opened afterward with the same ctx nest
+// as its children. The overhead breakdown subtracts direct children from a span's
+// self-time, so a nested span opened without this would be a sibling and its time would
+// be counted in BOTH buckets. The returned restore func MUST be called when the phase
+// ends (before EndSpan) to reinstate the prior parent. Nil-safe: returns a nil
+// tracer/handle and a no-op restore when no trace is active.
+func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tracer, schemas.SpanHandle, func()) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil, func() {}
+	}
+	prev := ctx.Value(schemas.BifrostContextKeySpanID)
+	id, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	if h == nil {
+		return nil, nil, func() {}
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {

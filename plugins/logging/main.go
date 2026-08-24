@@ -2061,7 +2061,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	}
 	// Per-span self-time decomposition of overhead, attached to the same terminal
 	// row that receives the overhead number below.
-	overheadBreakdown := computeOverheadBreakdown(trace, overheadMs, ovOK)
+	overheadBreakdown := computeOverheadBreakdown(trace, overheadMs, ovOK, upstreamMs, upOK)
 
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
@@ -2213,7 +2213,7 @@ func overheadBucketName(s *schemas.Span) string {
 // derived from overheadMs (which already excludes upstream), not from the root
 // span's self-time, so it never picks up streaming socket reads. Buckets are
 // returned with microsecond values, measured spans first (chronological) then core.
-func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool) []logstore.OverheadBucket {
+func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstreamMs float64, upstreamOK bool) []logstore.OverheadBucket {
 	if trace == nil || len(trace.Spans) == 0 {
 		return nil
 	}
@@ -2312,6 +2312,53 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 			} else {
 				addStreamBucketMs("stream-backpressure", bp)
 			}
+		}
+		// Worker->caller goroutine-hop latency (unary path): scheduling wall-time
+		// inside the overhead window that sits on no span. Carve it into its own
+		// bucket so it stops inflating "core". The reverse hop is the queue-wait span.
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostWorkerHandoffMs); ok {
+			addStreamBucketMs("worker-handoff", ms)
+		}
+	}
+
+	// Provider-agnostic catch-all. Every provider call runs inside an llm.call span
+	// (SpanKindLLMCall), which is not itself a bucket but envelops the upstream network
+	// call plus ALL provider-side glue: request conversion/marshal/signing, response
+	// read/decompress/parse, header and endpoint work. Its self-time (wall minus the
+	// child phase spans) is therefore exactly upstream + whatever provider work no phase
+	// span captured. Subtracting the measured upstream leaves that uncaptured remainder,
+	// surfaced as "provider-internal" so a brand-new provider — or an unspanned step in
+	// an existing one — can never silently inflate "core"; it lands here instead, and its
+	// size tells us a provider needs finer spans. Summed across attempts: retries create
+	// one llm.call span each, and upstream latency likewise accumulates across them.
+	// Streaming is excluded implicitly: its llm.call span ends when the channel is handed
+	// off (before the stream drains), so its self-time is small and the difference falls
+	// below the threshold; stream phases are decomposed via the stream attributes above.
+	if upstreamOK {
+		var llmSelfNs int64
+		var firstLLM time.Time
+		for _, s := range trace.Spans {
+			if s == nil || s.Kind != schemas.SpanKindLLMCall {
+				continue
+			}
+			if self := spanWall(s) - childDur[s.SpanID]; self > 0 {
+				llmSelfNs += self.Nanoseconds()
+			}
+			if firstLLM.IsZero() || s.StartTime.Before(firstLLM) {
+				firstLLM = s.StartTime
+			}
+		}
+		// llmSelfNs and upstream are both provider-side wall time; the difference is the
+		// uninstrumented glue. Guard on a small floor so measurement skew (upstream
+		// stamped slightly larger than the enveloping span) never emits a noise bucket.
+		providerInternalUs := float64(llmSelfNs)/1000.0 - upstreamMs*1000.0
+		if providerInternalUs > 0.5 {
+			b := buckets["provider-internal"]
+			if b == nil {
+				b = &agg{kind: schemas.SpanKindInternal, first: firstLLM}
+				buckets["provider-internal"] = b
+			}
+			b.dur += time.Duration(providerInternalUs * float64(time.Microsecond))
 		}
 	}
 

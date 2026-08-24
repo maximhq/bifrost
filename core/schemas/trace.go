@@ -937,6 +937,14 @@ const (
 	AttrBifrostStreamTransportCPUMs = "bifrost.stream.transport_cpu_ms"
 	AttrBifrostStreamClientWriteMs  = "bifrost.stream.client_write_ms"
 
+	// AttrBifrostWorkerHandoffMs is the scheduling latency between the provider
+	// worker sending the result and tryRequest receiving it (the worker->caller
+	// goroutine hop). It is real wall-time inside the overhead window that sits on
+	// no span, so it otherwise folds into "core"; the breakdown carves it into its
+	// own "worker-handoff" bucket. The reverse hop (enqueue->dequeue) is already the
+	// "queue-wait" span.
+	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
+
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
