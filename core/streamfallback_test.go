@@ -44,7 +44,7 @@ func sseHandler(payloads ...string) http.HandlerFunc {
 
 // anthropicMessagesHandler serves a minimal valid Anthropic Messages API
 // stream that produces the text "hello".
-func anthropicMessagesHandler() http.HandlerFunc {
+func anthropicMessagesHandler(beforeFirstWrite func()) http.HandlerFunc {
 	events := []struct{ typ, data string }{
 		{"message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_tokens":1}}}`},
 		{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
@@ -56,7 +56,10 @@ func anthropicMessagesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
-		for _, e := range events {
+		for i, e := range events {
+			if i == 0 && beforeFirstWrite != nil {
+				beforeFirstWrite()
+			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.typ, e.data)
 			if fl != nil {
 				fl.Flush()
@@ -105,7 +108,7 @@ func TestStreamFallbackAfterFirstChunkError(t *testing.T) {
 	var fallbackHits atomic.Int32
 	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fallbackHits.Add(1)
-		anthropicMessagesHandler()(w, r)
+		anthropicMessagesHandler(nil)(w, r)
 	}))
 	defer fallback.Close()
 
@@ -228,8 +231,9 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 	var fallbackHits atomic.Int32
 	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fallbackHits.Add(1)
-		fallbackOutputOrder.Store(lifecycleOrder.Add(1))
-		anthropicMessagesHandler()(w, r)
+		anthropicMessagesHandler(func() {
+			fallbackOutputOrder.Store(lifecycleOrder.Add(1))
+		})(w, r)
 	}))
 	defer fallback.Close()
 
