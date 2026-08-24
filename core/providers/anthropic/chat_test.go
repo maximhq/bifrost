@@ -1667,6 +1667,29 @@ func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
 	}
 }
 
+func TestToAnthropicChatRequest_MidConversationSystem_ConsecutiveSection(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("First policy")}},
+			{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Second policy")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Bonjour")}},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := chatRoleSeq(result.Messages); len(got) != 4 || got[0] != "user" || got[1] != "system" || got[2] != "system" || got[3] != "assistant" {
+		t.Fatalf("role sequence = %v, want [user system system assistant]", got)
+	}
+}
+
 // assertInlinedReminder asserts that `text` reached the messages array as a mid-conversation
 // reminder inlined into a user turn (the <system-reminder> envelope), and that it did NOT end up
 // in the top-level system block. Hoisting into `system` preserves the text but renders it ahead
@@ -1758,9 +1781,11 @@ func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testin
 }
 
 // TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines verifies the fallback for a
-// provider that cannot carry role:"system" at all. Bedrock, Vertex, and Foundry do not expose
-// mid-conversation system messages regardless of model, so every such message takes the fallback
-// path — which inlines rather than hoisting.
+// provider for which Bifrost does not enable native role:"system" handling. The classic
+// Bedrock provider retains its existing Converse compatibility conversion, so the message takes
+// the fail-closed fallback path — which inlines rather than hoisting. Vertex and Bedrock Mantle
+// use the documented Claude Messages surfaces and are gated separately by
+// SupportsMidConversationSystem.
 func TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Bedrock,

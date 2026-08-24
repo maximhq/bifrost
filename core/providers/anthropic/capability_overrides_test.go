@@ -103,7 +103,7 @@ func TestSupportsMidConversationSystem_OverrideHit(t *testing.T) {
 	model := "non-opus-midconv-yes"
 	yes := true
 	setOverride(t, model, schemas.ModelCapabilities{SupportsMidConversationSystem: &yes})
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, model)))
+	assert.True(t, SupportsMidConversationSystem(schemas.Anthropic, model))
 }
 
 func TestSupportsMidConversationSystem_OverrideExplicitFalse(t *testing.T) {
@@ -111,27 +111,36 @@ func TestSupportsMidConversationSystem_OverrideExplicitFalse(t *testing.T) {
 	model := "claude-opus-4-8-midconv-off"
 	no := false
 	setOverride(t, model, schemas.ModelCapabilities{SupportsMidConversationSystem: &no})
-	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, model)))
+	assert.False(t, SupportsMidConversationSystem(schemas.Anthropic, model))
 }
 
 func TestSupportsMidConversationSystem_ProviderGateWins(t *testing.T) {
-	// The hardcoded Anthropic-only provider gate runs before the override, so a
-	// non-Anthropic provider stays false even with an explicit true override.
+	// Datasheet/model support can refine a transport that Bifrost explicitly enables, but it
+	// cannot bypass the fail-closed gate for legacy Bedrock, Azure, or an unknown custom endpoint.
 	model := "claude-opus-4-8-gatecheck"
 	yes := true
-	setOverride(t, model, schemas.ModelCapabilities{SupportsMidConversationSystem: &yes})
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, model)))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Vertex, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Vertex, model)))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Bedrock, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Bedrock, model)))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Azure, model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Azure, model)))
+	providerUtils.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m == model {
+			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &yes}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+	assert.True(t, SupportsMidConversationSystem(schemas.Anthropic, model))
+	assert.True(t, SupportsMidConversationSystem(schemas.Vertex, model))
+	assert.True(t, SupportsMidConversationSystem(schemas.BedrockMantle, model))
+	assert.False(t, SupportsMidConversationSystem(schemas.Bedrock, model))
+	assert.False(t, SupportsMidConversationSystem(schemas.Azure, model))
+	assert.False(t, SupportsMidConversationSystem(schemas.ModelProvider("custom-anthropic"), model))
 }
 
 func TestSupportsMidConversationSystem_FallbackTakesOver(t *testing.T) {
 	// No override → provider gate + substring model gate.
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8-20260601").SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, "claude-opus-4-8-20260601")))
-	assert.True(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5").SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, "claude-fable-5")))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-7-20260401").SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Anthropic, "claude-opus-4-7-20260401")))
-	assert.False(t, schemas.ResolveModelCaps(schemas.Vertex, "claude-opus-4-8-20260601").SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(schemas.Vertex, "claude-opus-4-8-20260601")))
+	assert.True(t, SupportsMidConversationSystem(schemas.Anthropic, "claude-opus-4-8-20260601"))
+	assert.True(t, SupportsMidConversationSystem(schemas.Anthropic, "claude-fable-5"))
+	assert.True(t, SupportsMidConversationSystem(schemas.Vertex, "claude-opus-4-8-20260601"))
+	assert.True(t, SupportsMidConversationSystem(schemas.BedrockMantle, "anthropic.claude-opus-4-8"))
+	assert.False(t, SupportsMidConversationSystem(schemas.Anthropic, "claude-opus-4-7-20260401"))
 }
 
 func TestIsAdaptiveOnlyThinkingModel_OverrideHit(t *testing.T) {

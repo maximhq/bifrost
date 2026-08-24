@@ -332,6 +332,16 @@ func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, 
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
 func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*AnthropicMessageRequest, error) {
+	if bifrostReq == nil {
+		return nil, fmt.Errorf("bifrost request is nil or input is nil")
+	}
+	return toAnthropicChatRequest(ctx, bifrostReq, bifrostReq.Provider)
+}
+
+// toAnthropicChatRequest is the provider-aware implementation used by the
+// shared request builder. midConvProvider is the concrete wire transport, which
+// can differ from bifrostReq.Provider for custom providers and routed aliases.
+func toAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, midConvProvider schemas.ModelProvider) (*AnthropicMessageRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
@@ -784,15 +794,51 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// seenConversation tracks whether any user/assistant message has been processed.
 	// A system message after the first user/assistant turn is a mid-conversation
 	// system message and is emitted as role:"system" in the messages array
-	// (Anthropic API + Opus 4.8+ only).
+	// on documented native Messages transports and model families.
 	seenConversation := false
-	midConvSystemSupported := caps.SupportsMidConversationSystem(
-		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
+	midConvSystemSupported := SupportsMidConversationSystem(midConvProvider, capModel)
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
 	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
 	// model family only — these call sites also serve DeepSeek/Fireworks/SGL, which keep hoisting.
 	inlineMidConvSystem := schemas.IsAnthropicModelFamily(ctx, capModel)
+	isSystemRoleAt := func(index int) bool {
+		return index >= 0 && index < len(messages) &&
+			(messages[index].Role == schemas.ChatMessageRoleSystem || messages[index].Role == schemas.ChatMessageRoleDeveloper)
+	}
+	// Check the converted wire turn rather than the source role. OpenAI-style tool
+	// results use role:"tool" but are emitted as an Anthropic user turn, which is
+	// a valid predecessor for a native mid-conversation system section.
+	nativeMidConvSystemRunEnd := -1
+	systemRunEnd := func(index int) int {
+		end := index
+		for isSystemRoleAt(end + 1) {
+			end++
+		}
+		return end
+	}
+	midConvPlacementOK := func(index int) bool {
+		if index <= nativeMidConvSystemRunEnd {
+			return true
+		}
+		if len(anthropicMessages) == 0 || anthropicMessages[len(anthropicMessages)-1].Role != AnthropicMessageRoleUser {
+			return false
+		}
+		end := systemRunEnd(index)
+		if end < len(messages)-1 && messages[end+1].Role != schemas.ChatMessageRoleAssistant {
+			return false
+		}
+		nativeMidConvSystemRunEnd = end
+		return true
+	}
+	inlineMustFollowToolResults := func(index int) bool {
+		end := systemRunEnd(index)
+		if end+1 >= len(messages) || messages[end+1].Role != schemas.ChatMessageRoleTool || len(anthropicMessages) == 0 {
+			return false
+		}
+		return anthropicAssistantEndsWithClientToolUse(&anthropicMessages[len(anthropicMessages)-1])
+	}
+	var pendingInlineToolResultBlocks []AnthropicContentBlock
 
 	i := 0
 	for i < len(messages) {
@@ -800,17 +846,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Anthropic placement rule, both clauses: a mid-conv system message must FOLLOW a
-			// user message (or an assistant message ending in server-tool use) AND must end the
-			// array or be immediately followed by an assistant turn. Violating either returns a
-			// 400 ("messages.N: role 'system' must follow a 'user' message ..."). Checking only
-			// the trailing clause lets [.., assistant, system, assistant] through to a 400, so
-			// both are checked here; the assistant-ending-in-server-tool-use exception is not
-			// recognized, which only costs a cache-preserving fallback, never a rejection.
-			midConvPlacementOK := (i == len(messages)-1 ||
-				messages[i+1].Role == schemas.ChatMessageRoleAssistant) &&
-				i > 0 && messages[i-1].Role == schemas.ChatMessageRoleUser
-			if seenConversation && midConvSystemSupported && midConvPlacementOK {
+			// Anthropic treats consecutive system/developer turns as one section. The
+			// section must follow a user turn (including a converted tool-result turn)
+			// and must end the array or be followed by an assistant turn. ChatMessage
+			// cannot encode Anthropic server-tool result blocks, so that documented
+			// assistant-turn exception is handled by the raw and Responses paths.
+			if seenConversation && midConvSystemSupported && midConvPlacementOK(i) {
 				// Mid-conversation system message — emit directly as role:"system".
 				var content AnthropicContent
 				if msg.Content != nil {
@@ -867,7 +908,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					inlined = inlineMidConversationSystem(&newContent)
 				}
 				if inlined != nil {
-					anthropicMessages = append(anthropicMessages, *inlined)
+					if inlineMustFollowToolResults(i) {
+						pendingInlineToolResultBlocks = append(pendingInlineToolResultBlocks, inlined.Content.ContentBlocks...)
+					} else {
+						anthropicMessages = append(anthropicMessages, *inlined)
+					}
 					i++
 					continue
 				}
@@ -943,12 +988,24 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				i++
 			}
 
-			// Create a single user message with all tool results
+			// Create a single user message with all tool results. If an invalidly
+			// placed system section occurred between tool_use and tool_result, keep
+			// the required tool_result blocks first and append its reminder blocks
+			// to the same user turn instead of inserting a wire-invalid extra turn.
 			if len(toolResults) > 0 {
+				toolResults = append(toolResults, pendingInlineToolResultBlocks...)
+				pendingInlineToolResultBlocks = nil
 				anthropicMessages = append(anthropicMessages, AnthropicMessage{
 					Role:    "user", // Tool results are sent as user messages in Anthropic
 					Content: AnthropicContent{ContentBlocks: toolResults},
 				})
+				seenConversation = true
+			} else if len(pendingInlineToolResultBlocks) > 0 {
+				anthropicMessages = append(anthropicMessages, AnthropicMessage{
+					Role:    AnthropicMessageRoleUser,
+					Content: AnthropicContent{ContentBlocks: pendingInlineToolResultBlocks},
+				})
+				pendingInlineToolResultBlocks = nil
 				seenConversation = true
 			}
 
