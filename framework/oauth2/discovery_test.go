@@ -82,6 +82,12 @@ func TestFetchSingleAuthServerMetadata_RejectsMismatchedIssuer(t *testing.T) {
 	metadata, err := fetchSingleAuthServerMetadata(context.Background(), server.URL+"/tenant/prod/oidc")
 	require.Error(t, err)
 	assert.Nil(t, metadata)
+	assert.ErrorContains(t, err, "authorization-server metadata issuer mismatch")
+
+	metadata, err = fetchAuthorizationServerMetadata(context.Background(), []string{server.URL + "/tenant/prod/oidc"})
+	require.Error(t, err)
+	assert.Nil(t, metadata)
+	assert.ErrorContains(t, err, "authorization-server metadata issuer mismatch")
 }
 
 func TestFetchSingleAuthServerMetadata_NormalizesTrailingSlashForPathIssuer(t *testing.T) {

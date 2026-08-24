@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -238,6 +239,7 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
 // Tries multiple authorization servers until one succeeds
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+	var discoveryErrs []error
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
 		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
@@ -245,7 +247,13 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
 		}
+		if err != nil {
+			discoveryErrs = append(discoveryErrs, err)
+		}
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", issuer, err))
+	}
+	if len(discoveryErrs) > 0 {
+		return nil, fmt.Errorf("failed to fetch metadata from any authorization server: %w", errors.Join(discoveryErrs...))
 	}
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
@@ -288,6 +296,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
+	var issuerMismatchErr error
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
@@ -316,7 +325,8 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 				// issuer URL is a legacy fallback, however, and may be a guessed
 				// MCP server origin rather than an authorization-server issuer.
 				if metadata.Issuer != canonicalIssuer && candidateURL != canonicalIssuer {
-					logger.Debug(fmt.Sprintf("[OAuth Discovery] Metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, canonicalIssuer))
+					issuerMismatchErr = fmt.Errorf("authorization-server metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, canonicalIssuer)
+					logger.Warn("[OAuth Discovery] %v", issuerMismatchErr)
 					continue
 				}
 
@@ -329,6 +339,9 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		} else {
 			resp.Body.Close()
 		}
+	}
+	if issuerMismatchErr != nil {
+		return nil, issuerMismatchErr
 	}
 
 	return nil, fmt.Errorf("no valid metadata found for issuer: %s", issuer)
