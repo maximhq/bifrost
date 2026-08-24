@@ -122,6 +122,32 @@ func (bc *BifrostContext) StampStreamOverhead() {
 	}
 }
 
+// StampWorkerHandoff writes the worker->caller goroutine-hop latency onto the
+// request's root span so the overhead breakdown can carve it out of "core" into a
+// "worker-handoff" bucket. d is time.Since(the worker's pre-send timestamp),
+// measured by tryRequest the moment it receives the result/error. Best-effort:
+// no tracer / no trace / non-positive d leaves the root span unstamped, so absent
+// stays distinct from zero.
+func (bc *BifrostContext) StampWorkerHandoff(d time.Duration) {
+	if bc == nil || d <= 0 {
+		return
+	}
+	traceID, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if traceID == "" {
+		return
+	}
+	tracer, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	if tracer == nil {
+		return
+	}
+	// nil spanID selects the root span.
+	handle := tracer.GetSpanHandleByID(traceID, nil)
+	if handle == nil {
+		return
+	}
+	tracer.SetAttribute(handle, AttrBifrostWorkerHandoffMs, float64(d)/float64(time.Millisecond))
+}
+
 // StampStreamTransport writes the transport goroutine's per-chunk split onto the
 // root span: (B) outbound convert+marshal CPU and (A) client-socket write wait.
 // These run concurrently with the provider goroutine, so they are NOT part of the
