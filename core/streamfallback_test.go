@@ -196,8 +196,15 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 	primaryCanceled := make(chan struct{})
 	primaryExited := make(chan struct{})
+	var lifecycleOrder atomic.Int32
+	var primaryCanceledOrder atomic.Int32
+	var primaryExitedOrder atomic.Int32
+	var fallbackOutputOrder atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer close(primaryExited)
+		defer func() {
+			primaryExitedOrder.Store(lifecycleOrder.Add(1))
+			close(primaryExited)
+		}()
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
@@ -205,6 +212,7 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 		for i := 0; i < 30; i++ {
 			select {
 			case <-r.Context().Done():
+				primaryCanceledOrder.Store(lifecycleOrder.Add(1))
 				close(primaryCanceled)
 				return
 			case <-time.After(100 * time.Millisecond):
@@ -220,6 +228,7 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 	var fallbackHits atomic.Int32
 	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fallbackHits.Add(1)
+		fallbackOutputOrder.Store(lifecycleOrder.Add(1))
 		anthropicMessagesHandler()(w, r)
 	}))
 	defer fallback.Close()
@@ -272,5 +281,12 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 	case <-primaryExited:
 	default:
 		t.Fatal("primary stream handler did not exit before fallback completed")
+	}
+	fallbackOrder := fallbackOutputOrder.Load()
+	if canceledOrder := primaryCanceledOrder.Load(); canceledOrder >= fallbackOrder {
+		t.Fatalf("primary cancellation order = %d, fallback output order = %d; want cancellation before fallback output", canceledOrder, fallbackOrder)
+	}
+	if exitedOrder := primaryExitedOrder.Load(); exitedOrder >= fallbackOrder {
+		t.Fatalf("primary exit order = %d, fallback output order = %d; want primary exit before fallback output", exitedOrder, fallbackOrder)
 	}
 }
