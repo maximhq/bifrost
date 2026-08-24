@@ -286,7 +286,7 @@ func TestZhipuAnthropicMount_EffortDroppedBelowGLM52(t *testing.T) {
 //
 //   - qwen3.8-max: valid xhigh/medium/low; max clamps to xhigh.
 //   - glm-5.2/5.1/5 and non-dated deepseek-v4-pro/flash: valid high/max;
-//     xhigh→max, low/medium→high, minimal/none→low.
+//     xhigh→max, low/medium→high, minimal/none→high.
 //   - glm-5.3+: valid max/high/low; xhigh→max, medium→high, minimal/none→low.
 //   - deepseek-v4-pro-0813 / deepseek-v4-flash-0731: valid max/high/low;
 //     xhigh/medium→high, minimal/none→low.
@@ -307,7 +307,7 @@ func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
 		// "minimal" is covered in TestClampAlibabaMountEffortForModel: the
 		// conversion pre-maps minimal→low (MapBifrostEffortToAnthropic) before
 		// the clamp runs, so on this wire path it lands on "high" — the
-		// clamp's own minimal→low rule applies to raw/native bodies.
+		// clamp's own minimal→high rule applies to raw/native bodies.
 		{"glm-5.3", "max", "max"},
 		{"glm-5.3", "high", "high"},
 		{"glm-5.3", "low", "low"},
@@ -374,14 +374,14 @@ func TestClampAlibabaMountEffortForModel(t *testing.T) {
 		{"qwen3.8-max", "xhigh", "xhigh"},
 		{"qwen3.8-max", "high", "high"},
 		{"qwen3.8-max", "low", "low"},
-		// glm-5.2/5.1: valid high/max; xhigh→max, low/medium→high, minimal/none→low.
+		// glm-5.2/5.1: valid high/max; xhigh→max, low/medium→high, minimal/none→high.
 		{"glm-5.2", "max", "max"},
 		{"glm-5.2", "xhigh", "max"},
 		{"glm-5.2", "high", "high"},
 		{"glm-5.2", "low", "high"},
 		{"glm-5.2", "medium", "high"},
-		{"glm-5.2", "minimal", "low"},
-		{"glm-5.2", "none", "low"},
+		{"glm-5.2", "minimal", "high"},
+		{"glm-5.2", "none", "high"},
 		{"glm-5.1", "max", "max"},
 		{"glm-5.1", "xhigh", "max"},
 		// glm-5.3+: valid max/high/low; xhigh→max, medium→high, minimal/none→low.
@@ -396,6 +396,7 @@ func TestClampAlibabaMountEffortForModel(t *testing.T) {
 		{"deepseek-v4-pro", "max", "max"},
 		{"deepseek-v4-pro", "xhigh", "max"},
 		{"deepseek-v4-pro", "low", "high"},
+		{"deepseek-v4-pro", "minimal", "high"},
 		{"deepseek-v4-flash", "medium", "high"},
 		// Dated snapshots: valid max/high/low; xhigh/medium→high, minimal/none→low.
 		{"deepseek-v4-pro-0813", "max", "max"},

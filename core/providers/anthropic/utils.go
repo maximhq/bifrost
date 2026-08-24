@@ -1240,7 +1240,8 @@ func zhipuThinkingBudget(effort *string, maxTokens int) int {
 //     groups kimi-k3 here, but it never reaches this function — see below):
 //     valid max/high/low. xhigh→max, medium→high, minimal→low, none→low.
 //   - glm-5.2/glm-5.1/glm-5: valid high/max. xhigh→max, low→high,
-//     medium→high, minimal→low, none→low.
+//     medium→high, minimal→high, none→high — `low` is out of this family's
+//     enum, so the two mildest tiers collapse onto the mildest valid one.
 //   - deepseek-v4-pro-0813 / deepseek-v4-flash-0731 (dated snapshots): valid
 //     max/high/low. xhigh→high, medium→high, minimal→low, none→low.
 //   - deepseek-v4-pro / deepseek-v4-flash (non-dated): same as the GLM-5.2
@@ -1279,10 +1280,10 @@ func clampAlibabaMountEffortForModel(model, effort string) string {
 		switch effort {
 		case "xhigh":
 			return "max"
-		case "low", "medium":
+		case "low", "medium", "minimal", "none":
+			// `low` is out of this family's enum (high/max only), so the
+			// mildest tiers all collapse onto the mildest valid value.
 			return "high"
-		case "minimal", "none":
-			return "low"
 		}
 		return effort
 	}
