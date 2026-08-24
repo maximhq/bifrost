@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,4 +197,14 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, result)
 	})
+}
+
+// HuggingFace's router terminates chat-completion streams with an explicit
+// `data: [DONE]`, so the shared streaming loop must not break early on
+// finish_reason. Breaking early discards the trailing usage-only chunk
+// (`choices: []` plus top-level `usage`), which several inference providers
+// emit after the finish chunk — the stream then completes with zero tokens.
+func TestHuggingFaceSendsDoneMarker(t *testing.T) {
+	assert.True(t, providerUtils.ProviderSendsDoneMarker(schemas.HuggingFace),
+		"HuggingFace sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
 }
