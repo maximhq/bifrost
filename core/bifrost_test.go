@@ -618,6 +618,26 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
+func TestCreateBaseProvider_GigaChatCustomProvider(t *testing.T) {
+	const customProvider = schemas.ModelProvider("custom-gigachat")
+	config := &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.GigaChat,
+		},
+	}
+
+	provider, err := (&Bifrost{}).createBaseProvider(customProvider, config)
+	if err != nil {
+		t.Fatalf("expected GigaChat custom-provider base to be constructed: %v", err)
+	}
+	if got := provider.GetProviderKey(); got != customProvider {
+		t.Fatalf("provider key mismatch: got %q, want %q", got, customProvider)
+	}
+	if got := config.CustomProviderConfig.CustomProviderKey; got != string(customProvider) {
+		t.Fatalf("custom provider key mismatch: got %q, want %q", got, customProvider)
+	}
+}
+
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {
