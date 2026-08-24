@@ -629,7 +629,26 @@ func signAWSRequest(
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
-) *schemas.BifrostError {
+) (signErr *schemas.BifrostError) {
+	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work that
+	// otherwise hides in "core". The nested "credentials-fetch" span (below) isolates
+	// the network portion (STS AssumeRole / credential-provider Retrieve) from the CPU
+	// crypto, so a cold credential cache on an idle box reads as its own bucket instead
+	// of inflating core.
+	// Scoped so the nested "credentials-fetch" span below is a true child and its
+	// time is subtracted from request-sign's self-time exactly once (not double-counted
+	// in both buckets). restore() reinstates the prior parent before the span ends.
+	if st, sh, restore := providerUtils.StartScopedPhaseSpan(ctx, "request-sign"); st != nil {
+		defer func() {
+			restore()
+			if signErr != nil {
+				st.EndSpan(sh, schemas.SpanStatusError, "request signing failed")
+			} else {
+				st.EndSpan(sh, schemas.SpanStatusOk, "")
+			}
+		}()
+	}
+
 	var accessKey, secretKey schemas.SecretVar
 	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
 
@@ -756,8 +775,19 @@ func signAWSRequest(
 	// Create the AWS signer
 	signer := v4.NewSigner()
 
-	// Get credentials
+	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
+	// network round trip (STS AssumeRole when RoleARN is set, or the default provider
+	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
+	// credential cache has expired between sparse requests.
+	credT, credH := providerUtils.StartPhaseSpan(ctx, "credentials-fetch")
 	creds, err := cfg.Credentials.Retrieve(ctx)
+	if credT != nil {
+		if err != nil {
+			credT.EndSpan(credH, schemas.SpanStatusError, "credential retrieval failed")
+		} else {
+			credT.EndSpan(credH, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
