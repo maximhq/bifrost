@@ -6168,7 +6168,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			return primaryResult, primaryErr
 		}
 		served = &schemas.Route{Provider: provider, Model: model}
-		return wrapStreamForRequestTimeout(primaryResult, stopRequestTimeout), nil
+		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -6237,7 +6237,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
 			servedFallback = true
-			return wrapStreamForRequestTimeout(result, stopRequestTimeout), nil
+			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout), nil
 		}
 
 		// End span with error status

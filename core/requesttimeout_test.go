@@ -81,8 +81,11 @@ func TestArmRequestTimeout_StopPreventsFiring(t *testing.T) {
 // input channel calls stop immediately and returns nil, matching the error
 // return paths in handleStreamRequest that have no channel to wrap.
 func TestWrapStreamForRequestTimeout_NilChannelStopsImmediately(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
 	stopped := false
-	out := wrapStreamForRequestTimeout(nil, func() { stopped = true })
+	out := wrapStreamForRequestTimeout(ctx, nil, func() { stopped = true })
 	if out != nil {
 		t.Fatal("expected nil passthrough for a nil input channel")
 	}
@@ -96,13 +99,16 @@ func TestWrapStreamForRequestTimeout_NilChannelStopsImmediately(t *testing.T) {
 // as soon as wrapStreamForRequestTimeout returns -- the deadline must keep
 // the whole stream, not just its setup, in scope.
 func TestWrapStreamForRequestTimeout_StopsOnlyAfterDrain(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
 	in := make(chan *schemas.BifrostStreamChunk, 2)
 	in <- &schemas.BifrostStreamChunk{}
 	in <- &schemas.BifrostStreamChunk{}
 	close(in)
 
 	var stopped atomicBool
-	out := wrapStreamForRequestTimeout(in, func() { stopped.set(true) })
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) })
 
 	if stopped.get() {
 		t.Fatal("stop must not be called before the caller has drained the channel")
@@ -120,6 +126,66 @@ func TestWrapStreamForRequestTimeout_StopsOnlyAfterDrain(t *testing.T) {
 	for !stopped.get() {
 		if time.Now().After(deadline) {
 			t.Fatal("stop was not called after the channel was fully drained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer verifies
+// that once ctx is cancelled, the proxy goroutine stops blocking on a send to
+// an out channel nobody is reading anymore -- it falls back to draining ch
+// (so the upstream producer is never left blocked writing into ch either)
+// and still runs stop/close(out) once ch is exhausted, instead of leaking the
+// goroutine forever on out <- chunk.
+func TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	var stopped atomicBool
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) })
+
+	// Normal path: producer sends, consumer receives.
+	in <- &schemas.BifrostStreamChunk{}
+	<-out
+
+	// Producer sends a second chunk. The proxy receives it and blocks trying
+	// to forward it to out -- the consumer has now abandoned the stream
+	// (stopped reading out) without draining, e.g. an SDK caller that
+	// returns on its own ctx cancellation instead of finishing its range
+	// loop.
+	in <- &schemas.BifrostStreamChunk{}
+
+	// A third send from the producer must block: the proxy goroutine is
+	// parked in the select trying to forward the second chunk, so it hasn't
+	// looped back to receive from ch yet. This is the observable evidence
+	// that the proxy is genuinely stuck on the abandoned out send pre-fix.
+	thirdSent := make(chan struct{})
+	go func() {
+		in <- &schemas.BifrostStreamChunk{}
+		close(thirdSent)
+	}()
+
+	select {
+	case <-thirdSent:
+		t.Fatal("third send completed before cancellation -- proxy was not actually blocked forwarding the abandoned chunk")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case <-thirdSent:
+	case <-time.After(time.Second):
+		t.Fatal("producer send into ch must not stay blocked forever once ctx is cancelled and the consumer has abandoned out")
+	}
+
+	close(in)
+
+	deadline := time.Now().Add(time.Second)
+	for !stopped.get() {
+		if time.Now().After(deadline) {
+			t.Fatal("stop was not called after ctx cancellation unblocked the abandoned consumer")
 		}
 		time.Sleep(time.Millisecond)
 	}
