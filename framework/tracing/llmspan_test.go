@@ -182,6 +182,7 @@ func TestPopulateErrorAttributesEmitsBilledUsage(t *testing.T) {
 	bifrostErr := &schemas.BifrostError{
 		Error: &schemas.ErrorField{Message: msg},
 	}
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
 	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
 		PromptTokens:     1200,
 		CompletionTokens: 34,
@@ -203,18 +204,54 @@ func TestPopulateErrorAttributesEmitsBilledUsage(t *testing.T) {
 		schemas.AttrOutputTokens:                    34,
 		schemas.AttrTotalTokens:                     1234,
 		schemas.AttrUsageCacheReadInputTokens:       1000,
-		schemas.AttrInputTokenDetailsCachedRead:     1000,
-		schemas.AttrPromptTokenDetailsCachedRead:    1000,
 		schemas.AttrUsageCacheCreationInputTokens:   200,
-		schemas.AttrInputTokenDetailsCachedWrite:    200,
-		schemas.AttrPromptTokenDetailsCachedWrite:   200,
-		schemas.AttrInputTokenDetailsCachedWrite5m:  120,
 		schemas.AttrPromptTokenDetailsCachedWrite5m: 120,
-		schemas.AttrInputTokenDetailsCachedWrite1h:  80,
 		schemas.AttrPromptTokenDetailsCachedWrite1h: 80,
 	} {
 		if got := attrs[key]; got != want {
 			t.Errorf("attribute %s = %v, want %v", key, got, want)
+		}
+	}
+	// A failed chat span must not carry the Responses namespace: the otel
+	// plugin treats the two 5m/1h families as mutually exclusive per request.
+	for _, key := range []string{
+		schemas.AttrInputTokenDetailsCachedWrite5m,
+		schemas.AttrInputTokenDetailsCachedWrite1h,
+	} {
+		if _, ok := attrs[key]; ok {
+			t.Errorf("Responses-namespace attribute %s present on a chat span", key)
+		}
+	}
+}
+
+func TestPopulateErrorAttributesUsesResponsesNamespace(t *testing.T) {
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "responses stream cancelled"}}
+	bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 120,
+				CachedWriteTokens1h: 80,
+			},
+		},
+	}
+
+	attrs := PopulateErrorAttributes(bifrostErr)
+
+	for key, want := range map[string]any{
+		schemas.AttrInputTokenDetailsCachedWrite5m: 120,
+		schemas.AttrInputTokenDetailsCachedWrite1h: 80,
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("attribute %s = %v, want %v", key, got, want)
+		}
+	}
+	for _, key := range []string{
+		schemas.AttrPromptTokenDetailsCachedWrite5m,
+		schemas.AttrPromptTokenDetailsCachedWrite1h,
+	} {
+		if _, ok := attrs[key]; ok {
+			t.Errorf("chat-namespace attribute %s present on a Responses span", key)
 		}
 	}
 }
@@ -234,6 +271,7 @@ func TestPopulateErrorAttributesWithoutBilledUsageEmitsNoTokens(t *testing.T) {
 
 func TestPopulateErrorAttributesEmitsCacheWriteDetailsWithoutAggregate(t *testing.T) {
 	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "stream failed during cache creation"}}
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
 	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
 		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
 			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
@@ -246,22 +284,24 @@ func TestPopulateErrorAttributesEmitsCacheWriteDetailsWithoutAggregate(t *testin
 	attrs := PopulateErrorAttributes(bifrostErr)
 
 	for key, want := range map[string]any{
-		schemas.AttrInputTokenDetailsCachedWrite5m:  120,
 		schemas.AttrPromptTokenDetailsCachedWrite5m: 120,
-		schemas.AttrInputTokenDetailsCachedWrite1h:  80,
 		schemas.AttrPromptTokenDetailsCachedWrite1h: 80,
 	} {
 		if got := attrs[key]; got != want {
 			t.Errorf("attribute %s = %v, want %v", key, got, want)
 		}
 	}
+	// Zero-valued aggregates and totals stay absent: this BilledUsage carries
+	// only cache-write details, so emitting the totals would stamp explicit
+	// zeros on the span.
 	for _, key := range []string{
 		schemas.AttrUsageCacheCreationInputTokens,
-		schemas.AttrInputTokenDetailsCachedWrite,
-		schemas.AttrPromptTokenDetailsCachedWrite,
+		schemas.AttrInputTokens,
+		schemas.AttrOutputTokens,
+		schemas.AttrTotalTokens,
 	} {
 		if _, ok := attrs[key]; ok {
-			t.Errorf("zero-valued aggregate attribute %s is present", key)
+			t.Errorf("zero-valued attribute %s is present", key)
 		}
 	}
 }
