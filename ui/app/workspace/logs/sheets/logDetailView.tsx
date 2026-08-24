@@ -44,7 +44,8 @@ import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
-import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/redaction";
+import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
+import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -114,9 +115,12 @@ const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, st
 		text = msg.content
 			.filter(
 				(b: any) =>
-					b && b.text && (b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
+					b &&
+					(b.text || b.refusal) &&
+					(b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
 			)
-			.map((b: any) => b.text as string)
+			// Refusal blocks carry their text in `refusal`, not `text`.
+			.map((b: any) => (b.text ?? b.refusal) as string)
 			.join("\n");
 	} else if (typeof (msg as any).arguments === "string") {
 		text = (msg as any).arguments as string;
@@ -2787,6 +2791,9 @@ export function LogDetailView({
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
 									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
+									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
+									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
+									const itemPayload = extractResponsesItemPayload(msg);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
 									let meta: string | undefined;
@@ -2823,7 +2830,7 @@ export function LogDetailView({
 																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
 																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
 															})()
-														: msg.type || undefined;
+														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -2875,6 +2882,8 @@ export function LogDetailView({
 												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
 											) : Array.isArray(msg.tools) ? (
 												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
+											) : itemPayload ? (
+												<CollapsibleCode text={JSON.stringify(applyRedactionMappingToValue(itemPayload, mapping), null, 2)} preview={3} />
 											) : (
 												<div className="text-muted-foreground text-[12px] italic">No content</div>
 											)}
