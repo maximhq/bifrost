@@ -284,7 +284,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 		// row's stored usage). Skipping the write would lose the usage for good — the
 		// raw provider results are not persisted anywhere else.
 		if computed != nil && summary.Usage.TotalTokens > 0 && job.AggregateLogWrittenAt == nil {
-			entry := buildAggregateLog(req, summary, now)
+			entry := buildAggregateLog(req, summary, now, userAgentFromContext(ctx))
 			// Unknown, not zero — a zero cost would read as "this batch was free".
 			entry.Cost = nil
 			if computed.UnpricedModel != "" {
@@ -323,7 +323,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 	summary.FailedCount = computed.FailedCount
 	summary.Complete = computed.Complete
 
-	entry := buildAggregateLog(req, summary, now)
+	entry := buildAggregateLog(req, summary, now, userAgentFromContext(ctx))
 	if !summary.Complete {
 		// Some usage priced and some did not. summary.Cost is therefore only the known
 		// part of the bill, and persisting it as the row's cost would be a lie with
@@ -490,6 +490,14 @@ func stringSliceFromParsedOrJSON(parsed []string, raw *string) []string {
 		return nil
 	}
 	return values
+}
+
+// userAgentFromContext builds the user agent for bifrost workers.
+func userAgentFromContext(ctx context.Context) string {
+	if version, ok := ctx.Value(schemas.BifrostContextKeyRuntimeVersion).(string); ok && version != "" {
+		return "bifrost/" + version
+	}
+	return "bifrost"
 }
 
 // accountingLogNamespace is the UUIDv5 namespace for aggregate cost log ids.
@@ -898,7 +906,7 @@ func firstNonZero(values ...int) int {
 	return 0
 }
 
-func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.Log {
+func buildAggregateLog(req Request, summary *Summary, now time.Time, userAgent string) *logstore.Log {
 	model := req.FallbackModel
 	if len(summary.ModelBreakdowns) == 1 {
 		for key := range summary.ModelBreakdowns {
@@ -945,6 +953,7 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 		TotalTokens:      summary.Usage.TotalTokens,
 		CreatedAt:        now,
 		BatchDebugParsed: batchDebug,
+		UserAgent:        &userAgent,
 	}
 	// Attribution must not depend on who happens to settle the batch first. The
 	// sweeper reaches here with only the job; a /results call reaches here with the
