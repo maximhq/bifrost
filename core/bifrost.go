@@ -6608,7 +6608,7 @@ func executeRequestWithRetries[T any](
 			lastWasReasoningItemIDStrip = true
 			extraAttempts++
 			shouldRetry = true
-			logger.Warn("upstream rejected a replayed reasoning item id for %s/%s; retrying once without item ids: %s", providerKey, model, errMessage)
+			logger.Warn("upstream rejected a replayed reasoning item id for %s/%s; retrying once without item ids", providerKey, model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped non-replayable reasoning item IDs from the request to %s/%s and retrying once", providerKey, model))
 		}
 
