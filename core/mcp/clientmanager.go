@@ -1059,7 +1059,17 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 		m.mu.Unlock()
 		return
 	}
-	maps.Copy(client.ToolMap, tools)
+	// Replace the tool set wholesale, mirroring connectToMCPClient's swap and
+	// the checker's writeBackTools: every caller passes a complete discovery
+	// result, and merging into the existing map would keep tools the upstream
+	// has since removed alive in memory (and on the hosted /mcp surface) while
+	// the DB, persisted from the passed-in set via the tools-change callback,
+	// has already dropped them.
+	if tools == nil {
+		tools = make(map[string]schemas.ChatTool)
+	}
+	precomputeToolSerialization(tools)
+	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
 	client.State = schemas.MCPConnectionStateHealthy
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
@@ -1628,6 +1638,12 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 // before being committed. Non-credential metadata (name, tools, etc.) is preserved from the
 // current execution config.
 //
+// A shared-credential client running per-call (no session stickiness) has no connection to
+// replace; instead its tool list is refreshed synchronously via a one-shot discovery with the
+// now-current credential, so a credential update lands with fresh tools on both connection
+// modes alike. Per-user auth type clients return ErrMCPReconnectNotApplicable: their shared
+// tool list is driven by the retained admin credential, which is not what changes here.
+//
 // On failure the clientMap entry is left in Disconnected state but its ExecutionConfig is restored
 // to the previous value, allowing the health monitor to recover the client using the old credentials.
 //
@@ -1681,7 +1697,17 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStatePendingVerification {
 				cs.ExecutionConfig = newConfig
 				if len(newConfig.DiscoveredTools) > 0 {
-					maps.Copy(cs.ToolMap, newConfig.DiscoveredTools)
+					// Replace, not merge, mirroring AddClient's own restore:
+					// the persisted DiscoveredTools are the complete set, and
+					// a pending_verification entry holds no tools of its own
+					// worth keeping anyway. Copied into a fresh map so the
+					// entry never aliases the config's own map.
+					restored := make(map[string]schemas.ChatTool, len(newConfig.DiscoveredTools))
+					for toolName, tool := range newConfig.DiscoveredTools {
+						_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
+						restored[toolName] = tool
+					}
+					cs.ToolMap = restored
 					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
 				}
 				cs.State = schemas.MCPConnectionStateHealthy
@@ -1719,13 +1745,41 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			return nil
 		}
 		// Already past that first connection (a plain reauthorize of an
-		// already-Healthy client): a per-call client dials fresh on every
+		// already-verified client): a per-call client dials fresh on every
 		// call and already picks up whatever credential is current in the
-		// DB, so there is genuinely nothing left to do — that's a no-op,
-		// not a failure, hence the shared "not applicable" sentinel rather
-		// than an opaque error.
+		// DB, so there is no persistent connection to swap. The tool list
+		// still needs the treatment sticky clients get for free from their
+		// reconnect (which always re-runs discovery): nothing else revisits
+		// a per-call client until the periodic checker's next tick, minutes
+		// away on a Healthy client, so refresh tools synchronously with the
+		// now-current shared credential. A failed discovery fails the
+		// update, mirroring the sticky path (a reconnect whose tools/list
+		// fails is a failed reconnect); the periodic checker still retries
+		// on its own cadence afterwards. Skipped for a Disabled client:
+		// SetClientTools would force it back to Healthy, and re-enabling
+		// runs its own discovery anyway.
+		//
+		// Per-user auth types keep the "not applicable" sentinel: the
+		// credentials updated through here are never the retained admin
+		// discovery credential (the admin-verify paths own that flow and
+		// re-discover themselves), so the shared tool list is unaffected
+		// and there is genuinely nothing left to do.
+		isDisabled := client.State == schemas.MCPConnectionStateDisabled
 		m.mu.RUnlock()
-		return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+		switch newConfig.AuthType {
+		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
+			if isDisabled {
+				return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+			}
+			tools, mapping, discErr := m.performAdminToolDiscovery(m.ctx, newConfig)
+			if discErr != nil {
+				return fmt.Errorf("credentials updated but tool discovery with them failed for MCP client %s: %w", newConfig.Name, discErr)
+			}
+			m.SetClientTools(id, tools, mapping)
+			return nil
+		default:
+			return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+		}
 	}
 	if client.ExecutionConfig == nil {
 		m.mu.RUnlock()

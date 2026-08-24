@@ -805,3 +805,38 @@ func TestBudgetResolver_EvaluateVirtualKeyRequest_InactiveWithFutureExpiry(t *te
 	assertDecision(t, DecisionVirtualKeyBlocked, result)
 	assert.Contains(t, result.Reason, "inactive")
 }
+
+// TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel verifies that
+// the skip-model-check context flag drops the virtual key model allowlist even for a
+// provider the key does configure. Callers that are evaluated but never routed (the
+// enterprise /inspect endpoint) set the flag: they never reach a provider, so the model
+// on the payload is the one the caller was already talking to, not a model an operator
+// granted. skipProviderCheck alone is not enough here, because a configured provider
+// still carries a model allowlist for the request to fail on one step later.
+func TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel(t *testing.T) {
+	logger := NewMockLogger()
+
+	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4"}),
+	}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	// Baseline: without the flag the configured provider's model allowlist blocks.
+	plain := &schemas.BifrostContext{}
+	blocked := resolver.EvaluateVirtualKeyRequest(plain, "sk-bf-test", schemas.OpenAI, "gpt-4o-mini", schemas.ChatCompletionRequest, false, true)
+	assertDecision(t, DecisionModelBlocked, blocked)
+
+	// With the flag the same request is allowed.
+	skipping := &schemas.BifrostContext{}
+	skipping.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	result := resolver.EvaluateVirtualKeyRequest(skipping, "sk-bf-test", schemas.OpenAI, "gpt-4o-mini", schemas.ChatCompletionRequest, false, true)
+	assert.NotEqual(t, DecisionModelBlocked, result.Decision, "skipModelCheck must bypass the virtual key model allowlist")
+	assertDecision(t, DecisionAllow, result)
+}
