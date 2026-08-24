@@ -429,7 +429,11 @@ func TestStreamThroughputGuard_ProbeBufferIsBounded(t *testing.T) {
 	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != schemas.ErrCodeStreamThroughputProbeBufferExceeded {
 		t.Fatalf("unexpected buffer guard error: %+v", bifrostErr)
 	}
-	<-drainDone
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("probe stream did not drain")
+	}
 }
 
 func chatStreamChunk(content string) *schemas.BifrostStreamChunk {

@@ -194,7 +194,10 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 }
 
 func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
+	primaryCanceled := make(chan struct{})
+	primaryExited := make(chan struct{})
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(primaryExited)
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
@@ -202,6 +205,7 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 		for i := 0; i < 30; i++ {
 			select {
 			case <-r.Context().Done():
+				close(primaryCanceled)
 				return
 			case <-time.After(100 * time.Millisecond):
 			}
@@ -258,5 +262,15 @@ func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
 	}
 	if content != "hello" {
 		t.Fatalf("consumer-visible content = %q, want only fallback content %q", content, "hello")
+	}
+	select {
+	case <-primaryCanceled:
+	default:
+		t.Fatal("primary request was not canceled before fallback")
+	}
+	select {
+	case <-primaryExited:
+	default:
+		t.Fatal("primary stream handler did not exit before fallback completed")
 	}
 }
