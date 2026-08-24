@@ -507,7 +507,7 @@ const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-mar
 const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
 	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
 	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
+	"middleware.apikeys": { label: "API", colorClass: "bg-cyan-500/70" },
 	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
 	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
 	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
