@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -492,6 +493,10 @@ func (m *mockRealtimeMintingGovernancePlugin) EvaluateGovernanceRequest(ctx *sch
 	return &governance.EvaluationResult{Decision: governance.DecisionAllow}, nil
 }
 
+func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
 }
@@ -525,6 +530,21 @@ func (m *mockRealtimeMintingGovernancePlugin) Cleanup() error {
 }
 
 func (m *mockRealtimeMintingGovernancePlugin) GetGovernanceStore() governance.GovernanceStore {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) GetVirtualKey(_ context.Context, _ string) (*configstoreTables.TableVirtualKey, bool) {
+	return nil, false
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ context.Context, _ string, _ schemas.ModelProvider, _ *configstoreTables.TableVirtualKey, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ *configstoreTables.TableVirtualKey, _ string) {
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest, _ *configstoreTables.TableVirtualKey) error {
 	return nil
 }
 

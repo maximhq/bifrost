@@ -136,6 +136,8 @@ tags:
     description: Model Context Protocol endpoints
   - name: Governance
     description: Virtual keys, teams, and customers management
+  - name: Routing
+    description: Routing rules and complexity analyzer configuration
   - name: Logging
     description: Log search and management endpoints
   - name: Cache
@@ -148,6 +150,8 @@ tags:
     description: CADF-compliant audit log search, export, and signature verification endpoints
   - name: Webhooks
     description: Webhook endpoint management and signed async-job delivery history
+  - name: Notifications
+    description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
 
 paths:
   # ==================== Unified Inference API ====================
@@ -183,6 +187,8 @@ paths:
     $ref: "./paths/inference/videos.yaml#/video-download"
   /v1/videos/{video_id}/remix:
     $ref: "./paths/inference/videos.yaml#/video-remix"
+  /v1/videos/edits:
+    $ref: "./paths/inference/videos.yaml#/video-edit"
   /v1/responses/input_tokens:
     $ref: "./paths/inference/count-tokens.yaml#/count-tokens"
   /v1/responses/compact:
@@ -889,10 +895,6 @@ paths:
     $ref: "./paths/management/governance.yaml#/budgets"
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
-  /api/governance/routing-rules:
-    $ref: "./paths/management/governance.yaml#/routing-rules"
-  /api/governance/routing-rules/{rule_id}:
-    $ref: "./paths/management/governance.yaml#/routing-rules-by-id"
 
   # Governance - Model Configs
   /api/governance/model-configs:
@@ -1081,11 +1083,25 @@ paths:
   /api/circuit-breaker/state:
     $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-state"
 
-  # Governance - Complexity Analyzer Config
+  # Routing
+  /api/routing/rules:
+    $ref: "./paths/management/routing.yaml#/rules"
+  /api/routing/rules/{rule_id}:
+    $ref: "./paths/management/routing.yaml#/rules-by-id"
+  /api/routing/complexity-analyzer-config:
+    $ref: "./paths/management/routing.yaml#/complexity"
+  /api/routing/complexity-analyzer-config/reset:
+    $ref: "./paths/management/routing.yaml#/complexity-reset"
+
+  # Routing - deprecated paths, kept so existing clients keep working
+  /api/governance/routing-rules:
+    $ref: "./paths/management/routing.yaml#/rules-legacy"
+  /api/governance/routing-rules/{rule_id}:
+    $ref: "./paths/management/routing.yaml#/rules-by-id-legacy"
   /api/governance/complexity-analyzer-config:
-    $ref: "./paths/management/governance.yaml#/complexity"
+    $ref: "./paths/management/routing.yaml#/complexity-legacy"
   /api/governance/complexity-analyzer-config/reset:
-    $ref: "./paths/management/governance.yaml#/complexity-reset"
+    $ref: "./paths/management/routing.yaml#/complexity-reset-legacy"
 
   # Logging
   /api/logs:
@@ -1229,6 +1245,10 @@ paths:
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
+  # Notifications
+  /api/notifications:
+    $ref: "./paths/management/notifications.yaml#/notifications"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1291,6 +1311,12 @@ components:
             $ref: "./schemas/inference/common.yaml#/BifrostError"
     Unauthorized:
       description: Unauthorized — missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
+    Forbidden:
+      description: Forbidden — authenticated, but not permitted to perform this action
       content:
         application/json:
           schema:
@@ -1873,3 +1899,15 @@ components:
       $ref: "./schemas/management/webhooks.yaml#/RedeliverWebhookResponse"
     WebhookStatusResponse:
       $ref: "./schemas/management/webhooks.yaml#/WebhookStatusResponse"
+
+    # Notifications
+    NotificationSeverity:
+      $ref: "./schemas/management/notifications.yaml#/NotificationSeverity"
+    NotificationAudience:
+      $ref: "./schemas/management/notifications.yaml#/NotificationAudience"
+    NotificationInput:
+      $ref: "./schemas/management/notifications.yaml#/NotificationInput"
+    Notification:
+      $ref: "./schemas/management/notifications.yaml#/Notification"
+    NotificationList:
+      $ref: "./schemas/management/notifications.yaml#/NotificationList"

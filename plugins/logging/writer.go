@@ -373,6 +373,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ImageGenerationInput) +
 		len(log.ImageGenerationOutput) +
 		len(log.VideoGenerationInput) +
+		len(log.VideoEditInput) +
 		len(log.VideoGenerationOutput) +
 		len(log.VideoRetrieveOutput) +
 		len(log.VideoDownloadOutput) +
@@ -474,6 +475,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
 		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
+		VideoEditInputParsed:        pending.InitialData.VideoEditInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
@@ -574,6 +576,7 @@ func applyOutputFieldsToEntry(
 	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
+	upstreamLatency, overheadLatency *int64,
 	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
@@ -630,7 +633,30 @@ func applyOutputFieldsToEntry(
 		latF := float64(latency)
 		entry.Latency = &latF
 	}
+	setUpstreamOverheadLatency(entry, upstreamLatency, overheadLatency)
 	if len(attemptTrail) > 0 {
 		entry.AttemptTrailParsed = attemptTrail
 	}
+}
+
+// setUpstreamOverheadLatency copies upstream/overhead onto the entry. nil stays nil,
+// so an absent measurement is never persisted as zero.
+func setUpstreamOverheadLatency(entry *logstore.Log, upstreamLatency, overheadLatency *int64) {
+	if upstreamLatency != nil {
+		upF := float64(*upstreamLatency)
+		entry.UpstreamLatency = &upF
+	}
+	if overheadLatency != nil {
+		ovF := float64(*overheadLatency)
+		entry.OverheadLatency = &ovF
+	}
+}
+
+// applyUpstreamOverheadToEntry copies upstream/overhead from a response's ExtraFields
+// onto the entry. Used by the streaming path.
+func applyUpstreamOverheadToEntry(entry *logstore.Log, ef *schemas.BifrostResponseExtraFields) {
+	if ef == nil {
+		return
+	}
+	setUpstreamOverheadLatency(entry, ef.UpstreamLatency, ef.OverheadLatency)
 }

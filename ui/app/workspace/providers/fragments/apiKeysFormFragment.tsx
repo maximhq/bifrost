@@ -613,7 +613,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								}
 							}}
 						>
-							<TabsList className="grid w-full grid-cols-3">
+							<TabsList className="flex w-full justify-start">
 								<TabsTrigger data-testid="apikey-azure-default-credential-tab" value="default_credential">
 									Default Credential
 								</TabsTrigger>
@@ -764,7 +764,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								}
 							}}
 						>
-							<TabsList className="grid w-full grid-cols-3">
+							<TabsList className="flex w-full justify-start">
 								<TabsTrigger data-testid="apikey-vertex-service-account-tab" value="service_account">
 									Service Account (Attached)
 								</TabsTrigger>
@@ -1026,7 +1026,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								}
 							}}
 						>
-							<TabsList className="grid w-full grid-cols-3">
+							<TabsList className="flex w-full justify-start">
 								<TabsTrigger data-testid="apikey-bedrock-iam-role-tab" value="iam_role">
 									IAM Role (Inherited)
 								</TabsTrigger>
@@ -1275,7 +1275,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								}
 							}}
 						>
-							<TabsList className="grid w-full grid-cols-3">
+							<TabsList className="flex w-full justify-start">
 								<TabsTrigger data-testid="apikey-bedrock-mantle-iam-role-tab" value="iam_role">
 									IAM Role (Inherited)
 								</TabsTrigger>

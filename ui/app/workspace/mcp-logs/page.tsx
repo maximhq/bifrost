@@ -340,7 +340,10 @@ export default function MCPLogsPage() {
 		return icons;
 	}, [userAgentMappingsData?.mappings]);
 
-	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons), [customAppIcons, handleDelete, hasDeleteAccess]);
+	const columns = useMemo(
+		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -434,12 +437,12 @@ export default function MCPLogsPage() {
 			) : showEmptyState ? (
 				<MCPEmptyState error={displayError} />
 			) : (
-				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
 					{/* Sidebar Filters */}
 					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 						<div className="p-4 pb-0">
 							<McpHeaderView
 								filters={filters}

@@ -658,9 +658,10 @@ func TestMarshalSorted_Deterministic(t *testing.T) {
 	}
 }
 
-// TestCheckAndDecodeBody_PooledGzip verifies that CheckAndDecodeBody correctly
-// decompresses gzip-encoded responses using pooled gzip readers.
-func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
+// TestCheckAndDecodeBody_ContentEncodings verifies that unary provider responses
+// are decoded with the shared pooled readers before JSON parsing.
+func TestCheckAndDecodeBody_ContentEncodings(t *testing.T) {
+	chainedPayload := gzipCompress([]byte(`{"message":"chained"}`))
 	tests := []struct {
 		name            string
 		body            []byte
@@ -690,6 +691,36 @@ func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
 			wantErr:         false,
 		},
 		{
+			name:            "brotli encoded body",
+			body:            compressBrotli([]byte(`{"input_tokens":16998}`)),
+			contentEncoding: "br",
+			wantBody:        `{"input_tokens":16998}`,
+		},
+		{
+			name:            "deflate encoded body",
+			body:            compressFlate([]byte(`{"message":"deflate"}`)),
+			contentEncoding: "deflate",
+			wantBody:        `{"message":"deflate"}`,
+		},
+		{
+			name:            "zstd encoded body",
+			body:            compressZstd([]byte(`{"message":"zstd"}`)),
+			contentEncoding: "zstd",
+			wantBody:        `{"message":"zstd"}`,
+		},
+		{
+			name:            "identity encoded body",
+			body:            []byte(`{"message":"identity"}`),
+			contentEncoding: "identity",
+			wantBody:        `{"message":"identity"}`,
+		},
+		{
+			name:            "chained gzip then brotli body",
+			body:            compressBrotli(chainedPayload),
+			contentEncoding: "gzip, br",
+			wantBody:        `{"message":"chained"}`,
+		},
+		{
 			name:            "no encoding - plain body",
 			body:            []byte(`plain text`),
 			contentEncoding: "",
@@ -707,6 +738,30 @@ func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
 			name:            "invalid gzip data",
 			body:            []byte{0xFF, 0xFE, 0xFD},
 			contentEncoding: "gzip",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid brotli data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "br",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid deflate data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "deflate",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid zstd data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "zstd",
+			wantErr:         true,
+		},
+		{
+			name:            "unsupported encoding",
+			body:            []byte(`encoded somehow`),
+			contentEncoding: "snappy",
 			wantErr:         true,
 		},
 	}
@@ -2147,5 +2202,36 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 	}
 	if tracer.endStatus != schemas.SpanStatusOk {
 		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}
+
+// TestProviderSendsDoneMarker guards the stream termination switch: a provider
+// missing from the non-DONE case would make the stream loop in
+// core/providers/openai/openai.go wait indefinitely for a [DONE] marker it never sends.
+func TestProviderSendsDoneMarker(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
+		{schemas.Cerebras, false},
+		{schemas.Perplexity, false},
+		{schemas.HuggingFace, false},
+		{schemas.Bedrock, false},
+		{schemas.BedrockMantle, false},
+		// Providers that do send a [DONE] marker.
+		{schemas.OpenAI, true},
+		{schemas.Azure, true},
+		{schemas.Anthropic, true},
+		{schemas.Groq, true},
+		{schemas.OpenRouter, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
+			}
+		})
 	}
 }

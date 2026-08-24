@@ -42,11 +42,13 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"gorm.io/gorm"
@@ -130,6 +132,7 @@ var builtinPluginNames = []string{
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
+	routing.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
@@ -635,6 +638,11 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
+	// NotificationPublisher persists and delivers role-targeted dashboard
+	// notifications. Assigned at startup and deliberately unused in-tree: it is
+	// the seam enterprise builds and plugins publish through. See the doc on
+	// schemas.NotificationPublisher before adding the first caller.
+	NotificationPublisher schemas.NotificationPublisher
 
 	// EnvLabel is a short label (max 10 chars) displayed in the UI sidebar to identify the
 	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
@@ -670,7 +678,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
-	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
+	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
 }
 
 // applyV1Compat normalizes ConfigData to restore v1.4.x allow-list semantics.
@@ -4623,7 +4631,13 @@ func ResolveFrameworkPricingConfig(
 		if fileConfig.Pricing.MCPLibrarySyncInterval != nil {
 			val := *fileConfig.Pricing.MCPLibrarySyncInterval
 			switch {
-			case val <= 0:
+			case val == modelcatalog.MCPLibrarySyncDisabled:
+				// Explicit opt-out (air-gapped deployments with no local catalog
+				// file), not corruption. Passed through untouched so Phase 3 does
+				// not "repair" it back to the default.
+				disabled := modelcatalog.MCPLibrarySyncDisabled
+				fileMCPLibrarySyncSeconds = &disabled
+			case val < 0:
 				logger.Warn("mcp_library_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
@@ -4798,7 +4812,16 @@ func ResolveFrameworkPricingConfig(
 		if dbConfig.MCPLibrarySyncInterval != nil {
 			val := *dbConfig.MCPLibrarySyncInterval
 			switch {
-			case val <= 0:
+			case val == modelcatalog.MCPLibrarySyncDisabled:
+				// 0 is a deliberate opt-out rather than corruption, so it is
+				// honoured instead of being backfilled with the default.
+				if fileChanged && fileMCPLibrarySyncSeconds != nil {
+					logger.Info("mcp_library_sync_interval from config.json overrides DB (file hash changed): file=%d db=disabled — updating DB", *fileMCPLibrarySyncSeconds)
+					needsDBUpdate = true
+				} else {
+					resolvedMCPLibrarySyncInterval = dbConfig.MCPLibrarySyncInterval
+				}
+			case val < 0:
 				logger.Warn("mcp_library_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedMCPLibrarySyncInterval)
 				needsDBUpdate = true
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:

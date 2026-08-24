@@ -719,6 +719,12 @@ func (p *OtelPlugin) RedactConfig(raw map[string]any) (map[string]any, error) {
 	return result, nil
 }
 
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*OtelPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 // HTTPTransportPreHook is not used for this plugin
 func (p *OtelPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
@@ -983,9 +989,40 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 }
 
 // getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
-// is a meaningful value distinct from "absent" — an upstream total of 0 (a cache
+// is a meaningful value distinct from "absent": an upstream total of 0 (a cache
 // hit, or a request rejected before any provider call) means all of the elapsed
 // time was Bifrost's, whereas a missing attribute means it was never measured.
+func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+// overheadMicrosFromTrace reads Bifrost's own cost (in microseconds) off the root
+// span, where the tracer stamps it as AttrBifrostOverheadDurationMs (root duration
+// minus the upstream total, in ms). Reading the stamped value rather than recomputing
+// keeps the overhead metric and the span attribute in lockstep. Returns false when the
+// request carried no measurement; absent must not be reported as zero overhead.
+func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
+	if trace == nil || trace.RootSpan == nil {
+		return 0, false
+	}
+	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	if !ok {
+		return 0, false
+	}
+	return overheadMs * 1000.0, true
+}
+
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
@@ -1161,6 +1198,19 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		if finalSpan == nil || span.EndTime.After(finalSpan.EndTime) {
 			finalSpan = span
 		}
+	}
+
+	// Bifrost's own overhead. Derived once per trace from the root span, the only
+	// span whose duration covers the whole request (queue wait, plugin hooks and
+	// transport work no llm.call span sees). Labelled off the final attempt span so
+	// provider/model dimensions match the other per-request metrics; the root span
+	// carries only HTTP attributes.
+	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok {
+		labelSpan := finalSpan
+		if labelSpan == nil {
+			labelSpan = trace.RootSpan
+		}
+		exporter.RecordOverheadLatency(ctx, overheadMicros, buildSpanAttrs(labelSpan)...)
 	}
 
 	if finalSpan == nil {

@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -209,11 +210,11 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-						auth_config: {
-							...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
-							...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
-						},
-					}
+							auth_config: {
+								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
+								...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+							},
+						}
 					: {}),
 			}).unwrap();
 			setSetupToken("");
@@ -230,10 +231,7 @@ export default function SecurityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-			</div>
+			<PageTitle title="Security Settings">Configure security and access control settings.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
@@ -314,8 +312,8 @@ export default function SecurityView() {
 											onChange={(e) => setSetupToken(e.target.value)}
 										/>
 										<p className="text-muted-foreground text-xs">
-											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your
-											operator for the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
+											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your operator for
+											the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
 											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
 										</p>
 									</div>
@@ -370,10 +368,17 @@ export default function SecurityView() {
 						<Select
 							value={localConfig.dual_credential_conflict_behavior || "prefer_idp"}
 							onValueChange={(value) =>
-								setLocalConfig((prev) => ({ ...prev, dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"] }))
+								setLocalConfig((prev) => ({
+									...prev,
+									dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"],
+								}))
 							}
 						>
-							<SelectTrigger id="dual-credential-conflict-behavior" data-testid="dual-credential-conflict-behavior-select" className="w-[180px]">
+							<SelectTrigger
+								id="dual-credential-conflict-behavior"
+								data-testid="dual-credential-conflict-behavior-select"
+								className="w-full sm:w-[180px]"
+							>
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>

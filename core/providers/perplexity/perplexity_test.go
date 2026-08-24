@@ -278,7 +278,7 @@ func TestWebSearchOption_JSONSerialization(t *testing.T) {
 func TestBifrostCost_DeserializationWithPerplexityFields(t *testing.T) {
 	t.Parallel()
 
-	t.Run("deserializes new cost breakdown fields", func(t *testing.T) {
+	t.Run("maps legacy flat shape onto nested", func(t *testing.T) {
 		jsonStr := `{
 			"input_tokens_cost": 0.001,
 			"output_tokens_cost": 0.002,
@@ -294,23 +294,29 @@ func TestBifrostCost_DeserializationWithPerplexityFields(t *testing.T) {
 			t.Fatalf("failed to unmarshal BifrostCost: %v", err)
 		}
 
-		if cost.InputTokensCost != 0.001 {
-			t.Errorf("expected input_tokens_cost 0.001, got %f", cost.InputTokensCost)
+		// The legacy flat shape maps onto the nested schema: the request surcharge
+		// folds into the input side; reasoning/citation/search are output-side
+		// categories. Detail fields carry the exact JSON values.
+		if cost.InputCostDetails == nil || cost.OutputCostDetails == nil {
+			t.Fatalf("expected nested cost details, got %+v", cost)
 		}
-		if cost.OutputTokensCost != 0.002 {
-			t.Errorf("expected output_tokens_cost 0.002, got %f", cost.OutputTokensCost)
+		if cost.InputCostDetails.TextCost != 0.001 {
+			t.Errorf("expected input text cost 0.001, got %f", cost.InputCostDetails.TextCost)
 		}
-		if cost.ReasoningTokensCost != 0.003 {
-			t.Errorf("expected reasoning_tokens_cost 0.003, got %f", cost.ReasoningTokensCost)
+		if cost.InputCostDetails.RequestCost != 0.006 {
+			t.Errorf("expected request cost 0.006, got %f", cost.InputCostDetails.RequestCost)
 		}
-		if cost.CitationTokensCost != 0.004 {
-			t.Errorf("expected citation_tokens_cost 0.004, got %f", cost.CitationTokensCost)
+		if cost.OutputCostDetails.TextCost != 0.002 {
+			t.Errorf("expected output text cost 0.002, got %f", cost.OutputCostDetails.TextCost)
 		}
-		if cost.SearchQueriesCost != 0.005 {
-			t.Errorf("expected search_queries_cost 0.005, got %f", cost.SearchQueriesCost)
+		if cost.OutputCostDetails.ReasoningCost != 0.003 {
+			t.Errorf("expected reasoning cost 0.003, got %f", cost.OutputCostDetails.ReasoningCost)
 		}
-		if cost.RequestCost != 0.006 {
-			t.Errorf("expected request_cost 0.006, got %f", cost.RequestCost)
+		if cost.OutputCostDetails.CitationCost != 0.004 {
+			t.Errorf("expected citation cost 0.004, got %f", cost.OutputCostDetails.CitationCost)
+		}
+		if cost.OutputCostDetails.SearchQueriesCost != 0.005 {
+			t.Errorf("expected search queries cost 0.005, got %f", cost.OutputCostDetails.SearchQueriesCost)
 		}
 		if cost.TotalCost != 0.021 {
 			t.Errorf("expected total_cost 0.021, got %f", cost.TotalCost)

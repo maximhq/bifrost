@@ -76,7 +76,7 @@ func TestCompleteAndFlushTrace_SlowPluginDoesNotDelayOthers(t *testing.T) {
 	fast := &blockingObsPlugin{name: "fast-connector"}
 
 	// Slow one registered first: the ordering that used to cause the stall.
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{slow, fast})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{slow, fast}, nil)
 
 	traceID := tracer.CreateTrace("")
 	start := time.Now()
@@ -106,10 +106,10 @@ func TestCompleteAndFlushTrace_BoundsInjectsPerPlugin(t *testing.T) {
 	tracer := NewTracer(store, nil, nil)
 
 	stuck := &blockingObsPlugin{name: "stuck-connector", release: make(chan struct{})}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{stuck})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{stuck}, nil)
 
 	const overshoot = 250
-	total := maxConcurrentInjectsPerPlugin + overshoot
+	total := defaultSemaphoreSize + overshoot
 	for range total {
 		tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 	}
@@ -120,8 +120,8 @@ func TestCompleteAndFlushTrace_BoundsInjectsPerPlugin(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	if got := stuck.maxInFlight.Load(); got > maxConcurrentInjectsPerPlugin {
-		t.Fatalf("concurrent injects exceeded the cap: got %d, cap %d", got, maxConcurrentInjectsPerPlugin)
+	if got := stuck.maxInFlight.Load(); got > defaultSemaphoreSize {
+		t.Fatalf("concurrent injects exceeded the cap: got %d, cap %d", got, defaultSemaphoreSize)
 	}
 	if dropped := tracer.ObservabilityDropCounts()["stuck-connector"]; dropped == 0 {
 		t.Fatal("expected traces to be skipped once the plugin saturated, got 0")
@@ -140,7 +140,7 @@ func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
 	tracer := NewTracer(store, nil, nil)
 
 	hung := &blockingObsPlugin{name: "hung-connector", release: make(chan struct{})}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung}, nil)
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -173,7 +173,7 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	defer tracer.Stop()
 
 	dup := &blockingObsPlugin{name: "dup-connector"}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{dup, dup, dup})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{dup, dup, dup}, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -191,5 +191,133 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 
 	if got := dup.started.Load(); got != 1 {
 		t.Fatalf("expected a duplicate-named plugin to be injected once, got %d", got)
+	}
+}
+
+// ctxAwareObsPlugin's Inject respects ctx cancellation: it blocks until either released or
+// the context is done, whichever comes first. Stands in for a well-behaved connector whose
+// HTTP/gRPC client propagates ctx.
+type ctxAwareObsPlugin struct {
+	name    string
+	release chan struct{}
+	started atomic.Int64
+}
+
+func (p *ctxAwareObsPlugin) GetName() string { return p.name }
+func (p *ctxAwareObsPlugin) Cleanup() error  { return nil }
+func (p *ctxAwareObsPlugin) Inject(ctx context.Context, _ *schemas.Trace) error {
+	p.started.Add(1)
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestSetObservabilityPlugins_HonoursDeclaredLimits verifies a plugin whose generic
+// PluginConfig declares semaphore_size/inject_timeout gets a semaphore sized from that
+// config instead of the tracer's default.
+func TestSetObservabilityPlugins_HonoursDeclaredLimits(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	const customSemSize = 4
+	plugin := &blockingObsPlugin{name: "limited-connector", release: make(chan struct{})}
+	limits := map[string]schemas.ObservabilityLimits{
+		"limited-connector": {SemaphoreSize: customSemSize, InjectTimeout: time.Minute},
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, limits)
+
+	loaded := tracer.obsPlugins.Load()
+	if loaded == nil || len(*loaded) != 1 {
+		t.Fatalf("expected exactly one slot, got %v", loaded)
+	}
+	slot := (*loaded)[0]
+	if cap(slot.sem) != customSemSize {
+		t.Fatalf("expected semaphore sized %d from declared limits, got %d", customSemSize, cap(slot.sem))
+	}
+	if slot.injectTimeout != time.Minute {
+		t.Fatalf("expected inject timeout from declared limits, got %v", slot.injectTimeout)
+	}
+
+	close(plugin.release)
+}
+
+// TestSetObservabilityPlugins_DefaultsWhenLimitsNotDeclared verifies a plugin with no
+// entry in the limits map falls back to the tracer's defaults.
+func TestSetObservabilityPlugins_DefaultsWhenLimitsNotDeclared(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plain := &blockingObsPlugin{name: "plain-connector"}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plain}, nil)
+
+	loaded := tracer.obsPlugins.Load()
+	if loaded == nil || len(*loaded) != 1 {
+		t.Fatalf("expected exactly one slot, got %v", loaded)
+	}
+	slot := (*loaded)[0]
+	if cap(slot.sem) != defaultSemaphoreSize {
+		t.Fatalf("expected default semaphore size %d, got %d", defaultSemaphoreSize, cap(slot.sem))
+	}
+	if slot.injectTimeout != defaultInjectTimeout {
+		t.Fatalf("expected default inject timeout %v, got %v", defaultInjectTimeout, slot.injectTimeout)
+	}
+}
+
+// TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot verifies that a plugin honouring ctx
+// cancellation has its Inject call unblocked once the configured inject timeout elapses,
+// freeing the semaphore slot instead of holding it indefinitely.
+func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	// release is never closed: the plugin only returns because its 50ms inject timeout
+	// (declared via the limits map passed to SetObservabilityPlugins) cancels ctx.
+	plugin := &ctxAwareObsPlugin{name: "ctx-aware-connector", release: make(chan struct{})}
+	// SemaphoreSize: 1 makes the test meaningful — with the tracer's default of 10,000,
+	// both flushes below would acquire a slot immediately regardless of whether
+	// cancellation actually released one.
+	limits := map[string]schemas.ObservabilityLimits{
+		"ctx-aware-connector": {SemaphoreSize: 1, InjectTimeout: 50 * time.Millisecond},
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, limits)
+
+	// SemaphoreSize is 1, so the second flush can only start once the first Inject's
+	// ctx cancellation frees the slot. Submitting and waiting one at a time (rather
+	// than firing both up front) is what actually exercises that release path — with
+	// both queued together, the second could otherwise sit dropped by the non-blocking
+	// acquire instead of proving the slot came free.
+	start := time.Now()
+	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
+	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+		t.Fatal("expected the first flush to complete once its inject timeout elapsed")
+	}
+	if got := plugin.started.Load(); got != 1 {
+		t.Fatalf("expected first flush to start Inject once, got %d", got)
+	}
+
+	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
+	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+		t.Fatal("expected the second flush to complete once its inject timeout elapsed")
+	}
+	if got := plugin.started.Load(); got != 2 {
+		t.Fatalf("expected the second flush's Inject to start once the first slot was released, got %d starts", got)
+	}
+	if dropped := tracer.ObservabilityDropCounts()["ctx-aware-connector"]; dropped != 0 {
+		t.Fatalf("expected no traces dropped, got %d", dropped)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("flushes took %v, expected them to be bounded by the ~50ms inject timeout each", elapsed)
 	}
 }

@@ -120,7 +120,14 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 					<p className="text-muted-foreground text-sm">Map incoming User-Agent strings to app names and optional logos used in logs.</p>
 				</div>
 				<div className="pt-2">
-					<Button type="button" variant="outline" size="sm" onClick={openAddSheet} disabled={controlsDisabled} data-testid="user-agent-mapping-add-btn">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={openAddSheet}
+						disabled={controlsDisabled}
+						data-testid="user-agent-mapping-add-btn"
+					>
 						<Plus className="h-4 w-4" />
 						Add
 					</Button>
@@ -129,15 +136,20 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 
 			<Sheet open={isSheetOpen} onOpenChange={handleSheetOpenChange}>
 				<SheetContent className="p-0">
-					<SheetHeader className="flex flex-col items-start px-6 pt-6">
+					<SheetHeader className="flex flex-col items-start px-4 pt-6 md:px-6">
 						<SheetTitle>{isEditing ? "Edit User Agent Mapping" : "Add User Agent Mapping"}</SheetTitle>
 						<SheetDescription>Define how a User-Agent value maps to an app label in logs.</SheetDescription>
 					</SheetHeader>
-					<div className="flex-1 space-y-4 px-6">
+					<div className="flex-1 space-y-4 px-4 md:px-6">
 						<MappingForm draft={draft} onChange={setDraft} disabled={controlsDisabled} />
 					</div>
-					<SheetFooter className="flex-row justify-end border-t px-6 py-4">
-						<Button type="button" variant="outline" onClick={() => handleSheetOpenChange(false)} data-testid="user-agent-mapping-cancel-btn">
+					<SheetFooter className="flex-row justify-end border-t px-4 py-4 md:px-6">
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => handleSheetOpenChange(false)}
+							data-testid="user-agent-mapping-cancel-btn"
+						>
 							Cancel
 						</Button>
 						<Button type="button" onClick={handleSubmit} disabled={controlsDisabled} data-testid="user-agent-mapping-submit-btn">
@@ -190,7 +202,11 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 										</span>
 									</TableCell>
 									<TableCell>
-										{logoSrc ? <img src={logoSrc} alt={mapping.app} className="size-7 rounded-sm border object-contain" /> : <span className="text-muted-foreground text-sm">-</span>}
+										{logoSrc ? (
+											<img src={logoSrc} alt={mapping.app} className="size-7 rounded-sm border object-contain" />
+										) : (
+											<span className="text-muted-foreground text-sm">-</span>
+										)}
 									</TableCell>
 									<TableCell>
 										<span className={mapping.is_active ? "text-sm text-emerald-700" : "text-muted-foreground text-sm"}>
@@ -228,7 +244,9 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 											<AlertDialogContent>
 												<AlertDialogHeader>
 													<AlertDialogTitle>Are you sure you want to delete this mapping?</AlertDialogTitle>
-													<AlertDialogDescription>This action cannot be undone. This will permanently delete the user agent mapping.</AlertDialogDescription>
+													<AlertDialogDescription>
+														This action cannot be undone. This will permanently delete the user agent mapping.
+													</AlertDialogDescription>
 												</AlertDialogHeader>
 												<AlertDialogFooter>
 													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>Cancel</AlertDialogCancel>

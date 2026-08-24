@@ -156,12 +156,31 @@ type PricingEntry struct {
     OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
     OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
     OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+    OutputCostPerImageAbove1024x1536Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels,omitempty"`
+    OutputCostPerImageAbove1536x1024Pixels        *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels,omitempty"`
     OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
     OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+    OutputCostPerImageAbove4Megapixels             *float64 `json:"output_cost_per_image_above_4_megapixels,omitempty"`
+    OutputCostPerImageAbove8Megapixels             *float64 `json:"output_cost_per_image_above_8_megapixels,omitempty"`
+    OutputCostPerImageAbove16Megapixels            *float64 `json:"output_cost_per_image_above_16_megapixels,omitempty"`
+    OutputCostPerImageAbove32Megapixels             *float64 `json:"output_cost_per_image_above_32_megapixels,omitempty"`
+    OutputCostPerImageAbove64Megapixels             *float64 `json:"output_cost_per_image_above_64_megapixels,omitempty"`
     OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
     OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
     OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
     OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_low_quality,omitempty"`
+    OutputCostPerImageAbove1024x1536PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_low_quality,omitempty"`
+    OutputCostPerImageAbove1536x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_low_quality,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_medium_quality,omitempty"`
+    OutputCostPerImageAbove1024x1536PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_medium_quality,omitempty"`
+    OutputCostPerImageAbove1536x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_medium_quality,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_high_quality,omitempty"`
+    OutputCostPerImageAbove1024x1536PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_high_quality,omitempty"`
+    OutputCostPerImageAbove1536x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_high_quality,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
+    OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
+    OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
     // Costs - Audio/Video
     InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
     InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
@@ -173,6 +192,7 @@ type PricingEntry struct {
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+    InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`
 }

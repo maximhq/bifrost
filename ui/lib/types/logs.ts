@@ -446,6 +446,40 @@ export interface CacheDebug {
 	similarity?: number;
 }
 
+export interface BatchRequestCounts {
+	total: number;
+	completed: number;
+	failed: number;
+	succeeded?: number; // Anthropic-specific
+	expired?: number; // Anthropic-specific
+	canceled?: number; // Anthropic-specific
+	pending?: number; // Anthropic-specific
+}
+
+export interface BatchModelBreakdown {
+	model: string;
+	request_count: number;
+	usage: LLMUsage;
+	cost?: number; // Absent when this model hasn't priced yet (e.g. no batch rate at settlement time)
+}
+
+export interface BatchAccountingDebug {
+	model_breakdowns?: Record<string, BatchModelBreakdown>;
+	cost?: number; // Mirrors the settled price on a row that isn't itself the aggregate cost row
+	parse_error_count?: number; // Result rows the provider returned that could not be parsed; their usage is not in this row
+	incomplete?: boolean; // The row's total is known to under-state the batch (unpriced usage and/or parse errors)
+}
+
+// Batch detail for batch rows. `accounting` is present only on the aggregate
+// cost row written when a settled batch is priced.
+export interface BatchDebug {
+	batch_id?: string;
+	status?: string; // Provider batch lifecycle status, e.g. "in_progress" / "completed"
+	endpoint?: string; // Provider batch endpoint the batch ran against; absent on rows written before it was persisted
+	request_counts?: BatchRequestCounts;
+	accounting?: BatchAccountingDebug;
+}
+
 export interface GuardrailJudgeCall {
 	phase?: string;
 	rule_id?: number;
@@ -527,6 +561,16 @@ export interface RedactionMapping {
 	output?: Record<string, string>;
 }
 
+// One slice of Bifrost overhead, attributed to a span (or group of spans) by
+// self-time. duration_us is microseconds. Buckets come in chronological order and
+// summing them gives an independent measure of overhead vs the overhead_latency
+// number (which is total minus the upstream socket accumulator).
+export interface OverheadBucket {
+	name: string; // e.g. "key.selection", "plugin.governance", "transport/core"
+	kind: string; // originating span kind, for grouping/coloring
+	duration_us: number;
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
@@ -600,10 +644,17 @@ export interface LogEntry {
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
 	latency?: number;
+	upstream_latency?: number; // provider socket time across all attempts, ms
+	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
+	overhead_breakdown?: OverheadBucket[]; // per-span self-time decomposition of overhead (microseconds)
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
+	batch_debug?: BatchDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
+	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
+	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "ultrafast" / "default".
+	service_tier?: string;
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
@@ -769,6 +820,10 @@ export interface LatencyHistogramBucket {
 	p90_latency: number;
 	p95_latency: number;
 	p99_latency: number;
+	avg_overhead: number;
+	p90_overhead: number;
+	p95_overhead: number;
+	p99_overhead: number;
 	total_requests: number;
 }
 

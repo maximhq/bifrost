@@ -166,6 +166,10 @@
       "description": "Virtual keys, teams, and customers management"
     },
     {
+      "name": "Routing",
+      "description": "Routing rules and complexity analyzer configuration"
+    },
+    {
       "name": "Logging",
       "description": "Log search and management endpoints"
     },
@@ -188,6 +192,10 @@
     {
       "name": "Webhooks",
       "description": "Webhook endpoint management and signed async-job delivery history"
+    },
+    {
+      "name": "Notifications",
+      "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
     }
   ],
   "paths": {
@@ -2338,10 +2346,26 @@
                         "type": "string",
                         "enum": [
                           "url",
-                          "b64_json"
+                          "b64_json",
+                          "data_uri"
                         ],
                         "default": "url",
-                        "description": "Format of the response.\n"
+                        "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                      },
+                      "input_images": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Input images for image-to-image generation, as public URLs, provider-side asset IDs,\nor base64 data URIs. Providers that accept only a single input use the first entry.\n"
+                      },
+                      "aspect_ratio": {
+                        "type": "string",
+                        "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
                       },
                       "background": {
                         "type": "string",
@@ -2377,9 +2401,11 @@
                         "enum": [
                           "png",
                           "webp",
-                          "jpeg"
+                          "jpeg",
+                          "tiff",
+                          "svg"
                         ],
-                        "description": "Output image format"
+                        "description": "Output image format. `svg` applies to vectorize operations"
                       },
                       "user": {
                         "type": "string",
@@ -2442,6 +2468,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -2458,6 +2488,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -2726,8 +2778,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "model",
-                  "image"
+                  "model"
                 ],
                 "properties": {
                   "model": {
@@ -2736,26 +2787,57 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the edit. Required unless `type` is `background_removal`.\n"
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
                   },
                   "image": {
                     "type": "string",
                     "format": "binary",
-                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\n"
+                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\nEither `image` or `image_url` is required.\n"
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "description": "Input image as a public URL or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this\navoids round-tripping the asset through the gateway as base64. Uploads keep their leading\nposition, and providers treat the first image as the primary one.\n"
                   },
                   "mask": {
                     "type": "string",
                     "format": "binary",
-                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit)"
+                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for\nmodels that declare no mask input.\n"
                   },
                   "type": {
                     "type": "string",
                     "enum": [
                       "inpainting",
                       "outpainting",
-                      "background_removal"
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
-                    "description": "Type of edit operation"
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
                   },
                   "n": {
                     "type": "integer",
@@ -2779,10 +2861,11 @@
                     "type": "string",
                     "enum": [
                       "url",
-                      "b64_json"
+                      "b64_json",
+                      "data_uri"
                     ],
                     "default": "url",
-                    "description": "Format of the response"
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
                   },
                   "stream": {
                     "type": "boolean",
@@ -2828,9 +2911,11 @@
                     "enum": [
                       "png",
                       "webp",
-                      "jpeg"
+                      "jpeg",
+                      "tiff",
+                      "svg"
                     ],
-                    "description": "Output image format"
+                    "description": "Output image format. `svg` applies to vectorize operations"
                   },
                   "num_inference_steps": {
                     "type": "integer",
@@ -2892,6 +2977,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -2908,6 +2997,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -3250,6 +3361,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -3266,6 +3381,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -3405,8 +3542,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "model",
-                  "prompt"
+                  "model"
                 ],
                 "properties": {
                   "model": {
@@ -3415,7 +3551,27 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the video to generate"
+                    "description": "Text prompt describing the video to generate. Optional for operations driven purely by an\ninput asset, such as image-to-3D.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "3d",
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector for providers that run more than one async task type on this endpoint\n(e.g. `3d` for mesh generation on Runware). Omit for standard video generation.\n"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
                   },
                   "input_reference": {
                     "type": "string",
@@ -4429,6 +4585,330 @@
           },
           "404": {
             "description": "Source video not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/videos/edits": {
+      "post": {
+        "operationId": "videoEdit",
+        "summary": "Edit a video",
+        "description": "Edits an existing video - prompt-driven editing, upscaling, or background removal, selected\nwith `type`. Accepts either `application/json` (with the source as a provider-side ID or a\nURL) or `multipart/form-data` (to upload the source as `video`). Like generation this is an\nasynchronous operation that returns a job ID; poll the retrieve endpoint for completion.\n",
+        "tags": [
+          "Videos"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "JSON encoding of a video edit. The source is supplied as a nested `video` object holding either\nan `id` or a `url`. To upload the source as a file, post `multipart/form-data` instead - see\n`VideoEditMultipartRequest`.\n",
+                "required": [
+                  "model",
+                  "video"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "video": {
+                    "type": "object",
+                    "description": "Source video for an edit. Supply exactly one of `id` or `url`. Output geometry and duration are\nderived from the source and are not accepted as parameters.\n",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Provider-side video ID, as returned by a previous generation"
+                      },
+                      "url": {
+                        "type": "string",
+                        "description": "Public URL or data URI"
+                      }
+                    }
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for operation types driven purely by the\nsource video: `background_removal` and `upscale`.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector. Omit for prompt-driven editing. Support varies by provider; unsupported\nvalues fall back to a standard edit.\n"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "description": "Multipart encoding of a video edit, and the only encoding that can upload a source file. This\nis what the official OpenAI SDKs send unconditionally, flattening the reference form to a\n`video[id]` field. Supply exactly one of `video`, `video[id]` or `video[url]`.\n",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "video": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Source video file to upload"
+                  },
+                  "video[id]": {
+                    "type": "string",
+                    "description": "Provider-side video ID, as an alternative to uploading a file"
+                  },
+                  "video[url]": {
+                    "type": "string",
+                    "description": "Public URL of the source video, as an alternative to uploading a file"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for operation types driven purely by the\nsource video: `background_removal` and `upscale`.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "upscale",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg"
+                    ],
+                    "description": "Operation selector. Omit for prompt-driven editing"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "mp4",
+                      "webm",
+                      "mov"
+                    ],
+                    "description": "Output container format"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "`type: \"upscale\"` only; mutually exclusive with `target_megapixels`"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "`type: \"upscale\"` only; mutually exclusive with `upscale_factor`"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns a video job object with status information.\nPoll the retrieve endpoint to check completion status.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Provider-native job ID. To use in path parameters (retrieve/delete/download), combine as `{id}:{provider}` (e.g., `task_abc123:runway`)"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "video"
+                      ],
+                      "description": "Object type, always \"video\""
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model used for video generation"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                    },
+                    "progress": {
+                      "type": "number",
+                      "format": "float",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Approximate completion percentage (0-100)"
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "description": "Prompt used to generate the video"
+                    },
+                    "remixed_from_video_id": {
+                      "type": "string",
+                      "description": "Source video ID if this is a remix"
+                    },
+                    "seconds": {
+                      "type": "string",
+                      "description": "Duration of the generated video in seconds as a string (e.g., \"4\")"
+                    },
+                    "size": {
+                      "type": "string",
+                      "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job was created"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job completed"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                    },
+                    "videos": {
+                      "type": "array",
+                      "description": "Generated video outputs (only present when status is \"completed\")",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "base64"
+                            ],
+                            "description": "Output format of this video"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "URL to the generated video (present when type is \"url\")"
+                          },
+                          "base64": {
+                            "type": "string",
+                            "description": "Base64-encoded video content (present when type is \"base64\")"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the video (e.g., \"video/mp4\")"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
             "content": {
               "application/json": {
                 "schema": {
@@ -9582,10 +10062,26 @@
                         "type": "string",
                         "enum": [
                           "url",
-                          "b64_json"
+                          "b64_json",
+                          "data_uri"
                         ],
                         "default": "url",
-                        "description": "Format of the response.\n"
+                        "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                      },
+                      "input_images": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Input images for image-to-image generation, as public URLs, provider-side asset IDs,\nor base64 data URIs. Providers that accept only a single input use the first entry.\n"
+                      },
+                      "aspect_ratio": {
+                        "type": "string",
+                        "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
                       },
                       "background": {
                         "type": "string",
@@ -9621,9 +10117,11 @@
                         "enum": [
                           "png",
                           "webp",
-                          "jpeg"
+                          "jpeg",
+                          "tiff",
+                          "svg"
                         ],
-                        "description": "Output image format"
+                        "description": "Output image format. `svg` applies to vectorize operations"
                       },
                       "user": {
                         "type": "string",
@@ -9731,8 +10229,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "model",
-                  "image"
+                  "model"
                 ],
                 "properties": {
                   "model": {
@@ -9741,26 +10238,57 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "description": "Text prompt describing the edit. Required unless `type` is `background_removal`.\n"
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
                   },
                   "image": {
                     "type": "string",
                     "format": "binary",
-                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\n"
+                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\nEither `image` or `image_url` is required.\n"
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "description": "Input image as a public URL or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this\navoids round-tripping the asset through the gateway as base64. Uploads keep their leading\nposition, and providers treat the first image as the primary one.\n"
                   },
                   "mask": {
                     "type": "string",
                     "format": "binary",
-                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit)"
+                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for\nmodels that declare no mask input.\n"
                   },
                   "type": {
                     "type": "string",
                     "enum": [
                       "inpainting",
                       "outpainting",
-                      "background_removal"
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
-                    "description": "Type of edit operation"
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
                   },
                   "n": {
                     "type": "integer",
@@ -9784,10 +10312,11 @@
                     "type": "string",
                     "enum": [
                       "url",
-                      "b64_json"
+                      "b64_json",
+                      "data_uri"
                     ],
                     "default": "url",
-                    "description": "Format of the response"
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
                   },
                   "stream": {
                     "type": "boolean",
@@ -9833,9 +10362,11 @@
                     "enum": [
                       "png",
                       "webp",
-                      "jpeg"
+                      "jpeg",
+                      "tiff",
+                      "svg"
                     ],
-                    "description": "Output image format"
+                    "description": "Output image format. `svg` applies to vectorize operations"
                   },
                   "num_inference_steps": {
                     "type": "integer",
@@ -18023,6 +18554,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -18039,6 +18574,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -18371,6 +18928,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Provider-side asset identifier, when one is assigned. Providers that accept their own\nasset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.\n"
+                          },
                           "url": {
                             "type": "string",
                             "format": "uri",
@@ -18387,6 +18948,28 @@
                           "index": {
                             "type": "integer",
                             "description": "Index of this image"
+                          },
+                          "detections": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A region located by a masking model, in absolute input-image pixels",
+                              "properties": {
+                                "x_min": {
+                                  "type": "integer"
+                                },
+                                "y_min": {
+                                  "type": "integer"
+                                },
+                                "x_max": {
+                                  "type": "integer"
+                                },
+                                "y_max": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "description": "Regions located by a masking or segmentation operation"
                           }
                         }
                       },
@@ -49150,311 +49733,6 @@
         }
       }
     },
-    "/api/governance/routing-rules": {
-      "get": {
-        "operationId": "listRoutingRules",
-        "summary": "List routing rules",
-        "description": "Returns a list of all routing rules configured for intelligent request routing across providers.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "query",
-            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "scope_id",
-            "in": "query",
-            "description": "Filter routing rules by scope ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createRoutingRule",
-        "summary": "Create routing rule",
-        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.",
-        "tags": [
-          "Governance"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule created successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoutingRuleResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/governance/routing-rules/{rule_id}": {
-      "get": {
-        "operationId": "getRoutingRule",
-        "summary": "Get routing rule",
-        "description": "Returns a specific routing rule by ID.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "rule": {
-                      "$ref": "#/components/schemas/RoutingRule"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "operationId": "updateRoutingRule",
-        "summary": "Update routing rule",
-        "description": "Updates an existing routing rule's configuration.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule updated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoutingRuleResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteRoutingRule",
-        "summary": "Delete routing rule",
-        "description": "Deletes a routing rule.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule deleted successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/governance/model-configs": {
       "get": {
         "operationId": "listModelConfigs",
@@ -67451,13 +67729,323 @@
         }
       }
     },
-    "/api/governance/complexity-analyzer-config": {
+    "/api/routing/rules": {
+      "get": {
+        "operationId": "listRoutingRules",
+        "summary": "List routing rules",
+        "description": "Returns a list of all routing rules configured for intelligent request routing across providers.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "description": "Filter routing rules by scope ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createRoutingRule",
+        "summary": "Create routing rule",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/rules/{rule_id}": {
+      "get": {
+        "operationId": "getRoutingRule",
+        "summary": "Get routing rule",
+        "description": "Returns a specific routing rule by ID.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": {
+                      "$ref": "#/components/schemas/RoutingRule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateRoutingRule",
+        "summary": "Update routing rule",
+        "description": "Updates an existing routing rule's configuration.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteRoutingRule",
+        "summary": "Delete routing rule",
+        "description": "Deletes a routing rule.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-config": {
       "get": {
         "operationId": "getComplexityAnalyzerConfig",
         "summary": "Get complexity analyzer config",
         "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.",
         "tags": [
-          "Governance"
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -67574,9 +68162,9 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfig",
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
         "tags": [
-          "Governance"
+          "Routing"
         ],
         "requestBody": {
           "required": true,
@@ -67667,6 +68255,798 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-config/reset": {
+      "post": {
+        "operationId": "resetComplexityAnalyzerConfig",
+        "summary": "Reset complexity analyzer config",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/routing-rules": {
+      "get": {
+        "operationId": "listRoutingRulesLegacy",
+        "deprecated": true,
+        "summary": "List routing rules (deprecated path)",
+        "description": "Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "description": "Filter routing rules by scope ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Create routing rule (deprecated path)",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/routing-rules/{rule_id}": {
+      "get": {
+        "operationId": "getRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Get routing rule (deprecated path)",
+        "description": "Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": {
+                      "$ref": "#/components/schemas/RoutingRule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Update routing rule (deprecated path)",
+        "description": "Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Delete routing rule (deprecated path)",
+        "description": "Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/complexity-analyzer-config": {
+      "get": {
+        "operationId": "getComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Get complexity analyzer config (deprecated path)",
+        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Update complexity analyzer config (deprecated path)",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Full runtime configuration for complexity routing analysis.",
+                "additionalProperties": false,
+                "required": [
+                  "tier_boundaries",
+                  "keywords"
+                ],
+                "properties": {
+                  "tier_boundaries": {
+                    "type": "object",
+                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "additionalProperties": false,
+                    "required": [
+                      "simple_medium",
+                      "medium_complex",
+                      "complex_reasoning"
+                    ],
+                    "properties": {
+                      "simple_medium": {
+                        "type": "number",
+                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "medium_complex": {
+                        "type": "number",
+                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "complex_reasoning": {
+                        "type": "number",
+                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      }
+                    }
+                  },
+                  "keywords": {
+                    "type": "object",
+                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "code_keywords",
+                      "reasoning_keywords",
+                      "technical_keywords",
+                      "simple_keywords"
+                    ],
+                    "properties": {
+                      "code_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "reasoning_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "technical_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "simple_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Complexity analyzer config updated successfully",
@@ -67792,11 +69172,17 @@
     },
     "/api/governance/complexity-analyzer-config/reset": {
       "post": {
-        "operationId": "resetComplexityAnalyzerConfig",
-        "summary": "Reset complexity analyzer config",
-        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the governance plugin.",
+        "operationId": "resetComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Reset complexity analyzer config (deprecated path)",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.",
         "tags": [
-          "Governance"
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -79207,6 +80593,151 @@
           }
         ]
       }
+    },
+    "/api/notifications": {
+      "get": {
+        "operationId": "listNotifications",
+        "summary": "List dashboard notifications",
+        "description": "Returns notifications the caller is entitled to see, newest first.\nNotifications addressed to `all` are visible to everyone; those addressed\nto `roles` are only returned when the caller holds one of the listed\nroles. A local admin sees every notification.\n\nRead and dismissed state is not stored server-side, so every caller sees\nthe full page regardless of what they have already opened.\n",
+        "tags": [
+          "Notifications"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Notifications per page. Values above the server page size of 50 are\nclamped down to it.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The `next_cursor` from a previous response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createNotification",
+        "summary": "Publish a dashboard notification",
+        "description": "Persists a notification and pushes it over the dashboard WebSocket to\nevery connected client the audience covers.\n\nAdministrators only. Reading is open to any authenticated user because a\ncaller only ever receives rows their role already entitles them to, but a\nsingle publish reaches every dashboard user on the deployment, so it is\nrestricted to the local admin. On a deployment with dashboard auth\ndisabled every request is treated as local admin.\n\nNotifications expire 30 days after creation and are pruned hourly.\n",
+        "tags": [
+          "Notifications"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Notification published and broadcast",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notification"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -79297,6 +80828,16 @@
       },
       "Unauthorized": {
         "description": "Unauthorized — missing or invalid credentials",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden — authenticated, but not permitted to perform this action",
         "content": {
           "application/json": {
             "schema": {
@@ -96489,11 +98030,39 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image_above_1024_and_1536_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_image_above_2048_and_2048_pixels": {
             "type": "number",
             "minimum": 0
           },
           "output_cost_per_image_above_4096_and_4096_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_4_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_8_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_16_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_32_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_64_megapixels": {
             "type": "number",
             "minimum": 0
           },
@@ -96510,6 +98079,54 @@
             "minimum": 0
           },
           "output_cost_per_image_auto_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_standard_quality": {
             "type": "number",
             "minimum": 0
           },
@@ -96552,6 +98169,11 @@
           "search_context_cost_per_query": {
             "type": "number",
             "minimum": 0
+          },
+          "input_cost_per_query": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-query rate for rerank models. One query covers up to 100 document chunks, so a request over that many chunks bills as several queries."
           },
           "code_interpreter_cost_per_session": {
             "type": "number",
@@ -99654,6 +101276,144 @@
           "status": {
             "type": "string",
             "example": "success"
+          }
+        }
+      },
+      "NotificationSeverity": {
+        "type": "string",
+        "description": "Visual weight the dashboard gives the notification.",
+        "enum": [
+          "info",
+          "success",
+          "warning",
+          "error"
+        ]
+      },
+      "NotificationAudience": {
+        "type": "string",
+        "description": "Who the notification reaches. `all` is every dashboard user; `roles` limits\nit to the listed RBAC roles, enforced on both the list endpoint and the\nWebSocket fan-out.\n",
+        "enum": [
+          "all",
+          "roles"
+        ]
+      },
+      "NotificationInput": {
+        "type": "object",
+        "description": "A notification to publish. IDs and both timestamps are assigned by the\nserver and cannot be supplied.\n",
+        "required": [
+          "audience",
+          "severity",
+          "title",
+          "message"
+        ],
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/NotificationAudience"
+          },
+          "role_ids": {
+            "type": "array",
+            "description": "Required when `audience` is `roles`, and must be empty otherwise.\nDuplicates are removed and the list is sorted before it is stored.\n",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/NotificationSeverity"
+          },
+          "title": {
+            "type": "string",
+            "description": "Trimmed before validation.",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "message": {
+            "type": "string",
+            "description": "Trimmed before validation.",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "action_label": {
+            "type": "string",
+            "description": "Label for the notification's action. Must be supplied together with\n`action_path`, or not at all.\n"
+          },
+          "action_path": {
+            "type": "string",
+            "description": "Dashboard-internal absolute path the action opens, for example\n`/workspace/providers`. Absolute URLs, host-relative `//` paths, and\nanything not starting with `/` are rejected, so a notification cannot\nbe used to send users off-site.\n",
+            "pattern": "^/(?!/).*"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "description": "A persisted dashboard notification.",
+        "required": [
+          "id",
+          "audience",
+          "severity",
+          "title",
+          "message",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "audience": {
+            "$ref": "#/components/schemas/NotificationAudience"
+          },
+          "role_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/NotificationSeverity"
+          },
+          "title": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "action_label": {
+            "type": "string"
+          },
+          "action_path": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Always 30 days after `created_at`. Expired rows are pruned hourly and\nare not returned once pruned.\n"
+          }
+        }
+      },
+      "NotificationList": {
+        "type": "object",
+        "description": "A page of notifications, newest first, already filtered to what the caller's\nrole may see.\n",
+        "required": [
+          "notifications"
+        ],
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Opaque cursor for the next page. Absent when there are no further\nresults. Pass it back as the `cursor` query parameter.\n"
           }
         }
       }

@@ -886,6 +886,17 @@ type ConfigStore interface {
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
+	// Batch jobs - mutable coordination state for delayed batch accounting
+	UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error
+	GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error)
+	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error)
+	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
 	GetWebhookEndpointsPaginated(ctx context.Context, params WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error)

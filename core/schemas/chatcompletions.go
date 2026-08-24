@@ -231,7 +231,7 @@ type ChatParameters struct {
 	// in core/providers/anthropic/types.go). Non-Anthropic providers (OpenAI
 	// etc.) silently ignore them.
 	TopK              *int            `json:"top_k,omitempty"`              // Anthropic top_k sampling
-	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 only)
+	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 and 4.7+)
 	InferenceGeo      *string         `json:"inference_geo,omitempty"`      // Anthropic inference_geo (Claude API only)
 	MCPServers        []ChatMCPServer `json:"mcp_servers,omitempty"`        // Anthropic MCP connector (mcp-client-2025-11-20)
 	Container         *ChatContainer  `json:"container,omitempty"`          // Anthropic container (string id, or object with skills[] — beta skills-2025-10-02)
@@ -459,6 +459,13 @@ type ChatTool struct {
 	MCPServerName string                           `json:"mcp_server_name,omitempty"`
 	DefaultConfig *ChatMCPToolsetConfig            `json:"default_config,omitempty"`
 	Configs       map[string]*ChatMCPToolsetConfig `json:"configs,omitempty"`
+
+	// serialized caches this tool's MarshalJSON output. Set only for immutable,
+	// shared tools (MCP catalog entries precomputed once per refresh via
+	// EnsureSerialized) so logging/marshal reuse the bytes instead of re-running
+	// the full tool marshal per request. nil for client-supplied tools, which
+	// marshal normally. Unexported so it never appears in JSON.
+	serialized []byte
 }
 
 // normalizeShape clears fields that don't belong to the ChatTool's active
@@ -513,10 +520,37 @@ func (t *ChatTool) clearServerToolVariantFields() {
 // dispatch on the top-level Type/Name shape — could misinterpret or
 // silently forward the stray fields.
 func (t ChatTool) MarshalJSON() ([]byte, error) {
+	if len(t.serialized) > 0 {
+		return t.serialized, nil
+	}
 	normalized := t
 	normalized.normalizeShape()
 	type Alias ChatTool
 	return MarshalSorted((*Alias)(&normalized))
+}
+
+// EnsureSerialized precomputes and caches this tool's MarshalJSON output so later
+// marshals (logging especially) reuse the bytes. Call ONLY on immutable, shared
+// tools (e.g. MCP catalog entries at refresh time) — a later mutation would leave
+// the cache stale. Idempotent; a no-op once cached.
+func (t *ChatTool) EnsureSerialized() error {
+	if len(t.serialized) > 0 {
+		return nil
+	}
+	b, err := t.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	t.serialized = b
+	return nil
+}
+
+// InvalidateSerialized drops the cached MarshalJSON bytes so the next
+// EnsureSerialized (or MarshalJSON) recomputes them. Call after mutating any
+// field that changes the wire output (e.g. Function.Name); otherwise the stale
+// cache keeps emitting the old bytes.
+func (t *ChatTool) InvalidateSerialized() {
+	t.serialized = nil
 }
 
 // UnmarshalJSON tolerantly decodes whatever JSON shape arrives, then
@@ -1666,6 +1700,7 @@ const (
 	BifrostServiceTierDefault     BifrostServiceTier = "default"
 	BifrostServiceTierFlex        BifrostServiceTier = "flex"
 	BifrostServiceTierPriority    BifrostServiceTier = "priority"
+	BifrostServiceTierUltrafast   BifrostServiceTier = "ultrafast"
 	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
 )
 
@@ -1811,7 +1846,12 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
-	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	// SearchUnits is the billable unit for rerank: Cohere and Bedrock both define one unit as
+	// a single query against up to 100 document chunks, so a request over that many chunks
+	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which
+	// counts web-search calls made during a chat turn.
+	SearchUnits *int         `json:"search_units,omitempty"`
+	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Served Anthropic tier (fast mode / data residency), carried internally so
@@ -1913,17 +1953,155 @@ type ChatCompletionTokensDetails struct {
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 }
 
+// BifrostCost splits a request's cost into an input side, an output side, and an
+// additional side, each with an optional per-category detail breakdown, mirroring
+// the token-usage shape (BifrostLLMUsage's PromptTokens/PromptTokensDetails +
+// CompletionTokens/CompletionTokensDetails). InputCost + OutputCost +
+// AdditionalCost == TotalCost. Flat, non-token request costs (per-request
+// surcharge, OCR per-page, container per-session) fold into the input side as
+// InputCostDetails.RequestCost. Internal sidecar costs that map to no token
+// category (guardrail judge calls, MCP tool executions, semantic cache embedding
+// lookups) go on the additional side as AdditionalCostDetails.
 type BifrostCost struct {
-	InputTokensCost     float64 `json:"input_tokens_cost,omitempty"`
-	OutputTokensCost    float64 `json:"output_tokens_cost,omitempty"`
-	ReasoningTokensCost float64 `json:"reasoning_tokens_cost,omitempty"`
-	CitationTokensCost  float64 `json:"citation_tokens_cost,omitempty"`
-	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`
-	RequestCost         float64 `json:"request_cost,omitempty"`
-	TotalCost           float64 `json:"total_cost,omitempty"`
+	InputCost             float64                `json:"input_cost,omitempty"`
+	InputCostDetails      *InputCostDetails      `json:"input_cost_details,omitempty"`
+	OutputCost            float64                `json:"output_cost,omitempty"`
+	OutputCostDetails     *OutputCostDetails     `json:"output_cost_details,omitempty"`
+	AdditionalCost        float64                `json:"additional_cost,omitempty"`
+	AdditionalCostDetails *AdditionalCostDetails `json:"additional_cost_details,omitempty"`
+	TotalCost             float64                `json:"total_cost,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.
+// MergeBifrostLLMUsage returns a usage value containing the sum of base and add.
+// Nil inputs are treated as absent values; if both inputs are nil, nil is returned.
+func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
+	if add == nil {
+		return base
+	}
+	if base == nil {
+		return add
+	}
+
+	merged := &BifrostLLMUsage{
+		PromptTokens:     base.PromptTokens + add.PromptTokens,
+		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
+		TotalTokens:      base.TotalTokens + add.TotalTokens,
+	}
+
+	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
+		baseDetails := base.PromptTokensDetails
+		addDetails := add.PromptTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatPromptTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatPromptTokensDetails{}
+		}
+		merged.PromptTokensDetails = &ChatPromptTokensDetails{
+			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
+			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
+			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
+			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
+			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
+		}
+		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
+			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
+				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+			}
+		}
+	}
+
+	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
+		baseDetails := base.CompletionTokensDetails
+		addDetails := add.CompletionTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatCompletionTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatCompletionTokensDetails{}
+		}
+		merged.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			TextTokens:               baseDetails.TextTokens + addDetails.TextTokens,
+			AcceptedPredictionTokens: baseDetails.AcceptedPredictionTokens + addDetails.AcceptedPredictionTokens,
+			AudioTokens:              baseDetails.AudioTokens + addDetails.AudioTokens,
+			ReasoningTokens:          baseDetails.ReasoningTokens + addDetails.ReasoningTokens,
+			RejectedPredictionTokens: baseDetails.RejectedPredictionTokens + addDetails.RejectedPredictionTokens,
+		}
+		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
+		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
+		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
+	}
+
+	merged.Cost = base.Cost.Add(add.Cost)
+
+	return merged
+}
+
+func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens5m
+}
+
+func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens1h
+}
+
+func sumOptionalInts(base, add *int) *int {
+	if base == nil && add == nil {
+		return nil
+	}
+	sum := 0
+	if base != nil {
+		sum += *base
+	}
+	if add != nil {
+		sum += *add
+	}
+	return &sum
+}
+
+// InputCostDetails breaks InputCost down by category; sub-fields sum to InputCost.
+type InputCostDetails struct {
+	TextCost        float64 `json:"text_cost,omitempty"`
+	AudioCost       float64 `json:"audio_cost,omitempty"`
+	ImageCost       float64 `json:"image_cost,omitempty"`
+	CachedReadCost  float64 `json:"cached_read_cost,omitempty"`
+	CachedWriteCost float64 `json:"cached_write_cost,omitempty"`
+	// RequestCost is a flat per-request surcharge (also OCR per-page and
+	// container per-session), folded into the input side since it maps to no
+	// token category.
+	RequestCost float64 `json:"request_cost,omitempty"`
+}
+
+// OutputCostDetails breaks OutputCost down by category; sub-fields sum to OutputCost.
+type OutputCostDetails struct {
+	TextCost          float64 `json:"text_cost,omitempty"`
+	AudioCost         float64 `json:"audio_cost,omitempty"`
+	ImageCost         float64 `json:"image_cost,omitempty"`
+	ReasoningCost     float64 `json:"reasoning_cost,omitempty"`
+	CitationCost      float64 `json:"citation_cost,omitempty"`
+	SearchQueriesCost float64 `json:"search_queries_cost,omitempty"`
+}
+
+// AdditionalCostDetails breaks AdditionalCost down by category; sub-fields sum to
+// AdditionalCost. These are internal sidecar costs with no input/output token
+// category. Extend with new fields as more such cost sources are billed.
+type AdditionalCostDetails struct {
+	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail judge-call cost
+	MCPCost           float64 `json:"mcp_cost,omitempty"`            // MCP tool-execution cost
+	SemanticCacheCost float64 `json:"semantic_cache_cost,omitempty"` // Semantic-cache embedding-lookup cost
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for BifrostCost. It accepts
+// a bare float (treated as the total), the current nested shape, and the legacy
+// flat shape (input_tokens_cost, output_tokens_cost, ...) still emitted by
+// Perplexity and present in logs written before the nested shape existed.
 func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct float
 	var costFloat float64
@@ -1932,16 +2110,140 @@ func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// Try to unmarshal as a full BifrostCost struct
-	// Use a type alias to avoid infinite recursion
+	// Nested shape. Use a type alias to avoid infinite recursion.
 	type Alias BifrostCost
-	var costStruct Alias
-	if err := Unmarshal(data, &costStruct); err == nil {
-		*bc = BifrostCost(costStruct)
-		return nil
+	var nested Alias
+	if err := Unmarshal(data, &nested); err != nil {
+		return fmt.Errorf("cost field is neither a float nor an object: %w", err)
 	}
+	*bc = BifrostCost(nested)
 
-	return fmt.Errorf("cost field is neither a float nor an object")
+	// Legacy flat shape backfill, only when the nested keys were absent.
+	if bc.InputCost == 0 && bc.OutputCost == 0 && bc.InputCostDetails == nil && bc.OutputCostDetails == nil {
+		var legacy legacyBifrostCost
+		if err := Unmarshal(data, &legacy); err == nil {
+			legacy.mergeInto(bc)
+		}
+	}
+	return nil
+}
+
+// legacyBifrostCost is the pre-nested flat cost shape, kept for deserializing
+// older logs and Perplexity's response. Pointers distinguish absent from zero.
+type legacyBifrostCost struct {
+	InputTokensCost     *float64 `json:"input_tokens_cost"`
+	OutputTokensCost    *float64 `json:"output_tokens_cost"`
+	CacheReadTokensCost *float64 `json:"cache_read_tokens_cost"`
+	ReasoningTokensCost *float64 `json:"reasoning_tokens_cost"`
+	CitationTokensCost  *float64 `json:"citation_tokens_cost"`
+	SearchQueriesCost   *float64 `json:"search_queries_cost"`
+	RequestCost         *float64 `json:"request_cost"`
+}
+
+// mergeInto maps the flat fields onto the nested shape: the per-request
+// surcharge folds into the input side; search/reasoning/citation are output-side
+// categories. TotalCost is left untouched (its "total_cost" key is unchanged).
+func (l legacyBifrostCost) mergeInto(bc *BifrostCost) {
+	if l.InputTokensCost == nil && l.OutputTokensCost == nil && l.RequestCost == nil &&
+		l.CacheReadTokensCost == nil && l.ReasoningTokensCost == nil &&
+		l.CitationTokensCost == nil && l.SearchQueriesCost == nil {
+		return // no legacy keys present
+	}
+	val := func(p *float64) float64 {
+		if p != nil {
+			return *p
+		}
+		return 0
+	}
+	inTok, outTok := val(l.InputTokensCost), val(l.OutputTokensCost)
+	cacheRead, request := val(l.CacheReadTokensCost), val(l.RequestCost)
+	reasoning, citation, search := val(l.ReasoningTokensCost), val(l.CitationTokensCost), val(l.SearchQueriesCost)
+
+	bc.InputCost = inTok + request
+	bc.OutputCost = outTok + reasoning + citation + search
+	if bc.InputCost != 0 || cacheRead != 0 {
+		bc.InputCostDetails = &InputCostDetails{
+			TextCost:       inTok - cacheRead,
+			CachedReadCost: cacheRead,
+			RequestCost:    request,
+		}
+	}
+	if bc.OutputCost != 0 {
+		bc.OutputCostDetails = &OutputCostDetails{
+			TextCost:          outTok,
+			ReasoningCost:     reasoning,
+			CitationCost:      citation,
+			SearchQueriesCost: search,
+		}
+	}
+}
+
+// Add returns the component-wise sum of two cost breakdowns, treating a nil
+// operand as zero. Returns nil only when both are nil.
+func (bc *BifrostCost) Add(other *BifrostCost) *BifrostCost {
+	if bc == nil {
+		return other
+	}
+	if other == nil {
+		return bc
+	}
+	return &BifrostCost{
+		InputCost:             bc.InputCost + other.InputCost,
+		InputCostDetails:      bc.InputCostDetails.add(other.InputCostDetails),
+		OutputCost:            bc.OutputCost + other.OutputCost,
+		OutputCostDetails:     bc.OutputCostDetails.add(other.OutputCostDetails),
+		AdditionalCost:        bc.AdditionalCost + other.AdditionalCost,
+		AdditionalCostDetails: bc.AdditionalCostDetails.add(other.AdditionalCostDetails),
+		TotalCost:             bc.TotalCost + other.TotalCost,
+	}
+}
+
+func (a *InputCostDetails) add(b *InputCostDetails) *InputCostDetails {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &InputCostDetails{
+		TextCost:        a.TextCost + b.TextCost,
+		AudioCost:       a.AudioCost + b.AudioCost,
+		ImageCost:       a.ImageCost + b.ImageCost,
+		CachedReadCost:  a.CachedReadCost + b.CachedReadCost,
+		CachedWriteCost: a.CachedWriteCost + b.CachedWriteCost,
+		RequestCost:     a.RequestCost + b.RequestCost,
+	}
+}
+
+func (a *OutputCostDetails) add(b *OutputCostDetails) *OutputCostDetails {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &OutputCostDetails{
+		TextCost:          a.TextCost + b.TextCost,
+		AudioCost:         a.AudioCost + b.AudioCost,
+		ImageCost:         a.ImageCost + b.ImageCost,
+		ReasoningCost:     a.ReasoningCost + b.ReasoningCost,
+		CitationCost:      a.CitationCost + b.CitationCost,
+		SearchQueriesCost: a.SearchQueriesCost + b.SearchQueriesCost,
+	}
+}
+
+func (a *AdditionalCostDetails) add(b *AdditionalCostDetails) *AdditionalCostDetails {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &AdditionalCostDetails{
+		GuardrailCost:     a.GuardrailCost + b.GuardrailCost,
+		MCPCost:           a.MCPCost + b.MCPCost,
+		SemanticCacheCost: a.SemanticCacheCost + b.SemanticCacheCost,
+	}
 }
 
 // xAI reports request cost as cost_in_usd_ticks, where TICKS_IN_USD_CENT = 100_000_000, so 1 USD = 1e10 ticks.

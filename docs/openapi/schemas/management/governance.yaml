@@ -1855,10 +1855,31 @@ PricingPatch:
     output_cost_per_image_above_1024_and_1024_pixels_and_premium_image:
       type: number
       minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1536_and_1024_pixels:
+      type: number
+      minimum: 0
     output_cost_per_image_above_2048_and_2048_pixels:
       type: number
       minimum: 0
     output_cost_per_image_above_4096_and_4096_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_4_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_8_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_16_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_32_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_64_megapixels:
       type: number
       minimum: 0
     output_cost_per_image_low_quality:
@@ -1871,6 +1892,42 @@ PricingPatch:
       type: number
       minimum: 0
     output_cost_per_image_auto_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1536_and_1024_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1536_and_1024_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1536_and_1024_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_standard_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_standard_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1536_and_1024_pixels_standard_quality:
       type: number
       minimum: 0
     input_cost_per_image_token:
@@ -1905,6 +1962,12 @@ PricingPatch:
     search_context_cost_per_query:
       type: number
       minimum: 0
+    input_cost_per_query:
+      type: number
+      minimum: 0
+      description: >-
+        Per-query rate for rerank models. One query covers up to 100 document chunks, so a
+        request over that many chunks bills as several queries.
     code_interpreter_cost_per_session:
       type: number
       minimum: 0

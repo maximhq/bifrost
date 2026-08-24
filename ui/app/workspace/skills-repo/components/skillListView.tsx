@@ -1,5 +1,6 @@
 "use client";
 
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -95,12 +96,12 @@ function MarketplacePopover() {
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm">
+				<Button variant="outline" size="sm" title="Register as Marketplace" aria-label="Register as Marketplace">
 					<Package className="h-3.5 w-3.5" />
-					Register as Marketplace
+					<span className="hidden md:inline">Register as Marketplace</span>
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent align="end" className="w-auto max-w-md p-0">
+			<PopoverContent align="end" className="w-[calc(100vw-2rem)] max-w-md p-0 md:w-auto">
 				<div className="border-b px-3 py-2">
 					<p className="text-muted-foreground text-xs font-medium">Copy CLI command to register this repository</p>
 				</div>
@@ -373,7 +374,10 @@ export function SkillsListView({
 	// True empty state: no skills at all (not just filtered to zero)
 	if (total === 0 && !search && !debouncedSearch && !isFetching) {
 		return (
-			<div className="flex h-full w-full flex-col items-center justify-center gap-4 text-center" data-testid="skills-repo-empty-state">
+			<div
+				className="flex h-full w-full flex-col items-center justify-center gap-4 px-2 py-10 text-center md:px-0 md:py-0"
+				data-testid="skills-repo-empty-state"
+			>
 				<div className="text-muted-foreground">
 					<BookOpenText className="h-24 w-24" strokeWidth={1} />
 				</div>
@@ -406,78 +410,14 @@ export function SkillsListView({
 	}
 
 	return (
-		<div className="flex w-full flex-1 flex-col">
+		<div className="flex w-full min-w-0 flex-1 flex-col">
 			{/* Header */}
-			<div className="mb-4 flex shrink-0 items-center justify-between">
-				<div>
-					<div className="flex items-center gap-2">
-						<h2 className="text-lg font-semibold">Skills Repository</h2>
-						<Badge aria-label="Skills Repository is in beta">Beta</Badge>
-					</div>
-					<p className="text-muted-foreground text-sm">Manage Agent Skills for distribution to AI coding assistants</p>
-				</div>
-				<div className="flex items-center gap-2">
-					{isGitAvailable ? (
-						<MarketplacePopover />
-					) : (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span tabIndex={0}>
-									<Button variant="outline" size="sm" disabled>
-										<Package className="h-3.5 w-3.5" />
-										Register as Marketplace
-									</Button>
-								</span>
-							</TooltipTrigger>
-							<TooltipContent side="bottom">
-								<p className="max-w-xs text-xs">
-									Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code and
-									Codex.
-								</p>
-							</TooltipContent>
-						</Tooltip>
-					)}
-					<Button
-						variant="outline"
-						size="sm"
-						data-testid="skill-download-all-btn"
-						onClick={async () => {
-							setIsDownloadingAll(true);
-							try {
-								const res = await fetch(`${getApiBaseUrl()}/skills/serve/all/download.zip`);
-								if (!res.ok) throw new Error("Download failed");
-								const blob = await res.blob();
-								const url = URL.createObjectURL(blob);
-								const link = document.createElement("a");
-								link.href = url;
-								link.download = "all-skills.zip";
-								document.body.appendChild(link);
-								link.click();
-								document.body.removeChild(link);
-								URL.revokeObjectURL(url);
-							} catch {
-								toast.error("Failed to download skills");
-							} finally {
-								setIsDownloadingAll(false);
-							}
-						}}
-						disabled={!skills?.length || isDownloadingAll}
-					>
-						{isDownloadingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-						{isDownloadingAll ? "Downloading..." : "Download All Skills"}
-					</Button>
-					{hasCreateAccess && (
-						<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm">
-							<Plus className="h-4 w-4" />
-							New Skill
-						</Button>
-					)}
-				</div>
-			</div>
-
-			{/* Search + All-skills version */}
-			<div className="mb-4 flex items-center gap-3">
-				<div className="relative max-w-sm flex-1">
+			{/* Search + All-skills version + Actions */}
+			<div className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-center">
+				<PageTitle title="Skills Repository" beta>
+					Manage Agent Skills for distribution to AI coding assistants
+				</PageTitle>
+				<div className="relative w-full flex-1 md:max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						data-testid="skill-search-input"
@@ -491,7 +431,7 @@ export function SkillsListView({
 						className="h-8 pl-9"
 					/>
 				</div>
-				<div className="flex items-center gap-2 text-xs">
+				<div className="flex min-w-0 items-center gap-2 text-xs">
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Info className="text-muted-foreground h-3.5 w-3.5 cursor-help" />
@@ -541,11 +481,72 @@ export function SkillsListView({
 						</Badge>
 					)}
 				</div>
+				<div className="flex shrink-0 items-center gap-2 md:ml-auto">
+					<div className="grid grid-cols-3 items-center gap-2 md:flex">
+						{isGitAvailable ? (
+							<MarketplacePopover />
+						) : (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span tabIndex={0}>
+										<Button variant="outline" size="sm" disabled title="Register as Marketplace" aria-label="Register as Marketplace">
+											<Package className="h-3.5 w-3.5" />
+											<span className="hidden md:inline">Register as Marketplace</span>
+										</Button>
+									</span>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									<p className="max-w-xs text-xs">
+										Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code
+										and Codex.
+									</p>
+								</TooltipContent>
+							</Tooltip>
+						)}
+						<Button
+							variant="outline"
+							size="sm"
+							data-testid="skill-download-all-btn"
+							onClick={async () => {
+								setIsDownloadingAll(true);
+								try {
+									const res = await fetch(`${getApiBaseUrl()}/skills/serve/all/download.zip`);
+									if (!res.ok) throw new Error("Download failed");
+									const blob = await res.blob();
+									const url = URL.createObjectURL(blob);
+									const link = document.createElement("a");
+									link.href = url;
+									link.download = "all-skills.zip";
+									document.body.appendChild(link);
+									link.click();
+									document.body.removeChild(link);
+									URL.revokeObjectURL(url);
+								} catch {
+									toast.error("Failed to download skills");
+								} finally {
+									setIsDownloadingAll(false);
+								}
+							}}
+							disabled={!skills?.length || isDownloadingAll}
+							title="Download all skills"
+							aria-label="Download all skills"
+						>
+							{isDownloadingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
+						</Button>
+						{hasCreateAccess && (
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="New skill" aria-label="New skill">
+								<Plus className="h-4 w-4" />
+								<span className="hidden md:inline">New Skill</span>
+							</Button>
+						)}
+					</div>
+				</div>
 			</div>
 
 			{/* Table */}
-			<div className="mb-2 grow overflow-hidden rounded-sm border">
-				<Table containerClassName="h-full overflow-auto" className="w-full table-fixed">
+			<div className="mb-2 min-h-80 grow overflow-hidden rounded-sm border md:min-h-0">
+				<Table containerClassName="h-full overflow-auto" className="min-w-[58rem] table-fixed md:w-full md:min-w-0">
 					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow className="hover:bg-transparent">
 							<TableHead className="w-60">
@@ -640,7 +641,7 @@ export function SkillsListView({
 
 			{/* Pagination */}
 			{total > 0 && (
-				<div className="flex shrink-0 items-center justify-between text-xs">
+				<div className="flex shrink-0 flex-col gap-2 text-xs md:flex-row md:items-center md:justify-between md:gap-0">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, total).toLocaleString()} of {total.toLocaleString()} entries
 					</div>

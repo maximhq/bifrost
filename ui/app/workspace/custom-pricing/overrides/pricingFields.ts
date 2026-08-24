@@ -80,6 +80,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "input_cost_per_token_ultrafast",
+		label: "Input / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "output_cost_per_token_ultrafast",
+		label: "Output / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "input_cost_per_token_flex",
 		label: "Input / token (flex)",
 		group: "chat",
@@ -218,6 +230,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_read_input_token_cost_ultrafast",
+		label: "Cache read / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_read_input_token_cost_flex",
 		label: "Cache read / token (flex)",
 		group: "chat",
@@ -272,6 +290,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_creation_input_token_cost_ultrafast",
+		label: "Cache creation / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_creation_input_token_cost_flex",
 		label: "Cache creation / token (flex)",
 		group: "chat",
@@ -294,6 +318,12 @@ export const PRICING_FIELDS = [
 		label: "Search context / query",
 		group: "chat",
 		requestTypeGroups: ["chat", "rerank"],
+	},
+	{
+		key: "input_cost_per_query",
+		label: "Rerank / query",
+		group: "chat",
+		requestTypeGroups: ["rerank"],
 	},
 	{
 		key: "code_interpreter_cost_per_session",
@@ -436,6 +466,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["image"],
 	},
 	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels",
+		label: "Output / image (>1024x1536px)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels",
+		label: "Output / image (>1536x1024px)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
 		key: "output_cost_per_image_above_2048_and_2048_pixels",
 		label: "Output / image (>2048px)",
 		group: "image",
@@ -444,6 +486,36 @@ export const PRICING_FIELDS = [
 	{
 		key: "output_cost_per_image_above_4096_and_4096_pixels",
 		label: "Output / image (>4096px)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_4_megapixels",
+		label: "Output / image (>4MP)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_8_megapixels",
+		label: "Output / image (>8MP)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_16_megapixels",
+		label: "Output / image (>16MP)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_32_megapixels",
+		label: "Output / image (>32MP)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_64_megapixels",
+		label: "Output / image (>64MP)",
 		group: "image",
 		requestTypeGroups: ["image"],
 	},
@@ -468,6 +540,78 @@ export const PRICING_FIELDS = [
 	{
 		key: "output_cost_per_image_auto_quality",
 		label: "Output / image (auto quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_low_quality",
+		label: "Output / image (>1024x1024px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_low_quality",
+		label: "Output / image (>1024x1536px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_low_quality",
+		label: "Output / image (>1536x1024px, low quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_medium_quality",
+		label: "Output / image (>1024x1024px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_medium_quality",
+		label: "Output / image (>1024x1536px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_medium_quality",
+		label: "Output / image (>1536x1024px, medium quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_high_quality",
+		label: "Output / image (>1024x1024px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_high_quality",
+		label: "Output / image (>1024x1536px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_high_quality",
+		label: "Output / image (>1536x1024px, high quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1024_pixels_standard_quality",
+		label: "Output / image (>1024x1024px, standard quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1024_and_1536_pixels_standard_quality",
+		label: "Output / image (>1024x1536px, standard quality)",
+		group: "image",
+		requestTypeGroups: ["image"],
+	},
+	{
+		key: "output_cost_per_image_above_1536_and_1024_pixels_standard_quality",
+		label: "Output / image (>1536x1024px, standard quality)",
 		group: "image",
 		requestTypeGroups: ["image"],
 	},

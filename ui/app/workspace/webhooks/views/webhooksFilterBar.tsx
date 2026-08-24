@@ -24,6 +24,8 @@ export interface WebhooksFilterBarProps {
 	onStatusFilterChange: (value: string[]) => void;
 	hasActiveFilters: boolean;
 	onClearFilters: () => void;
+	/** Page-level actions rendered at the right end of the same row as the search. */
+	actions?: React.ReactNode;
 }
 
 export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
@@ -68,6 +70,7 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 					Clear filters
 				</Button>
 			)}
+			{props.actions && <div className="flex items-center gap-2 sm:ml-auto">{props.actions}</div>}
 		</div>
 	);
 }

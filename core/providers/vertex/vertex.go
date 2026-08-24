@@ -2759,6 +2759,11 @@ func (provider *VertexProvider) VideoList(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Vertex provider.
+func (provider *VertexProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by the Vertex provider.
 func (provider *VertexProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -3418,7 +3423,7 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 			if line.Response != nil {
 				item.Response = &schemas.BatchResultResponse{
 					StatusCode: 200,
-					Body:       line.Response,
+					Body:       vertexNormalizeBatchUsage(line.Response),
 				}
 			} else {
 				item.Error = &schemas.BatchResultError{Message: line.Status}
@@ -3428,12 +3433,40 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	return &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: time.Since(startTime).Milliseconds(),
 		},
 	}, nil
+}
+
+func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
+	raw, ok := body["usageMetadata"]
+	if !ok {
+		return body
+	}
+	metaBytes, err := sonic.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	var meta gemini.GenerateContentResponseUsageMetadata
+	if err := sonic.Unmarshal(metaBytes, &meta); err != nil {
+		return body
+	}
+	usage := map[string]any{
+		"prompt_tokens":     meta.PromptTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount,
+		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.CachedContentTokenCount > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": meta.CachedContentTokenCount,
+		}
+	}
+	body["usage"] = usage
+	return body
 }
 
 // gcsListAllObjects lists every object under a prefix, following pagination.
@@ -3524,7 +3557,6 @@ const (
 	gcsStorageBase = "https://storage.googleapis.com/storage/v1"
 	gcsUploadBase  = "https://storage.googleapis.com/upload/storage/v1"
 )
-
 
 // --- GCS helpers ---
 

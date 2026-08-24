@@ -184,6 +184,11 @@ export function OtelFormFragment({
 		setProfileOpenState((prev) => ({ ...prev, [index]: open }));
 	};
 
+	const handleAddProfile = () => {
+		append(emptyProfile());
+		setProfileOpenState((prev) => ({ ...prev, [fields.length]: true }));
+	};
+
 	const handleRemoveProfile = (index: number) => {
 		remove(index);
 		setProfileOpenState((prev) => {
@@ -216,7 +221,7 @@ export function OtelFormFragment({
 							index={index}
 							hasOtelAccess={hasOtelAccess}
 							canRemove={fields.length > 1}
-							open={profileOpenState[index] ?? true}
+							open={profileOpenState[index] ?? false}
 							onOpenChange={(open) => handleProfileOpenChange(index, open)}
 							onRemove={() => handleRemoveProfile(index)}
 						/>
@@ -227,7 +232,7 @@ export function OtelFormFragment({
 					type="button"
 					variant="outline"
 					size="sm"
-					onClick={() => append(emptyProfile())}
+					onClick={handleAddProfile}
 					disabled={!hasOtelAccess}
 					data-testid="otel-add-profile-btn"
 				>

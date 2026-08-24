@@ -30,6 +30,9 @@ func TestIsMantleModel(t *testing.T) {
 		{"gemma-3-12b-it", false},
 		{"google.gemma-3-27b-it", false},
 		{"gemma-3-4b-it", false},
+		// Grok → mantle (mantle-only, no Converse endpoint)
+		{"xai.grok-4.3", true},
+		{"us.xai.grok-4.3", true},
 		// Anthropic (Claude) models stay on the Converse path.
 		{"claude-opus-4-8", false},
 		{"anthropic.claude-3-5-sonnet-20240620-v1:0", false},
@@ -61,6 +64,8 @@ func TestMantleOpenAIURL(t *testing.T) {
 			"https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"},
 		{"gemma-3 uses bare v1", "us-east-1", "google.gemma-3-12b-it", "chat/completions",
 			"https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions"},
+		{"grok uses openai/v1", "us-east-1", "xai.grok-4.3", "responses",
+			"https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

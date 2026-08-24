@@ -80,6 +80,70 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_InvalidatesStaleSerializedCache guards the fix for a
+// shared MCP tool carrying a precomputed serialized cache. Those tools are
+// injected into the request by value, so the cache rides along with the copy.
+// ToOpenAIChatRequest replaces Function.Parameters with the normalized form; if
+// it left the stale cache in place, ChatTool.MarshalJSON would return the
+// pre-normalized bytes and silently defeat the normalization for exactly the
+// tools it is meant to help.
+func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
+	// Items is a structural schema field Normalized() canonicalizes (unlike
+	// Properties, whose order is preserved). Its keys are inserted out of the
+	// canonical order (type, description, then alphabetical) so Normalized()
+	// reorders them, making the cached (un-normalized) bytes differ from the
+	// normalized output.
+	params := &schemas.ToolFunctionParameters{
+		Type: "array",
+		Items: schemas.NewOrderedMapFromPairs(
+			schemas.KV("enum", []interface{}{"celsius", "fahrenheit"}),
+			schemas.KV("description", "A unit"),
+			schemas.KV("type", "string"),
+		),
+	}
+
+	tool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params},
+	}
+	// Simulate the MCP source caching the pre-normalized bytes.
+	require.NoError(t, tool.EnsureSerialized())
+	staleJSON, err := schemas.Marshal(tool)
+	require.NoError(t, err)
+
+	// Expected wire form: the same tool normalized, with no cache.
+	expTool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params.Normalized()},
+	}
+	expJSON, err := schemas.Marshal(expTool)
+	require.NoError(t, err)
+
+	// Setup guard: the case is only meaningful if normalization changes the bytes.
+	require.NotEqual(t, string(staleJSON), string(expJSON),
+		"test setup: normalized form must differ from the cached form")
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params:   &schemas.ChatParameters{Tools: []schemas.ChatTool{tool}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+
+	gotJSON, err := schemas.Marshal(result.ChatParameters.Tools[0])
+	require.NoError(t, err)
+
+	require.Equal(t, string(expJSON), string(gotJSON),
+		"converted tool must marshal from normalized params, not the stale serialized cache")
+	require.NotEqual(t, string(staleJSON), string(gotJSON),
+		"converted tool must not emit the pre-normalized cached bytes")
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
@@ -547,7 +611,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters(req.Model)
+			req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.OpenAI, req.Model))
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
@@ -1376,7 +1440,7 @@ func TestApplyXAICompatibility(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Apply the compatibility function
-			tt.request.applyXAICompatibility(tt.model)
+			tt.request.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, tt.model))
 
 			// Validate the results
 			tt.validate(t, tt.request)
@@ -1871,4 +1935,65 @@ func TestXAIReasoningEffortEndToEnd(t *testing.T) {
 			}
 		})
 	}
+}
+
+// installCapabilityRecord points the capability resolver at a single model for
+// the duration of the test, so a gate can be driven from the datasheet side.
+func installCapabilityRecord(t *testing.T, model string, record *schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// TestOpenAICompatFiltersReadDatasheet covers the datasheet side of the
+// openai-compat parameter filters. The name-based fallbacks are covered by
+// TestApplyXAICompatibility; these pin that an unsupported_fields entry
+// overrides them, and that unlisted fields keep the fallback.
+func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
+	t.Run("compat_filter_strips_when_datasheet_is_silent", func(t *testing.T) {
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+			Verbosity:  schemas.Ptr("low"),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Cerebras, "some-compat-model"))
+		require.Nil(t, req.Prediction)
+		require.Nil(t, req.Store)
+		require.Nil(t, req.Verbosity)
+	})
+
+	t.Run("compat_filter_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "fireworks-predictive"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPrediction: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Fireworks, model))
+		require.NotNil(t, req.Prediction, "an explicit false must survive the compat filter")
+		require.Nil(t, req.Store, "fields the row omits keep the default strip")
+	})
+
+	t.Run("xai_gate_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "grok-4"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPresencePenalty: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			PresencePenalty:  schemas.Ptr(0.5),
+			FrequencyPenalty: schemas.Ptr(0.5),
+		}}
+		req.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, model))
+		require.NotNil(t, req.PresencePenalty, "an explicit false must beat the grok name check")
+		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
+	})
 }

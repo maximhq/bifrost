@@ -79,11 +79,11 @@ const defaultMantleRegion = "us-east-1"
 // region, model, and API path (e.g. "chat/completions", "responses"). The native-Anthropic
 // path is built separately by mantleAnthropicURL. Pass the canonical (capability-resolved)
 // model for correct path gating; the request body still carries the wire request.Model.
-// Frontier families (closed gpt-5.x, Gemma 4) live under the "openai/v1" base path; gpt-oss
+// Frontier families (closed gpt-5.x, Gemma 4, Grok) live under the "openai/v1" base path; gpt-oss
 // uses the bare "v1" path.
 func mantleOpenAIURL(endpoints *schemas.BedrockEndpoints, region, model, path string) string {
 	base := "v1"
-	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") {
+	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") || schemas.IsGrokModel(model) {
 		base = "openai/v1"
 	}
 	return fmt.Sprintf("https://%s/%s/%s", mantleHost(endpoints, region), base, path)
@@ -486,6 +486,11 @@ func (provider *BedrockMantleProvider) VideoDelete(_ *schemas.BifrostContext, _ 
 // VideoList is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the BedrockMantle provider.
+func (provider *BedrockMantleProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by the Bedrock Mantle provider.

@@ -194,21 +194,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				/>
 			)}
 			<CardHeader className="mb-4 px-0">
-				<CardTitle className="flex items-center justify-between">
+				<CardTitle className="flex flex-col items-stretch gap-3 md:flex-row md:items-center md:justify-between">
 					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
-					<div className="flex items-center gap-2">
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
 						{headerActions}
 						{hasUpdateProviderAccess ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button
 										variant="outline"
+										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
 										disabled={isRefreshing}
 										data-testid="provider-refresh-models"
+										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+										<span className="hidden xl:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">
@@ -217,16 +219,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							</Tooltip>
 						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
-							<Button
-								disabled={!hasUpdateProviderAccess}
-								data-testid="add-key-btn"
-								onClick={() => {
-									handleAddKey();
-								}}
-							>
-								<PlusIcon className="h-4 w-4" />
-								Add new {entityLabel}
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										disabled={!hasUpdateProviderAccess}
+										data-testid="add-key-btn"
+										aria-label={`Add new ${entityLabel}`}
+										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										onClick={() => {
+											handleAddKey();
+										}}
+									>
+										<PlusIcon className="h-4 w-4" />
+										<span className="hidden xl:inline">Add new {entityLabel}</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent className="xl:hidden">Add new {entityLabel}</TooltipContent>
+							</Tooltip>
 						) : null}
 					</div>
 				</CardTitle>

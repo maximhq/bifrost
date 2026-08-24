@@ -17,7 +17,7 @@ RUN npm run build-enterprise
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS builder
+FROM golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite (with latest security patches)
@@ -49,7 +49,7 @@ RUN go build \
 RUN test -f /app/main || (echo "Build failed" && exit 1)
   
 # --- Runtime Stage: Red Hat UBI 9 Minimal ---
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:24650313873554b6ba16c1a1b6b9f9142604f6ab735113e1695faf2dd07fdede
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:8eb2830d0936237fc13a1f2f7e45aecf90d69043380ad167fad0343632937f41
 
 # Redeclared here so it is in scope for the LABEL instruction below.
 ARG VERSION=unknown

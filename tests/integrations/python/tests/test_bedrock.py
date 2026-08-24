@@ -56,6 +56,8 @@ Invoke Endpoint — Image Generation Tests (TestBedrockInvokeEndpoint):
 29. Titan image generation via invoke (taskType=TEXT_IMAGE)
 30. Titan embeddings via invoke (inputText)
 31. Titan embeddings with params via invoke (inputText + params)
+31a. Titan binary embeddings via invoke (embeddingTypes=["binary"])
+31b. Titan float+binary embeddings via invoke (embeddingTypes=["float","binary"])
 32. Cohere embeddings via invoke (texts array)
 33. Titan inpainting via invoke (taskType=INPAINTING)
 34. Titan outpainting via invoke (taskType=OUTPAINTING)
@@ -88,6 +90,9 @@ import botocore.exceptions
 import pytest
 
 from .utils.common import (
+    RERANK_DOCUMENTS,
+    RERANK_QUERY,
+    assert_valid_rerank_results,
     BASE64_IMAGE_LARGE,
     BASE64_TITAN_MASK_IMAGE,
     CALCULATOR_TOOL,
@@ -2201,6 +2206,68 @@ class TestBedrockInvokeEndpoint:
         )
 
     # ------------------------------------------------------------------ #
+    # 31a. Titan binary embeddings                                        #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_31a_invoke_titan_binary_embeddings(self, bedrock_client):
+        """Test Case 31a: Titan Embed Text v2 returns embeddingsByType.binary."""
+        print("\n=== Test 31a: Titan binary embeddings via invoke ===")
+
+        body = {
+            "inputText": "compact binary embedding",
+            "dimensions": 256,
+            "normalize": True,
+            "embeddingTypes": ["binary"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        binary = out.get("embeddingsByType", {}).get("binary")
+        assert isinstance(binary, list) and len(binary) > 0, (
+            f"Expected non-empty embeddingsByType.binary, got: {out}"
+        )
+        assert all(isinstance(value, int) for value in binary), (
+            "Titan binary embedding values must be integers"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 31b. Titan float + binary embeddings                                #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_31b_invoke_titan_float_and_binary_embeddings(self, bedrock_client):
+        """Test Case 31b: Titan Embed Text v2 preserves both requested encodings."""
+        print("\n=== Test 31b: Titan float + binary embeddings via invoke ===")
+
+        body = {
+            "inputText": "dual format embedding",
+            "dimensions": 256,
+            "normalize": True,
+            "embeddingTypes": ["float", "binary"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        typed = out.get("embeddingsByType", {})
+        float_vector = typed.get("float")
+        binary_vector = typed.get("binary")
+        assert isinstance(float_vector, list) and len(float_vector) == 256, (
+            f"Expected 256-dim embeddingsByType.float, got: {out}"
+        )
+        assert isinstance(binary_vector, list) and len(binary_vector) > 0, (
+            f"Expected non-empty embeddingsByType.binary, got: {out}"
+        )
+
+    # ------------------------------------------------------------------ #
     # 32. Cohere embed English v3                                          #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
@@ -3491,3 +3558,132 @@ class TestBedrockGuardrail:
             f"  ✓ outputAssessments type correct — stopReason={response['stopReason']}, "
             f"outputAssessments keys={list(output_assessments.keys())}"
         )
+
+
+def get_provider_rerank_client(provider: str) -> boto3.client:
+    """Create bedrock-agent-runtime client with x-model-provider header for given provider"""
+    base_url = get_integration_url("bedrock")
+    config = get_config()
+    integration_settings = config.get_integration_settings("bedrock")
+    region = integration_settings.get("region", "us-west-2")
+
+    client = boto3.client(
+        "bedrock-agent-runtime",
+        region_name=region,
+        endpoint_url=base_url,
+    )
+
+    client.meta.events.register("before-send", create_provider_header_handler(provider))
+    return client
+
+
+def bedrock_reranking_configuration(model: str, number_of_results: int = None) -> Dict[str, Any]:
+    """Build Bedrock's rerankingConfiguration block.
+
+    Bifrost expands a bare model id into a foundation-model ARN, so tests pass whatever
+    identifier the provider is configured with.
+    """
+    bedrock_config: Dict[str, Any] = {"modelConfiguration": {"modelArn": model}}
+    if number_of_results is not None:
+        bedrock_config["numberOfResults"] = number_of_results
+
+    return {
+        "type": "BEDROCK_RERANKING_MODEL",
+        "bedrockRerankingConfiguration": bedrock_config,
+    }
+
+
+def bedrock_rerank_pairs(response: Dict[str, Any]) -> List[tuple]:
+    """Normalize a Bedrock rerank response into (index, score) tuples.
+
+    Bedrock uses camelCase relevanceScore. AWS SDKs match response keys case-insensitively
+    but not punctuation-insensitively, so a snake_case body would silently deserialize every
+    score as 0.0 rather than raising - hence the explicit key assertion.
+    """
+    results = response["results"]
+    for result in results:
+        assert "relevanceScore" in result, (
+            f"expected camelCase relevanceScore, got keys {list(result)}"
+        )
+    return [(r["index"], r["relevanceScore"]) for r in results]
+
+
+class TestBedrockRerank:
+    """Rerank via the AWS SDK (bedrock-agent-runtime) through Bifrost."""
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_26_rerank_text_documents(self, provider, model):
+        """Inline TEXT document sources - the common Bedrock rerank shape."""
+        client = get_provider_rerank_client(provider)
+
+        response = client.rerank(
+            queries=[{"type": "TEXT", "textQuery": {"text": RERANK_QUERY}}],
+            sources=[
+                {
+                    "type": "INLINE",
+                    "inlineDocumentSource": {
+                        "type": "TEXT",
+                        "textDocument": {"text": document},
+                    },
+                }
+                for document in RERANK_DOCUMENTS
+            ],
+            rerankingConfiguration=bedrock_reranking_configuration(model),
+        )
+
+        assert_valid_rerank_results(bedrock_rerank_pairs(response))
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_27_rerank_json_documents(self, provider, model):
+        """Inline JSON document sources.
+
+        A provider that drops the structured body still returns 200, so this asserts the
+        relevant document separates from the irrelevant one - which only happens if the
+        JSON content actually reached the model.
+        """
+        client = get_provider_rerank_client(provider)
+
+        response = client.rerank(
+            queries=[{"type": "TEXT", "textQuery": {"text": RERANK_QUERY}}],
+            sources=[
+                {
+                    "type": "INLINE",
+                    "inlineDocumentSource": {
+                        "type": "JSON",
+                        "jsonDocument": {"position": index, "body": document},
+                    },
+                }
+                for index, document in enumerate(RERANK_DOCUMENTS)
+            ],
+            rerankingConfiguration=bedrock_reranking_configuration(model),
+        )
+
+        assert_valid_rerank_results(bedrock_rerank_pairs(response))
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_28_rerank_number_of_results(self, provider, model):
+        """numberOfResults truncates the ranking, Bedrock's spelling of top_n."""
+        client = get_provider_rerank_client(provider)
+
+        response = client.rerank(
+            queries=[{"type": "TEXT", "textQuery": {"text": RERANK_QUERY}}],
+            sources=[
+                {
+                    "type": "INLINE",
+                    "inlineDocumentSource": {
+                        "type": "TEXT",
+                        "textDocument": {"text": document},
+                    },
+                }
+                for document in RERANK_DOCUMENTS
+            ],
+            rerankingConfiguration=bedrock_reranking_configuration(model, number_of_results=2),
+        )
+
+        assert_valid_rerank_results(bedrock_rerank_pairs(response), expected_count=2)

@@ -318,6 +318,11 @@ func (c *ClientConnectionChecker) markAsCheck(ctx context.Context) *schemas.Bifr
 // before the check ran, and these (now stale) results are dropped silently
 // — the next tick syncs against whatever is current.
 func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) {
+	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
+	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
+	// held across N marshals.
+	precomputeToolSerialization(newTools)
+
 	c.manager.mu.Lock()
 
 	clientState, exists := c.manager.clientMap[c.clientID]

@@ -663,9 +663,9 @@
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
-                  "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "description": "MCP library sync interval in seconds. Set to 0 to disable background catalog syncing entirely (air-gapped deployments with no local catalog file). Default is 24 hours; minimum when enabled is 3600 seconds (1 hour).",
                   "default": 86400,
-                  "minimum": 3600
+                  "anyOf": [{ "const": 0 }, { "minimum": 3600 }]
                 },
                 "liveModelsSyncInterval": {
                   "type": "integer",
@@ -1037,6 +1037,18 @@
                     { "$ref": "#/$defs/otelProfilesConfig" }
                   ],
                   "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
+                },
+                "semaphore_size": {
+                  "type": "integer",
+                  "description": "Cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide (default: 10000).",
+                  "default": 10000,
+                  "minimum": 1
+                },
+                "inject_timeout": {
+                  "type": "string",
+                  "description": "Timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot.",
+                  "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                  "default": "5s"
                 }
               },
               "if": {
@@ -1158,6 +1170,120 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  }
+                }
+              }
+            },
+            "splunk": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "endpoint": {
+                      "type": "string",
+                      "description": "HEC base URL, e.g. https://localhost:8088 (required when enabled). Do not include the /services/collector path. Supports env.VAR_NAME prefix"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "HEC token, sent as the Authorization: Splunk <token> header (required when enabled). Supports env.VAR_NAME prefix"
+                    },
+                    "events_index": {
+                      "type": "string",
+                      "description": "Splunk event index for per-request events (required when enable_events is true)"
+                    },
+                    "metrics_index": {
+                      "type": "string",
+                      "description": "Splunk metrics index for derived metrics (required when enable_metrics is true)"
+                    },
+                    "source": {
+                      "type": "string",
+                      "description": "HEC source field on every event and metric (default: bifrost)"
+                    },
+                    "sourcetype": {
+                      "type": "string",
+                      "description": "HEC sourcetype for events; metrics use bifrost:metric (default: bifrost:llm)"
+                    },
+                    "host": {
+                      "type": "string",
+                      "description": "HEC host field (defaults to the server hostname)"
+                    },
+                    "enable_events": {
+                      "type": "boolean",
+                      "description": "Emit one flattened event per request to the event index (default: true)"
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Derive and emit the metric set to the metrics index (default: true)"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from events (default: false)"
+                    },
+                    "ca_cert": {
+                      "type": "string",
+                      "description": "PEM-encoded CA certificate to verify the HEC TLS certificate. Supports env.VAR_NAME prefix"
+                    },
+                    "insecure_skip_verify": {
+                      "type": "boolean",
+                      "description": "Disable TLS certificate verification. Development or isolated environments only; use ca_cert in production (default: false)"
+                    },
+                    "custom_fields": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Static key/value fields added to every event and metric"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request-header name patterns to capture onto events. Use an explicit allowlist of exact header names; wildcards can capture credentials"
+                    },
+                    "batch_max_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Flush a HEC batch once its concatenated bodies reach this many bytes (default: 524288)"
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum time buffered events wait before a flush, in ms (default: 1000)"
+                    },
+                    "post_workers": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64,
+                      "description": "Concurrent HEC poster goroutines, capped at 64 (default: 4)"
+                    },
+                    "indexer_ack": {
+                      "type": "boolean",
+                      "description": "Enable HEC indexer acknowledgement for confirmed delivery. Set when the HEC token has acknowledgement enabled (default: false)"
+                    },
+                    "ack_poll_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How often to poll Splunk for acknowledgement, in ms (only used when indexer_ack is true, default: 1000)"
+                    },
+                    "ack_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How long an unacknowledged batch waits before the client resends it, in ms (only used when indexer_ack is true, default: 30000)"
+                    },
+                    "max_ack_attempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum POST attempts per batch before it is dropped (only used when indexer_ack is true, default: 3)"
                     }
                   }
                 }
@@ -1465,6 +1591,18 @@
                     "type": "integer",
                     "default": 0,
                     "description": "Position within placement group. Lower = earlier execution"
+                  },
+                  "semaphore_size": {
+                    "type": "integer",
+                    "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+                    "default": 10000,
+                    "minimum": 1
+                  },
+                  "inject_timeout": {
+                    "type": "string",
+                    "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+                    "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                    "default": "5s"
                   }
                 },
                 "required": ["name", "enabled"]
@@ -5238,6 +5376,18 @@
         },
         "config": {
           "type": "object"
+        },
+        "semaphore_size": {
+          "type": "integer",
+          "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+          "default": 10000,
+          "minimum": 1
+        },
+        "inject_timeout": {
+          "type": "string",
+          "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "default": "5s"
         }
       }
     },

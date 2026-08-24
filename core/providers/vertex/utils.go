@@ -250,13 +250,21 @@ var vertexFlexModels = []string{
 }
 
 // isVertexModelSupportedForTier reports whether a model supports the given service tier.
-// Custom/fine-tuned models (all-digits IDs) are passed through without restriction since
-// their base model cannot be determined from the ID alone.
+// Prefers the datasheet's service_tiers list, falling back to the published model
+// prefixes above. Custom/fine-tuned models (all-digits IDs) are passed through without
+// restriction since their base model cannot be determined from the ID alone.
 func isVertexModelSupportedForTier(model string, tier schemas.BifrostServiceTier) bool {
 	if schemas.IsAllDigitsASCII(model) {
 		return true
 	}
 	normalized := gemini.NormalizeModelName(model)
+	caps := schemas.ResolveModelCaps(schemas.Vertex, normalized)
+	return caps.ServiceTierSupported(tier, vertexTierPrefixMatch(normalized, tier))
+}
+
+// vertexTierPrefixMatch is the name-based fallback for tier support, from Google's
+// published Priority/Flex PayGo model lists. Tiers Vertex does not offer are false.
+func vertexTierPrefixMatch(normalized string, tier schemas.BifrostServiceTier) bool {
 	var prefixes []string
 	switch tier {
 	case schemas.BifrostServiceTierPriority:

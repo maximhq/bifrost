@@ -7,6 +7,26 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestResponsesStreamError_NormalizesAzureShapeAndEmptyDetails(t *testing.T) {
+	cases := []struct {
+		wire, wantMessage string
+	}{
+		{`{"type":"error","error":{"type":"too_many_requests","code":"no_capacity","message":"capacity"}}`, "capacity"},
+		{`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"input is too large"}}}`, "input is too large"},
+		{`{"type":"error","error":{}}`, "provider stream error (error)"},
+	}
+	for _, tc := range cases {
+		var response schemas.BifrostResponsesStreamResponse
+		if err := schemas.Unmarshal([]byte(tc.wire), &response); err != nil {
+			t.Fatalf("unmarshal stream error: %v", err)
+		}
+		got := responsesStreamError(&response)
+		if got == nil || got.Error == nil || got.Error.Message != tc.wantMessage {
+			t.Fatalf("normalized error = %v, want message %q", got, tc.wantMessage)
+		}
+	}
+}
+
 func TestParseOpenAIError_FallbackMessageWhenProviderBodyIsNonOpenAIShape(t *testing.T) {
 	var resp fasthttp.Response
 	resp.SetStatusCode(fasthttp.StatusUnprocessableEntity)

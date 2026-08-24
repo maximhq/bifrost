@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"gorm.io/gorm"
 )
 
@@ -24,6 +25,15 @@ const (
 	retryBackoffMin        = time.Second      // initial wait before the first retry
 	maxMCPLibraryBodyBytes = 50 << 20         // 50 MiB — hard cap on the catalog payload to prevent OOM
 )
+
+// isFileURL reports whether rawURL points at a local catalog file rather than a
+// remote endpoint. Used to skip network-shaped retry behaviour on the air-gapped
+// path. An unparseable URL is treated as non-file so it still flows into the
+// normal validation and error reporting in fetchMCPLibrary.
+func isFileURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && parsed.Scheme == "file"
+}
 
 // withRetries runs op up to maxRetries+1 times, waiting with exponential
 // backoff (starting at retryBackoffMin, capped at maxBackoff) between attempts.
@@ -102,7 +112,15 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 		url = DefaultMCPLibraryURL
 	}
 
-	entries, err := withRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() ([]MCPLibraryEntry, error) {
+	// A local catalog file either exists or it does not; retrying with backoff
+	// only adds boot latency on an air-gapped host with a bad path. Retries stay
+	// on the network path where a transient failure is plausible.
+	maxRetries := urlFetchMaxRetries
+	if isFileURL(url) {
+		maxRetries = 0
+	}
+
+	entries, err := withRetries(ctx, maxRetries, urlFetchMaxBackoff, func() ([]MCPLibraryEntry, error) {
 		return fetchMCPLibrary(ctx, url)
 	})
 	if err != nil {
@@ -240,7 +258,10 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 
 	var data []byte
 	if parsed.Scheme == "file" {
-		f, err := os.Open(parsed.Path)
+		// Resolve through the shared datasheet helper so relative
+		// (file://./servers.json) and localhost-host (file://localhost/abs/...)
+		// forms work here exactly as they do for the pricing datasheets.
+		f, err := os.Open(datasheet.FilePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to open MCP library file: %w", err)
 		}

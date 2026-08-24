@@ -150,7 +150,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 	return (
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
-				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky top-0 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky top-0 bg-card z-10">
 					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
 					<SheetDescription>
 						{isEditMode
@@ -161,11 +161,11 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="flex-1 space-y-4 px-8">
+						<div className="flex-1 space-y-4 px-4 md:px-8">
 							<PluginFormFragment form={form} isEditMode={isEditMode} />
 						</div>
 
-						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-8 py-4">
+						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
 								Cancel
 							</Button>

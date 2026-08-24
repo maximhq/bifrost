@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PluginStatus constants
@@ -170,7 +171,10 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order)
+// 0. HTTPTransportPreAuthHook (HTTP transport only, once per request, executed in registration order,
+//    before the transport's authentication middlewares)
+// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order,
+//    after the transport's authentication middlewares)
 // 2. PreRequestHook (once per request, executed in registration order)
 // 3. PreLLMHook (executed in registration order, runs again on each fallback attempt)
 // 4. Provider call
@@ -179,7 +183,8 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // 6a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
 //
 // Per-request vs per-attempt phases:
-// - HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run ONCE per top-level request.
+// - HTTPTransportPreAuthHook, HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run
+//   ONCE per top-level request.
 // - PreLLMHook, PostLLMHook run ONCE PER ATTEMPT: the primary provider call, plus once per
 //   fallback attempt. Mutations a PreLLMHook makes to the request only carry to later
 //   fallbacks where prepareFallbackRequest happens to share pointers (shallow copy) —
@@ -218,7 +223,40 @@ type BasePlugin interface {
 type HTTPTransportPlugin interface {
 	BasePlugin
 
-	// HTTPTransportPreHook is called at the HTTP transport layer before requests enter Bifrost core.
+	// HTTPTransportPreAuthHook is called at the HTTP transport layer before the transport's
+	// authentication middlewares run, so mutations made here are visible to authentication.
+	// Implement it with a body only when the plugin's job is to supply or translate the
+	// credentials authentication reads — deriving a virtual key from an upstream identity
+	// header, say. Every other kind of work belongs in HTTPTransportPreHook, which runs after
+	// authentication and can therefore see the resolved caller identity. Plugins with nothing
+	// to do before authentication return (nil, nil).
+	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK
+	// directly. Like the other transport hooks it takes serializable types; native .so plugins
+	// join the phase by exporting an HTTPTransportPreAuthHook symbol.
+	//
+	// req carries the same fields HTTPTransportPreHook receives — Method, Path, Headers, Query,
+	// PathParams and Body — and the same mutations apply, so moving a hook between the two
+	// phases is a rename. Note the cost: the body is snapshotted before the caller is known, so
+	// a request authentication goes on to reject has already been copied.
+	//
+	// Mutating Method or Path is rejected (the request is failed with 409) — routing has
+	// already been resolved by the time this runs.
+	//
+	// This hook has no post-hook counterpart: HTTPTransportPostHook pairs with
+	// HTTPTransportPreHook, and a request rejected by authentication runs neither. A plugin
+	// that must observe every request, including rejected ones, should not rely on this phase
+	// for its bookkeeping.
+	//
+	// Return values:
+	// - (nil, nil): Continue to authentication, request modifications are applied
+	// - (*HTTPResponse, nil): Short-circuit with this response, skip authentication and the handler
+	// - (nil, error): Short-circuit with error response
+	HTTPTransportPreAuthHook(ctx *BifrostContext, req *HTTPRequest) (*HTTPResponse, error)
+
+	// HTTPTransportPreHook is called at the HTTP transport layer before requests enter Bifrost core,
+	// after the transport has authenticated the request — so the resolved caller identity is already
+	// on ctx. A plugin that needs to run BEFORE authentication (typically to supply the credentials
+	// authentication reads) belongs in HTTPTransportPreAuthHook instead.
 	// It receives a serializable HTTPRequest and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
@@ -368,6 +406,17 @@ type PluginConfig struct {
 	Config    any              `json:"config,omitempty"`
 	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
+
+	// SemaphoreSize caps concurrent in-flight Inject calls the tracer will send this
+	// plugin, if it implements ObservabilityPlugin. Generic (like Enabled) rather than
+	// part of each plugin's own Config, since the tracer holds one semaphore per plugin
+	// regardless of that plugin's internal shape. Zero/unset falls back to the tracer's
+	// default (10000). Ignored by plugins that don't implement ObservabilityPlugin.
+	SemaphoreSize *int `json:"semaphore_size,omitempty"`
+	// InjectTimeout bounds a single Inject call, as a Go duration string (e.g. "5s").
+	// Generic for the same reason as SemaphoreSize. Zero/unset falls back to the
+	// tracer's default (5s). Ignored by plugins that don't implement ObservabilityPlugin.
+	InjectTimeout *string `json:"inject_timeout,omitempty"`
 }
 
 // ConfigMarshallerPlugin is optionally implemented by plugins that need custom
@@ -414,11 +463,41 @@ type ObservabilityPlugin interface {
 	// - Send the trace to the backend (can be async, but see retention note below)
 	// - Handle errors gracefully (log and continue)
 	//
-	// The context passed is a fresh background context, not the request context.
+	// The context passed is derived from a fresh background context (not the request
+	// context), bounded by the plugin's inject timeout (see ObservabilityLimits).
+	// Implementations that perform network I/O should propagate ctx into their client
+	// calls so a hung backend is actually unblocked when the timeout fires, rather than
+	// leaking the goroutine and its concurrency-budget slot indefinitely.
 	//
 	// Retention: implementations MUST NOT retain the *Trace pointer after Inject
 	// returns. The caller releases the underlying trace back to a sync.Pool
 	// immediately after Inject completes. If a plugin needs to forward the trace
 	// asynchronously, it must copy the data it needs before returning.
 	Inject(ctx context.Context, trace *Trace) error
+}
+
+// ObservabilityLimits configures how the tracer bounds a single observability plugin's
+// Inject calls: how many may run concurrently, and how long any one call is allowed to take.
+// Resolved from the plugin's generic PluginConfig.SemaphoreSize/InjectTimeout — plugins
+// themselves have no say in this, the same way they don't decide their own Enabled state.
+type ObservabilityLimits struct {
+	// SemaphoreSize caps concurrent in-flight Inject calls for this plugin. A trace is
+	// dropped for this plugin (not process-wide) when the cap is already saturated.
+	// Zero/unset falls back to the tracer's default (10000).
+	SemaphoreSize int
+	// InjectTimeout bounds a single Inject call. Zero/unset falls back to the tracer's
+	// default (5s).
+	InjectTimeout time.Duration
+}
+
+// OverheadSpanConsumer is an optional interface an ObservabilityPlugin may implement
+// to opt into receiving the internal overhead-breakdown spans (see
+// IsOverheadBreakdownSpan). By default those spans are stripped from the trace before
+// it reaches a connector, so they feed the log-detail overhead breakdown without
+// inflating span volume in OTEL/Datadog/etc. The logging plugin implements this and
+// returns true because it computes the breakdown from those spans; connectors that do
+// not implement it receive the stripped trace. Type-asserted by the tracer, so no
+// change is required of existing plugins.
+type OverheadSpanConsumer interface {
+	ConsumesOverheadSpans() bool
 }

@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -287,10 +288,7 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
-			</div>
+			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Drop Excess Requests */}

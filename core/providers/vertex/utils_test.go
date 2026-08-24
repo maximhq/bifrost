@@ -198,17 +198,20 @@ func TestGetVertexPublisherModelURL(t *testing.T) {
 }
 
 func TestGetVertexModelAwareAPIHost(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(true),
+	// IsVertexMultiRegionOnlyModel asks the resolver for (Vertex, model).
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.Vertex {
+			return nil
+		}
+		switch model {
+		case "claude-opus-4-7":
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(true)}
+		case "claude-sonnet-4-5":
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(false)}
+		}
+		return nil
 	})
-	providerUtils.SetModelParams("vertex_ai/claude-sonnet-4-5", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(false),
-	})
-	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
-		providerUtils.DeleteModelParams("vertex_ai/claude-sonnet-4-5")
-	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
 
 	tests := []struct {
 		name              string
@@ -306,13 +309,14 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 }
 
 func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(true),
+	// IsVertexMultiRegionOnlyModel asks the resolver for (Vertex, model).
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Vertex && model == "claude-opus-4-7" {
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(true)}
+		}
+		return nil
 	})
-	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
-	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
 
 	tests := []struct {
 		name              string
@@ -901,4 +905,55 @@ func TestVertexGeminiGCSFileURLSurvivesInlining(t *testing.T) {
 	if part.FileData.MIMEType != fileType {
 		t.Errorf("mimeType = %q, want %q", part.FileData.MIMEType, fileType)
 	}
+}
+
+// TestVertexServiceTierReadsDatasheet covers the datasheet side of the tier gate.
+// The published-prefix fallback is covered by the test above; these pin that a
+// service_tiers list overrides it in both directions, and that the list is
+// per-tier rather than a single on/off.
+func TestVertexServiceTierReadsDatasheet(t *testing.T) {
+	install := func(t *testing.T, model string, tiers []string) {
+		t.Helper()
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{ServiceTiers: tiers}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	t.Run("list_opts_an_unlisted_model_in", func(t *testing.T) {
+		const model = "gemini-4-hypothetical"
+		install(t, model, []string{"priority"})
+
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierPriority); got != "priority" {
+			t.Fatalf("expected priority header from service_tiers, got %q", got)
+		}
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierFlex); got != "" {
+			t.Fatalf("expected no flex header for a priority-only row, got %q", got)
+		}
+	})
+
+	t.Run("list_opts_a_published_model_out", func(t *testing.T) {
+		// gemini-2.5-pro is in vertexPriorityModels; an explicit list must win.
+		const model = "gemini-2.5-pro"
+		install(t, model, []string{"flex"})
+
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierPriority); got != "" {
+			t.Fatalf("expected service_tiers to drop priority, got %q", got)
+		}
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierFlex); got != "flex" {
+			t.Fatalf("expected flex header from service_tiers, got %q", got)
+		}
+	})
+
+	t.Run("region_gate_still_applies", func(t *testing.T) {
+		const model = "gemini-4-hypothetical"
+		install(t, model, []string{"priority"})
+
+		if got := vertexServiceTierHeaderValue("us-central1", model, schemas.BifrostServiceTierPriority); got != "" {
+			t.Fatalf("service tiers are global-endpoint only, got %q", got)
+		}
+	})
 }

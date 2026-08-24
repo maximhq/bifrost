@@ -74,8 +74,8 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 				<p className="text-muted-foreground text-xs">
 					{mode === "all" ? (
 						<>
-							<span className="text-foreground font-medium">{formatCompactNumber(totalLogs)}</span> logs match the current filters and will be
-							recalculated.
+							<span className="text-foreground font-medium">{formatCompactNumber(totalLogs)}</span> logs match the current filters and will
+							be recalculated.
 						</>
 					) : isFetching ? (
 						"Checking how many logs are missing a cost…"
@@ -85,13 +85,13 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 						"All logs in the current window already have a cost."
 					) : (
 						<>
-							<span className="text-foreground font-medium">{formatCompactNumber(missingCount)}</span> {missingCount === 1 ? "log" : "logs"} in the
-							current window {missingCount === 1 ? "doesn't have" : "don't have"} a cost yet and will be recalculated.
+							<span className="text-foreground font-medium">{formatCompactNumber(missingCount)}</span> {missingCount === 1 ? "log" : "logs"}{" "}
+							in the current window {missingCount === 1 ? "doesn't have" : "don't have"} a cost yet and will be recalculated.
 						</>
 					)}
 				</p>
 
-				<div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+				<div className="text-muted-foreground flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
 					<Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-500" />
 					<span>Affects the logs dashboard only. Governance budgets and usage tracking remain unchanged.</span>
 				</div>
@@ -125,12 +125,14 @@ function RecalculateModeOption({
 			type="button"
 			onClick={onSelect}
 			aria-pressed={selected}
-			className={`flex items-start cursor-pointer gap-3 rounded-md border p-3 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-input hover:bg-accent/50"
-				}`}
+			className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-left transition-colors ${
+				selected ? "border-primary bg-primary/5" : "border-input hover:bg-accent/50"
+			}`}
 		>
 			<span
-				className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
-					}`}
+				className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border ${
+					selected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
+				}`}
 			>
 				{selected && <Check className="size-3" />}
 			</span>
