@@ -17,6 +17,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySessionID`               | `x-bf-session-id` (falls back to coding-harness session headers) | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
 | `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session-to-key cache TTL (duration string or seconds)                                                                                 |
 | `BifrostContextKeyRequestTimeout`          | `x-bf-request-timeout`                               | `time.Duration`       | Total request/stream deadline (duration string or seconds), independent of any per-chunk stream-idle timeout                         |
+| `BifrostContextKeyStreamIdleTimeout`       | `x-bf-stream-idle-timeout`                           | `time.Duration`       | Per-chunk stream idle timeout override (duration string or seconds), independent of the total request/stream deadline                |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
@@ -372,6 +373,48 @@ Input: messages,
 <Note>
 When the deadline fires, Bifrost sets the internal `BifrostContextKeyRequestTimeoutFired` sentinel before cancelling the request, so plugins can distinguish a declared deadline firing from an arbitrary caller-disconnect or network cancellation.
 </Note>
+
+### Stream Idle Timeout
+
+**Context Key:** `BifrostContextKeyStreamIdleTimeout`
+**Header:** `x-bf-stream-idle-timeout`
+**Type:** `time.Duration` (header value: duration string like `"9m"` or `"540s"`, or seconds as integer)
+**Required:** No
+
+Override the per-chunk idle timeout for a single request's stream: if no data arrives within this window, Bifrost closes the connection. Lets one caller widen (or tighten) the idle tolerance without changing the provider's own `stream_idle_timeout_in_seconds` config, which applies to every caller of that provider.
+
+Independent of the total request/stream deadline (`x-bf-request-timeout`): setting one does not imply or stretch the other. A caller who wants both a total budget and a looser idle tolerance sets both headers; a caller who only cares about one sets just that one and the other falls through to the server's own configured default.
+
+Accepts duration strings (`"30s"`, `"9m"`, `"1h"`) or plain numbers (treated as seconds). Clamped to 30 minutes.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-stream-idle-timeout: 9m' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+}'
+````
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamIdleTimeout, 9*time.Minute)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
+})
+
+````
+</Tab>
+</Tabs>
 
 ### Request ID
 
