@@ -34,29 +34,29 @@ const externalLinks: {
 	icon: React.ComponentType<Record<string, unknown>>;
 	strokeWidth?: number;
 }[] = [
-		{
-			title: "Discord Server",
-			url: "https://discord.gg/exN5KAydbU",
-			icon: DiscordLogoIcon,
-		},
-		{
-			title: "GitHub Repository",
-			url: "https://github.com/maximhq/bifrost",
-			icon: GithubLogoIcon,
-		},
-		{
-			title: "Report a bug",
-			url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-			icon: BugIcon,
-			strokeWidth: 1.5,
-		},
-		{
-			title: "Full Documentation",
-			url: "https://docs.getbifrost.ai",
-			icon: BooksIcon,
-			strokeWidth: 1,
-		},
-	];
+	{
+		title: "Discord Server",
+		url: "https://discord.gg/exN5KAydbU",
+		icon: DiscordLogoIcon,
+	},
+	{
+		title: "GitHub Repository",
+		url: "https://github.com/maximhq/bifrost",
+		icon: GithubLogoIcon,
+	},
+	{
+		title: "Report a bug",
+		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
+		icon: BugIcon,
+		strokeWidth: 1.5,
+	},
+	{
+		title: "Full Documentation",
+		url: "https://docs.getbifrost.ai",
+		icon: BooksIcon,
+		strokeWidth: 1,
+	},
+];
 
 /**
  * Resolves the topbar title. A page can name itself via useSetTopbarTitle();
