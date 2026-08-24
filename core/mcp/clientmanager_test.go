@@ -319,6 +319,42 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
 }
 
+// TestSetClientTools_ReplacesStaleTools pins SetClientTools' replace
+// semantics: every caller passes a complete discovery result, so a tool the
+// upstream removed between discoveries must disappear from the in-memory
+// ToolMap. The old merge behavior kept such tools alive in memory (and on
+// the hosted MCP surface, which serves from ToolMap) while the DB, persisted
+// from the passed-in set via the tools-change callback, had already dropped
+// them.
+func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{ID: "client-replace-tools", Name: "replace-tools-client"}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap: map[string]schemas.ChatTool{
+			"replace-tools-client-removed": {},
+		},
+		ToolNameMapping: map[string]string{"replace-tools-client-removed": "removed"},
+	}
+	m.mu.Unlock()
+
+	m.SetClientTools(config.ID,
+		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
+		map[string]string{"replace-tools-client-kept": "kept"},
+	)
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
+	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
+	assert.Equal(t, map[string]string{"replace-tools-client-kept": "kept"}, state.ToolNameMapping)
+}
+
 // TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate
 // pins the strict half of the same symmetry: a sticky reconnect whose
 // tools/list fails is a failed reconnect, so a per-call refresh whose
