@@ -22,7 +22,7 @@ func span(base time.Time, id, parent, name string, kind schemas.SpanKind, startM
 func bucketMap(t *testing.T, trace *schemas.Trace, overheadMs float64, ovOK bool) map[string]float64 {
 	t.Helper()
 	out := map[string]float64{}
-	for _, b := range computeOverheadBreakdown(trace, overheadMs, ovOK) {
+	for _, b := range computeOverheadBreakdown(trace, overheadMs, ovOK, 0, false) {
 		out[b.Name] = b.DurationUs
 	}
 	return out
@@ -65,6 +65,76 @@ func TestComputeOverheadBreakdown_ChatPath(t *testing.T) {
 	}
 	if _, ok := got["/v1/chat/completions"]; ok {
 		t.Error("root http.request span must not appear as an overhead bucket")
+	}
+}
+
+// Regression: a nested phase span (e.g. "credentials-fetch" opened while "request-sign"
+// is the active parent, or a plugin hook opened while "handle-setup" is active) must be
+// counted ONCE. Because self-time subtracts only DIRECT children, the parent phase must
+// truly be the child's parent — if the two were siblings (the bug that motivated
+// startCoreSpan/StartScopedPhaseSpan installing themselves as the active parent), the
+// overlapping window would be counted in both buckets. Here credentials-fetch (15-25) is
+// a child of request-sign (10-30): request-sign self-time = 20ms - 10ms = 10ms, and the
+// two buckets sum to 20ms, not 30ms.
+func TestComputeOverheadBreakdown_NestedPhaseSpansCountedOnce(t *testing.T) {
+	base := time.Now()
+	trace := &schemas.Trace{Spans: []*schemas.Span{
+		span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100),
+		span(base, "sign", "root", "request-sign", schemas.SpanKindInternal, 10, 30),
+		span(base, "creds", "sign", "credentials-fetch", schemas.SpanKindInternal, 15, 25),
+	}}
+
+	// Overhead 20ms == the two spans' combined self-time, so core is empty.
+	got := bucketMap(t, trace, 20, true)
+
+	if got["request-sign"] != 10000 {
+		t.Errorf("request-sign = %v us, want 10000 (20ms wall - 10ms nested child)", got["request-sign"])
+	}
+	if got["credentials-fetch"] != 10000 {
+		t.Errorf("credentials-fetch = %v us, want 10000", got["credentials-fetch"])
+	}
+	// The overlapping 10ms window is counted once, not in both buckets.
+	if sum := got["request-sign"] + got["credentials-fetch"]; sum != 20000 {
+		t.Errorf("request-sign + credentials-fetch = %v us, want 20000 (no double-count)", sum)
+	}
+	if _, ok := got["core"]; ok {
+		t.Errorf("core should be empty when spans account for all overhead, got %v", got["core"])
+	}
+}
+
+// Regression: a phase span (e.g. "pipeline-post") that encloses MULTIPLE plugin hook
+// spans must subtract ALL of them, not just the first. This is why the plugin loops
+// restore the active span after each plugin (making the plugins siblings/direct children
+// of the phase span) instead of chaining them. Here pipeline-post (50-90) has three
+// direct plugin children (52-60, 60-70, 70-78): its self-time is 40ms - 26ms = 14ms, and
+// the phase + three plugin buckets sum to exactly the 40ms wall (no double-count). Were
+// the plugins chained (each parented to the previous), pipeline-post would subtract only
+// the first and the later two would be counted twice.
+func TestComputeOverheadBreakdown_SiblingPluginsUnderPhaseCountedOnce(t *testing.T) {
+	base := time.Now()
+	trace := &schemas.Trace{Spans: []*schemas.Span{
+		span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100),
+		span(base, "pp", "root", "pipeline-post", schemas.SpanKindInternal, 50, 90),
+		span(base, "a", "pp", "plugin.logging.posthook", schemas.SpanKindPlugin, 52, 60),
+		span(base, "b", "pp", "plugin.telemetry.posthook", schemas.SpanKindPlugin, 60, 70),
+		span(base, "c", "pp", "plugin.governance.posthook", schemas.SpanKindPlugin, 70, 78),
+	}}
+
+	got := bucketMap(t, trace, 40, true)
+
+	if got["pipeline-post"] != 14000 {
+		t.Errorf("pipeline-post = %v us, want 14000 (40ms wall - 26ms of nested plugins)", got["pipeline-post"])
+	}
+	if got["plugin.logging"] != 8000 || got["plugin.telemetry"] != 10000 || got["plugin.governance"] != 8000 {
+		t.Errorf("plugin buckets = logging %v / telemetry %v / governance %v us, want 8000/10000/8000",
+			got["plugin.logging"], got["plugin.telemetry"], got["plugin.governance"])
+	}
+	sum := got["pipeline-post"] + got["plugin.logging"] + got["plugin.telemetry"] + got["plugin.governance"]
+	if sum != 40000 {
+		t.Errorf("phase + plugins = %v us, want 40000 (== pipeline-post wall, no double-count)", sum)
+	}
+	if _, ok := got["core"]; ok {
+		t.Errorf("core should be empty, got %v", got["core"])
 	}
 }
 
@@ -183,16 +253,16 @@ func TestComputeOverheadBreakdown_NegligibleOverhead(t *testing.T) {
 		span(base, "llm", "root", "chat gpt-4o", schemas.SpanKindLLMCall, 0, 100),
 	}}
 
-	if got := computeOverheadBreakdown(trace, 0, false); len(got) != 0 {
+	if got := computeOverheadBreakdown(trace, 0, false, 0, false); len(got) != 0 {
 		t.Errorf("expected no overhead buckets when overhead is negligible, got %v", got)
 	}
 }
 
 func TestComputeOverheadBreakdown_Empty(t *testing.T) {
-	if computeOverheadBreakdown(nil, 0, false) != nil {
+	if computeOverheadBreakdown(nil, 0, false, 0, false) != nil {
 		t.Error("nil trace must yield nil")
 	}
-	if computeOverheadBreakdown(&schemas.Trace{}, 5, true) != nil {
+	if computeOverheadBreakdown(&schemas.Trace{}, 5, true, 0, false) != nil {
 		t.Error("trace with no spans must yield nil")
 	}
 }

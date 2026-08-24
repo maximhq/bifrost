@@ -388,6 +388,9 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
+// Helper to detect batch operations (they carry no messages or tool declarations)
+const isBatchOperation = (object: string) => object.startsWith("batch_");
+
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
@@ -507,7 +510,7 @@ const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-mar
 const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
 	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
 	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
+	"middleware.apikeys": { label: "API", colorClass: "bg-cyan-500/70" },
 	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
 	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
 	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
@@ -898,16 +901,17 @@ export function LogDetailView({
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
 	const batchRawRequest = useMemo(() => {
-		if (!batchDebug || !log.raw_request) return null;
+		if (!isBatch || !log.raw_request) return null;
 		try {
 			const parsed = JSON.parse(log.raw_request);
 			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 		} catch {
 			return null;
 		}
-	}, [batchDebug, log.raw_request]);
+	}, [isBatch, log.raw_request]);
 	const batchInlineRequests = useMemo(() => {
 		const requests = batchRawRequest?.requests;
 		if (Array.isArray(requests)) {
@@ -953,14 +957,20 @@ export function LogDetailView({
 				? ((batchRawRequest?.batch as any).inputConfig.fileName as string)
 				: null;
 	const batchRawResponse = useMemo(() => {
-		if (!batchDebug || !log.raw_response) return null;
+		if (!isBatch || !log.raw_response) return null;
 		try {
 			const parsed = JSON.parse(log.raw_response);
 			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 		} catch {
 			return null;
 		}
-	}, [batchDebug, log.raw_response]);
+	}, [isBatch, log.raw_response]);
+	// batch_debug is only recorded for create/retrieve, so fall back to the raw
+	// provider payload to describe the batch a cancel addressed.
+	const batchId = batchDebug?.batch_id ?? (typeof batchRawResponse?.id === "string" ? (batchRawResponse.id as string) : null);
+	const batchStatus = batchDebug?.status ?? (typeof batchRawResponse?.status === "string" ? (batchRawResponse.status as string) : null);
+	const showBatchDetailsTab = showTabs && isBatch && log.object !== "batch_list";
+
 	const batchResultItems = useMemo(() => {
 		const raw = batchRawResponse;
 		const results: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? (raw!.results as any[]) : [];
@@ -1988,23 +1998,6 @@ export function LogDetailView({
 												)}
 											</div>
 										)}
-										{batchDebug.status && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Status"
-												value={
-													<Badge
-														variant="outline"
-														className={cn(
-															"rounded-sm px-2 py-0.5 font-medium uppercase",
-															batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
-														)}
-													>
-														{batchDebug.status.replace(/_/g, " ")}
-													</Badge>
-												}
-											/>
-										)}
 									</div>
 								</>
 							)}
@@ -2201,9 +2194,9 @@ export function LogDetailView({
 						)}
 				</div>
 			</details>
-			<Tabs key={log.id} defaultValue={batchDebug ? "details" : showTabs ? "messages" : "plugins"} className="gap-2">
+			<Tabs key={log.id} defaultValue={showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins"} className="gap-2">
 				<TabsList className="bg-muted/60 h-10 w-fit">
-					{showTabs && batchDebug && (
+					{showBatchDetailsTab && (
 						<TabsTrigger value="details" className="px-3">
 							Details
 							{batchInlineRequests.length + batchResultItems.length ? (
@@ -2213,7 +2206,7 @@ export function LogDetailView({
 							) : null}
 						</TabsTrigger>
 					)}
-					{showTabs && !batchDebug && (
+					{showTabs && !isBatch && (
 						<TabsTrigger value="messages" className="px-3">
 							Messages
 							{log.input_history?.length ? (
@@ -2224,7 +2217,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !batchDebug && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -2259,17 +2252,17 @@ export function LogDetailView({
 					)}
 				</TabsList>
 
-				{batchDebug && (
+				{showBatchDetailsTab && (
 					<TabsContent value="details" className="space-y-4">
-						{(batchDebug.batch_id || (batchInlineRequests.length === 0 && batchInputFileId)) && (
+						{(batchId || batchStatus || (batchInlineRequests.length === 0 && batchInputFileId)) && (
 							<div className="bg-card rounded-sm border p-5 space-y-4">
-								{batchDebug.batch_id && (
+								{batchId && (
 									<LogEntryDetailsView
 										label="Batch ID"
 										value={
 											<span className="flex items-center gap-1">
-												<code className="font-mono text-xs">{batchDebug.batch_id}</code>
-												<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-details-copy-batch-id-button" />
+												<code className="font-mono text-xs">{batchId}</code>
+												<CopyInlineButton text={batchId} testId="logdetails-details-copy-batch-id-button" />
 											</span>
 										}
 									/>
@@ -2282,6 +2275,19 @@ export function LogDetailView({
 												<code className="font-mono text-xs">{batchInputFileId}</code>
 												<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
 											</span>
+										}
+									/>
+								)}
+								{batchStatus && (
+									<LogEntryDetailsView
+										label="Status"
+										value={
+											<Badge
+												variant="outline"
+												className={cn("rounded-sm px-2 py-0.5 font-medium uppercase", batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault)}
+											>
+												{batchStatus.replace(/_/g, " ")}
+											</Badge>
 										}
 									/>
 								)}
