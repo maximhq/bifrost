@@ -96,7 +96,7 @@ func shouldPreserveAdminPassword(password *schemas.SecretVar) bool {
 	}
 
 	value := password.GetValue()
-	return value == "" || strings.EqualFold(value, "<redacted>") || strings.EqualFold(value, "[redacted]")
+	return value == "" || schemas.IsRedactionSentinel(value)
 }
 
 func validateSubmittedAdminPassword(password *schemas.SecretVar) error {
@@ -354,9 +354,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if payload.AuthConfig != nil {
-		if err := validateSubmittedAdminPassword(payload.AuthConfig.AdminPassword); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
+		// Secret-backed credentials must not block the recovery path when auth is
+		// being disabled, but newly submitted plaintext still must meet policy.
+		shouldValidatePassword := payload.AuthConfig.IsEnabled ||
+			(payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.IsFromSecret())
+		if shouldValidatePassword {
+			if err := validateSubmittedAdminPassword(payload.AuthConfig.AdminPassword); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
 		}
 	}
 
@@ -921,6 +927,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
 				!shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword)
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
+				payload.AuthConfig.AdminUserName.GetValue() != "" &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
 				usernameChanged ||
@@ -987,7 +994,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) {
+			if shouldPreserveAdminPassword(payload.AuthConfig.AdminPassword) ||
+				(payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "") {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			} else {
 				hashedPassword, err := hashAdminPassword(payload.AuthConfig.AdminPassword)
