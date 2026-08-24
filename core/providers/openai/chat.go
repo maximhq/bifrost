@@ -48,6 +48,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		if bifrostReq.Provider == schemas.OpenRouter {
+			openaiReq.OpenRouterRouting = bifrostReq.Params.ExtraParams["provider"]
+		}
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {

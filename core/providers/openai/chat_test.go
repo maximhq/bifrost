@@ -80,6 +80,46 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_OpenRouterProviderRouting pins OpenRouter's upstream
+// routing contract without enabling broad arbitrary-extra-parameter passthrough.
+func TestToOpenAIChatRequest_OpenRouterProviderRouting(t *testing.T) {
+	routing := map[string]any{
+		"order":           []any{"reka"},
+		"allow_fallbacks": false,
+	}
+	makeRequest := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "deepseek/deepseek-v4-flash-0731",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]any{"provider": routing},
+			},
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	openRouterRequest := ToOpenAIChatRequest(ctx, makeRequest(schemas.OpenRouter))
+	wireBody, err := sonic.Marshal(openRouterRequest)
+	require.NoError(t, err)
+	var wire map[string]any
+	require.NoError(t, sonic.Unmarshal(wireBody, &wire))
+	require.Equal(t, routing, wire["provider"])
+
+	// The native field must not require the broad arbitrary-extra-parameter
+	// passthrough switch, and must never leak onto another provider's wire body.
+	openAIRequest := ToOpenAIChatRequest(ctx, makeRequest(schemas.OpenAI))
+	wireBody, err = sonic.Marshal(openAIRequest)
+	require.NoError(t, err)
+	wire = nil
+	require.NoError(t, sonic.Unmarshal(wireBody, &wire))
+	require.NotContains(t, wire, "provider")
+}
+
 // TestToOpenAIChatRequest_InvalidatesStaleSerializedCache guards the fix for a
 // shared MCP tool carrying a precomputed serialized cache. Those tools are
 // injected into the request by value, so the cache rides along with the copy.

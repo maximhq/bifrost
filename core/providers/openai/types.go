@@ -135,6 +135,13 @@ type OpenAIChatRequest struct {
 	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
 
+	// OpenRouterRouting is OpenRouter's top-level `provider` preferences object.
+	// It deliberately has a different Go name from Provider: Provider selects the
+	// Bifrost adapter, while this value constrains which upstream OpenRouter may
+	// serve. It is populated only for the native OpenRouter adapter so a customer
+	// routing constraint cannot leak to other OpenAI-compatible providers.
+	OpenRouterRouting any `json:"provider,omitempty"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters

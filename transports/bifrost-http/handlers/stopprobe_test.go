@@ -47,3 +47,22 @@ func TestProbeChatRequestStopParse(t *testing.T) {
 		t.Fatalf("extract extra params: %v", err)
 	}
 }
+
+// OpenRouter also calls its upstream-routing object `provider`. Bifrost's own
+// adapter selector lives in the model prefix, so the HTTP parser must retain the
+// top-level object as an extra parameter for the native OpenRouter converter.
+func TestProbeChatRequestRetainsOpenRouterProviderRouting(t *testing.T) {
+	body := []byte(`{"model":"openrouter/deepseek/deepseek-v4-flash-0731","messages":[{"role":"user","content":"route"}],"provider":{"order":["reka"],"allow_fallbacks":false}}`)
+
+	extraParams, err := extractExtraParams(body, chatParamsKnownFields)
+	if err != nil {
+		t.Fatalf("extract extra params: %v", err)
+	}
+	routing, ok := extraParams["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider routing was not retained: %#v", extraParams["provider"])
+	}
+	if allowFallbacks, ok := routing["allow_fallbacks"].(bool); !ok || allowFallbacks {
+		t.Fatalf("allow_fallbacks = %#v, want false", routing["allow_fallbacks"])
+	}
+}

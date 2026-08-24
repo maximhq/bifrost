@@ -132937,6 +132937,135 @@
           ]
         }
       ]
+    },
+    {
+      "name": "55. OpenRouter Upstream Provider Routing (PR #6452)",
+      "description": "Pins the two meanings of `provider` on the native OpenRouter path. Bifrost selects its adapter from the `openrouter/` model prefix; OpenRouter's top-level `provider` object must still reach the upstream API to constrain the serving vendor. These negative-shape cases are intentionally rejected by OpenRouter, while a gateway that drops the field incorrectly serves the model and returns 200.",
+      "item": [
+        {
+          "name": "[EXPECT-4XX] OpenRouter DeepSeek malformed provider routing is forwarded - PR #6452",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/deepseek/deepseek-v4-flash-0731\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with one word.\"}],\n  \"max_tokens\": 8,\n  \"provider\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenRouter validates the forwarded provider field', function () {",
+                  "  pm.expect(pm.response.code, 'provider field was dropped: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] OpenRouter DeepSeek unavailable-only provider contract is forwarded - PR #6452",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/deepseek/deepseek-v4-flash-0731\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with one word.\"}],\n  \"max_tokens\": 8,\n  \"provider\": {\"order\": [\"__bifrost_route_contract_probe__\"], \"allow_fallbacks\": false}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenRouter honors the forwarded no-fallback contract', function () {",
+                  "  pm.expect(pm.response.code, 'provider routing object was dropped: ' + pm.response.text()).to.eql(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] OpenRouter DeepSeek streaming malformed provider routing is forwarded - PR #6452",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/deepseek/deepseek-v4-flash-0731\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with one word.\"}],\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"provider\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('streaming forwards the same provider contract', function () {",
+                  "  pm.expect(pm.response.code, 'streaming provider field was dropped: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
