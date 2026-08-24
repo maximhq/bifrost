@@ -206,7 +206,7 @@ Bifrost sets the correct header automatically based on the resolved endpoint mod
 
 ### Extra Parameters
 
-Model Studio enables passthrough extra parameters for Chat Completions and the Responses API on the default OpenAI-compatible endpoints. Vendor-specific body params such as `enable_thinking`, `thinking_budget`, or `clear_thinking` can be sent under `extra_params` with the `x-bf-passthrough-extra-params: true` header. Extra parameters are **not** passed through by default when `use_anthropic_endpoints` is enabled.
+Model Studio enables passthrough extra parameters for Chat Completions and the Responses API on the default OpenAI-compatible endpoints. Vendor-specific body params such as `enable_thinking`, `thinking_budget`, or `clear_thinking` can be sent under `extra_params` with the `x-bf-passthrough-extra-params: true` header — the header is what extracts `extra_params` from the request body at ingress, and it is required on either endpoint mode. Once extracted, the params are merged into the outbound request body by default on the OpenAI-compatible endpoints; the Anthropic-compatible path performs no such outbound merge, so extra parameters are effectively dropped when `use_anthropic_endpoints` is enabled.
 
 ---
 
@@ -294,7 +294,7 @@ Text embeddings through the OpenAI-compatible `/embeddings` endpoint (`text-embe
 
 <Accordion title="Extra Parameters Not Passed Through in Anthropic-Compatible Mode">
 **Severity**: Low
-**Behavior**: Extra parameters are merged into the outbound request body by default on the OpenAI-compatible path (Chat Completions and the Responses API), but not on the Anthropic-compatible path
+**Behavior**: The `x-bf-passthrough-extra-params: true` header is still required to extract `extra_params` from the request body on either path. Once populated, the params are merged into the outbound request body by default on the OpenAI-compatible path (Chat Completions and the Responses API), but not on the Anthropic-compatible path
 **Impact**: Provider-specific `extra_params` set on a request may be silently dropped when `use_anthropic_endpoints` is enabled
 **Code**: `BifrostContextKeyPassthroughExtraParams` is set in the OpenAI-compatible branches of `ChatCompletion`/`ChatCompletionStream` and in `Responses`/`ResponsesStream`, but not in the Anthropic-compatible branches, in `core/providers/alibaba/alibaba.go`
 </Accordion>
