@@ -7,7 +7,6 @@
  * offset lands every menu on the same line, and a lone override would visibly
  * break the row.
  */
-export const TOPBAR_MENU_SIDE_OFFSET = 8;
 
 /** Path segments that are shouted rather than capitalised. */
 const titleAcronyms: Record<string, string> = {
