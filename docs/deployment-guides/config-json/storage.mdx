@@ -402,10 +402,10 @@ The IAM user or role needs the following permissions on your bucket:
 }
 ```
 
-2. KMS keys also need permission granted separately on the **key's own policy** (in the KMS console). Add that same IAM user or role ARN there too ([AWS guide](https://repost.aws/knowledge-center/s3-bucket-access-default-encryption)).
+2. If you're using a **customer-managed key** (not the AWS-managed `aws/s3` key), it also needs permission granted separately on the **key's own policy** (in the KMS console). Add that same IAM user or role ARN there too ([AWS guide](https://repost.aws/knowledge-center/s3-bucket-access-default-encryption)). AWS-managed keys don't allow their key policy to be edited, so this step doesn't apply if you're using the default `aws/s3` key.
 
 <Info>
-Default encryption applies KMS without requiring anything from the uploader. If instead your bucket policy denies uploads that don't include the encryption header, note that Bifrost does not send that header, so uploads will fail under that policy.
+Default encryption applies KMS without requiring encryption headers from the uploader. Bifrost's IAM identity still needs the KMS permissions above regardless of encryption mode. If instead your bucket policy denies uploads that don't include the encryption header, note that Bifrost does not send that header, so uploads will fail under that policy.
 </Info>
 
 </Accordion>
