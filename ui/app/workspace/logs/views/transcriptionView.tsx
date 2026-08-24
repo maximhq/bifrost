@@ -54,7 +54,7 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 
 								{/* Basic Information */}
 								{(transcriptionOutput?.task || transcriptionOutput?.language || transcriptionOutput?.duration) && (
-									<div className="grid grid-cols-3 gap-4">
+									<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
 										{transcriptionOutput?.task && (
 											<div>
 												<div className="text-muted-foreground mb-2 text-xs font-medium">TASK</div>

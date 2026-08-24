@@ -486,6 +486,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
+	input_cost_per_token_ultrafast?: number;
+	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
@@ -519,6 +521,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost_ultrafast?: number;
 	cache_read_input_token_cost_flex?: number;
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
@@ -528,6 +531,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_flex?: number;
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
 	cache_read_input_token_cost_fast?: number;
@@ -543,12 +547,31 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
 	output_cost_per_image_above_1024_and_1024_pixels?: number;
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	output_cost_per_image_above_1024_and_1536_pixels?: number;
+	output_cost_per_image_above_1536_and_1024_pixels?: number;
 	output_cost_per_image_above_2048_and_2048_pixels?: number;
 	output_cost_per_image_above_4096_and_4096_pixels?: number;
+	output_cost_per_image_above_4_megapixels?: number;
+	output_cost_per_image_above_8_megapixels?: number;
+	output_cost_per_image_above_16_megapixels?: number;
+	output_cost_per_image_above_32_megapixels?: number;
+	output_cost_per_image_above_64_megapixels?: number;
 	output_cost_per_image_low_quality?: number;
 	output_cost_per_image_medium_quality?: number;
 	output_cost_per_image_high_quality?: number;
 	output_cost_per_image_auto_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_low_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_medium_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_high_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_standard_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_standard_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_standard_quality?: number;
 	// Audio/Video
 	input_cost_per_audio_token?: number;
 	input_cost_per_audio_per_second?: number;
@@ -559,6 +582,7 @@ export interface PricingOverridePatch {
 	output_cost_per_second?: number;
 	// Other
 	search_context_cost_per_query?: number;
+	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
 	cost_per_request?: number;

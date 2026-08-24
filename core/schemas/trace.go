@@ -204,6 +204,108 @@ func (t *Trace) SnapshotForExport() *Trace {
 	return clone
 }
 
+// overheadBreakdownSpanNames are internal phase spans emitted solely to build the
+// log-detail overhead breakdown. They are withheld from observability connectors (see
+// IsOverheadBreakdownSpan); only a plugin that opts in via OverheadSpanConsumer (the
+// logging plugin) receives them.
+var overheadBreakdownSpanNames = map[string]struct{}{
+	"request-unmarshal":    {},
+	"request-marshal":      {},
+	"response-parse":       {},
+	"response-marshal":     {},
+	"convertor":            {},
+	"queue-wait":           {},
+	"attribute-population": {},
+}
+
+// IsOverheadBreakdownSpan reports whether a span exists only to feed the overhead
+// breakdown and should not be exported to observability connectors: the internal phase
+// spans, the middleware.* auth spans, and the plugin transport-hook stages. Note
+// key.selection is deliberately NOT included — it predates the breakdown and carries
+// chosen-key attributes worth keeping in traces.
+func IsOverheadBreakdownSpan(span *Span) bool {
+	if span == nil {
+		return false
+	}
+	switch span.Kind {
+	case SpanKindInternal:
+		if _, ok := overheadBreakdownSpanNames[span.Name]; ok {
+			return true
+		}
+		return strings.HasPrefix(span.Name, "middleware.")
+	case SpanKindPlugin:
+		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+	}
+	return false
+}
+
+// WithoutOverheadBreakdownSpans returns a copy of the trace whose Spans slice omits the
+// overhead-breakdown spans. It is meant to be called on an export snapshot (which has
+// no live writers), so the returned trace shares that snapshot's metadata and its kept
+// span pointers; only the span slice differs and reparented spans are copied. A
+// retained span parented to an omitted one is reparented to the omitted span's own
+// parent so the exported hierarchy stays connected (breakdown spans are leaves today,
+// so this is defensive). Returns the receiver unchanged when nothing is stripped, so
+// the common path allocates nothing.
+func (t *Trace) WithoutOverheadBreakdownSpans() *Trace {
+	if t == nil {
+		return t
+	}
+	var omittedParent map[string]string
+	for _, s := range t.Spans {
+		if IsOverheadBreakdownSpan(s) {
+			if omittedParent == nil {
+				omittedParent = make(map[string]string)
+			}
+			omittedParent[s.SpanID] = s.ParentID
+		}
+	}
+	if len(omittedParent) == 0 {
+		return t
+	}
+	kept := make([]*Span, 0, len(t.Spans)-len(omittedParent))
+	for _, s := range t.Spans {
+		if s == nil {
+			continue
+		}
+		if _, drop := omittedParent[s.SpanID]; drop {
+			continue
+		}
+		if _, reparent := omittedParent[s.ParentID]; reparent {
+			// Walk up past any chained omitted ancestors to the nearest kept parent.
+			parentID := s.ParentID
+			for range omittedParent {
+				next, still := omittedParent[parentID]
+				if !still {
+					break
+				}
+				parentID = next
+			}
+			cp := s.snapshotForExport()
+			cp.ParentID = parentID
+			kept = append(kept, cp)
+			continue
+		}
+		kept = append(kept, s)
+	}
+	// New Trace (fresh zero mutex, intentional) sharing the snapshot's metadata; only
+	// the span slice differs.
+	return &Trace{
+		RequestID:             t.RequestID,
+		TraceID:               t.TraceID,
+		InternalID:            t.InternalID,
+		ParentID:              t.ParentID,
+		RootSpan:              t.RootSpan,
+		Spans:                 kept,
+		StartTime:             t.StartTime,
+		EndTime:               t.EndTime,
+		Attributes:            t.Attributes,
+		RequestHeaders:        t.RequestHeaders,
+		PluginLogs:            t.PluginLogs,
+		redactionReplacements: t.redactionReplacements,
+	}
+}
+
 // StampOverheadDuration writes Bifrost's own cost onto the root span as
 // AttrBifrostOverheadDurationMs: the root span's wall time minus the upstream
 // total stamped on it. This is the single definition of the overhead number —
@@ -380,6 +482,27 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// SetAttributes merges an already-built attribute map into the span under a
+// single lock. Preferred over a caller-side range + SetAttribute loop (one lock
+// per entry) when the map already exists (e.g. the Populate*Attributes output).
+// Nil values are skipped, matching SetAttribute.
+func (s *Span) SetAttributes(attrs map[string]any) {
+	if s == nil || len(attrs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any, len(attrs))
+	}
+	for k, v := range attrs {
+		if v == nil {
+			continue
+		}
+		s.Attributes[k] = v
+	}
+}
+
 // snapshotForExport returns a copy of the span whose Attributes (and Events)
 // are cloned under the span lock, so observability exporters can read them
 // concurrently while a late writer (streaming finalization, redaction) may still
@@ -435,6 +558,59 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 	s.StatusMsg = statusMsg
 }
 
+// EndIfMatch ends the span only if its SpanID still equals id, and reports whether
+// it did. It exists for the tracer's cached-pointer fast path: a span pooled by
+// ReleaseTrace has its SpanID cleared under this same lock (see Reset), and a span
+// reused by another trace carries a different SpanID, so a stale handle fails the
+// check and the caller falls back to the by-ID store lookup instead of mutating a
+// recycled span. The check rides inside the lock End already takes, so it adds no
+// extra locking.
+func (s *Span) EndIfMatch(id string, status SpanStatus, statusMsg string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.EndTime = time.Now()
+	s.Status = status
+	s.StatusMsg = statusMsg
+	return true
+}
+
+// SetAttributeIfMatch sets an attribute only if the span's SpanID still equals id,
+// and reports whether it did. Same recycling guard as EndIfMatch, for the tracer's
+// cached-pointer fast path.
+func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
+	if s == nil || value == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any)
+	}
+	s.Attributes[key] = value
+	return true
+}
+
+// MatchesID reports whether the span's SpanID still equals id, read under the span
+// lock so it does not race a concurrent Reset. Used by the tracer to decide whether
+// a cached span pointer is still the one the handle refers to before returning it.
+func (s *Span) MatchesID(id string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.SpanID == id
+}
+
 // Reset clears the span for reuse from pool. It holds s.mu — like every other
 // Span mutator — so a straggling writer (e.g. streaming finalization) that races
 // pool release can't trigger a fatal concurrent map access on s.Attributes.
@@ -450,7 +626,14 @@ func (s *Span) Reset() {
 	s.EndTime = time.Time{}
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
-	s.Attributes = nil
+	// Reuse the attribute map across pool cycles: tracing/store.go clears and
+	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
+	// request. Drop only an outlier-sized map so one huge request can't pin it.
+	if len(s.Attributes) > 64 {
+		s.Attributes = nil
+	} else {
+		clear(s.Attributes)
+	}
 	s.Events = s.Events[:0]
 }
 
@@ -841,6 +1024,11 @@ const RedactedAttrValue = "REDACTED"
 // well-known exact names, substring/suffix patterns catch credential-bearing
 // variants like x-auth-token, x-amz-security-token, and provider-specific
 // *-api-key headers.
+//
+// Identity-aware-proxy headers are covered explicitly: Cloudflare Access
+// (cf-access-*, incl. the cf-access-jwt-assertion signed JWT) and AWS ALB OIDC
+// (x-amzn-oidc-*) inject signed identity tokens the substring rules would miss,
+// plus generic jwt/assertion-bearing headers.
 func IsSensitiveHeader(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 
@@ -852,6 +1040,10 @@ func IsSensitiveHeader(name string) bool {
 	return strings.Contains(normalized, "api-key") ||
 		strings.Contains(normalized, "authorization") ||
 		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "assertion") ||
+		strings.Contains(normalized, "jwt") ||
+		strings.HasPrefix(normalized, "cf-access-") ||
+		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
 }

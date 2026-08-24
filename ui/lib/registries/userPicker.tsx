@@ -59,10 +59,7 @@ export interface UserSearchQueryResult {
 }
 
 /** Shape of an RTK Query search hook: same calling convention as `useGetXQuery(params, options)`. */
-export type UseUserSearchQuery = (
-	params: { search?: string; limit?: number },
-	options?: { skip?: boolean },
-) => UserSearchQueryResult;
+export type UseUserSearchQuery = (params: { search?: string; limit?: number }, options?: { skip?: boolean }) => UserSearchQueryResult;
 
 let userSearchQuery: UseUserSearchQuery | undefined;
 

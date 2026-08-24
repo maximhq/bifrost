@@ -295,8 +295,11 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 	// 3. Check model filtering. Most request types always carry a model and are always checked.
 	// Passthrough forwards raw provider routes where a model may or may not be resolvable for some request types.
+	// Video edit's model is itself optional (e.g. OpenAI infers it from the source video ID), so it's
+	// checked only when the caller actually supplied one, same as passthrough.
 	isPassthrough := requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest
-	if !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (isPassthrough && model != "")) && !r.isModelAllowed(vk, provider, model) {
+	checkModelIfPresent := isPassthrough || requestType == schemas.VideoEditRequest
+	if !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),

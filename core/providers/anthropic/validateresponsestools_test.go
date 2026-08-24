@@ -104,7 +104,7 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, dropped := ValidateResponsesToolsForProvider(tc.input, tc.provider)
+			keep, dropped := ValidateResponsesToolsForProvider(tc.input, schemas.ResolveModelCaps(tc.provider, "claude-opus-4-5"))
 			if len(keep) != tc.wantKeep {
 				t.Errorf("keep count: got %d, want %d (%s)", len(keep), tc.wantKeep, tc.assertNotes)
 			}

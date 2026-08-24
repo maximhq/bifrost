@@ -94,12 +94,18 @@ The **Complexity Spectrum** bar updates live as you type boundary values, so you
 </Tab>
 <Tab title="API">
 
+<Note>
+  These endpoints moved to `/api/routing/*` when routing became its own plugin. The previous
+  `/api/governance/*` paths still work and behave identically, so existing scripts keep
+  running, but they are deprecated and new integrations should use the paths shown here.
+</Note>
+
 ```bash
 # Get current configuration
-curl http://localhost:8080/api/governance/complexity-analyzer-config
+curl http://localhost:8080/api/routing/complexity-analyzer-config
 
 # Update tier boundaries
-curl -X PUT http://localhost:8080/api/governance/complexity-analyzer-config \
+curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
   -H "Content-Type: application/json" \
   -d '{
     "tier_boundaries": {
@@ -116,7 +122,7 @@ curl -X PUT http://localhost:8080/api/governance/complexity-analyzer-config \
   }'
 
 # Reset to factory defaults
-curl -X POST http://localhost:8080/api/governance/complexity-analyzer-config/reset
+curl -X POST http://localhost:8080/api/routing/complexity-analyzer-config/reset
 ```
 
 **Response (GET / PUT):**

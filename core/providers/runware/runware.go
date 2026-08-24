@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -19,7 +22,8 @@ import (
 // RunwareProvider implements the Provider interface for Runware's API.
 type RunwareProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -44,6 +48,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	// Set default BaseURL if not provided. Runware's single endpoint already includes /v1.
 	if config.NetworkConfig.BaseURL == "" {
@@ -54,6 +59,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	return &RunwareProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -65,9 +71,71 @@ func (provider *RunwareProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Runware
 }
 
-// ListModels is not supported by the Runware provider.
+// ListModels returns Runware's curated model catalog, spanning every modality it serves — image,
+// video, 3D, audio and text.
 func (provider *RunwareProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	startTime := time.Now()
+
+	response, err := providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+	return response, nil
+}
+
+// listModelsByKey sweeps Runware's catalog for one key. Runware pages a modelSearch task by offset
+// and reports totalResults inconsistently, so paging stops on the first short page rather than on a
+// count. The sweep is scoped to curated models: the full catalog is ~320k entries, the overwhelming
+// majority community LoRA uploads that no Bifrost route targets.
+func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	var models []RunwareModel
+
+	for offset := 0; ; offset += runwareModelSearchPageSize {
+		searchRequest := RunwareModelSearchRequest{
+			TaskType: taskTypeModelSearch,
+			TaskUUID: uuid.New().String(),
+			Source:   runwareCuratedSource,
+			Limit:    runwareModelSearchPageSize,
+			Offset:   offset,
+		}
+		jsonData, err := providerUtils.MarshalSorted(searchRequest)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+
+		_, respBody, _, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		var searchResponse RunwareModelSearchResponse
+		if err := sonic.Unmarshal(respBody, &searchResponse); err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		}
+		if len(searchResponse.Data) == 0 {
+			if msg := firstRunwareErrorMessage(searchResponse.Errors); msg != "" {
+				return nil, providerUtils.NewBifrostOperationError(msg, nil)
+			}
+			break
+		}
+
+		page := searchResponse.Data[0].Results
+		models = append(models, page...)
+		if len(page) < runwareModelSearchPageSize {
+			break
+		}
+	}
+
+	return ToBifrostListModelsResponse(
+		models,
+		provider.GetProviderKey(),
+		key.Models,
+		key.BlacklistedModels,
+		key.Aliases,
+		request.Unfiltered,
+	), nil
 }
 
 // TextCompletion is not supported by the Runware provider.
@@ -80,24 +148,70 @@ func (provider *RunwareProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
-// ChatCompletion is not supported by the Runware provider.
+// ChatCompletion performs a chat completion request against Runware's OpenAI-compatible endpoint.
+// Runware serves text inference at /v1/chat/completions in the standard OpenAI request and response
+// shape, including reasoning_content, so the OpenAI handlers are used unchanged. Models are named
+// by their AIR identifier rather than an OpenAI model name.
 func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
-// ChatCompletionStream is not supported by the Runware provider.
+// ChatCompletionStream streams a chat completion from Runware's OpenAI-compatible endpoint. The SSE
+// format matches OpenAI's, terminating with [DONE].
 func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIChatCompletionStreaming(
+		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
 }
 
-// Responses is not supported by the Runware provider.
+// Responses serves the Responses API from the chat completions endpoint. Runware routes /v1/responses
+// but rejects every model on it, so the request is muxed through chat rather than sent natively.
 func (provider *RunwareProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRequest, provider.GetProviderKey())
+	chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return chatResponse.ToBifrostResponsesResponse(), nil
 }
 
-// ResponsesStream is not supported by the Runware provider.
+// ResponsesStream streams the Responses API through chat completions (see Responses).
 func (provider *RunwareProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 }
 
 // Embedding is not supported by the Runware provider.
@@ -323,7 +437,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(result.TaskUUID, providerName)
 	bifrostResp.Model = bifrostReq.Model
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
@@ -365,7 +479,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(taskID, providerName)
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawRequest {
@@ -445,6 +559,53 @@ func (provider *RunwareProvider) VideoDelete(_ *schemas.BifrostContext, _ schema
 // VideoList is not supported by the Runware provider.
 func (provider *RunwareProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit submits a task that operates on an existing video. Like video generation it is async,
+// so the response carries the task ID and callers poll it through VideoRetrieve.
+func (provider *RunwareProvider) VideoEdit(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToRunwareVideoEditRequest(bifrostReq)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var videoResp RunwareResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result, bifrostErr := firstVideoResult(&videoResp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
+	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(result.TaskUUID, providerName)
+	bifrostResp.Model = bifrostReq.Model
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
 }
 
 // VideoRemix is not supported by the Runware provider.

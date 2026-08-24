@@ -90,6 +90,14 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		return nil, fmt.Errorf("failed to cast Cleanup to func() error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 
+	// Optional: HTTPTransportPreAuthHook — runs before the transport authenticates the
+	// request. Plugins predating the hook simply don't export it and are skipped.
+	if sym, err := pluginObj.Lookup("HTTPTransportPreAuthHook"); err == nil {
+		if dp.httpTransportPreAuthHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportPreAuthHook to expected signature")
+		}
+	}
+
 	// Optional: HTTPTransportPreHook
 	if sym, err := pluginObj.Lookup("HTTPTransportPreHook"); err == nil {
 		if dp.httpTransportPreHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {

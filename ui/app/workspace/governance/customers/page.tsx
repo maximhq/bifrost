@@ -79,7 +79,7 @@ export default function GovernanceCustomersPage() {
 	}
 
 	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] w-full flex-col p-4">
+		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full flex-col p-4">
 			<CustomersTable
 				customers={customersData?.customers || []}
 				totalCount={customersData?.total_count || 0}

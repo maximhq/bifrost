@@ -25,6 +25,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
@@ -37,7 +38,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -46,7 +47,7 @@ import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/r
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
-import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
+import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
 import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
@@ -364,6 +365,25 @@ const formatToolChoice = (value: unknown): string => {
 	}
 };
 
+// batchRequestStates lists the provider's per-state request tallies as discrete
+// label/count pairs. Total, Completed, and Failed are universal (every provider
+// sets them, and a 0 is a real, useful count — e.g. "no failures yet"), so they
+// always render. The remaining states are Anthropic-specific and simply absent
+// for other providers, so those are dropped when not reported.
+const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
+	const optional: [string, number | undefined][] = [
+		["Succeeded", counts.succeeded],
+		["Expired", counts.expired],
+		["Canceled", counts.canceled],
+		["Pending", counts.pending],
+	];
+	return [
+		["Completed", counts.completed],
+		["Failed", counts.failed],
+		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
+	];
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -396,6 +416,16 @@ const statusDotStyles: Record<string, string> = {
 	cancelled: "bg-gray-400",
 };
 
+const batchStatusBadgeStyles: Record<string, string> = {
+	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+};
+const batchStatusBadgeDefault = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+
 function StatusPill({ status }: { status: Status }) {
 	return (
 		<span
@@ -408,6 +438,17 @@ function StatusPill({ status }: { status: Status }) {
 			{status}
 		</span>
 	);
+}
+
+// Colors an HTTP status code badge by response class.
+function statusCodeBadgeClass(code: number): string {
+	if (code >= 200 && code < 300)
+		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 300 && code < 400)
+		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
+	if (code >= 400 && code < 500)
+		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
+	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
 }
 
 function HeroStat({
@@ -432,6 +473,191 @@ function HeroStat({
 				{value}
 			</div>
 			{sub ? <div className="text-muted-foreground mt-0.5 truncate text-[11px]">{sub}</div> : null}
+		</div>
+	);
+}
+
+// formatMicros renders a microsecond overhead value, promoting to ms once it is
+// large enough that microseconds would just be noise.
+function formatMicros(us: number): string {
+	if (us >= 1000) return `${(us / 1000).toFixed(2)} ms`;
+	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
+}
+
+// Top-level overhead categories. The four JSON (un)marshalling phases fold into one
+// "Serialization" category; the auth middleware spans (middleware.*) fold into
+// "Middleware"; every plugin span folds into "Plugins"; the remaining named phase
+// spans (queue-wait, convertor, key.selection) and the backend "core" remainder each
+// get their own category; anything else lands in "Other". The stacked bar and legend
+// show these categories, and "View details" drills into the member spans (individual
+// (un)marshal phases, individual middlewares, individual plugins) inside grouped ones.
+type OverheadCategory = {
+	key: string;
+	label: string;
+	colorClass: string;
+	totalUs: number;
+	members: OverheadBucket[];
+};
+
+// The four serialization phases collapsed into the "Serialization" category. Their
+// per-phase labels below are used for the drill-down rows.
+const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
+
+const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
+	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
+	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
+	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
+	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
+	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
+	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
+	"request-unmarshal": { label: "Request unmarshal", colorClass: "bg-sky-500/70" },
+	convertor: { label: "Convertor", colorClass: "bg-fuchsia-500/70" },
+	"attribute-population": { label: "Attribute population", colorClass: "bg-pink-500/70" },
+	"request-marshal": { label: "Request marshal", colorClass: "bg-indigo-500/70" },
+	"response-parse": { label: "Response unmarshal", colorClass: "bg-purple-500/70" },
+	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
+	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
+	core: { label: "Core", colorClass: "bg-slate-500/70" },
+	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
+	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
+	other: { label: "Other", colorClass: "bg-emerald-500/70" },
+};
+
+function overheadCategoryKey(b: OverheadBucket): string {
+	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
+		return "serialization";
+	}
+	if (b.name.startsWith("middleware.")) {
+		return "middleware";
+	}
+	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
+		return b.name;
+	}
+	return b.kind === "plugin" ? "plugins" : "other";
+}
+
+// overheadMemberLabel renders a drill-down member with its friendly phase label when
+// there is one (serialization phases), else the raw span name (plugins).
+function overheadMemberLabel(name: string): string {
+	return OVERHEAD_CATEGORY_META[name]?.label ?? name;
+}
+
+// buildOverheadCategories groups the raw buckets into the top-level categories,
+// ordered largest-first so the bar and legend read like the numbers.
+function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
+	const grouped = new Map<string, OverheadBucket[]>();
+	for (const b of buckets) {
+		const key = overheadCategoryKey(b);
+		const list = grouped.get(key);
+		if (list) list.push(b);
+		else grouped.set(key, [b]);
+	}
+	const cats: OverheadCategory[] = [];
+	for (const [key, members] of grouped) {
+		members.sort((a, b) => b.duration_us - a.duration_us);
+		cats.push({
+			key,
+			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
+			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
+			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
+			members,
+		});
+	}
+	return cats.sort((a, b) => b.totalUs - a.totalUs);
+}
+
+// OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
+// split into the top-level categories, with a legend beneath. Plugin and internal
+// spans are measured directly; the "core" bucket (from the backend) accounts for the
+// rest of the overhead, so the segments sum to the full overhead number. "View
+// details" expands the categories that hold more than one span (Plugins, Other) into
+// their individual members so a specific plugin can be inspected.
+function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
+	const [showDetails, setShowDetails] = useState(false);
+	if (!buckets || buckets.length === 0) return null;
+
+	const categories = buildOverheadCategories(buckets);
+	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
+	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
+
+	// When measured spans already exceed the computed overhead, the backend omits a
+	// core bucket (it would be negative): a sign the upstream accumulator is
+	// over-counting. Surface it rather than let the numbers look inconsistent.
+	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
+
+	const barTotal = categories.reduce((acc, c) => acc + c.totalUs, 0) || 1;
+	// Only categories that aggregate more than one span are worth drilling into.
+	const drillable = categories.filter((c) => c.members.length > 1);
+
+	return (
+		<div className="space-y-3">
+			<div className="flex items-center justify-between gap-2">
+				<BlockHeader title="Overhead Breakdown" />
+				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
+			</div>
+
+			<div className="flex h-3 w-full overflow-hidden rounded-sm">
+				{categories.map((c) => (
+					<div
+						key={c.key}
+						className={cn(c.colorClass, "h-full")}
+						style={{ width: `${(c.totalUs / barTotal) * 100}%` }}
+						title={`${c.label} · ${formatMicros(c.totalUs)}`}
+					/>
+				))}
+			</div>
+
+			<div className="flex flex-wrap gap-x-4 gap-y-1.5">
+				{categories.map((c) => (
+					<div key={c.key} className="flex items-center gap-1.5 font-mono text-[11px]">
+						<span className={cn("h-2.5 w-2.5 shrink-0 rounded-[2px]", c.colorClass)} />
+						<span>{c.label}</span>
+						<span className="text-muted-foreground tabular-nums">{formatMicros(c.totalUs)}</span>
+					</div>
+				))}
+			</div>
+
+			{drillable.length > 0 ? (
+				<button
+					type="button"
+					onClick={() => setShowDetails((v) => !v)}
+					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
+				>
+					View details
+					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
+				</button>
+			) : null}
+
+			{showDetails ? (
+				<div className="space-y-3 pt-1">
+					{drillable.map((c) => (
+						<div key={c.key} className="space-y-1.5">
+							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
+								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
+								{c.label}
+								<span className="tabular-nums">{formatMicros(c.totalUs)}</span>
+							</div>
+							<div className="space-y-1 pl-3">
+								{c.members.map((m) => (
+									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
+										<span className="truncate" title={m.name}>
+											{overheadMemberLabel(m.name)}
+										</span>
+										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
+									</div>
+								))}
+							</div>
+						</div>
+					))}
+				</div>
+			) : null}
+
+			{overCounted ? (
+				<div className="text-muted-foreground text-[11px]">
+					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
+					over-counting.
+				</div>
+			) : null}
 		</div>
 	);
 }
@@ -658,6 +884,7 @@ export function LogDetailView({
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const batchDebug = log.batch_debug;
 	const passthroughParams = isPassthrough
 		? (log.params as {
 				method?: string;
@@ -666,6 +893,11 @@ export function LogDetailView({
 				status_code?: number;
 			})
 		: null;
+	// Only errors and passthrough requests carry a real HTTP status code; others have none.
+	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
+	// so the header doesn't render a misleading red "0" badge.
+	const rawStatusCode = log.error_details?.status_code ?? passthroughParams?.status_code ?? null;
+	const statusCode = rawStatusCode === 0 ? null : rawStatusCode;
 
 	// Tools can also be declared inside Responses input items instead of the
 	// top-level tools param (codex code-mode models send an `additional_tools`
@@ -781,13 +1013,24 @@ export function LogDetailView({
 							</AlertDialogContent>
 						</AlertDialog>
 					) : null}
+					{onClose ? (
+						<Button
+							variant="ghost"
+							className="size-8"
+							type="button"
+							onClick={onClose}
+							data-testid="logdetails-close-button"
+							aria-label="Close"
+						>
+							<X className="h-3 w-3" />
+						</Button>
+					) : null}
 				</div>
 			</div>
 			<div className="border-border rounded-sm border">
 				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 					<div className="min-w-0 flex-1">
 						<div className="flex flex-wrap items-center gap-2">
-							<StatusPill status={log.status as Status} />
 							<Badge
 								variant="outline"
 								className={cn(
@@ -797,6 +1040,15 @@ export function LogDetailView({
 							>
 								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 							</Badge>
+							<StatusPill status={log.status as Status} />
+							{statusCode != null && (
+								<Badge
+									variant="outline"
+									className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(statusCode))}
+								>
+									{statusCode}
+								</Badge>
+							)}
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
@@ -850,6 +1102,17 @@ export function LogDetailView({
 									{log.metadata.realtime_voice}
 								</Badge>
 							)}
+							{batchDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{batchDebug.status.replace(/_/g, " ")}
+								</Badge>
+							)}
 						</div>
 						<div className="mt-3 flex items-center gap-2">
 							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
@@ -897,7 +1160,7 @@ export function LogDetailView({
 						<span className="uppercase">{log.provider}</span>
 					</div>
 				</div>
-				<div className="border-border grid grid-cols-2 border-t md:grid-cols-5">
+				<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-5">
 					<HeroStat
 						label="Latency"
 						valueClass="text-primary"
@@ -972,10 +1235,10 @@ export function LogDetailView({
 						<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
 					</span>
 				</summary>
-				<div className="space-y-4 border-t px-6 py-4">
+				<div className="space-y-4 border-t px-4 py-4 md:px-6">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" />
-						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
 								label="Start Timestamp"
@@ -995,14 +1258,30 @@ export function LogDetailView({
 							<LogEntryDetailsView
 								className="w-full"
 								label="Latency"
+								tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
 								value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
 							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Upstream Latency"
+								tooltip="Time spent waiting on the provider, summed across every attempt."
+								value={log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>}
+							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Bifrost Overhead"
+								tooltip="Time added by Bifrost itself: routing, plugins, and processing."
+								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
+							/>
 						</div>
+						{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
+							<OverheadBreakdown buckets={log.overhead_breakdown} overheadMs={log.overhead_latency} />
+						) : null}
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
 						<BlockHeader title="Request Details" />
-						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
 								label="Provider"
@@ -1057,6 +1336,17 @@ export function LogDetailView({
 									</div>
 								}
 							/>
+							{log.service_tier && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Service Tier"
+									value={
+										<Badge variant="secondary" className="uppercase" data-testid="logdetails-service-tier">
+											{log.service_tier}
+										</Badge>
+									}
+								/>
+							)}
 							{log.stop_reason && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1087,16 +1377,20 @@ export function LogDetailView({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<code
-														className="block min-w-0 cursor-pointer font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
 													</code>
 												</TooltipTrigger>
-												<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.parent_request_id} · Filter this session
+												</TooltipContent>
 											</Tooltip>
 										) : (
-											<code className="block min-w-0 font-normal break-all">{log.parent_request_id}</code>
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.parent_request_id}
+											</TruncatedLabel>
 										)
 									}
 								/>
@@ -1224,7 +1518,7 @@ export function LogDetailView({
 												<Link
 													to="/workspace/logs"
 													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
-													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
+													className={`block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
 													{log.user_name || log.user_id}
@@ -1394,7 +1688,7 @@ export function LogDetailView({
 							<DottedSeparator />
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
-								<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
@@ -1508,7 +1802,7 @@ export function LogDetailView({
 										<DottedSeparator />
 										<div className="space-y-4">
 											<BlockHeader title="Reasoning Parameters" />
-											<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+											<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 												{reasoning.effort && (
 													<LogEntryDetailsView
 														className="w-full"
@@ -1548,12 +1842,48 @@ export function LogDetailView({
 									</>
 								);
 							})()}
+							{batchDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Batch Details" />
+										{batchDebug.batch_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Batch ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+														<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
+											<div className="grid w-full grid-cols-1 md:grid-cols-3 items-start justify-between gap-4">
+												{batchDebug.request_counts && (
+													<>
+														<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
+															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
+														))}
+													</>
+												)}
+												{batchDebug.accounting?.cost != null && (
+													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
+												)}
+											</div>
+										)}
+									</div>
+								</>
+							)}
+
 							{log.cache_debug && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-4">
 										<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
-										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+										<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 											{log.cache_debug.cache_hit ? (
 												<>
 													<LogEntryDetailsView
@@ -1712,7 +2042,7 @@ export function LogDetailView({
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
-									<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
 											.filter(([key]) => {
 												if (key === "isAsyncRequest") return false;
@@ -2459,7 +2789,7 @@ export function LogDetailView({
 					) : null}
 					{log.params?.instructions && (
 						<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
-							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-4 py-2 font-mono text-xs break-words whitespace-pre-wrap md:px-6">
 								{log.params.instructions}
 							</div>
 						</CollapsibleBox>
@@ -2477,7 +2807,7 @@ export function LogDetailView({
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
 							onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
 						>
-							<div className="overflow-x-auto px-6 py-3">
+							<div className="overflow-x-auto px-4 py-3 md:px-6">
 								<table className="w-full border-collapse text-xs">
 									<thead>
 										<tr className="border-border text-muted-foreground border-b">

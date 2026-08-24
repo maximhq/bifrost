@@ -34,6 +34,7 @@ var payloadFields = []string{
 	"image_edit_input",
 	"image_variation_input",
 	"video_generation_input",
+	"video_edit_input",
 	"speech_output",
 	"transcription_output",
 	"image_generation_output",
@@ -75,6 +76,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["image_edit_input"] = l.ImageEditInput
 	m["image_variation_input"] = l.ImageVariationInput
 	m["video_generation_input"] = l.VideoGenerationInput
+	m["video_edit_input"] = l.VideoEditInput
 	m["speech_output"] = l.SpeechOutput
 	m["transcription_output"] = l.TranscriptionOutput
 	m["image_generation_output"] = l.ImageGenerationOutput
@@ -187,7 +189,7 @@ type BillingPayloadBackfill struct {
 //
 // Safe because pricing is the last thing that reads these: the recalc job keeps only
 // the ID, timestamp and computed cost afterwards, and the rows are never written back
-// (BulkUpdateCost takes an id → cost map).
+// (BulkUpdateCost takes an id → CostUpdate map).
 func ReleaseBillingPayloads(logs []*Log) {
 	for _, l := range logs {
 		if l != nil {
@@ -215,6 +217,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInput = ""
 	l.ImageVariationInput = ""
 	l.VideoGenerationInput = ""
+	l.VideoEditInput = ""
 	l.SpeechOutput = ""
 	l.TranscriptionOutput = ""
 	l.ImageGenerationOutput = ""
@@ -252,6 +255,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInputParsed = nil
 	l.ImageVariationInputParsed = nil
 	l.VideoGenerationInputParsed = nil
+	l.VideoEditInputParsed = nil
 	l.SpeechOutputParsed = nil
 	l.TranscriptionOutputParsed = nil
 	l.ImageGenerationOutputParsed = nil
@@ -325,6 +329,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["video_generation_input"]; ok && v != "" {
 		l.VideoGenerationInput = v
+	}
+	if v, ok := m["video_edit_input"]; ok && v != "" {
+		l.VideoEditInput = v
 	}
 	if v, ok := m["speech_output"]; ok && v != "" {
 		l.SpeechOutput = v
@@ -526,6 +533,11 @@ func (l *Log) BuildInputContentSummary() string {
 	// Video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		return l.VideoGenerationInputParsed.Prompt
+	}
+
+	// Video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		return l.VideoEditInputParsed.Prompt
 	}
 
 	return ""
@@ -884,6 +896,9 @@ func clearPayloadField(l *Log, name string) {
 	case "video_generation_input":
 		l.VideoGenerationInput = ""
 		l.VideoGenerationInputParsed = nil
+	case "video_edit_input":
+		l.VideoEditInput = ""
+		l.VideoEditInputParsed = nil
 	case "speech_output":
 		l.SpeechOutput = ""
 		l.SpeechOutputParsed = nil

@@ -80,7 +80,8 @@ function TopDimensionChart({
 			title={`Top ${dimensionLabel}s`}
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
-			className="z-[1] h-full"
+			className="z-[1]"
+			autoHeight
 			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
 			total={
 				actualTotal !== null ? (
@@ -165,7 +166,7 @@ function TopDimensionChart({
 			</div>
 			<div className="py-2">
 				{rankedItems.length > 0 && (
-					<div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-1.5 px-2 pb-1">
+					<div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1.5 px-2 pb-1 sm:grid-cols-2">
 						{rankedItems.map((item, idx) => (
 							<div key={item.id} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>

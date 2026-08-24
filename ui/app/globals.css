@@ -96,7 +96,25 @@
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
-	--height-base: calc(100vh - 130px);
+	/* Height of the app topbar, and the viewport height left underneath it for
+	   page content. Anything rendered inside the content card must size against
+	   --app-content-viewport rather than 100dvh, or it overflows the card by
+	   exactly the topbar's height and gives the whole shell a second scrollbar.
+	   Full-viewport surfaces that sit outside the card — dialogs, portalled
+	   popovers, the sidebar, the auth-only MinimalShell — keep using 100dvh. */
+	--app-topbar-height: 3.25rem;
+	/* Pages size themselves as
+	   `calc(var(--app-content-viewport) - var(--app-bottom-padding))` — a
+	   leftover from when the card carried my-2. It now has only mb-2, so add
+	   that 0.5rem back here to keep their subtraction landing exactly on the
+	   card's inner height. */
+	--app-content-viewport: calc(100dvh - var(--app-topbar-height) + 0.5rem);
+	/* Gap left below a full-height page so it doesn't sit flush against the
+	   bottom of the content card. Change it here, not per page — every
+	   full-height page subtracts this from --app-content-viewport. */
+	--app-bottom-padding: 20px;
+
+	--height-base: calc(var(--app-content-viewport) - 130px);
 
 	/* Font size overrides - format: [size, { line-height: value }] */
 	--text-xs: 0.75rem;
@@ -207,6 +225,18 @@
 	}
 }
 
+@keyframes update-progress {
+	0% {
+		transform: translateX(-110%);
+	}
+	50% {
+		transform: translateX(110%);
+	}
+	100% {
+		transform: translateX(310%);
+	}
+}
+
 @utility custom-scrollbar {
 	overflow: auto !important;
 	scrollbar-width: thin; /* Firefox */
@@ -300,8 +330,22 @@ div.content-container:has(.no-border-parent) {
 /* // trial-notification-banner style*/
 
 #trial-notification-banner {
-	width: calc(100% + 80px);
-	margin-left: -40px;
+	width: calc(100% + 32px);
+	margin-left: -16px;
+}
+
+@media (min-width: 768px) {
+	#trial-notification-banner {
+		width: 100%;
+		margin-left: 0;
+	}
+
+	@media (min-width: 48rem) {
+		#trial-notification-banner {
+			width: calc(100% + 80px);
+			margin-left: -40px;
+		}
+	}
 }
 
 div.content-container:has(.no-padding-parent) #trial-notification-banner {

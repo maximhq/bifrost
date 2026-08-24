@@ -189,8 +189,9 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeOpenAIReasoningEffort(tt.model, tt.effort); got != tt.expected {
-				t.Errorf("normalizeOpenAIReasoningEffort(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
+			caps := schemas.ResolveModelCaps(schemas.OpenAI, tt.model)
+			if got := caps.NormalizeReasoningEffort(tt.effort, defaultEffortControl(tt.model)); got != tt.expected {
+				t.Errorf("model %q: NormalizeReasoningEffort(%q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
 			}
 		})
 	}
@@ -1102,5 +1103,57 @@ func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
 			}
 			tt.assert(t, m)
 		})
+	}
+}
+
+// TestEffortPredicatesAgainstCatalogIDs pins the three effort predicates against
+// model IDs as they actually appear in the datasheet. bareModelLower strips only
+// one leading segment, so region and vendor namespaces survive ("azure/eu/gpt-5.2"
+// → "eu/gpt-5.2"); the xhigh/max needles are matched as substrings for that
+// reason, while "minimal" needs a boundary check because "gpt-5" is a literal
+// prefix of every dot-revision that dropped it.
+func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
+	cases := []struct {
+		model               string
+		minimal, xhigh, max bool
+	}{
+		// original trio: minimal only
+		{"gpt-5", true, false, false},
+		{"gpt-5-mini", true, false, false},
+		{"gpt-5-nano", true, false, false},
+		{"gpt-5-2025-08-07", true, false, false},
+		{"gpt-5-mini-2025-08-07", true, false, false},
+		{"azure/gpt-5", true, false, false},
+		{"azure/eu/gpt-5-2025-08-07", true, false, false},
+		{"databricks/databricks-gpt-5", true, false, false},
+		// trio variants that never had minimal
+		{"gpt-5-codex", false, false, false},
+		{"gpt-5-pro", false, false, false},
+		{"gpt-5-chat-latest", false, false, false},
+		{"gpt-5-search-api", false, false, false},
+		// dot-revisions: no minimal; xhigh from 5.2
+		{"gpt-5.1", false, false, false},
+		{"gpt-5.2", false, true, false},
+		{"azure/eu/gpt-5.2", false, true, false},
+		{"gmi/openai/gpt-5.2", false, true, false},
+		{"gpt-5.3-codex", false, true, false},
+		{"gpt-5.4", false, true, false},
+		{"gpt-5.6-terra", false, true, true},
+		{"openai.gpt-5.6-sol", false, true, true},
+		// non-gpt families
+		{"deepseek-v4-pro", false, false, true},
+		{"glm-5.2", false, false, true},
+		{"gpt-4o", false, false, false},
+	}
+	for _, c := range cases {
+		if got := acceptsMinimalEffort(c.model); got != c.minimal {
+			t.Errorf("minimal(%q) = %v, want %v", c.model, got, c.minimal)
+		}
+		if got := acceptsXHighEffort(c.model); got != c.xhigh {
+			t.Errorf("xhigh(%q) = %v, want %v", c.model, got, c.xhigh)
+		}
+		if got := acceptsMaxEffort(c.model); got != c.max {
+			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
+		}
 	}
 }

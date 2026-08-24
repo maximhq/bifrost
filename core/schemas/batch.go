@@ -30,11 +30,11 @@ const (
 
 // BatchRequestItem represents a single request in a batch (for inline requests).
 type BatchRequestItem struct {
-	CustomID string                 `json:"custom_id"`        // User-provided unique ID for this request
-	Method   string                 `json:"method,omitempty"` // HTTP method (typically "POST")
-	URL      string                 `json:"url,omitempty"`    // Endpoint URL (e.g., "/v1/chat/completions")
-	Body     map[string]interface{} `json:"body,omitempty"`   // Request body parameters
-	Params   map[string]interface{} `json:"params,omitempty"` // Alternative to Body for Anthropic
+	CustomID string         `json:"custom_id"`        // User-provided unique ID for this request
+	Method   string         `json:"method,omitempty"` // HTTP method (typically "POST")
+	URL      string         `json:"url,omitempty"`    // Endpoint URL (e.g., "/v1/chat/completions")
+	Body     map[string]any `json:"body,omitempty"`   // Request body parameters
+	Params   map[string]any `json:"params,omitempty"` // Alternative to Body for Anthropic
 }
 
 // BatchRequestCounts tracks the counts of requests in different states.
@@ -46,6 +46,83 @@ type BatchRequestCounts struct {
 	Expired   int `json:"expired,omitempty"`   // Anthropic-specific
 	Canceled  int `json:"canceled,omitempty"`  // Anthropic-specific
 	Pending   int `json:"pending,omitempty"`   // Anthropic-specific
+}
+
+// IsZero reports whether no provider request counts are present.
+func (c BatchRequestCounts) IsZero() bool {
+	return c.Total == 0 &&
+		c.Completed == 0 &&
+		c.Failed == 0 &&
+		c.Succeeded == 0 &&
+		c.Expired == 0 &&
+		c.Canceled == 0 &&
+		c.Pending == 0
+}
+
+// BifrostBatchDebug is the batch detail attached to a log row: which batch the
+// request addressed, how the provider reported its progress, and — on the
+// aggregate cost row only — how settlement priced it.
+type BifrostBatchDebug struct {
+	BatchID string `json:"batch_id,omitempty"`
+	// Status is the provider's batch lifecycle status (BatchStatus, e.g.
+	// "in_progress" or "completed") as last known when this row was written. On a
+	// batch_create/batch_retrieve row it is that call's own response status. On the
+	// aggregate cost row it is the status settlement observed (always a terminal
+	// one, since settlement only runs once the batch completed) — a later /results
+	// fetch of the same batch mirrors this value rather than re-deriving it, so it
+	// can go stale relative to the provider if queried long after settlement.
+	Status string `json:"status,omitempty"`
+	// Endpoint is the batch's provider endpoint (/v1/embeddings, /v1/chat/completions,
+	// …). The row's Object column is always "batch_results", which carries no modality,
+	// so without this a later repricing pass cannot tell an embeddings batch from a
+	// chat one and would look the wrong catalog rates up. Empty on rows written before
+	// this field existed; callers must keep a fallback for them.
+	Endpoint      string                `json:"endpoint,omitempty"`
+	RequestCounts *BatchRequestCounts   `json:"request_counts,omitempty"`
+	Accounting    *BatchAccountingDebug `json:"accounting,omitempty"` // Set only on the aggregate cost row
+}
+
+// IsZero reports whether no batch detail is present, so callers can skip
+// attaching an empty record to a log.
+func (d *BifrostBatchDebug) IsZero() bool {
+	if d == nil {
+		return true
+	}
+	return d.BatchID == "" && d.Status == "" && d.Endpoint == "" && d.RequestCounts == nil && d.Accounting == nil
+}
+
+// BatchAccountingDebug records how a settled batch was priced. On the aggregate
+// cost row (the one CreateIfNotExists writes once), the row's own cost and
+// token_usage columns hold the row-level totals ModelBreakdowns breaks down.
+// A repeated /results fetch after the batch already settled gets its own,
+// separate log row for that HTTP call — Cost on THAT row is a read-only echo
+// of the aggregate row's price so the caller can display it too; see Cost below.
+type BatchAccountingDebug struct {
+	ModelBreakdowns map[string]BatchModelBreakdown `json:"model_breakdowns,omitempty"`
+	Cost            *float64                       `json:"cost,omitempty"`
+	// ParseErrorCount is how many result rows the provider returned that could not
+	// be parsed at all. Their usage is unrecoverable — the raw results are not
+	// persisted — so the count is kept as the record of how much the row omits.
+	ParseErrorCount int `json:"parse_error_count,omitempty"`
+	// Incomplete marks a total that is known to under-state the batch: some
+	// usage-bearing row failed to price, or rows were lost to parse errors. It is
+	// only ever set, never cleared by a repricing pass — usage that never reached
+	// ModelBreakdowns (a row with no model at all, or a parse error) cannot be
+	// recovered by repricing the breakdowns that did land.
+	Incomplete bool `json:"incomplete,omitempty"`
+}
+
+// BatchModelBreakdown is the per-model slice of a settled batch's usage and
+// cost. Cost is a pointer for the same reason logstore's row-level Cost is:
+// nil means "not priced yet" (e.g. the catalog had no rate for this model at
+// settlement time), distinct from a real $0. A future cost-recalculation pass
+// can price a nil-Cost entry from its Usage and fill it in without touching
+// the entries that already priced.
+type BatchModelBreakdown struct {
+	Model        string          `json:"model"`
+	RequestCount int             `json:"request_count"`
+	Usage        BifrostLLMUsage `json:"usage"`
+	Cost         *float64        `json:"cost,omitempty"`
 }
 
 // BatchErrors represents errors encountered during batch processing.
@@ -86,7 +163,7 @@ type BifrostBatchCreateRequest struct {
 	OutputExpiresAfter *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 type BatchOutputFolder struct {
@@ -113,7 +190,7 @@ type BifrostBatchCreateResponse struct {
 	InputFileID      string             `json:"input_file_id,omitempty"`
 	CompletionWindow string             `json:"completion_window,omitempty"`
 	Status           BatchStatus        `json:"status"`
-	RequestCounts    BatchRequestCounts `json:"request_counts,omitempty"`
+	RequestCounts    BatchRequestCounts `json:"request_counts"`
 	Metadata         map[string]string  `json:"metadata,omitempty"`
 	CreatedAt        int64              `json:"created_at,omitempty"`
 	ExpiresAt        *int64             `json:"expires_at,omitempty"`
@@ -152,7 +229,7 @@ type BifrostBatchListRequest struct {
 	NextCursor *string `json:"next_cursor,omitempty"` // For Gemini pagination
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // BifrostBatchListResponse represents the response from listing batch jobs.
@@ -178,7 +255,7 @@ type BifrostBatchRetrieveRequest struct {
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // GetRawRequestBody returns the raw request body.
@@ -239,7 +316,7 @@ type BifrostBatchCancelRequest struct {
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // GetRawRequestBody returns the raw request body.
@@ -268,7 +345,7 @@ type BifrostBatchDeleteRequest struct {
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // GetRawRequestBody returns the raw request body.
@@ -298,7 +375,7 @@ type BifrostBatchResultsRequest struct {
 	// For Anthropic, results are streamed from a dedicated endpoint
 
 	// Extra parameters for provider-specific features
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // GetRawRequestBody returns the raw request body.
@@ -318,17 +395,47 @@ type BatchResultItem struct {
 	Error *BatchResultError `json:"error,omitempty"`
 }
 
+// Failed reports whether the result item represents a failed per-request batch result.
+func (i BatchResultItem) Failed() bool {
+	if i.Error != nil {
+		return true
+	}
+	if i.Response != nil && (i.Response.StatusCode < 200 || i.Response.StatusCode >= 300) {
+		return true
+	}
+	if i.Result != nil && i.Result.Type != "" && i.Result.Type != "succeeded" {
+		return true
+	}
+	// An item carrying neither a response nor a result is not a success: the
+	// provider returned no outcome for that request. Gemini's inline path and
+	// Bedrock both emit this shape when a record has no output and no error.
+	return i.Response == nil && i.Result == nil
+}
+
+// BatchRequestCountsFromResults derives aggregate request counts from batch result rows.
+func BatchRequestCountsFromResults(results []BatchResultItem) BatchRequestCounts {
+	counts := BatchRequestCounts{Total: len(results)}
+	for _, item := range results {
+		if item.Failed() {
+			counts.Failed++
+			continue
+		}
+		counts.Completed++
+	}
+	return counts
+}
+
 // BatchResultResponse represents OpenAI-style result response.
 type BatchResultResponse struct {
-	StatusCode int                    `json:"status_code"`
-	RequestID  string                 `json:"request_id,omitempty"`
-	Body       map[string]interface{} `json:"body,omitempty"`
+	StatusCode int            `json:"status_code"`
+	RequestID  string         `json:"request_id,omitempty"`
+	Body       map[string]any `json:"body,omitempty"`
 }
 
 // BatchResultData represents Anthropic-style result data.
 type BatchResultData struct {
-	Type    string                 `json:"type"` // "succeeded", "errored", "expired", "canceled"
-	Message map[string]interface{} `json:"message,omitempty"`
+	Type    string         `json:"type"` // "succeeded", "errored", "expired", "canceled"
+	Message map[string]any `json:"message,omitempty"`
 }
 
 // BatchResultError represents an error for a single batch request.
@@ -339,8 +446,9 @@ type BatchResultError struct {
 
 // BifrostBatchResultsResponse represents the response from retrieving batch results.
 type BifrostBatchResultsResponse struct {
-	BatchID string            `json:"batch_id"`
-	Results []BatchResultItem `json:"results"`
+	BatchID  string            `json:"batch_id"`
+	Endpoint BatchEndpoint     `json:"-"` // Internal accounting hint; provider-facing result payloads stay unchanged.
+	Results  []BatchResultItem `json:"results"`
 
 	// For streaming results (Anthropic)
 	HasMore    bool    `json:"has_more,omitempty"`

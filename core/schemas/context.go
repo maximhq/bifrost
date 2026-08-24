@@ -11,29 +11,46 @@ import (
 
 var NoDeadline time.Time
 
-var reservedKeys = []any{
-	BifrostContextKeyVirtualKey,
-	BifrostContextKeyAPIKeyName,
-	BifrostContextKeyAPIKeyID,
-	BifrostContextKeyDirectKey,
-	BifrostContextKeyRequestID,
-	BifrostContextKeyFallbackRequestID,
-	BifrostContextKeySelectedKeyID,
-	BifrostContextKeySelectedKeyName,
-	BifrostContextKeyNumberOfRetries,
-	BifrostContextKeyFallbackIndex,
-	BifrostContextKeySkipKeySelection,
-	BifrostContextKeyPassthroughHeaders,
-	BifrostContextKeySkipBudgetAndRateLimits,
-	BifrostContextKeySkipProviderCheck,
-	BifrostContextKeyURLPath,
-	BifrostContextKeyDeferTraceCompletion,
-	BifrostContextKeyAttemptTrail,
-	BifrostContextKeyStreamGated,
-	BifrostContextKeyMCPHealthCheckRequest,
-	BifrostContextKeyUpstreamLatency,
-	BifrostContextKeyRoutingInfo,
-	BifrostContextKeyMCPInboundBearer,
+// reservedKeys is a set (not a slice) so the per-write guard is O(1) instead of a
+// linear interface-equality scan; the guard runs on every restricted write, per
+// chunk on streams. Keyed by BifrostContextKey (not any) so isReservedKey can
+// assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
+// and indexing a map with a non-comparable key (slice, map, func) would panic.
+var reservedKeys = map[BifrostContextKey]struct{}{
+	BifrostContextKeyVirtualKey:              {},
+	BifrostContextKeyAPIKeyName:              {},
+	BifrostContextKeyAPIKeyID:                {},
+	BifrostContextKeyDirectKey:               {},
+	BifrostContextKeyRequestID:               {},
+	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeySelectedKeyID:           {},
+	BifrostContextKeySelectedKeyName:         {},
+	BifrostContextKeyNumberOfRetries:         {},
+	BifrostContextKeyFallbackIndex:           {},
+	BifrostContextKeySkipKeySelection:        {},
+	BifrostContextKeyPassthroughHeaders:      {},
+	BifrostContextKeySkipBudgetAndRateLimits: {},
+	BifrostContextKeySkipProviderCheck:       {},
+	BifrostContextKeyURLPath:                 {},
+	BifrostContextKeyDeferTraceCompletion:    {},
+	BifrostContextKeyAttemptTrail:            {},
+	BifrostContextKeyStreamGated:             {},
+	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyUpstreamLatency:         {},
+	BifrostContextKeyRoutingInfo:             {},
+	BifrostContextKeyMCPInboundBearer:        {},
+}
+
+// isReservedKey reports whether key is a reserved context key whose writes are
+// blocked while blockRestrictedWrites is set. Non-BifrostContextKey keys (which
+// may be non-comparable) are never reserved and must not reach the map index.
+func isReservedKey(key any) bool {
+	contextKey, ok := key.(BifrostContextKey)
+	if !ok {
+		return false
+	}
+	_, ok = reservedKeys[contextKey]
+	return ok
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -96,7 +113,6 @@ func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostConte
 		deadline:              deadline,
 		hasDeadline:           !deadline.IsZero(),
 		done:                  make(chan struct{}),
-		userValues:            make(map[any]any),
 		blockRestrictedWrites: atomic.Bool{},
 	}
 	ctx.blockRestrictedWrites.Store(false)
@@ -379,14 +395,14 @@ func (bc *BifrostContext) SetValue(key, value any) {
 		return
 	}
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
 }
@@ -403,7 +419,7 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
 }
@@ -426,7 +442,7 @@ func (bc *BifrostContext) ClearValue(key any) {
 		return
 	}
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return
 	}
@@ -446,12 +462,12 @@ func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
@@ -812,6 +828,22 @@ func (bc *BifrostContext) GetPluginLogs() []PluginLogEntry {
 	copied := make([]PluginLogEntry, len(store.logs))
 	copy(copied, store.logs)
 	return copied
+}
+
+// HasPluginLogs reports whether DrainPluginLogs would return any entries,
+// without draining or copying. Lets hot callers skip a tracer lookup when
+// there is nothing to attach, while still leaving the buffer intact.
+func (bc *BifrostContext) HasPluginLogs() bool {
+	if bc.valueDelegate != nil {
+		return false // scoped contexts share the store but must not drain it
+	}
+	store := bc.pluginLogs.Load()
+	if store == nil {
+		return false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.logs) > 0
 }
 
 // DrainPluginLogs transfers ownership of the plugin log slice to the caller.

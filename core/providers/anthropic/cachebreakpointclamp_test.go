@@ -163,7 +163,7 @@ func TestClampAnthropicCacheBreakpoints_TopLevelMarkerSurvives(t *testing.T) {
 		t.Fatalf("dropped = %d, want 1", dropped)
 	}
 	if req.CacheControl == nil {
-		t.Error("top-level cache_control was cleared; it auto-places on the last cacheable block, "+
+		t.Error("top-level cache_control was cleared; it auto-places on the last cacheable block, " +
 			"so it is the final breakpoint and should outrank earlier explicit ones")
 	}
 	if got, want := markerTexts(req), []string{"sys2", "sys3", "sys4"}; !eq(got, want) {

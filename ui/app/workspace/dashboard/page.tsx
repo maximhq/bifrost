@@ -65,6 +65,7 @@ export default function DashboardPage() {
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
 			latency_chart: parseAsString.withDefault("bar"),
+			overhead_chart: parseAsString.withDefault("bar"),
 			throughput_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
@@ -307,6 +308,7 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
+	const handleOverheadChartToggle = useCallback((type: ChartType) => setUrlState({ overhead_chart: type }), [setUrlState]);
 	const handleThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ throughput_chart: type }), [setUrlState]);
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
@@ -467,110 +469,113 @@ export default function DashboardPage() {
 	const activeTab = (urlState.tab || "overview") as DashboardTab;
 
 	return (
-		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+		<div
+			id="dashboard-root"
+			className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3"
+		>
 			{/* Sidebar Filters */}
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
-				{/* Header */}
-				<div className="flex items-center justify-between p-4">
-					<div className="flex items-center gap-2">
-						<h1 className="text-lg font-semibold">Dashboard</h1>
-					</div>
-					<div className="flex items-center gap-2">
-						<ExportPopover
-							getData={getDashboardData}
-							activeTab={activeTab}
-							onPreloadData={handlePreloadData}
-							onPdfExport={handlePdfExport}
-							onExportDone={handleExportDone}
-						/>
-						{activeTab === "mcp" && mcpFilterData && (
-							<div className="flex items-center gap-1">
-								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
-									<ModelFilterSelect
-										models={mcpFilterData.tool_names ?? []}
-										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
-										onModelChange={(value) => {
-											if (value === "all") {
-												setUrlState({ mcp_tool_names: "" });
-											} else {
-												setUrlState({ mcp_tool_names: value });
-											}
-										}}
-										placeholder="All Tools"
-										data-testid="dashboard-mcp-tool-filter"
-									/>
-								)}
-								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
-									<ModelFilterSelect
-										models={mcpFilterData.server_labels ?? []}
-										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
-										onModelChange={(value) => {
-											if (value === "all") {
-												setUrlState({ mcp_server_labels: "" });
-											} else {
-												setUrlState({ mcp_server_labels: value });
-											}
-										}}
-										placeholder="All Servers"
-										data-testid="dashboard-mcp-server-filter"
-									/>
-								)}
-							</div>
-						)}
-						<DateTimePickerWithRange
-							dateTime={dateRange}
-							onDateTimeUpdate={handleDateRangeChange}
-							preDefinedPeriods={TIME_PERIODS}
-							predefinedPeriod={urlState.period || undefined}
-							onPredefinedPeriodChange={handlePeriodChange}
-							triggerTestId="dashboard-filter-daterange"
-							popupAlignment="end"
-							showTimezone
-							timezone={timezone}
-							onTimezoneChange={setTimezone}
-						/>
-					</div>
-				</div>
-
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-md border" viewportClassName="no-table">
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>
-						<div className="mb-2 max-w-full overflow-x-auto">
-							<TabsList className="w-max min-w-max">
-								<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
-									Overview
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
-									Provider Usage
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
-									Model Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
-									MCP usage
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
-									Team Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
-									User Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
-									Virtual Key Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
-									Customer Rankings
-								</TabsTrigger>
-								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
-									BU Rankings
-								</TabsTrigger>
-								<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
-									App Rankings
-								</TabsTrigger>
-							</TabsList>
+						<div className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center">
+							{/* min-w-0 keeps the tab strip from pushing the filters off the row —
+							    there are eleven tabs. TabsList collapses whatever does not fit
+							    into its own dropdown, so no horizontal scrolling is needed. */}
+							<div className="max-w-full min-w-0 flex-1">
+								{/* Stays w-max: TabsTrigger is flex-1, so a full-width list would
+								    stretch every tab across the row. */}
+								<TabsList className="w-max min-w-max">
+									<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
+										Overview
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
+										Provider Usage
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
+										Model Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
+										MCP usage
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
+										Team Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
+										User Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+										Virtual Key Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+										Customer Rankings
+									</TabsTrigger>
+									<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+										BU Rankings
+									</TabsTrigger>
+									<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+										App Rankings
+									</TabsTrigger>
+								</TabsList>
+							</div>
+							<div className="flex shrink-0 flex-wrap items-center gap-2 lg:ml-auto">
+								<ExportPopover
+									getData={getDashboardData}
+									activeTab={activeTab}
+									onPreloadData={handlePreloadData}
+									onPdfExport={handlePdfExport}
+									onExportDone={handleExportDone}
+								/>
+								{activeTab === "mcp" && mcpFilterData && (
+									<div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
+										{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
+											<ModelFilterSelect
+												models={mcpFilterData.tool_names ?? []}
+												selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
+												onModelChange={(value) => {
+													if (value === "all") {
+														setUrlState({ mcp_tool_names: "" });
+													} else {
+														setUrlState({ mcp_tool_names: value });
+													}
+												}}
+												placeholder="All Tools"
+												data-testid="dashboard-mcp-tool-filter"
+											/>
+										)}
+										{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
+											<ModelFilterSelect
+												models={mcpFilterData.server_labels ?? []}
+												selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
+												onModelChange={(value) => {
+													if (value === "all") {
+														setUrlState({ mcp_server_labels: "" });
+													} else {
+														setUrlState({ mcp_server_labels: value });
+													}
+												}}
+												placeholder="All Servers"
+												data-testid="dashboard-mcp-server-filter"
+											/>
+										)}
+									</div>
+								)}
+								<DateTimePickerWithRange
+									dateTime={dateRange}
+									onDateTimeUpdate={handleDateRangeChange}
+									preDefinedPeriods={TIME_PERIODS}
+									predefinedPeriod={urlState.period || undefined}
+									onPredefinedPeriodChange={handlePeriodChange}
+									triggerTestId="dashboard-filter-daterange"
+									popupAlignment="end"
+									showTimezone
+									timezone={timezone}
+									onTimezoneChange={setTimezone}
+								/>
+							</div>
 						</div>
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
@@ -586,6 +591,7 @@ export default function DashboardPage() {
 									costChartType={toChartType(urlState.cost_chart)}
 									modelChartType={toChartType(urlState.model_chart)}
 									latencyChartType={toChartType(urlState.latency_chart)}
+									overheadChartType={toChartType(urlState.overhead_chart)}
 									throughputChartType={toChartType(urlState.throughput_chart)}
 									costModel={urlState.cost_model}
 									usageModel={urlState.usage_model}
@@ -594,6 +600,7 @@ export default function DashboardPage() {
 									onCostChartToggle={handleCostChartToggle}
 									onModelChartToggle={handleModelChartToggle}
 									onLatencyChartToggle={handleLatencyChartToggle}
+									onOverheadChartToggle={handleOverheadChartToggle}
 									onThroughputChartToggle={handleThroughputChartToggle}
 									onCostModelChange={handleCostModelChange}
 									onUsageModelChange={handleUsageModelChange}

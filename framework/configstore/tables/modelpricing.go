@@ -21,14 +21,16 @@ type TableModelPricing struct {
 	IsDeprecated    bool                  `gorm:"default:false;column:is_deprecated" json:"is_deprecated"`
 
 	// Costs - Text
-	InputCostPerToken          *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken         *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
-	InputCostPerTokenBatches   *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches  *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
-	InputCostPerTokenPriority  *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`
-	OutputCostPerTokenPriority *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
-	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
-	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerToken           *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches    *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority   *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority  *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenUltrafast  *float64 `gorm:"default:null;column:input_cost_per_token_ultrafast" json:"input_cost_per_token_ultrafast,omitempty"`
+	OutputCostPerTokenUltrafast *float64 `gorm:"default:null;column:output_cost_per_token_ultrafast" json:"output_cost_per_token_ultrafast,omitempty"`
+	InputCostPerTokenFlex       *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex      *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window; cache tokens use the _fast cache columns below.
 	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
@@ -63,6 +65,7 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_above_200k_tokens" json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `gorm:"default:null;column:cache_creation_input_audio_token_cost" json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `gorm:"default:null;column:cache_read_input_token_cost_priority" json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                   *float64 `gorm:"default:null;column:cache_read_input_token_cost_ultrafast" json:"cache_read_input_token_cost_ultrafast,omitempty"`
 	CacheReadInputTokenCostFlex                        *float64 `gorm:"default:null;column:cache_read_input_token_cost_flex" json:"cache_read_input_token_cost_flex,omitempty"`
 	CacheReadInputImageTokenCost                       *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens" json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
@@ -73,6 +76,7 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostFlex                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex" json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex_above_272k_tokens" json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority            *float64 `gorm:"default:null;column:cache_creation_input_token_cost_priority" json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostUltrafast           *float64 `gorm:"default:null;column:cache_creation_input_token_cost_ultrafast" json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_fast" json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_fast" json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
@@ -88,14 +92,37 @@ type TableModelPricing struct {
 	OutputCostPerImageAbove512x512PixelsPremium   *float64 `gorm:"default:null;column:output_cost_per_image_above_512x512_pixels_premium" json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
 	OutputCostPerImageAbove1024x1024Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1024_pixels" json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_premium" json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1536Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1536_pixels" json:"output_cost_per_image_above_1024_and_1536_pixels,omitempty"`
+	OutputCostPerImageAbove1536x1024Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_1536_and_1024_pixels" json:"output_cost_per_image_above_1536_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove2048x2048Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_2048_and_2048_pixels" json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
 	OutputCostPerImageAbove4096x4096Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_4096_and_4096_pixels" json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageAbove4Megapixels            *float64 `gorm:"default:null;column:output_cost_per_image_above_4_megapixels" json:"output_cost_per_image_above_4_megapixels,omitempty"`
+	OutputCostPerImageAbove8Megapixels            *float64 `gorm:"default:null;column:output_cost_per_image_above_8_megapixels" json:"output_cost_per_image_above_8_megapixels,omitempty"`
+	OutputCostPerImageAbove16Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_16_megapixels" json:"output_cost_per_image_above_16_megapixels,omitempty"`
+	OutputCostPerImageAbove32Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_32_megapixels" json:"output_cost_per_image_above_32_megapixels,omitempty"`
+	OutputCostPerImageAbove64Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_64_megapixels" json:"output_cost_per_image_above_64_megapixels,omitempty"`
 	OutputCostPerImageLowQuality                  *float64 `gorm:"default:null;column:output_cost_per_image_low_quality" json:"output_cost_per_image_low_quality,omitempty"`
 	OutputCostPerImageMediumQuality               *float64 `gorm:"default:null;column:output_cost_per_image_medium_quality" json:"output_cost_per_image_medium_quality,omitempty"`
 	OutputCostPerImageHighQuality                 *float64 `gorm:"default:null;column:output_cost_per_image_high_quality" json:"output_cost_per_image_high_quality,omitempty"`
 	OutputCostPerImageAutoQuality                 *float64 `gorm:"default:null;column:output_cost_per_image_auto_quality" json:"output_cost_per_image_auto_quality,omitempty"`
 	InputCostPerImageToken                        *float64 `gorm:"default:null;column:input_cost_per_image_token" json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken                       *float64 `gorm:"default:null;column:output_cost_per_image_token" json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Image, joint size and quality. The standard-quality columns use
+	// the compact WxH form because the full name exceeds the 63-byte Postgres
+	// identifier limit.
+	OutputCostPerImageAbove1024x1024PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1024_pixels_low_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1536_pixels_low_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1536_and_1024_pixels_low_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1024_pixels_medium_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1536_pixels_medium_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_1536_and_1024_pixels_medium_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1024_pixels_high_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1536_pixels_high_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_1536_and_1024_pixels_high_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_standard_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1536_pixels_standard_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1536x1024_pixels_standard_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
 	// Costs - Audio/Video
 	InputCostPerAudioToken      *float64 `gorm:"default:null;column:input_cost_per_audio_token" json:"input_cost_per_audio_token,omitempty"`
@@ -108,6 +135,7 @@ type TableModelPricing struct {
 
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
+	InputCostPerQuery             *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
 	// Data-residency multiplier scaling all token/cache costs when Anthropic serves inference_geo:"us" (1.1x); nil = no multiplier.
 	InferenceGeoUSMultiplier *float64 `gorm:"default:null;column:inference_geo_us_multiplier" json:"inference_geo_us_multiplier,omitempty"`

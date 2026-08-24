@@ -3,8 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "description": "Pinned CI-only CLI tooling (newman). Not published, not part of the product build. Installed with `npm ci` so package-lock.json's integrity hashes are enforced, which is what OpenSSF Scorecard's Pinned-Dependencies check requires; a bare `npm install -g newman@x` pins the version but verifies nothing.",
+  "overridesRationale": "newman pins vulnerable transitive deps (handlebars, lodash, node-forge, flatted, underscore, qs, jose, uuid). Upstream has not released a newman that picks up the patched versions, so each one is forced to its fixed release here. Every consumer of these packages in the tree was checked for API compatibility, and `newman run` with the cli + htmlextra reporters was exercised against the forced tree. Drop an entry once newman ships a release that resolves at or above it.",
   "dependencies": {
-    "newman": "6.2.1",
+    "newman": "6.2.2",
     "newman-reporter-htmlextra": "1.23.1"
+  },
+  "overrides": {
+    "handlebars": "4.7.9",
+    "lodash": "4.18.1",
+    "node-forge": "1.4.0",
+    "flatted": "3.4.4",
+    "underscore": "1.13.8",
+    "qs": "6.15.3",
+    "jose": "4.15.9",
+    "uuid": "11.1.1"
   }
 }

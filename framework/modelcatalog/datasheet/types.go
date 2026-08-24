@@ -11,6 +11,7 @@ package datasheet
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -95,14 +96,16 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 // as the patch shape for Override.
 type Options struct {
 	// Costs - Text
-	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
-	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
-	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
-	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
-	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
-	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerToken           *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority   *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority  *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenUltrafast  *float64 `json:"input_cost_per_token_ultrafast,omitempty"`
+	OutputCostPerTokenUltrafast *float64 `json:"output_cost_per_token_ultrafast,omitempty"`
+	InputCostPerTokenFlex       *float64 `json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex      *float64 `json:"output_cost_per_token_flex,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -137,6 +140,7 @@ type Options struct {
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                   *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
 	CacheReadInputTokenCostFlex                        *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
 	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
@@ -147,6 +151,7 @@ type Options struct {
 	CacheCreationInputTokenCostFlex                *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority            *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostUltrafast           *float64 `json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
@@ -162,14 +167,37 @@ type Options struct {
 	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
 	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1536Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels,omitempty"`
+	OutputCostPerImageAbove1536x1024Pixels        *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels,omitempty"`
 	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
 	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageAbove4Megapixels            *float64 `json:"output_cost_per_image_above_4_megapixels,omitempty"`
+	OutputCostPerImageAbove8Megapixels            *float64 `json:"output_cost_per_image_above_8_megapixels,omitempty"`
+	OutputCostPerImageAbove16Megapixels           *float64 `json:"output_cost_per_image_above_16_megapixels,omitempty"`
+	OutputCostPerImageAbove32Megapixels           *float64 `json:"output_cost_per_image_above_32_megapixels,omitempty"`
+	OutputCostPerImageAbove64Megapixels           *float64 `json:"output_cost_per_image_above_64_megapixels,omitempty"`
 	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
 	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
 	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
 	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
 	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Image, joint size and quality. These are the most specific
+	// per-image rates: they win over the quality-only and size-only rates
+	// above, since upstream prices size and quality together.
+	OutputCostPerImageAbove1024x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
 	// Costs - Audio/Video
 	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
@@ -186,7 +214,15 @@ type Options struct {
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
-	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
+	// InputCostPerQuery is the per-query rate rerank models bill on. Cohere and Bedrock both
+	// define a query (a "search unit") as one query against up to 100 document chunks, so a
+	// request over that many chunks bills as several queries. It is unrelated to
+	// SearchContextCostPerQuery, which prices web-search context on chat models.
+	//
+	// Not applicable to Vertex: its Ranking API bills "ranking units" derived from record count
+	// and title/content size, so a flat per-query rate would misprice every call.
+	InputCostPerQuery        *float64 `json:"input_cost_per_query,omitempty"`
+	InferenceGeoUSMultiplier *float64 `json:"inference_geo_us_multiplier,omitempty"`
 	// CostPerRequest is a flat fee added once per billed request, on top of
 	// whatever usage-based cost the request otherwise computes to.
 	CostPerRequest *float64 `json:"cost_per_request,omitempty"`
@@ -276,9 +312,10 @@ type Override struct {
 // serviceTier captures the OpenAI service_tier value from a response.
 // Add new tier flags here as OpenAI introduces them.
 type serviceTier struct {
-	isPriority bool // true when service_tier == "priority"
-	isFlex     bool // true when service_tier == "flex"
-	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
+	isPriority  bool // true when service_tier == "priority"
+	isFlex      bool // true when service_tier == "flex"
+	isUltrafast bool // true when service_tier == "ultrafast"
+	isFast      bool // true when usage.speed == "fast" (Anthropic fast mode)
 	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
 	inferenceGeoUS bool
 }
@@ -324,27 +361,6 @@ type customPricingData struct {
 	wildcard []customPricingEntry
 }
 
-// modelParametersParseResult is the parsed result type used by
-// extractSupportedParams (consumed by params.go's applyModelParameters).
-type modelParametersParseResult struct {
-	Mode               *string  `json:"mode,omitempty"`
-	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
-	ModelParameters    []struct {
-		ID string `json:"id"`
-	} `json:"model_parameters,omitempty"`
-	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
-	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
-	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
-	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
-	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
-	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
-	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
-	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
-	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
-	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
-}
-
 // --- private helpers (shared across pricing/*.go files) ---
 
 // makeKey is the composite map key used by pricingData: model|provider|mode.
@@ -356,7 +372,7 @@ func makeKey(model, provider, mode string) string {
 // provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
-	case p == "together":
+	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
@@ -379,7 +395,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 	switch reqType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return "completion"
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.BatchResultsRequest:
 		return "chat"
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return "responses"
@@ -395,7 +411,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "image_generation"
 	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
 		return "image_edit"
-	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return "video_generation"
 	case schemas.OCRRequest:
 		return "ocr"
@@ -485,7 +501,7 @@ func normalizeModeToOutputType(mode string) string {
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
 // names from model_parameters[].id values and supports_* boolean flags.
-func extractSupportedParams(parsed *modelParametersParseResult) []string {
+func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	var supported []string
 	addParam := func(name string) {
 		if !slices.Contains(supported, name) {
@@ -514,8 +530,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
-		// Not an actual request parameter; if present, trailing assistant messages
-		// for anthropic and bedrock's anthropic models will not be trimmed.
+		// Not an actual request parameter; if present, trailing assistant messages are
+		// left in place instead of being trimmed. Read by anthropic and by bedrock's
+		// anthropic models, and by gemini/vertex -- where the default is the opposite
+		// (no model supports prefill, so the trim is on unless a record turns it off),
+		// because Gemini rejects any conversation ending on a role:"model" turn.
 		addParam("assistant_prefill")
 	}
 	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
@@ -532,6 +551,9 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 	if parsed.SupportsReasoningWithToolCalls == nil || *parsed.SupportsReasoningWithToolCalls {
 		addParam("reasoning_with_tool_calls")
+	}
+	if parsed.SupportsNoneReasoningEffort != nil && *parsed.SupportsNoneReasoningEffort {
+		addParam("supports_none_reasoning_effort")
 	}
 	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
 		addParam("response_format")
@@ -613,6 +635,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenBatches:                 entry.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:                 entry.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                entry.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:               entry.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
 		InputCostPerTokenFast:                     entry.InputCostPerTokenFast,
@@ -643,6 +667,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   entry.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    entry.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                   entry.CacheReadInputTokenCostUltrafast,
 		CacheReadInputTokenCostFlex:                        entry.CacheReadInputTokenCostFlex,
 		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
@@ -652,6 +677,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostFlex:                    entry.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:     entry.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                entry.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostUltrafast:               entry.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostFast:                    entry.CacheCreationInputTokenCostFast,
 		CacheCreationInputTokenCostAbove1hrFast:            entry.CacheCreationInputTokenCostAbove1hrFast,
 		CacheReadInputTokenCostFast:                        entry.CacheReadInputTokenCostFast,
@@ -667,12 +693,32 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerImageAbove1024x1024PixelsPremium: entry.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        entry.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        entry.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            entry.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            entry.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           entry.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           entry.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           entry.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  entry.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               entry.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 entry.OutputCostPerImageHighQuality,
 		OutputCostPerImageAutoQuality:                 entry.OutputCostPerImageAutoQuality,
 		InputCostPerImageToken:                        entry.InputCostPerImageToken,
 		OutputCostPerImageToken:                       entry.OutputCostPerImageToken,
+
+		OutputCostPerImageAbove1024x1536Pixels:                entry.OutputCostPerImageAbove1024x1536Pixels,
+		OutputCostPerImageAbove1536x1024Pixels:                entry.OutputCostPerImageAbove1536x1024Pixels,
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      entry.OutputCostPerImageAbove1024x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      entry.OutputCostPerImageAbove1024x1536PixelsLowQuality,
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      entry.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   entry.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   entry.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   entry.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1024PixelsHighQuality:     entry.OutputCostPerImageAbove1024x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     entry.OutputCostPerImageAbove1024x1536PixelsHighQuality,
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     entry.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
 
 		InputCostPerAudioToken:      entry.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  entry.InputCostPerAudioPerSecond,
@@ -684,6 +730,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		InputCostPerQuery:             entry.InputCostPerQuery,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
 		CostPerRequest:                entry.CostPerRequest,
 
@@ -702,6 +749,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:                 pricing.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:                pricing.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast:               pricing.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
 		InputCostPerTokenFast:                     pricing.InputCostPerTokenFast,
@@ -732,6 +781,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   pricing.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    pricing.CacheReadInputTokenCostPriority,
+		CacheReadInputTokenCostUltrafast:                   pricing.CacheReadInputTokenCostUltrafast,
 		CacheReadInputTokenCostFlex:                        pricing.CacheReadInputTokenCostFlex,
 		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
@@ -741,6 +791,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostFlex:                    pricing.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:     pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                pricing.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostUltrafast:               pricing.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostFast:                    pricing.CacheCreationInputTokenCostFast,
 		CacheCreationInputTokenCostAbove1hrFast:            pricing.CacheCreationInputTokenCostAbove1hrFast,
 		CacheReadInputTokenCostFast:                        pricing.CacheReadInputTokenCostFast,
@@ -756,12 +807,32 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerImageAbove1024x1024PixelsPremium: pricing.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        pricing.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        pricing.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            pricing.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            pricing.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           pricing.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           pricing.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           pricing.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  pricing.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               pricing.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 pricing.OutputCostPerImageHighQuality,
 		OutputCostPerImageAutoQuality:                 pricing.OutputCostPerImageAutoQuality,
 		InputCostPerImageToken:                        pricing.InputCostPerImageToken,
 		OutputCostPerImageToken:                       pricing.OutputCostPerImageToken,
+
+		OutputCostPerImageAbove1024x1536Pixels:                pricing.OutputCostPerImageAbove1024x1536Pixels,
+		OutputCostPerImageAbove1536x1024Pixels:                pricing.OutputCostPerImageAbove1536x1024Pixels,
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      pricing.OutputCostPerImageAbove1024x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      pricing.OutputCostPerImageAbove1024x1536PixelsLowQuality,
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      pricing.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   pricing.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   pricing.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   pricing.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+		OutputCostPerImageAbove1024x1024PixelsHighQuality:     pricing.OutputCostPerImageAbove1024x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     pricing.OutputCostPerImageAbove1024x1536PixelsHighQuality,
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     pricing.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
 
 		InputCostPerAudioToken:      pricing.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  pricing.InputCostPerAudioPerSecond,
@@ -772,6 +843,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
+		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
 		CostPerRequest:                pricing.CostPerRequest,
@@ -779,7 +851,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
-	return &Entry{
+	entry := &Entry{
 		BaseModel:            pricing.BaseModel,
 		Provider:             pricing.Provider,
 		Mode:                 pricing.Mode,
@@ -791,6 +863,16 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
+	return entry
+}
+
+// IsEmptyModelCapabilities reports whether no field on the override struct is
+// set. Compared against the zero value so new fields need no maintenance here.
+func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
+	if ov == nil {
+		return true
+	}
+	return reflect.DeepEqual(*ov, schemas.ModelCapabilities{})
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

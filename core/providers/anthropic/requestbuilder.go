@@ -220,7 +220,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 						modelForTokens = r.String()
 					}
 				}
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
@@ -292,7 +292,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// than failing the whole request. Mirrors ValidateChatToolsForProvider
 			// and the Bedrock Responses path. Use a shallow copy so the shared
 			// (possibly pooled) request and its Params are never mutated.
-			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, cfg.Provider); len(dropped) > 0 {
+			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, schemas.ResolveModelCaps(cfg.Provider, capModel)); len(dropped) > 0 {
 				reqCopy := *request
 				paramsCopy := *request.Params
 				paramsCopy.Tools = keep
@@ -343,7 +343,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -504,7 +504,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 					modelForTokens = r.String()
 				}
 			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -603,7 +603,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}

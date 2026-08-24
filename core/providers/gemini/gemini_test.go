@@ -3906,6 +3906,216 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 	})
 }
 
+// TestThinkingLevelFromEffort covers the effort → thinkingLevel mapping on
+// Gemini 3+. Pro accepts low/high only, so minimal and medium fold onto them;
+// other models also accept minimal.
+func TestThinkingLevelFromEffort(t *testing.T) {
+	tests := []struct {
+		model  string
+		effort string
+		want   string
+	}{
+		{"gemini-3-pro-preview", "minimal", "low"},
+		{"gemini-3-pro-preview", "low", "low"},
+		{"gemini-3-pro-preview", "medium", "high"},
+		{"gemini-3-pro-preview", "high", "high"},
+		{"gemini-3-pro-preview", "xhigh", "high"},
+		{"gemini-3-pro-preview", "max", "high"},
+		{"gemini-3-flash-preview", "minimal", "minimal"},
+		{"gemini-3-flash-preview", "low", "low"},
+		{"gemini-3-flash-preview", "medium", "medium"},
+		{"gemini-3-flash-preview", "high", "high"},
+		{"gemini-3-flash-preview", "xhigh", "high"},
+		{"gemini-3-flash-preview", "max", "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model+"_"+tt.effort, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model: tt.model,
+				Input: minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: &tt.effort},
+				},
+			}
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+			require.NoError(t, err)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+			assert.Equal(t, tt.want, *result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+			assert.Nil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		})
+	}
+}
+
+// TestThinkingConfigResolvesPerProvider verifies capability lookups carry the
+// request's provider, so a Vertex request reads the vertex_ai row instead of the
+// Gemini one. The datasheet keys these separately and the rows can disagree.
+func TestThinkingConfigResolvesPerProvider(t *testing.T) {
+	const model = "gemini-capability-probe"
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model || provider != schemas.Vertex {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsReasoning: new(true)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	effort := "low"
+	for _, tt := range []struct {
+		provider     schemas.ModelProvider
+		wantThinking bool
+	}{
+		{schemas.Gemini, false},
+		{schemas.Vertex, true},
+	} {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    model,
+				Input:    minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+			require.NoError(t, err)
+			if tt.wantThinking {
+				assert.NotNil(t, result.GenerationConfig.ThinkingConfig)
+			} else {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+			}
+		})
+	}
+}
+
+// TestGemini3CapabilityGatesReadDatasheet covers the three model gates that used
+// to be Gemini-3 name checks. Each subtest pins a 2.5-era model, which the name
+// fallback answers false, and asserts the datasheet record flips it. The
+// fallback side is covered by TestStructuredOutputWithToolsConflict,
+// TestThinkingLevelFromEffort and TestMultimodalFunctionResponse_RoundTrip.
+func TestGemini3CapabilityGatesReadDatasheet(t *testing.T) {
+	const model = "gemini-2.5-flash"
+
+	withCaps := func(t *testing.T, record *schemas.ModelCapabilities) {
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return record
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	t.Run("effort_control_selects_thinking_level", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{
+			SupportsReasoning:     new(true),
+			ReasoningEffortLevels: []string{"low", "high"},
+		})
+
+		effort := "low"
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Model: model,
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+		assert.Equal(t, "low", *result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+		assert.Nil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget,
+			"an effort control must send thinkingLevel rather than convert to a budget")
+	})
+
+	t.Run("response_schema_survives_alongside_tools", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsResponseSchemaWithTools: new(true)})
+
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Model: model,
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				}},
+				ResponseFormat: schemas.Ptr[interface{}](map[string]interface{}{"type": "json_object"}),
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType)
+		assert.NotEmpty(t, result.Tools)
+	})
+
+	t.Run("multimodal_tool_output_keeps_media_parts", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsMultimodalToolOutput: new(true)})
+
+		result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: multimodalToolOutputInput(),
+		})
+		require.NoError(t, err)
+		assert.NotEmpty(t, mediaPartsInFunctionResponse(result),
+			"media blocks must ride along as functionResponse.parts when the model supports them")
+	})
+
+	t.Run("multimodal_tool_output_drops_media_when_unsupported", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsMultimodalToolOutput: new(false)})
+
+		result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: multimodalToolOutputInput(),
+		})
+		require.NoError(t, err)
+		assert.Empty(t, mediaPartsInFunctionResponse(result),
+			"media blocks must be dropped rather than sent to a model that rejects them")
+	})
+}
+
+// multimodalToolOutputInput builds a function_call_output carrying one text and
+// one image block, the shape the multimodal tool-output gate acts on.
+func multimodalToolOutputInput() []schemas.ResponsesMessage {
+	const redPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	return []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("c1"),
+			Name:   schemas.Ptr("read_file"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: schemas.Ptr("result:"),
+					},
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: schemas.Ptr("data:image/png;base64," + redPNG),
+						},
+					},
+				},
+			},
+		},
+	}}
+}
+
+// mediaPartsInFunctionResponse returns the media parts hanging off the first
+// functionResponse in the request.
+func mediaPartsInFunctionResponse(req *gemini.GeminiGenerationRequest) []*gemini.Part {
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part.FunctionResponse != nil {
+				return part.FunctionResponse.Parts
+			}
+		}
+	}
+	return nil
+}
+
 // Regression: GenAI /generateContent path must not turn thinkingLevel into a derived
 // thinkingBudget (which changes Gemini 3.x behavior). Inbound should set effort only;
 // outbound for Gemini 3+ should emit thinkingLevel again.

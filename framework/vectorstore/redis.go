@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/redis/go-redis/v9"
@@ -1557,35 +1558,26 @@ func (s *RedisStore) RequiresVectors() bool {
 }
 
 // escapeSearchValue escapes special characters in search values.
+// RediSearch treats every punctuation character as special inside a TAG query
+// (@field:{value}, DIALECT 2), so escape all non-alphanumeric ASCII characters
+// instead of enumerating specials: an unescaped character either fails the
+// query with a syntax error (e.g. ":" in "gemma31b-q6:latest") or silently
+// matches nothing (e.g. "/" in "openai/gpt-4o").
+// Iterates bytes, not runes, so non-ASCII and even malformed UTF-8 pass
+// through byte-for-byte, matching the raw bytes Redis stored.
 func escapeSearchValue(value string) string {
-	// Escape special RediSearch characters
-	replacer := strings.NewReplacer(
-		"(", "\\(",
-		")", "\\)",
-		"[", "\\[",
-		"]", "\\]",
-		"{", "\\{",
-		"}", "\\}",
-		"*", "\\*",
-		"?", "\\?",
-		"|", "\\|",
-		"&", "\\&",
-		"!", "\\!",
-		"@", "\\@",
-		"#", "\\#",
-		"$", "\\$",
-		"%", "\\%",
-		"^", "\\^",
-		"~", "\\~",
-		"`", "\\`",
-		"\"", "\\\"",
-		"'", "\\'",
-		" ", "\\ ",
-		"-", "\\-",
-		".", "\\.",
-		",", "\\,",
-	)
-	return replacer.Replace(value)
+	var b strings.Builder
+	b.Grow(len(value) * 2)
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		isSafe := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c >= utf8.RuneSelf
+		if !isSafe {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // Binary embedding conversion helpers

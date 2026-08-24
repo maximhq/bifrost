@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { SettingsIcon, Trash } from "lucide-react";
@@ -26,22 +27,32 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	}, [provider.name, provider.custom_provider_config?.is_key_less]);
 
 	const editConfigButton = (
-		<div className="flex items-center gap-2">
+		<div className="flex min-w-0 flex-wrap items-center gap-2">
 			{onRequestDelete && hasDeleteProviderAccess && (
 				<Button
 					variant="outline"
 					onClick={onRequestDelete}
-					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive size-9 px-0"
 					aria-label="Delete provider"
 					data-testid="provider-delete-btn"
 				>
 					<Trash className="h-4 w-4" />
 				</Button>
 			)}
-			<Button variant="outline" onClick={() => setShowConfigSheet(true)}>
-				<SettingsIcon className="h-4 w-4" />
-				{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}
-			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						variant="outline"
+						className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+						onClick={() => setShowConfigSheet(true)}
+						aria-label={hasUpdateProviderAccess ? "Edit provider configuration" : "View provider configuration"}
+					>
+						<SettingsIcon className="h-4 w-4" />
+						<span className="hidden xl:inline">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</span>
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent className="xl:hidden">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</TooltipContent>
+			</Tooltip>
 		</div>
 	);
 

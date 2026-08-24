@@ -148,20 +148,20 @@ export default function LogsPage() {
 			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
+					try {
+						return JSON.parse(urlState.metadata_filters);
+					} catch {
+						return undefined;
+					}
+				})()
 				: undefined,
 			// Use a period if present
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-						start_time: dateUtils.toISOString(urlState.start_time),
-						end_time: dateUtils.toISOString(urlState.end_time),
-					}),
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -211,8 +211,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -589,6 +588,7 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			service_tier: "Service Tier",
 			virtual_key: "Virtual Key",
 			routing_rule: "Routing Rule",
 			team: "Team",
@@ -599,7 +599,10 @@ export default function LogsPage() {
 		[],
 	);
 
-	const DEFAULT_HIDDEN_COLUMNS = useMemo(() => ["virtual_key", "routing_rule", "team", "customer", "user", "business_unit"], []);
+	const DEFAULT_HIDDEN_COLUMNS = useMemo(
+		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit"],
+		[],
+	);
 
 	const {
 		entries: columnEntries,
@@ -645,10 +648,22 @@ export default function LogsPage() {
 		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
 		[expandedChainIds, loadingChainIds, handleToggleChain],
 	);
-	const selectedLogFromData = useMemo(
-		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
-		[selectedLogId, logs],
-	);
+	// Resolve the selected log from data already on screen — the page of roots
+	// first, then the children of any expanded chain. Children live outside
+	// `logs`, so without this second lookup clicking a child would fall through
+	// to the fetch-by-id effect below and the sheet would only appear after that
+	// round trip. Resolving locally opens the sheet immediately; the sheet still
+	// fetches the full record and shows its own loader while that lands.
+	const selectedLogFromData = useMemo(() => {
+		if (!selectedLogId) return null;
+		const root = logs.find((l) => l.id === selectedLogId);
+		if (root) return root;
+		for (const children of Object.values(chainChildren)) {
+			const child = children.find((l) => l.id === selectedLogId);
+			if (child) return child;
+		}
+		return null;
+	}, [selectedLogId, logs, chainChildren]);
 
 	useEffect(() => {
 		if (!selectedLogId || selectedLogFromData) {
@@ -734,7 +749,7 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (
@@ -743,7 +758,7 @@ export default function LogsPage() {
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border p-4 pb-2">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}
