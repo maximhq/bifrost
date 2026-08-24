@@ -1,6 +1,9 @@
 package zhipu
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const (
 	// defaultBaseURL is the Z.AI international General API (pay-as-you-go) base URL.
@@ -27,6 +30,23 @@ const (
 	anthropicMessagesPath = "/v1/messages"
 )
 
+// zhipuKnownHosts are the upstream hosts whose URL shapes the suffix rewrites
+// below rely on. Custom or proxied hosts never get their paths rewritten.
+var zhipuKnownHosts = map[string]bool{
+	"api.z.ai":         true, // General API + Coding Plan (international)
+	"open.bigmodel.cn": true, // BigModel platform (China)
+}
+
+// isKnownZhipuHost reports whether the base URL sits on one of Zhipu's own hosts.
+// Unparseable or scheme-less inputs are treated as custom hosts.
+func isKnownZhipuHost(base string) bool {
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return zhipuKnownHosts[parsed.Host]
+}
+
 // deriveAnthropicBaseURL derives the Anthropic-compatible mount base URL from the
 // configured OpenAI-compatible base URL.
 //
@@ -37,9 +57,11 @@ const (
 //   - https://api.z.ai/api/paas/v4        -> https://api.z.ai/api/anthropic
 //
 // (same for open.bigmodel.cn). The mount requires a Coding Plan key; requests made
-// with a General API key are rejected upstream with 401. Any other base URL falls
-// back to appending /anthropic; users on exotic hosts can always create a second
-// provider instance with an explicit base URL.
+// with a General API key are rejected upstream with 401. The path rewrites only
+// apply on Zhipu's own hosts — any other base URL, including a custom or proxied
+// base that merely ends in /coding/paas/v4 or /paas/v4, keeps its configured path
+// and only gets /anthropic appended; users on exotic hosts can always create a
+// second provider instance with an explicit base URL.
 //
 // Idempotent: a base that already ends with the mount suffix is returned unchanged —
 // use_anthropic_endpoints with a base_url set to the mount itself must not append
@@ -48,6 +70,9 @@ func deriveAnthropicBaseURL(openAIBaseURL string) string {
 	base := strings.TrimRight(openAIBaseURL, "/")
 	if strings.HasSuffix(base, anthropicMount) {
 		return base
+	}
+	if !isKnownZhipuHost(base) {
+		return base + anthropicMount
 	}
 	if strings.HasSuffix(base, codingPlanSuffix) {
 		return strings.TrimSuffix(base, codingPlanSuffix) + anthropicMount

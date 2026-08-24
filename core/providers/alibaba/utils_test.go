@@ -54,6 +54,32 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			wantMessages: "https://proxy.example.com/qwen/apps/anthropic/v1/messages",
 		},
 		{
+			// Suffix semantics only hold on Alibaba's own hosts: a custom host
+			// ending in /compatible-mode/v1 must NOT have it rewritten away.
+			name:         "custom base ending in /compatible-mode/v1 keeps its path",
+			openAIBase:   "https://proxy.example.com/compatible-mode/v1",
+			wantMessages: "https://proxy.example.com/compatible-mode/v1/apps/anthropic/v1/messages",
+		},
+		{
+			name:         "custom base ending in /v1 keeps its path",
+			openAIBase:   "https://proxy.example.com/v1",
+			wantMessages: "https://proxy.example.com/v1/apps/anthropic/v1/messages",
+		},
+		{
+			// The aliyuncs.com gate must respect the domain boundary — a host
+			// whose name merely CONTAINS aliyuncs.com is a foreign host.
+			name:         "lookalike host ending in aliyuncs.com.<foreign domain> keeps its path",
+			openAIBase:   "https://dashscope-intl.aliyuncs.com.evil.example/compatible-mode/v1",
+			wantMessages: "https://dashscope-intl.aliyuncs.com.evil.example/compatible-mode/v1/apps/anthropic/v1/messages",
+		},
+		{
+			// Scheme-less values must take the custom-host fallback even when
+			// the remainder parses to a known Alibaba host.
+			name:         "scheme-less base takes the custom-host fallback",
+			openAIBase:   "//dashscope-intl.aliyuncs.com/compatible-mode/v1",
+			wantMessages: "//dashscope-intl.aliyuncs.com/compatible-mode/v1/apps/anthropic/v1/messages",
+		},
+		{
 			// use_anthropic_endpoints with a base_url already set to the mount
 			// itself must not append /apps/anthropic a second time.
 			name:         "Token Plan host with the Anthropic mount as base is idempotent",

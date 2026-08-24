@@ -39,6 +39,32 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			wantMessages: "https://proxy.example.com/zhipu/anthropic/v1/messages",
 		},
 		{
+			// Suffix semantics only hold on Zhipu's own hosts: a custom host
+			// ending in a recognized suffix must NOT have it rewritten away.
+			name:         "custom base ending in /coding/paas/v4 keeps its path",
+			openAIBase:   "https://proxy.example.com/api/coding/paas/v4",
+			wantMessages: "https://proxy.example.com/api/coding/paas/v4/anthropic/v1/messages",
+		},
+		{
+			name:         "custom base ending in /paas/v4 keeps its path",
+			openAIBase:   "https://proxy.example.com/api/paas/v4",
+			wantMessages: "https://proxy.example.com/api/paas/v4/anthropic/v1/messages",
+		},
+		{
+			// The known-host gate is exact-match: a host whose name merely
+			// contains api.z.ai is a foreign host.
+			name:         "lookalike host containing api.z.ai keeps its path",
+			openAIBase:   "https://api.z.ai.proxy.example.com/api/paas/v4",
+			wantMessages: "https://api.z.ai.proxy.example.com/api/paas/v4/anthropic/v1/messages",
+		},
+		{
+			// Scheme-less values must take the custom-host fallback even when
+			// the remainder parses to a known Zhipu host.
+			name:         "scheme-less base takes the custom-host fallback",
+			openAIBase:   "//api.z.ai/api/paas/v4",
+			wantMessages: "//api.z.ai/api/paas/v4/anthropic/v1/messages",
+		},
+		{
 			// use_anthropic_endpoints with a base_url already set to the mount
 			// itself must not append /anthropic a second time.
 			name:         "Anthropic mount as base is idempotent",
