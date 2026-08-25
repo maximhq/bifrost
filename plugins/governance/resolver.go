@@ -186,7 +186,6 @@ func (r *BudgetResolver) EvaluateTeamRequest(ctx *schemas.BifrostContext, teamID
 		Decision: DecisionAllow,
 		Reason:   "Team-level checks passed",
 	}
-
 }
 
 // EvaluateUserRequest evaluates user-level rate limits and budgets (enterprise-only)
@@ -304,8 +303,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	// them. This is separate from skipProviderCheck: a provider the key does configure
 	// still carries a model allowlist that would deny the request one step later.
 	skipModelCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipModelCheck)
-	isPassthrough := requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest
-	checkModelIfPresent := isPassthrough || requestType == schemas.VideoEditRequest
+	checkModelIfPresent := IsModelCheckedWhenPresent(requestType)
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,

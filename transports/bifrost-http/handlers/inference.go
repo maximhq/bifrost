@@ -3423,9 +3423,12 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
-	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
-		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
-			model = schemas.Ptr(m)
+	} else if len(req.Requests) > 0 {
+		for _, body := range []map[string]any{req.Requests[0].Body, req.Requests[0].Params} {
+			if m, ok := body["model"].(string); ok && m != "" {
+				model = schemas.Ptr(m)
+				break
+			}
 		}
 	}
 
