@@ -559,8 +559,10 @@ func HandleGeminiChatCompletionStream(
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 				return
 			}
-			// Process chunk using shared function
+			// Process chunk using shared function. Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(eventData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
@@ -581,8 +583,10 @@ func HandleGeminiChatCompletionStream(
 				modelName = geminiResponse.ModelVersion
 			}
 
-			// Convert to Bifrost stream response
+			// Convert to Bifrost stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1072,8 +1076,10 @@ func HandleGeminiResponsesStream(
 				return
 			}
 
-			// Process chunk using shared function
+			// Process chunk using shared function. Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(eventData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
@@ -1095,8 +1101,10 @@ func HandleGeminiResponsesStream(
 				}
 			}
 
-			// Convert to Bifrost responses stream response
+			// Convert to Bifrost responses stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			responses, bifrostErr := geminiResponse.ToBifrostResponsesStream(sequenceNumber, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)

@@ -1204,13 +1204,16 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Parse the chunk payload
+				// Parse the chunk payload. Per-event decode -> "response-parse" (Serialization) stream phase.
 				var chunkPayload struct {
 					Bytes []byte `json:"bytes"`
 				}
-				if err := sonic.Unmarshal(message.Payload, &chunkPayload); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &chunkPayload)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -1575,11 +1578,15 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Converse API path: parse Bedrock Converse-specific stream events
+				// Converse API path: parse Bedrock Converse-specific stream events.
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				var streamEvent BedrockStreamEvent
-				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &streamEvent)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -1696,7 +1703,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
+				// Per-event mapping -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
 				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream(streamState)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
@@ -1994,11 +2004,15 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
-				// Converse API path: parse Bedrock Converse-specific stream events
+				// Converse API path: parse Bedrock Converse-specific stream events.
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				var streamEvent BedrockStreamEvent
-				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &streamEvent)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -2062,7 +2076,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
+				// Per-event mapping -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
 				responses, bifrostErr, _ := streamEvent.ToBifrostResponsesStream(chunkIndex, streamState)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)

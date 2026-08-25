@@ -2,7 +2,6 @@ package logging
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -197,44 +196,19 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			return snapshot(), err
 		}
 
-		costUpdates := make(map[string]logstore.CostUpdate, len(batch))
-		gotPositiveCost := make([]bool, len(batch))
-		batchSkipped := 0
-		batchUnpriceable := 0
-		for i := range batch {
-			logEntry := batch[i]
-			cost, calcErr := outcomes[i].cost, outcomes[i].err
-			if calcErr != nil {
-				batchSkipped++
-				if errors.Is(calcErr, errPricingInputsUnavailable) {
-					batchUnpriceable++
-				}
-				p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
-				continue
-			}
-			if cost <= 0 {
-				if outcomes[i].knownZeroCost {
-					costUpdates[logEntry.ID] = logstore.CostUpdate{}
-				} else {
-					batchSkipped++
-					p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
-				}
-				continue
-			}
-			costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
-			gotPositiveCost[i] = true
+		// Shared with RecalculateCostsWithProgress so the two paths cannot drift on
+		// how a page is persisted — notably the batch-aggregate rows, which carry a
+		// scalar total instead of a breakdown.
+		tally, err := p.persistRecalcOutcomes(ctx, batch, outcomes)
+		if err != nil {
+			return snapshot(), err
 		}
-
-		if len(costUpdates) > 0 {
-			if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
-				return snapshot(), fmt.Errorf("failed to bulk update costs: %w", err)
-			}
-			meta.Updated += len(costUpdates)
-		}
-		// Merge the skip counts only once the batch is durably committed, so a retry
-		// after a BulkUpdateCost failure cannot double-count the same skipped rows.
-		meta.Skipped += batchSkipped
-		meta.Unpriceable += batchUnpriceable
+		gotPositiveCost := tally.priced
+		// Merge the counts only once the batch is durably committed, so a retry
+		// after a failed write cannot double-count the same rows.
+		meta.Updated += tally.updated
+		meta.Skipped += tally.skipped
+		meta.Unpriceable += tally.unpriceable
 		meta.Processed += len(batch)
 
 		// Advance the cursor. The lower bound is inclusive and rows that keep matching

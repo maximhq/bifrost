@@ -2993,3 +2993,58 @@ func TestStartBatchAccountingSweeperAfterCleanupIsRefused(t *testing.T) {
 		t.Fatal("no sweeper should be registered after Cleanup")
 	}
 }
+
+// The batch job row is the only durable record of who to bill: settlement can run
+// hours later from a sweeper with no request context. A virtual key alone is not
+// enough — an access profile shares one across users — so the user, team, customer
+// and the creating log row must all be captured at create time.
+func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      store,
+		batchStore: bs,
+		logger:     testLogger{},
+	}
+
+	vkID := "vk-access-profile"
+	userID := "user-alice"
+	teamID := "team-1"
+	customerID := "customer-1"
+	entry := &logstore.Log{
+		ID:                 "req-create-batch-identity",
+		Provider:           string(schemas.OpenAI),
+		Model:              "gpt-4o",
+		SelectedKeyID:      "key-1",
+		VirtualKeyID:       &vkID,
+		UserID:             &userID,
+		TeamID:             &teamID,
+		CustomerID:         &customerID,
+		BudgetIDsParsed:    []string{"budget-1"},
+		RateLimitIDsParsed: []string{"rl-1"},
+	}
+	plugin.recordBatchJobLifecycle(entry, &schemas.BifrostResponse{
+		BatchCreateResponse: &schemas.BifrostBatchCreateResponse{
+			ID:     "batch-identity-123",
+			Status: schemas.BatchStatusValidating,
+		},
+	})
+
+	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-identity-123"))
+	if err != nil {
+		t.Fatalf("GetBatchJob() error = %v", err)
+	}
+	if job.UserID == nil || *job.UserID != userID {
+		t.Fatalf("expected user_id %s, got %v", userID, job.UserID)
+	}
+	if job.TeamID == nil || *job.TeamID != teamID {
+		t.Fatalf("expected team_id %s, got %v", teamID, job.TeamID)
+	}
+	if job.CustomerID == nil || *job.CustomerID != customerID {
+		t.Fatalf("expected customer_id %s, got %v", customerID, job.CustomerID)
+	}
+	if job.SourceLogID == nil || *job.SourceLogID != entry.ID {
+		t.Fatalf("expected source_log_id %s, got %v", entry.ID, job.SourceLogID)
+	}
+}
