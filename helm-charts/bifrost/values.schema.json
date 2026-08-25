@@ -787,6 +787,11 @@
                       },
                       "description": "Custom labels to add to all metrics"
                     },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Serve the Prometheus /metrics scrape endpoint. Default true."
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
