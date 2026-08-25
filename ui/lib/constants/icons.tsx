@@ -818,6 +818,57 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	alibaba: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Alibaba Cloud</title>
+				<path d="M17.5 19H7a5 5 0 0 1-.54-9.98 7 7 0 0 1 13.42 2.62A4.5 4.5 0 0 1 17.5 19Z" fill="#FF6A00" />
+			</svg>
+		);
+	},
+	kimi: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Kimi</title>
+				<path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79Z" fill="currentColor" />
+			</svg>
+		);
+	},
+	zhipu: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Zhipu AI</title>
+				<path d="M5 4h14L9.5 16H19v4H5l9.5-12H5V4Z" fill="#2B5CFF" />
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

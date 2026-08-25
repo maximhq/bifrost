@@ -468,6 +468,12 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
+# NOTE: transports/Dockerfile sets GOWORK=off and resolves the framework module
+# from the published tag (go.mod), so plain `make docker-image` FAILS on branches
+# whose local framework/ is ahead of the latest release (e.g. missing packages
+# like framework/batchaccounting). Use `LOCAL=1 make docker-image` (Dockerfile.local,
+# go-workspace build) on such branches — a stale-layer image from the plain target
+# has already caused one silent-regression incident (2026-08-20).
 docker-image: build-ui ## Build Docker image (LOCAL=1 to use Dockerfile.local)
 	@$(ECHO) "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))

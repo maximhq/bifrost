@@ -125,6 +125,7 @@
                 "icon": "bars-progress",
                 "pages": [
                   "providers/supported-providers/overview",
+                  "providers/supported-providers/alibaba",
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/azure-model-router",
@@ -139,6 +140,7 @@
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/kimi",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
@@ -155,7 +157,8 @@
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
-                  "providers/supported-providers/xai"
+                  "providers/supported-providers/xai",
+                  "providers/supported-providers/zhipu"
                 ]
               },
               "providers/routing-rules",

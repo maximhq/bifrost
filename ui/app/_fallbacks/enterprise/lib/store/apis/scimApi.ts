@@ -18,6 +18,9 @@ export const useGetAuthTypeQuery = (
 // OSS stub for SCIM providers — returns an empty list so the onboarding
 // widget's enterprise-only "configure SCIM" step is always considered
 // incomplete (the step itself is hidden in OSS via IS_ENTERPRISE).
+// Element type mirrors the fields OSS consumers read off the enterprise
+// response (e.g. onboarding's `provider.enabled` gate); `unknown` elements
+// force every consumer into a per-site cast.
 export const useGetSCIMProvidersQuery = (
 	_args?: undefined,
 	_opts?: { skip?: boolean },

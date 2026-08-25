@@ -4188,7 +4188,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					// Preserve a co-present effort — these models support
 					// output_config.effort, and the budget is otherwise dropped.
 					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
 					}
 				} else {
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
@@ -4204,15 +4204,32 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						Type:         "enabled",
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
+					// Vendor extension mounts keep a co-present effort instead
+					// of discarding it. z.ai accepts thinking.budget_tokens and
+					// output_config.effort together (the ZCode-proven shape);
+					// Model Studio rejects the pair ("'reasoning_effort' and
+					// 'thinking_budget' cannot be set simultaneously") and
+					// engages thinking itself from the effort value, so the
+					// effort wins there and the thinking field is dropped
+					// (verified live 2026-08-23).
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+						SupportsProviderEffort(bifrostReq.Provider, capModel) {
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						if bifrostReq.Provider == schemas.Alibaba {
+							anthropicReq.Thinking = nil
+						}
+					}
 				}
 			} else if native, ok := anthropicNativeEffortFrom(ctx); ok && native.ThinkingOmitted {
 				// The caller sent output_config.effort and no thinking parameter.
 				// Forward exactly that: the effort alone, with thinking left absent so
 				// the model applies its own default. Synthesizing thinking here would
 				// turn it on against the caller's request on every model that defaults
-				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6).
-				if caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
-					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
+				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6). Provider-aware via
+				// SupportsProviderEffort: vendor mounts (z.ai, Model Studio) keep the
+				// field for their documented families too.
+				if SupportsProviderEffort(bifrostReq.Provider, capModel) {
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(native.Effort))
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil {
@@ -4222,17 +4239,24 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
-							setEffortOnOutputConfig(anthropicReq, effort)
-						} else if SupportsNativeEffort(caps) {
-							// Opus 4.5: native effort + budget_tokens thinking
-							setEffortOnOutputConfig(anthropicReq, effort)
-							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-							if err != nil {
-								return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
-							}
-							anthropicReq.Thinking = &AnthropicThinking{
-								Type:         "enabled",
-								BudgetTokens: schemas.Ptr(budgetTokens),
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
+						} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
+							// Opus 4.5: native effort + budget_tokens thinking.
+							// z.ai (GLM-5.2+) takes the same shape — the mount maps
+							// the effort value server-side. Model Studio (Alibaba)
+							// rejects effort + thinking_budget together and engages
+							// thinking itself from the effort value, so the effort is
+							// forwarded alone there (verified live 2026-08-23).
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
+							if bifrostReq.Provider != schemas.Alibaba {
+								budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+								if err != nil {
+									return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
+								}
+								anthropicReq.Thinking = &AnthropicThinking{
+									Type:         "enabled",
+									BudgetTokens: schemas.Ptr(budgetTokens),
+								}
 							}
 						} else {
 							// Older models: budget_tokens only
@@ -4250,7 +4274,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
 							// adaptive thinking is always on and cannot be disabled. Omit
 							// the thinking param entirely for that family; all other
-							// models take the explicit disabled path.
+							// models take the explicit disabled path. (Forced-thinking
+							// GLM models get rewritten to enabled downstream in
+							// stripUnsupportedAnthropicFields.)
 							anthropicReq.Thinking = &AnthropicThinking{
 								Type: "disabled",
 							}
@@ -4261,8 +4287,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						// The neutral params collapsed the caller's effort into "none"
 						// to signal reasoning-off, so restore it from what they sent.
 						if native, ok := anthropicNativeEffortFrom(ctx); ok && native.Effort != "" &&
-							caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
-							setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
+							SupportsProviderEffort(bifrostReq.Provider, capModel) {
+							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(native.Effort))
 						}
 					}
 				}
@@ -4966,8 +4992,45 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		if i == len(bifrostMessages)-1 {
 			return true
 		}
-		next := bifrostMessages[i+1]
-		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+		// The "followed by an assistant turn" clause is evaluated against the next
+		// ROLE-BEARING message. Roleless reasoning and function_call items are
+		// intermediate representations of the adjacent assistant turn — Anthropic's
+		// own wire carries thinking and tool_use INSIDE the assistant message, and
+		// the egress below regroups these fragments into it — so they are skipped.
+		// Failing on them was a false negative that forced the fallback (hoist or
+		// inline) for exactly the thinking-replay shape every extended-thinking
+		// conversation produces on replay. A function_call fragment confirms the
+		// regrouped assistant message is emitted directly after the system turn
+		// (its tool results follow it, never precede it), which settles the clause
+		// then and there. A roleless function_call_output with no function_call
+		// ahead of it is the USER side of a tool exchange (it regroups into a user
+		// turn), so it and any other roleless shape fail the clause instead.
+		// Known theoretical false positive, unreachable from opencode-shaped
+		// traffic (which anchors system entries right after a role-bearing user
+		// message): a hand-crafted [user, function_call_output, system,
+		// function_call] sequence — clause 1 passes (the buffered output flushes
+		// later), the scan sees function_call and returns true, but the egress
+		// flushes the buffered results as a USER message between the system turn
+		// and the regrouped assistant, yielding [user, system, user, assistant].
+		for j := i + 1; j < len(bifrostMessages); j++ {
+			next := bifrostMessages[j]
+			if next.Role != nil {
+				return *next.Role == schemas.ResponsesInputMessageRoleAssistant
+			}
+			if next.Type == nil {
+				return false
+			}
+			switch *next.Type {
+			case schemas.ResponsesMessageTypeFunctionCall:
+				return true
+			case schemas.ResponsesMessageTypeReasoning:
+				continue
+			}
+			return false
+		}
+		// Only reasoning fragments followed the system turn; they regroup into
+		// an assistant message, satisfying the clause.
+		return true
 	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user

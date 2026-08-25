@@ -209,8 +209,10 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 				responseCount++
 
-				// Safety check to prevent infinite loops in case of issues
-				if responseCount > 500 {
+				// Safety check to prevent infinite loops in case of issues.
+				// Generous bound: token-by-token reasoning streams (e.g. GLM) can
+				// legitimately produce well over 500 chunks for a single response.
+				if responseCount > 2500 {
 					t.Fatal("Received too many streaming chunks, something might be wrong")
 				}
 
@@ -406,7 +408,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								}
 							}
 
-							if responseCount > 100 {
+							if responseCount > 1500 {
+								// Runaway stream: the tool-detection window is a safety bound,
+								// so tripping it must fail validation instead of letting a
+								// pathological stream pass on the strength of an earlier tool event.
+								streamErrors = append(streamErrors, "❌ Received too many streaming chunks in tool-call stream, something might be wrong")
 								goto toolStreamComplete
 							}
 

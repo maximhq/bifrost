@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -250,12 +251,22 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
-	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+	// effort parameter." Provider-aware via SupportsProviderEffort: mounts that
+	// document the field as a vendor extension (z.ai, Model Studio) keep it for
+	// their documented families, and the fallback carries the datasheet-driven
+	// native-effort gate for everything else.
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsProviderEffort(provider, model) {
 		req.OutputConfig.Effort = nil
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
 		}
+	}
+	// Model Studio clamp: the alibaba mount validates a surviving effort value
+	// against its per-model chat-completions enum instead of mapping it
+	// server-side (see clampAlibabaMountEffortForModel), so each family's
+	// officially valid values are emitted on the typed path too.
+	if provider == schemas.Alibaba && req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+		req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortForModel(model, *req.OutputConfig.Effort))
 	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
@@ -300,6 +311,31 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if RejectsDisabledThinking(model, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
+		}
+	}
+	// Forced-thinking GLM models on z.ai's mount (GLM-5.3+, GLM-4.7, GLM-4.5V):
+	// thinking cannot be disabled — GLM-5.3+ 400s ("This model always engages in
+	// thinking and cannot be disabled") and the mount treats an absent thinking
+	// field as disabled. Rewrite disabled → enabled with the minimum budget (the
+	// closest legal shape to the caller's "cheap" intent).
+	if provider == schemas.Zhipu && req.Thinking != nil && req.Thinking.Type == "disabled" &&
+		ZhipuForcedThinkingModel(model) {
+		req.Thinking = &AnthropicThinking{
+			Type:         "enabled",
+			BudgetTokens: schemas.Ptr(MinimumReasoningMaxTokens),
+		}
+	}
+	// GLM-5.3+ requires the thinking field outright on this mount (absent =
+	// disabled = 1210 error), so synthesize it. Budget precedence: effort-derived
+	// (the caller's output_config.effort) > minimum.
+	if provider == schemas.Zhipu && req.Thinking == nil && ZhipuRequiresThinkingModel(model) {
+		var effort *string
+		if req.OutputConfig != nil {
+			effort = req.OutputConfig.Effort
+		}
+		req.Thinking = &AnthropicThinking{
+			Type:         "enabled",
+			BudgetTokens: schemas.Ptr(zhipuThinkingBudget(effort, req.MaxTokens)),
 		}
 	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
@@ -619,9 +655,10 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
-	// Mirrors the typed path; same cleanup of an empty parent.
+	// Mirrors the typed path; same cleanup of an empty parent. Provider-aware
+	// via SupportsProviderEffort (z.ai / Model Studio extension families).
 	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+		!SupportsProviderEffort(provider, model) {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
@@ -630,6 +667,20 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+
+	// Model Studio clamp — mirrors the typed path: a surviving effort value is
+	// mapped onto the mount's per-model chat-completions enum instead of
+	// being forwarded into a vendor 400.
+	if provider == schemas.Alibaba {
+		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+			if clamped := clampAlibabaMountEffortForModel(model, e.String()); clamped != e.String() {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "output_config.effort", clamped)
+				if err != nil {
+					return nil, fmt.Errorf("clamp raw output_config.effort on the model studio mount: %w", err)
+				}
 			}
 		}
 	}
@@ -678,6 +729,42 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				if err != nil {
 					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 				}
+			}
+		}
+	}
+
+	// Forced-thinking GLM models on z.ai's mount — mirrors the typed path in
+	// stripUnsupportedAnthropicFields: thinking cannot be disabled (GLM-5.3+
+	// 400s), so disabled is rewritten to enabled with the minimum budget, and
+	// on GLM-5.3+ (which requires the field outright — absent = disabled =
+	// 1210 error) a missing thinking field is synthesized, budget derived from
+	// output_config.effort when present.
+	if provider == schemas.Zhipu {
+		thinkingType := providerUtils.GetJSONField(jsonBody, "thinking.type").String()
+		switch {
+		case thinkingType == "disabled" && ZhipuForcedThinkingModel(model):
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "enabled")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type on forced-thinking GLM: %w", err)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", MinimumReasoningMaxTokens)
+			if err != nil {
+				return nil, fmt.Errorf("set raw thinking.budget_tokens on forced-thinking GLM: %w", err)
+			}
+		case thinkingType == "" && ZhipuRequiresThinkingModel(model):
+			var effort *string
+			if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+				v := e.String()
+				effort = &v
+			}
+			maxTokens := int(providerUtils.GetJSONField(jsonBody, "max_tokens").Int())
+			thinking := map[string]interface{}{
+				"type":          "enabled",
+				"budget_tokens": zhipuThinkingBudget(effort, maxTokens),
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking", thinking)
+			if err != nil {
+				return nil, fmt.Errorf("synthesize raw thinking on GLM-5.3+: %w", err)
 			}
 		}
 	}
@@ -1062,6 +1149,219 @@ func DefaultSupportsNativeEffort(model string) bool {
 	return false
 }
 
+// glm5Minor returns the GLM-5.x minor revision of a (lowercased) model name,
+// or -1 when the model is not a glm-5.<digit>... shape. Covers Coding Plan
+// aliases (glm-5.2[1m]) via the leading-digit parse. Mirrors the helper of the
+// same name in core/providers/openai/utils.go — keep the two in lockstep.
+func glm5Minor(modelLower string) int {
+	rest, ok := strings.CutPrefix(modelLower, "glm-5.")
+	if !ok {
+		return -1
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return -1
+	}
+	minor, err := strconv.Atoi(rest[:digits])
+	if err != nil {
+		return -1
+	}
+	return minor
+}
+
+// bareModelName lowercases model and strips any provider/routing prefix so the
+// vendor model predicates below match the same strings the upstream sees.
+func bareModelName(model string) string {
+	m := strings.ToLower(model)
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	return m
+}
+
+// ZhipuForcedThinkingModel reports whether a GLM model cannot disable thinking
+// on z.ai: GLM-5.3+ errors on thinking.type:"disabled" ("GLM-5.3 no longer
+// supports disabling thinking"), and GLM-4.7 / GLM-4.5V are forced-thinking
+// (disabled is not honored).
+//
+// Source: https://docs.z.ai/guides/capabilities/thinking (verified 2026-08-16)
+func ZhipuForcedThinkingModel(model string) bool {
+	m := bareModelName(model)
+	if glm5Minor(m) >= 3 {
+		return true
+	}
+	return strings.HasPrefix(m, "glm-4.7") || strings.HasPrefix(m, "glm-4.5v")
+}
+
+// ZhipuRequiresThinkingModel reports whether a GLM model requires an explicit
+// thinking:{type:"enabled"} field on z.ai's Anthropic mount: the mount treats an
+// absent thinking field as disabled, and GLM-5.3+ answers that with a 1210
+// error ("This model always engages in thinking and cannot be disabled") —
+// verified live 2026-08-16 (no-thinking and effort-only requests both 400).
+// GLM-4.7 tolerates an absent field (Claude Code's default traffic against the
+// mount carries none), so the requirement starts at 5.3.
+func ZhipuRequiresThinkingModel(model string) bool {
+	return glm5Minor(bareModelName(model)) >= 3
+}
+
+// zhipuThinkingBudget picks the budget_tokens value for a thinking field the
+// gateway rewrites or synthesizes on z.ai's mount: the caller's effort derives
+// one when present, otherwise the minimum — the closest legal shape to "think
+// as little as possible" when the caller gave no reasoning signal.
+func zhipuThinkingBudget(effort *string, maxTokens int) int {
+	budget := MinimumReasoningMaxTokens
+	if effort != nil {
+		if derived, err := providerUtils.GetBudgetTokensFromReasoningEffort(*effort, MinimumReasoningMaxTokens, maxTokens); err == nil {
+			budget = derived
+		}
+	}
+	if maxTokens > 1 && budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+	return budget
+}
+
+// clampAlibabaMountEffortForModel maps an effort value onto the officially
+// valid reasoning_effort enum Model Studio's Anthropic mount accepts for a
+// given model family. The mount proxies Messages to chat-completions
+// internally (errors surface with a chatcmpl-* id) and validates
+// output_config.effort against the per-model reasoning_effort ladder —
+// rejecting out-of-enum values outright ("'reasoning_effort' must be one of:
+// ...") instead of mapping them server-side, so the gateway emits only
+// officially valid values itself. Per the vendor API docs (supplied
+// 2026-08-23; authoritative):
+//
+//   - qwen3.8-max: valid xhigh/medium/low. max→xhigh; every other value
+//     forwards verbatim.
+//   - GLM-5.3+ (the revision that narrowed the enum; the vendor's matrix
+//     groups kimi-k3 here, but it never reaches this function — see below):
+//     valid max/high/low. xhigh→max, medium→high, minimal→low, none→low.
+//   - glm-5.2/glm-5.1/glm-5: valid high/max. xhigh→max, low→high,
+//     medium→high, minimal→high, none→high — `low` is out of this family's
+//     enum, so the two mildest tiers collapse onto the mildest valid one.
+//   - deepseek-v4-pro-0813 / deepseek-v4-flash-0731 (dated snapshots): valid
+//     max/high/low. xhigh→high, medium→high, minimal→low, none→low.
+//   - deepseek-v4-pro / deepseek-v4-flash (non-dated): same as the GLM-5.2
+//     family (valid high/max).
+//   - Anything else: verbatim. kimi-k3 never reaches here — its effort is
+//     stripped upstream by providerSupportsEffortModel.
+func clampAlibabaMountEffortForModel(model, effort string) string {
+	m := bareModelName(model)
+	switch {
+	case strings.HasPrefix(m, "qwen3.8-max"):
+		if effort == "max" {
+			return "xhigh"
+		}
+		return effort
+	case strings.HasPrefix(m, "deepseek-v4-pro-0813"), strings.HasPrefix(m, "deepseek-v4-flash-0731"):
+		switch effort {
+		case "xhigh", "medium":
+			return "high"
+		case "minimal", "none":
+			return "low"
+		}
+		return effort
+	case glm5Minor(m) >= 3:
+		switch effort {
+		case "xhigh":
+			return "max"
+		case "medium":
+			return "high"
+		case "minimal", "none":
+			return "low"
+		}
+		return effort
+	case glm5Minor(m) >= 0,
+		strings.HasPrefix(m, "deepseek-v4-pro"),
+		strings.HasPrefix(m, "deepseek-v4-flash"):
+		switch effort {
+		case "xhigh":
+			return "max"
+		case "low", "medium", "minimal", "none":
+			// `low` is out of this family's enum (high/max only), so the
+			// mildest tiers all collapse onto the mildest valid value.
+			return "high"
+		}
+		return effort
+	}
+	return effort
+}
+
+// providerSupportsEffortModel scopes output_config.effort to the model families
+// each non-Anthropic vendor documents on its Anthropic-compatible mount. It only
+// runs for providers whose ProviderFeatures entry sets OutputConfigEffort.
+//
+//   - Zhipu: z.ai documents reasoning_effort for "GLM-5.2 and above"; on the
+//     Coding Plan Anthropic mount out-of-scale values are mapped server-side
+//     (GLM-5.3: none/minimal/low→low, medium/high→high, xhigh/max→max), so any
+//     Bifrost effort value is safe to forward verbatim.
+//   - Alibaba: the mount's API page documents no effort field at all (see Q in
+//     types.go); live verification (2026-08-23) shows the mount proxies Messages
+//     to its OpenAI-dialect backend, which validates output_config.effort against
+//     the per-model reasoning_effort ladder documented on the Model Studio model
+//     page — it does NOT map out-of-enum values server-side (max 400s). The
+//     gateway therefore clamps to each family's valid values
+//     (clampAlibabaMountEffortForModel) at every emission site.
+//
+// Cites: Z on the OutputConfigEffort flag (types.go); the alibaba mount is an
+// empirical contract (live-verified 2026-08-23); per-model matrix from the
+// vendor model-page docs supplied 2026-08-23.
+func providerSupportsEffortModel(provider schemas.ModelProvider, model string) bool {
+	m := bareModelName(model)
+	switch provider {
+	case schemas.Zhipu:
+		return glm5Minor(m) >= 2
+	case schemas.Alibaba:
+		return strings.HasPrefix(m, "qwen3.8-max") ||
+			glm5Minor(m) >= 2 ||
+			strings.HasPrefix(m, "deepseek-v4-pro") ||
+			strings.HasPrefix(m, "deepseek-v4-flash")
+	default:
+		return true
+	}
+}
+
+// SupportsProviderEffort is the provider-aware form of SupportsEffortParameter.
+// Anthropic-family providers keep the model-gated Anthropic behavior; providers
+// whose mount documents the field as a vendor extension (OutputConfigEffort
+// flag) accept it for the vendor-documented model families instead.
+func SupportsProviderEffort(provider schemas.ModelProvider, model string) bool {
+	if features, ok := ProviderFeatures[provider]; ok && features.OutputConfigEffort {
+		return providerSupportsEffortModel(provider, model)
+	}
+	caps := schemas.ResolveModelCaps(provider, model)
+	return caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model()))
+}
+
+// ResolveAnthropicMountProfile maps well-known third-party Anthropic-compatible
+// hosts to the provider whose capability profile applies. Custom providers
+// (base_provider_type: anthropic) can point at any Anthropic-shaped mount, and
+// gating everything on schemas.Anthropic applies Anthropic's own model rules to
+// vendors whose mounts differ: z.ai accepts output_config.effort (and requires
+// thinking on GLM-5.3+), Model Studio accepts it on specific families, Kimi's
+// mount takes neither. Host-matched (not URL-parsed) so scheme-less base URLs
+// and workspace-dedicated hosts ({WorkspaceId}.{region}.maas.aliyuncs.com)
+// resolve the same way.
+//
+// Verified 2026-08-16 against vendor docs and live upstream behavior; see
+// docs/research 02 §8.4, 03 §6.3, 04 §7.4.
+func ResolveAnthropicMountProfile(baseURL string) schemas.ModelProvider {
+	u := strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(u, "api.z.ai"), strings.Contains(u, "open.bigmodel.cn"):
+		return schemas.Zhipu
+	case strings.Contains(u, "aliyuncs.com"):
+		return schemas.Alibaba
+	case strings.Contains(u, "api.moonshot.ai"), strings.Contains(u, "api.moonshot.cn"), strings.Contains(u, "api.kimi.com"):
+		return schemas.Kimi
+	default:
+		return schemas.Anthropic
+	}
+}
+
 // appendToSystemContent merges newContent into existing.
 // If existing is nil the new content is returned as-is (preserving ContentStr
 // vs ContentBlocks wire format). When both sides are non-empty both are
@@ -1403,12 +1703,24 @@ func MapBifrostEffortToAnthropic(effort string) string {
 }
 
 // setEffortOnOutputConfig merges the effort value into the request's OutputConfig,
-// preserving any existing Format field (used for structured outputs).
-func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
+// preserving any existing Format field (used for structured outputs). Provider-aware:
+// the alibaba mount rejects out-of-enum effort values (clampAlibabaMountEffortForModel),
+// so the value is clamped to the model family's officially valid enum before it lands
+// on the wire.
+func setEffortOnOutputConfig(req *AnthropicMessageRequest, provider schemas.ModelProvider, model, effort string) {
 	if req.OutputConfig == nil {
 		req.OutputConfig = &AnthropicOutputConfig{}
 	}
-	req.OutputConfig.Effort = &effort
+	req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortFor(provider, model, effort))
+}
+
+// clampAlibabaMountEffortFor is the provider-gated form of
+// clampAlibabaMountEffortForModel: only the alibaba profile remaps the value.
+func clampAlibabaMountEffortFor(provider schemas.ModelProvider, model, effort string) string {
+	if provider == schemas.Alibaba {
+		return clampAlibabaMountEffortForModel(model, effort)
+	}
+	return effort
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.

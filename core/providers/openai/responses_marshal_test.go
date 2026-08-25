@@ -184,6 +184,12 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
 		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
 		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"qwen3.8-max keeps xhigh", "qwen3.8-max", "xhigh", "xhigh"},
+		{"qwen3.8-max downgrades max to xhigh", "qwen3.8-max", "max", "xhigh"},
+		{"provider-prefixed qwen3.8-max downgrades max to xhigh", "alibaba/qwen3.8-max", "max", "xhigh"},
+		{"qwen3.8-max keeps medium", "qwen3.8-max", "medium", "medium"},
+		{"qwen3.8-max downgrades minimal to low", "qwen3.8-max", "minimal", "low"},
+		{"kimi-k3 keeps max", "kimi-k3", "max", "max"},
 		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
 	}
 
