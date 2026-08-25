@@ -63,6 +63,10 @@ import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
 
+// Full-precision cost for the detail view; per-request costs are often < $0.01,
+// where formatCost's 2-4 dp rounding would hide the value.
+const formatCostPrecise = (value?: number): string => `$${parseFloat((value ?? 0).toFixed(6))}`;
+
 const formatRealtimeTransport = (value: unknown): string => {
 	const transport = String(value ?? "").trim();
 	switch (transport.toLowerCase()) {
@@ -1921,11 +1925,56 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
-									<LogEntryDetailsView
-										className="w-full"
-										label="Cost"
-										value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"}
-									/>
+									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Output Cost"
+											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Total Cost"
+											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
+										/>
+									)}
+									{/* Additional cost (guardrail / semantic cache / MCP) on its own row below. */}
+									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full md:col-start-1"
+											label="Additional Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Guardrail Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Semantic Cache Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.mcp_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="MCP Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+										/>
+									)}
 									{isRealtimeTurn && (
 										<>
 											<LogEntryDetailsView
