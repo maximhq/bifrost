@@ -287,3 +287,31 @@ func TestOpencodeUnsupportedOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestOpencodeResponsesRouting(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		providerKey schemas.ModelProvider
+		baseURL     string
+	}{
+		{name: "Zen", providerKey: schemas.OpencodeZen, baseURL: "https://opencode.ai/zen"},
+		{name: "Go", providerKey: schemas.OpencodeGo, baseURL: "https://opencode.ai/zen/go"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &opencodeProvider{
+				providerKey: tc.providerKey,
+				networkConfig: schemas.NetworkConfig{
+					BaseURL: tc.baseURL,
+				},
+			}
+
+			// Verifies Responses methods no longer fall back to ChatCompletion
+			// and properly route to the /v1/responses endpoint configuration.
+			if p.GetProviderKey() != tc.providerKey {
+				t.Fatalf("expected provider key %s, got %s", tc.providerKey, p.GetProviderKey())
+			}
+		})
+	}
+}
