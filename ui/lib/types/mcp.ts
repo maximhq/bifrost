@@ -134,7 +134,7 @@ export interface MCPClientConfig {
 	// always behave as sticky regardless of this field.
 	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
-	// Per-client override (0 = use global, -1 = disabled). API returns NANOSECONDS
+	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
 	tool_sync_interval?: number;
@@ -233,7 +233,7 @@ export interface UpdateMCPClientRequest {
 	// MCPClientConfig's field doc for the full contract.
 	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
-	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
