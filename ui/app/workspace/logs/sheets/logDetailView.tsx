@@ -492,13 +492,14 @@ function formatMicros(us: number): string {
 	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
 }
 
-// Top-level overhead categories. The four JSON (un)marshalling phases fold into one
-// "Serialization" category; the auth middleware spans (middleware.*) fold into
-// "Middleware"; every plugin span folds into "Plugins"; the remaining named phase
-// spans (queue-wait, convertor, key.selection) and the backend "core" remainder each
-// get their own category; anything else lands in "Other". The stacked bar and legend
-// show these categories, and "View details" drills into the member spans (individual
-// (un)marshal phases, individual middlewares, individual plugins) inside grouped ones.
+// Top-level overhead categories shown in the stacked bar + legend. Raw backend span
+// names are grouped into a handful of user-facing categories: Serialization (JSON
+// parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
+// Key selection, Processing (internal request pipeline), Networking
+// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Scheduling (the
+// residual goroutine-hop latency between phases). "View details" drills into the member
+// spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
+// OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
 type OverheadCategory = {
 	key: string;
 	label: string;
@@ -511,29 +512,95 @@ type OverheadCategory = {
 // per-phase labels below are used for the drill-down rows.
 const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
 
+// Top-level categories shown in the stacked bar + legend. Each has a distinct colour.
 const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
 	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
-	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	"middleware.apikeys": { label: "API", colorClass: "bg-cyan-500/70" },
-	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
-	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
-	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
-	"request-unmarshal": { label: "Request unmarshal", colorClass: "bg-sky-500/70" },
-	convertor: { label: "Convertor", colorClass: "bg-fuchsia-500/70" },
-	"attribute-population": { label: "Attribute population", colorClass: "bg-pink-500/70" },
-	"request-marshal": { label: "Request marshal", colorClass: "bg-indigo-500/70" },
-	"response-parse": { label: "Response unmarshal", colorClass: "bg-purple-500/70" },
-	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
-	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
-	core: { label: "Core", colorClass: "bg-slate-500/70" },
-	"convertor.stream-in": { label: "Stream inbound convert", colorClass: "bg-fuchsia-500/70" },
-	"convertor.stream-out": { label: "Stream outbound convert", colorClass: "bg-fuchsia-500/70" },
-	"stream-client-write": { label: "Stream client write", colorClass: "bg-red-500/70" },
-	"stream-backpressure": { label: "Stream backpressure", colorClass: "bg-red-500/70" },
-	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
+	conversion: { label: "Conversion", colorClass: "bg-fuchsia-500/70" },
 	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
-	other: { label: "Other", colorClass: "bg-emerald-500/70" },
+	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
+	routing: { label: "Key selection", colorClass: "bg-amber-500/70" },
+	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
+	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
+	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
+	scheduling: { label: "Scheduling", colorClass: "bg-slate-500/70" },
+	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
 };
+
+// Friendly drill-down labels for each raw bucket name (the technical span names the
+// backend emits). Members without an entry fall back to the name with any "plugin."
+// prefix stripped.
+const OVERHEAD_LABELS: Record<string, string> = {
+	// Serialization (JSON parse / encode)
+	"request-unmarshal": "Request parse",
+	"request-marshal": "Request encode",
+	"response-parse": "Response parse",
+	"response-marshal": "Response encode",
+	// Conversion (API schema translation)
+	convertor: "Schema conversion",
+	"convertor.stream-in": "Stream convert (inbound)",
+	"convertor.stream-out": "Stream convert (outbound)",
+	// Middleware (auth / access control)
+	"middleware.apikeys": "API",
+	"middleware.scim": "SCIM",
+	"middleware.auth": "Auth",
+	// Routing
+	"key-pool": "Key pool",
+	"key.selection": "Key selection",
+	// Processing (internal request pipeline)
+	"handle-setup": "Request setup",
+	"pipeline-pre": "Pre-hooks",
+	"pipeline-post": "Post-hooks",
+	"worker-setup": "Worker setup",
+	"worker-handoff": "Worker handoff",
+	"queue-wait": "Queue wait",
+	"attribute-population": "Attribute population",
+	// Networking (client<->gateway<->provider handling)
+	"provider-internal": "Provider I/O",
+	"transport-context": "Request context building",
+	"transport-response-headers": "Response headers",
+	"response-finalize": "Response read",
+	"request-sign": "Request signing",
+	"credentials-fetch": "Credential fetch",
+	// Streaming relay
+	"stream-backpressure": "Client backpressure",
+	"stream-client-write": "Client write",
+	scheduling: "Scheduling",
+};
+
+// Category assignment for buckets that aren't matched by a prefix rule below. Every
+// backend bucket name should be either matched by a prefix rule (serialization phases,
+// middleware.*, convertor*, plugin.*) or listed here — otherwise it lands in "Other",
+// which is the signal that a new bucket needs a home.
+const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
+	"key-pool": "routing",
+	"key.selection": "routing",
+	"handle-setup": "processing",
+	"pipeline-pre": "processing",
+	"pipeline-post": "processing",
+	"worker-setup": "processing",
+	"worker-handoff": "processing",
+	"queue-wait": "processing",
+	"attribute-population": "processing",
+	"provider-internal": "networking",
+	"transport-context": "networking",
+	"transport-response-headers": "networking",
+	"response-finalize": "networking",
+	"request-sign": "networking",
+	"credentials-fetch": "networking",
+	"stream-backpressure": "streaming",
+	"stream-client-write": "streaming",
+	scheduling: "scheduling",
+};
+
+// Raw backend spans that split one user-facing step into internals a reader doesn't care
+// about are folded into a single member. key-pool (the pool lookup) + key.selection (the
+// actual pick) are both "choosing the API key", so they collapse into "Key selection".
+const OVERHEAD_MEMBER_MERGE: Record<string, string> = {
+	"key-pool": "key.selection",
+};
+function mergedBucketName(name: string): string {
+	return OVERHEAD_MEMBER_MERGE[name] ?? name;
+}
 
 function overheadCategoryKey(b: OverheadBucket): string {
 	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
@@ -542,24 +609,48 @@ function overheadCategoryKey(b: OverheadBucket): string {
 	if (b.name.startsWith("middleware.")) {
 		return "middleware";
 	}
-	// Streaming emits per-chunk convert phases (convertor.stream-in / .stream-out) that
-	// belong under the single Convertor category, shown as members in the drill-down.
-	if (b.name.startsWith("convertor.")) {
-		return "convertor";
+	// The bare "convertor" phase and the per-chunk streaming variants (convertor.stream-in
+	// / .stream-out) all fold into the single Conversion category.
+	if (b.name === "convertor" || b.name.startsWith("convertor.")) {
+		return "conversion";
 	}
-	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
-		return b.name;
+	const mapped = OVERHEAD_BUCKET_CATEGORY[b.name];
+	if (mapped) {
+		return mapped;
 	}
 	return b.kind === "plugin" ? "plugins" : "other";
 }
 
-// overheadMemberLabel renders a drill-down member with its friendly phase label when
-// there is one (serialization phases), else the span name with the redundant
-// "plugin." prefix stripped (every plugin row already sits under the Plugins group).
+// overheadMemberLabel renders a drill-down member with its friendly label when there is
+// one, else the span name with the redundant "plugin." prefix stripped (every plugin row
+// already sits under the Plugins group).
+// Plugin display names where a plain title-case of the kebab id would read wrong
+// (acronyms, multi-word tokens). Everything else is title-cased from its id.
+const PLUGIN_LABEL_OVERRIDES: Record<string, string> = {
+	otel: "OpenTelemetry",
+	datadog: "Datadog",
+	compat: "Compatibility",
+	"adaptive-loadbalancer": "Adaptive Load Balancer",
+	"model-catalog-resolver": "Model Catalog Resolver",
+};
+
+// pluginDisplayName turns a plugin's kebab-case id ("enterprise-governance") into a
+// friendly label ("Enterprise Governance"), honouring PLUGIN_LABEL_OVERRIDES first.
+function pluginDisplayName(id: string): string {
+	if (PLUGIN_LABEL_OVERRIDES[id]) return PLUGIN_LABEL_OVERRIDES[id];
+	return id
+		.split("-")
+		.filter(Boolean)
+		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+		.join(" ");
+}
+
 function overheadMemberLabel(name: string): string {
-	const friendly = OVERHEAD_CATEGORY_META[name]?.label;
+	const friendly = OVERHEAD_LABELS[name];
 	if (friendly) return friendly;
-	return name.startsWith("plugin.") ? name.slice("plugin.".length) : name;
+	if (name.startsWith("plugin.")) return pluginDisplayName(name.slice("plugin.".length));
+	if (name.startsWith("middleware.")) return name.slice("middleware.".length);
+	return name;
 }
 
 // buildOverheadCategories groups the raw buckets into the top-level categories,
@@ -573,7 +664,17 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 		else grouped.set(key, [b]);
 	}
 	const cats: OverheadCategory[] = [];
-	for (const [key, members] of grouped) {
+	for (const [key, rawMembers] of grouped) {
+		// Fold raw span splits into their merged member (e.g. key-pool -> key.selection),
+		// summing durations, before sorting/rendering.
+		const byName = new Map<string, OverheadBucket>();
+		for (const m of rawMembers) {
+			const name = mergedBucketName(m.name);
+			const existing = byName.get(name);
+			if (existing) existing.duration_us += m.duration_us;
+			else byName.set(name, { ...m, name });
+		}
+		const members = Array.from(byName.values());
 		members.sort((a, b) => b.duration_us - a.duration_us);
 		cats.push({
 			key,
@@ -588,10 +689,10 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 
 // OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
 // split into the top-level categories, with a legend beneath. Plugin and internal
-// spans are measured directly; the "core" bucket (from the backend) accounts for the
-// rest of the overhead, so the segments sum to the full overhead number. "View
-// details" expands the categories that hold more than one span (Plugins, Other) into
-// their individual members so a specific plugin can be inspected.
+// spans are measured directly; the "scheduling" bucket (from the backend) accounts for
+// the residual goroutine-hop latency between phases, so the segments sum to the full
+// overhead number. "View details" expands the categories that hold more than one span
+// into their individual members so a specific phase or plugin can be inspected.
 function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
 	const [showDetails, setShowDetails] = useState(false);
 	if (!buckets || buckets.length === 0) return null;
@@ -601,7 +702,7 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
 
 	// When measured spans already exceed the computed overhead, the backend omits a
-	// core bucket (it would be negative): a sign the upstream accumulator is
+	// scheduling bucket (it would be negative): a sign the upstream accumulator is
 	// over-counting. Surface it rather than let the numbers look inconsistent.
 	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
 

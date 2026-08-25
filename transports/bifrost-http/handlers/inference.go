@@ -2000,6 +2000,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
 	go func() {
 		var transportLogs []schemas.PluginLogEntry
+		// Per-chunk transport-goroutine costs, stamped onto the root span at stream end so
+		// the overhead breakdown attributes the outbound relay (chunk marshal = transport
+		// CPU -> "convertor.stream-out"; client socket write -> "stream-client-write")
+		// instead of folding it into the residual bucket. Mirrors integrations/router.go.
+		var streamTransportCPUNs, streamClientWriteNs int64
 		completerRan := false
 		// runCompleter invokes the transport post-hook completer at most once.
 		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
@@ -2064,6 +2069,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
 			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
+			// Stamp the outbound relay costs onto the root span before the trace completes
+			// below (traceCompleter), so they reach the overhead breakdown. Runs on every
+			// exit path (normal end, client disconnect, interceptor error).
+			bifrostCtx.StampStreamTransport(time.Duration(streamTransportCPUNs), time.Duration(streamClientWriteNs))
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
@@ -2141,8 +2150,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			// Convert response to JSON
+			// Convert response to JSON (transport-goroutine CPU).
+			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
 				continue
@@ -2167,7 +2178,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			if !reader.SendEvent(eventType, chunkJSON) {
+			writeStart := time.Now()
+			sent := reader.SendEvent(eventType, chunkJSON)
+			streamClientWriteNs += time.Since(writeStart).Nanoseconds()
+			if !sent {
 				cancel() // Client disconnected, cancel upstream stream
 				// Drain remaining chunks so the provider goroutine's defer
 				// (HandleStreamCancellation -> PostLLMHook -> storeOrEnqueueEntry) finishes
