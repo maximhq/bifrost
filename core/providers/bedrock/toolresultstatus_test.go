@@ -2,9 +2,11 @@ package bedrock
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -70,8 +72,72 @@ func TestToolResultWithoutContentStillEmitsResult(t *testing.T) {
 	if result.ToolUseID != "toolu_void" {
 		t.Fatalf("expected toolu_void, got %q", result.ToolUseID)
 	}
-	if result.Content != nil {
-		t.Fatalf("expected omitted tool-result content, got %#v", result.Content)
+	if len(result.Content) != 1 || string(result.Content[0].JSON) != `{}` {
+		t.Fatalf("expected empty JSON tool-result content, got %#v", result.Content)
+	}
+
+	wire, err := providerUtils.MarshalSorted(result)
+	if err != nil {
+		t.Fatalf("marshal tool result: %v", err)
+	}
+	if strings.Contains(string(wire), `"content":null`) || !strings.Contains(string(wire), `"content":[{"json":{}}]`) {
+		t.Fatalf("content-less tool result must carry a valid content array, got %s", wire)
+	}
+}
+
+func TestBlankToolResultContentUsesEmptyJSON(t *testing.T) {
+	for _, content := range []string{"", " \t\n "} {
+		t.Run(fmt.Sprintf("content_%q", content), func(t *testing.T) {
+			converted, err := convertToolMessages(context.Background(), []schemas.ChatMessage{
+				{
+					Role:            schemas.ChatMessageRoleTool,
+					ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_blank")},
+					Content:         &schemas.ChatMessageContent{ContentStr: &content},
+				},
+			})
+			if err != nil {
+				t.Fatalf("convert blank tool result: %v", err)
+			}
+			result := converted.Content[0].ToolResult
+			if len(result.Content) != 1 || string(result.Content[0].JSON) != `{}` {
+				t.Fatalf("expected empty JSON tool-result content, got %#v", result.Content)
+			}
+		})
+	}
+}
+
+func TestToolResultContentBlocksUseSharedConverter(t *testing.T) {
+	converted, err := convertToolMessages(context.Background(), []schemas.ChatMessage{
+		{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_blocks")},
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{
+						Filename: schemas.Ptr("result.pdf"),
+						FileType: schemas.Ptr("application/pdf"),
+						FileData: schemas.Ptr("cGRm"),
+					},
+				},
+				{CachePoint: &schemas.CachePoint{}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("convert tool-result blocks: %v", err)
+	}
+
+	content := converted.Content[0].ToolResult.Content
+	if len(content) != 2 || content[0].Document == nil || content[1].CachePoint == nil {
+		t.Fatalf("expected document and standalone cache point to survive, got %#v", content)
+	}
+}
+
+func TestNilSystemMessageContentReturnsError(t *testing.T) {
+	_, _, err := convertMessages(context.Background(), []schemas.ChatMessage{{Role: schemas.ChatMessageRoleSystem}})
+	if err == nil || !strings.Contains(err.Error(), "system message missing required content") {
+		t.Fatalf("expected missing system content error, got %v", err)
 	}
 }
 
@@ -91,6 +157,14 @@ func TestMalformedToolMessagesReturnErrors(t *testing.T) {
 			message: schemas.ChatMessage{
 				Role:            schemas.ChatMessageRoleTool,
 				ChatToolMessage: &schemas.ChatToolMessage{},
+			},
+			want: "missing required ToolCallID",
+		},
+		{
+			name: "empty tool call id",
+			message: schemas.ChatMessage{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("  ")},
 			},
 			want: "missing required ToolCallID",
 		},

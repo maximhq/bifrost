@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -93,4 +94,54 @@ func TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace(t *testing.T
 	got, err := loadBalance(t, p, ctx, "meta-llama/llama-3.1-8b-instant")
 	require.NoError(t, err)
 	assert.Equal(t, "groq/meta-llama/llama-3.1-8b-instant", got)
+}
+
+func TestSelectWeightedProviderConfigIgnoresUnusableWeights(t *testing.T) {
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "zero", Weight: schemas.Ptr(0.0)},
+		{Provider: "negative", Weight: schemas.Ptr(-1.0)},
+		{Provider: "nan", Weight: schemas.Ptr(math.NaN())},
+		{Provider: "infinity", Weight: schemas.Ptr(math.Inf(1))},
+		{Provider: "positive", Weight: schemas.Ptr(1.0)},
+	}
+
+	selected, eligible, ok := selectWeightedProviderConfigAt(configs, 0.5)
+	require.True(t, ok)
+	assert.Equal(t, "positive", selected.Provider)
+	require.Len(t, eligible, 1)
+	assert.Equal(t, "positive", eligible[0].Provider)
+}
+
+func TestSelectWeightedProviderConfigRejectsOnlyUnusableWeights(t *testing.T) {
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "unset"},
+		{Provider: "zero", Weight: schemas.Ptr(0.0)},
+		{Provider: "nan", Weight: schemas.Ptr(math.NaN())},
+	}
+
+	_, eligible, ok := selectWeightedProviderConfigAt(configs, 0.5)
+	assert.False(t, ok)
+	assert.Empty(t, eligible)
+}
+
+func TestSelectWeightedProviderConfigPreservesTinyWeights(t *testing.T) {
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "normal", Weight: schemas.Ptr(1.0)},
+		{Provider: "tiny", Weight: schemas.Ptr(0.001)},
+	}
+
+	selected, _, ok := selectWeightedProviderConfigAt(configs, math.Nextafter(1, 0))
+	require.True(t, ok)
+	assert.Equal(t, "tiny", selected.Provider)
+}
+
+func TestSelectWeightedProviderConfigHandlesVeryLargeWeights(t *testing.T) {
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "first", Weight: schemas.Ptr(math.MaxFloat64)},
+		{Provider: "second", Weight: schemas.Ptr(math.MaxFloat64)},
+	}
+
+	selected, _, ok := selectWeightedProviderConfigAt(configs, 0.75)
+	require.True(t, ok)
+	assert.Equal(t, "second", selected.Provider)
 }

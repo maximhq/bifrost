@@ -459,42 +459,15 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		return nil
 	}
 
-	weightedConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(allowedProviderConfigs))
-	for _, config := range allowedProviderConfigs {
-		if config.Weight != nil {
-			weightedConfigs = append(weightedConfigs, config)
-		}
-	}
-
-	if len(weightedConfigs) == 0 {
-		// All allowed configs survived the model-allowance / budget / rate-limit filters,
-		// but none of them have a Weight set — there's nothing to feed weighted selection.
-		// Emit an explicit log so the routing trail explains why governance stops here
-		// instead of trailing off after "Allowed providers after filtering: [...]".
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No weighted configs for model %s — none of the allowed VK provider configs have a weight assigned; skipping load balancing", modelStr))
+	selectedConfig, weightedConfigs, ok := selectWeightedProviderConfigAt(allowedProviderConfigs, rand.Float64())
+	if !ok {
+		// Nil opts out of weighted routing; non-positive and non-finite values are
+		// unusable. Keep the existing behavior of leaving the incoming provider
+		// untouched when nothing can participate in load balancing.
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No usable weighted configs for model %s; skipping load balancing", modelStr))
 		return nil
 	}
-
-	var selectedProvider schemas.ModelProvider
-	totalWeight := 0.0
-	for _, config := range weightedConfigs {
-		totalWeight += getWeight(config.Weight)
-	}
-	// Generate random number between 0 and totalWeight
-	randomValue := rand.Float64() * totalWeight
-	// Select provider based on weighted random selection
-	currentWeight := 0.0
-	for _, config := range weightedConfigs {
-		currentWeight += getWeight(config.Weight)
-		if randomValue <= currentWeight {
-			selectedProvider = schemas.ModelProvider(config.Provider)
-			break
-		}
-	}
-	// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
-	if selectedProvider == "" {
-		selectedProvider = schemas.ModelProvider(weightedConfigs[0].Provider)
-	}
+	selectedProvider := schemas.ModelProvider(selectedConfig.Provider)
 
 	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))

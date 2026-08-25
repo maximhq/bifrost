@@ -4,6 +4,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -124,6 +125,48 @@ func getWeight(w *float64) float64 {
 		return 1.0
 	}
 	return *w
+}
+
+// selectWeightedProviderConfigAt selects among provider configs whose weights
+// are finite and strictly positive. Normalizing by the largest weight prevents
+// overflow when malformed persisted data contains extremely large values.
+func selectWeightedProviderConfigAt(configs []configstoreTables.TableVirtualKeyProviderConfig, unitRandom float64) (configstoreTables.TableVirtualKeyProviderConfig, []configstoreTables.TableVirtualKeyProviderConfig, bool) {
+	eligibleConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(configs))
+	maxWeight := 0.0
+	for _, config := range configs {
+		if config.Weight == nil {
+			continue
+		}
+		weight := *config.Weight
+		if weight <= 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+			continue
+		}
+		eligibleConfigs = append(eligibleConfigs, config)
+		if weight > maxWeight {
+			maxWeight = weight
+		}
+	}
+	if len(eligibleConfigs) == 0 {
+		return configstoreTables.TableVirtualKeyProviderConfig{}, nil, false
+	}
+
+	totalWeight := 0.0
+	for _, config := range eligibleConfigs {
+		totalWeight += *config.Weight / maxWeight
+	}
+
+	randomValue := unitRandom * totalWeight
+	currentWeight := 0.0
+	for _, config := range eligibleConfigs {
+		currentWeight += *config.Weight / maxWeight
+		if randomValue < currentWeight {
+			return config, eligibleConfigs, true
+		}
+	}
+
+	// unitRandom comes from rand.Float64 and is always below 1. Return the final
+	// eligible config defensively if floating-point rounding reaches the boundary.
+	return eligibleConfigs[len(eligibleConfigs)-1], eligibleConfigs, true
 }
 
 // stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so

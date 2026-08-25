@@ -982,9 +982,12 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 // convertSystemMessages converts a Bifrost system message to Bedrock format
 func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, error) {
 	systemMsgs := []BedrockSystemMessage{}
+	if msg.Content == nil {
+		return nil, fmt.Errorf("system message missing required content")
+	}
 
 	// Convert content
-	if msg.Content.ContentStr != nil {
+	if msg.Content.ContentStr != nil && strings.TrimSpace(*msg.Content.ContentStr) != "" {
 		systemMsgs = append(systemMsgs, BedrockSystemMessage{
 			Text: msg.Content.ContentStr,
 		})
@@ -996,7 +999,7 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 				blockType = schemas.ChatContentBlockTypeText
 			}
 
-			if blockType == schemas.ChatContentBlockTypeText && block.Text != nil {
+			if blockType == schemas.ChatContentBlockTypeText && block.Text != nil && strings.TrimSpace(*block.Text) != "" {
 				systemMsgs = append(systemMsgs, BedrockSystemMessage{
 					Text: block.Text,
 				})
@@ -1012,6 +1015,9 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 				})
 			}
 		}
+	}
+	if len(systemMsgs) == 0 {
+		return nil, fmt.Errorf("system message content must not be blank")
 	}
 
 	return systemMsgs, nil
@@ -1155,12 +1161,12 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 		if msg.ChatToolMessage == nil {
 			return BedrockMessage{}, fmt.Errorf("tool message missing required ChatToolMessage")
 		}
-		if msg.ChatToolMessage.ToolCallID == nil {
+		if msg.ChatToolMessage.ToolCallID == nil || strings.TrimSpace(*msg.ChatToolMessage.ToolCallID) == "" {
 			return BedrockMessage{}, fmt.Errorf("tool message missing required ToolCallID")
 		}
 
 		var toolResultContent []BedrockContentBlock
-		if msg.Content != nil && msg.Content.ContentStr != nil {
+		if msg.Content != nil && msg.Content.ContentStr != nil && strings.TrimSpace(*msg.Content.ContentStr) != "" {
 			// Bedrock expects JSON to be a parsed object, not a string
 			// Validate and compact JSON without parsing into Go types (preserves key ordering)
 			var buf bytes.Buffer
@@ -1199,37 +1205,20 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 			}
 		} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
-				switch block.Type {
-				case schemas.ChatContentBlockTypeText:
-					if block.Text != nil {
-						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							Text: block.Text,
-						})
-						// Cache point must be in a separate block
-						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
-						}
-					}
-				case schemas.ChatContentBlockTypeImage:
-					if block.ImageURLStruct != nil {
-						imageSource, err := convertImageToBedrockSource(ctx, block.ImageURLStruct.URL)
-						if err != nil {
-							return BedrockMessage{}, fmt.Errorf("failed to convert image in tool result: %w", err)
-						}
-						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							Image: imageSource,
-						})
-						// Cache point must be in a separate block
-						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
-						}
-					}
+				converted, err := convertContentBlock(ctx, block)
+				if err != nil {
+					return BedrockMessage{}, fmt.Errorf("failed to convert content block in tool result: %w", err)
 				}
+				toolResultContent = append(toolResultContent, converted...)
 			}
+		}
+		if len(toolResultContent) == 0 {
+			// Converse requires toolResult.content to be an array. Preserve a
+			// content-less tool result as an empty JSON object instead of emitting
+			// content:null or an invalid blank text block.
+			toolResultContent = append(toolResultContent, BedrockContentBlock{
+				JSON: json.RawMessage(`{}`),
+			})
 		}
 
 		// Create tool result content block for this tool message
@@ -1256,7 +1245,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 // The ctx is propagated to URL fetches inside individual content blocks.
 func convertContent(ctx context.Context, content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
-	if content.ContentStr != nil && *content.ContentStr != "" {
+	if content.ContentStr != nil && strings.TrimSpace(*content.ContentStr) != "" {
 		// Simple text content (skip empty strings as Bedrock rejects blank text)
 		contentBlocks = append(contentBlocks, BedrockContentBlock{
 			Text: content.ContentStr,
@@ -1291,7 +1280,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		// Ideally we should not play with the payload - we should let the provider handle it.
 		// But for now, we are doing this to avoid the API error.
 		// Once the world onboards on Bifrost - we should remove these shitty patterns.
-		if block.Text == nil || *block.Text == "" {
+		if block.Text == nil || strings.TrimSpace(*block.Text) == "" {
 			// Skip nil or empty text as Bedrock rejects blank text content blocks
 			return []BedrockContentBlock{}, nil
 		}
