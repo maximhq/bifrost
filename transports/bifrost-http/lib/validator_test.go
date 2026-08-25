@@ -348,8 +348,8 @@ func TestValidateConfigSchema_NetworkConfig_BaseURL_EnvReference(t *testing.T) {
 	// gets a chance to resolve it. See github.com/maximhq/bifrost#6119.
 	validConfig := `{
 		"providers": {
-			"vllm-local": {
-				"keys": [{"name": "vllm-key", "value": "dummy", "weight": 1.0}],
+			"openai": {
+				"keys": [{"name": "openai-key", "value": "dummy", "weight": 1.0}],
 				"network_config": {"base_url": "env.VLLM_BASE_URL"}
 			}
 		}
