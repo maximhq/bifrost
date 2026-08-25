@@ -1802,7 +1802,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			}
 		}
 	}
-	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP)
+	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP, configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp"))
 }
 
 // pinMCPClientImmutableFields rewrites a file-declared client so that fields
@@ -2224,7 +2224,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 }
 
-func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig) {
+func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig, fileIsSourceOfTruth bool) {
 	if config == nil || config.ClientConfig == nil || mcpCfg == nil {
 		return
 	}
@@ -2245,25 +2245,61 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	)
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
 
-	// ToolSyncInterval lives only in MCPConfig (not a ClientConfig field), so reconcile separately.
-	changed := false
-	if mcpCfg.ToolSyncInterval == 0 {
-		if config.ClientConfig.MCPToolSyncInterval != 0 {
-			config.ClientConfig.MCPToolSyncInterval = 0
-			changed = true
+	// ToolSyncInterval is declared under the file's mcp section rather than
+	// client_config, so it sits outside the hash-driven client config load and
+	// is reconciled here. The stored setting is kept in whole minutes.
+	invalid := false
+	switch {
+	case mcpCfg.ToolSyncInterval < 0:
+		logger.Warn(
+			"ignoring negative mcp.tool_sync_interval %q: use 0 for the default or a positive whole number of minutes",
+			mcpCfg.ToolSyncInterval.String(),
+		)
+		invalid = true
+	case mcpCfg.ToolSyncInterval > 0 && mcpCfg.ToolSyncInterval%time.Minute != 0:
+		// The stored setting (whole minutes) is what every later runtime
+		// re-timing applies (client config reload, cluster peers), so a
+		// value the store cannot hold must not run either: it would
+		// silently flip to the stored value on the first unrelated edit.
+		logger.Warn(
+			"ignoring mcp.tool_sync_interval %q: must be a whole number of minutes",
+			mcpCfg.ToolSyncInterval.String(),
+		)
+		invalid = true
+	}
+	if invalid {
+		// An invalid declaration is ignored, never applied: the stored
+		// setting stays exactly as it is in both modes (ignoring must never
+		// mean clearing), and it is what the runtime gets, as if the file had
+		// declared nothing while the store was authoritative.
+		mcpCfg.ToolSyncInterval = 0
+		if config.ClientConfig.MCPToolSyncInterval > 0 {
+			mcpCfg.ToolSyncInterval = time.Duration(config.ClientConfig.MCPToolSyncInterval) * time.Minute
 		}
-	} else if mcpCfg.ToolSyncInterval > 0 {
-		if mcpCfg.ToolSyncInterval%time.Minute != 0 {
-			logger.Warn(
-				"ignoring mcp.tool_sync_interval %q: must be a whole number of minutes",
-				mcpCfg.ToolSyncInterval.String(),
-			)
-		} else {
-			syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
-			if config.ClientConfig.MCPToolSyncInterval != syncMinutes {
-				config.ClientConfig.MCPToolSyncInterval = syncMinutes
+		return
+	}
+	changed := false
+	switch {
+	case mcpCfg.ToolSyncInterval == 0:
+		if fileIsSourceOfTruth {
+			// The file is authoritative and declares no interval: clear the
+			// stored value so the runtime and the UI both fall back to the
+			// built-in default.
+			if config.ClientConfig.MCPToolSyncInterval != 0 {
+				config.ClientConfig.MCPToolSyncInterval = 0
 				changed = true
 			}
+		} else if config.ClientConfig.MCPToolSyncInterval > 0 {
+			// The store is authoritative: carry its value into the MCPConfig
+			// bifrost.Init receives and leave the stored setting alone. An
+			// absent file value is not an instruction to clear a UI edit.
+			mcpCfg.ToolSyncInterval = time.Duration(config.ClientConfig.MCPToolSyncInterval) * time.Minute
+		}
+	case mcpCfg.ToolSyncInterval > 0:
+		syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
+		if config.ClientConfig.MCPToolSyncInterval != syncMinutes {
+			config.ClientConfig.MCPToolSyncInterval = syncMinutes
+			changed = true
 		}
 	}
 
@@ -2277,6 +2313,12 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreTables.TableMCPClient, error) {
 	if clientConfig == nil {
 		return configstoreTables.TableMCPClient{}, nil
+	}
+	if clientConfig.ToolSyncInterval < 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"tool_sync_interval must be 0 (use the global setting) or a positive duration, got %q",
+			clientConfig.ToolSyncInterval.String(),
+		)
 	}
 	if clientConfig.ToolSyncInterval%time.Second != 0 {
 		return configstoreTables.TableMCPClient{}, fmt.Errorf(
@@ -2352,6 +2394,11 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 	}
 
 	keepIDs := make(map[string]bool, len(fileMCPConfig.ClientConfigs))
+	// What the runtime is handed: accepted file declarations, plus the stored
+	// configuration of any existing client whose file declaration was
+	// rejected. A declaration the store refuses must never drive the runtime
+	// (a sub-second interval, for one, would spin the checker).
+	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs))
 	updates := make([]configstoreTables.TableMCPClient, 0)
 	adds := make([]*schemas.MCPClientConfig, 0)
 	for _, fileClient := range fileMCPConfig.ClientConfigs {
@@ -2376,17 +2423,26 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		}
 		fileRow, err := mcpClientConfigToTable(fileClient)
 		if err != nil {
-			logger.Warn("invalid MCP client config for %q: %v", fileClient.Name, err)
+			if existing != nil {
+				logger.Warn("invalid MCP client config for %q: %v; keeping the stored configuration", fileClient.Name, err)
+				runtimeClients = append(runtimeClients, existing)
+			} else {
+				logger.Warn("invalid MCP client config for %q: %v", fileClient.Name, err)
+			}
 			continue
 		}
 		fileHash, err := configstore.GenerateMCPClientHash(fileRow)
 		if err != nil {
 			logger.Warn("failed to generate MCP client hash for %q: %v", fileClient.Name, err)
+			if existing != nil {
+				runtimeClients = append(runtimeClients, existing)
+			}
 			continue
 		}
 		fileClient.ConfigHash = fileHash
 		fileRow.ConfigHash = fileHash
 		keepIDs[fileClient.ID] = true
+		runtimeClients = append(runtimeClients, fileClient)
 		if existing == nil {
 			adds = append(adds, fileClient)
 		} else {
@@ -2439,6 +2495,7 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 			}
 		}
 	}
+	fileMCPConfig.ClientConfigs = runtimeClients
 	config.MCPConfig = fileMCPConfig
 }
 

@@ -2216,7 +2216,6 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
 		{schemas.Cerebras, false},
 		{schemas.Perplexity, false},
-		{schemas.HuggingFace, false},
 		{schemas.Bedrock, false},
 		{schemas.BedrockMantle, false},
 		// Providers that do send a [DONE] marker.
@@ -2225,6 +2224,11 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 		{schemas.Anthropic, true},
 		{schemas.Groq, true},
 		{schemas.OpenRouter, true},
+		// HuggingFace's router does send [DONE]. It was previously listed as not
+		// sending one, which made the stream loop break on finish_reason and drop
+		// the trailing usage-only chunk that several inference providers emit
+		// after it, leaving the stream with zero tokens and zero cost.
+		{schemas.HuggingFace, true},
 	}
 
 	for _, tt := range tests {

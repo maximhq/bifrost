@@ -1059,7 +1059,17 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 		m.mu.Unlock()
 		return
 	}
-	maps.Copy(client.ToolMap, tools)
+	// Replace the tool set wholesale, mirroring connectToMCPClient's swap and
+	// the checker's writeBackTools: every caller passes a complete discovery
+	// result, and merging into the existing map would keep tools the upstream
+	// has since removed alive in memory (and on the hosted /mcp surface) while
+	// the DB, persisted from the passed-in set via the tools-change callback,
+	// has already dropped them.
+	if tools == nil {
+		tools = make(map[string]schemas.ChatTool)
+	}
+	precomputeToolSerialization(tools)
+	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
 	client.State = schemas.MCPConnectionStateHealthy
 	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
@@ -1277,9 +1287,11 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	m.logger.Debug("%s Enabling MCP client '%s'", MCPLogPrefix, configCopy.Name)
 
-	// Per-user auth clients have no persistent connection — auth is per-request.
-	// Mirror the AddClient early-return path: just restore the runtime state
-	// based on whether tools were previously discovered.
+	// Per-call clients have no persistent connection to dial. Mirror
+	// AddClient's per-call branch: restore the runtime state (tools, if any,
+	// were preserved by DisableClient) and start the periodic checker that
+	// DisableClient stopped, or the client would never refresh its tools
+	// again until a restart.
 	if m.credStore.RequiresPerCallConnection(configCopy) {
 		m.mu.Lock()
 		// Healthy either way — an empty ToolMap already says "no tools
@@ -1288,7 +1300,15 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			cs.State = schemas.MCPConnectionStateHealthy
 		}
 		m.mu.Unlock()
-		m.logger.Debug("%s Per-user auth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
+		if id != BifrostMCPClientKey {
+			isPingAvailable := true
+			if configCopy.IsPingAvailable != nil {
+				isPingAvailable = *configCopy.IsPingAvailable
+			}
+			syncInterval := ResolveToolSyncInterval(configCopy, m.checkerManager.GetGlobalInterval())
+			m.checkerManager.StartChecking(NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger))
+		}
+		m.logger.Debug("%s Per-call MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
 		return nil
 	}
 
@@ -1415,6 +1435,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	var newConfig *schemas.MCPClientConfig
 	var becamePerCall, becameSticky bool
 	var clientName string
+	startPerCallChecker := false
 
 	err := func() error {
 		m.mu.Lock()
@@ -1566,6 +1587,10 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			if client.State != schemas.MCPConnectionStateDisabled && client.State != schemas.MCPConnectionStateNeedsReauth {
 				client.State = schemas.MCPConnectionStateHealthy
 			}
+			// A disabled client keeps no checker (DisableClient stopped it,
+			// EnableClient starts a fresh one), so only a live client gets
+			// the per-call replacement started below.
+			startPerCallChecker = client.State != schemas.MCPConnectionStateDisabled
 			becamePerCall = true
 		case wasPerCall && !isPerCall:
 			// Per-call -> sticky: there is nothing to release, but a
@@ -1581,17 +1606,39 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	}
 
 	if becamePerCall {
-		m.checkerManager.StopChecking(id)
+		if startPerCallChecker {
+			// The persistent connection is gone, but discovery must keep
+			// running: a per-call client relies on the checker's ephemeral
+			// discovery cycle (checkPerCall) for tool refresh, exactly as
+			// AddClient's per-call branch sets it up. Replace the sticky
+			// checker with a per-call one rather than just stopping it;
+			// otherwise this client would never refresh its tools again
+			// until a restart.
+			isPingAvailable := true
+			if newConfig.IsPingAvailable != nil {
+				isPingAvailable = *newConfig.IsPingAvailable
+			}
+			syncInterval := ResolveToolSyncInterval(newConfig, m.checkerManager.GetGlobalInterval())
+			m.checkerManager.StartChecking(NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger))
+		} else {
+			m.checkerManager.StopChecking(id)
+		}
 		m.logger.Info("%s MCP client '%s' switched to per-call connections (needs_session_stickiness=false): released its persistent connection", MCPLogPrefix, clientName)
+	} else if !becameSticky {
+		// Re-time the running checker against the updated config and the
+		// current global; a no-op when the cadence is unchanged. Both
+		// stickiness transitions start a fresh checker with the new config
+		// themselves (above, and via connectToMCPClient below).
+		m.checkerManager.RetimeClient(id, newConfig)
 	}
 	if becameSticky {
 		// connectToMCPClient starts the connection checker itself on
 		// success, mirroring every other successful-connect path. On
 		// failure it does NOT start one (mirroring EnableClient's own
-		// failure handling below) — without this, a failed first dial would
-		// leave the client Unstable with nothing ever periodically retrying
-		// it, since a per-call client never had a checker running to begin
-		// with. Start one explicitly, same as EnableClient does.
+		// failure handling below): the per-call checker registered before
+		// the flip would keep retrying through its no-connection branch,
+		// but its cadence was resolved for the old config, so start a fresh
+		// one explicitly, same as EnableClient does.
 		if connErr := m.connectToMCPClient(m.ctx, newConfig); connErr != nil {
 			m.mu.Lock()
 			alreadyTerminal := false
@@ -1627,6 +1674,12 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 // closing the current connection and establishing a new one so the new credentials are verified
 // before being committed. Non-credential metadata (name, tools, etc.) is preserved from the
 // current execution config.
+//
+// A shared-credential client running per-call (no session stickiness) has no connection to
+// replace; instead its tool list is refreshed synchronously via a one-shot discovery with the
+// now-current credential, so a credential update lands with fresh tools on both connection
+// modes alike. Per-user auth type clients return ErrMCPReconnectNotApplicable: their shared
+// tool list is driven by the retained admin credential, which is not what changes here.
 //
 // On failure the clientMap entry is left in Disconnected state but its ExecutionConfig is restored
 // to the previous value, allowing the health monitor to recover the client using the old credentials.
@@ -1681,7 +1734,17 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStatePendingVerification {
 				cs.ExecutionConfig = newConfig
 				if len(newConfig.DiscoveredTools) > 0 {
-					maps.Copy(cs.ToolMap, newConfig.DiscoveredTools)
+					// Replace, not merge, mirroring AddClient's own restore:
+					// the persisted DiscoveredTools are the complete set, and
+					// a pending_verification entry holds no tools of its own
+					// worth keeping anyway. Copied into a fresh map so the
+					// entry never aliases the config's own map.
+					restored := make(map[string]schemas.ChatTool, len(newConfig.DiscoveredTools))
+					for toolName, tool := range newConfig.DiscoveredTools {
+						_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
+						restored[toolName] = tool
+					}
+					cs.ToolMap = restored
 					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
 				}
 				cs.State = schemas.MCPConnectionStateHealthy
@@ -1719,13 +1782,41 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			return nil
 		}
 		// Already past that first connection (a plain reauthorize of an
-		// already-Healthy client): a per-call client dials fresh on every
+		// already-verified client): a per-call client dials fresh on every
 		// call and already picks up whatever credential is current in the
-		// DB, so there is genuinely nothing left to do — that's a no-op,
-		// not a failure, hence the shared "not applicable" sentinel rather
-		// than an opaque error.
+		// DB, so there is no persistent connection to swap. The tool list
+		// still needs the treatment sticky clients get for free from their
+		// reconnect (which always re-runs discovery): nothing else revisits
+		// a per-call client until the periodic checker's next tick, minutes
+		// away on a Healthy client, so refresh tools synchronously with the
+		// now-current shared credential. A failed discovery fails the
+		// update, mirroring the sticky path (a reconnect whose tools/list
+		// fails is a failed reconnect); the periodic checker still retries
+		// on its own cadence afterwards. Skipped for a Disabled client:
+		// SetClientTools would force it back to Healthy, and re-enabling
+		// runs its own discovery anyway.
+		//
+		// Per-user auth types keep the "not applicable" sentinel: the
+		// credentials updated through here are never the retained admin
+		// discovery credential (the admin-verify paths own that flow and
+		// re-discover themselves), so the shared tool list is unaffected
+		// and there is genuinely nothing left to do.
+		isDisabled := client.State == schemas.MCPConnectionStateDisabled
 		m.mu.RUnlock()
-		return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+		switch newConfig.AuthType {
+		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
+			if isDisabled {
+				return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+			}
+			tools, mapping, discErr := m.performAdminToolDiscovery(m.ctx, newConfig)
+			if discErr != nil {
+				return fmt.Errorf("credentials updated but tool discovery with them failed for MCP client %s: %w", newConfig.Name, discErr)
+			}
+			m.SetClientTools(id, tools, mapping)
+			return nil
+		default:
+			return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
+		}
 	}
 	if client.ExecutionConfig == nil {
 		m.mu.RUnlock()
@@ -2327,14 +2418,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	}
 
 	// Start the connection checker for the client (skip for the internal
-	// bifrost client — an in-process construct with nothing external to
-	// check). This now covers both liveness and discovery refresh in one
-	// mechanism, so unlike the old separate tool-syncer, a per-client
-	// ToolSyncInterval < 0 ("disable discovery refresh") no longer fully
-	// disables checking here — liveness/recovery must never be silently
-	// disabled by that setting, and the two are no longer separable calls.
-	// ResolveToolSyncInterval's 0 (disabled) return still falls back to
-	// DefaultConnectionCheckInterval inside NewClientConnectionChecker.
+	// bifrost client, an in-process construct with nothing external to
+	// check). One mechanism covers both liveness and discovery refresh, so
+	// checking is never disabled per client; the tool sync interval only
+	// sets its steady-state cadence (per-client override, else the global,
+	// else DefaultConnectionCheckInterval).
 	if config.ID != BifrostMCPClientKey {
 		isPingAvailable := true
 		if config.IsPingAvailable != nil {

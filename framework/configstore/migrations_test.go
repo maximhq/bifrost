@@ -2979,3 +2979,68 @@ func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
 	assert.Equal(t, time.April, got.QuarterStartMonth(),
 		"the fiscal quarter definition must survive the refused rollback")
 }
+
+// TestMigrationAddBatchJobsAttributionColumns verifies the upgrade path: an existing
+// batch_jobs table gains the requester-identity columns without disturbing the rows
+// already in it (which simply have no identity to recover).
+func TestMigrationAddBatchJobsAttributionColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	// Pre-migration shape: the table as migrationAddBatchJobsTable left it.
+	require.NoError(t, db.Exec(`
+		CREATE TABLE batch_jobs (
+			id VARCHAR(512) PRIMARY KEY,
+			provider VARCHAR(255) NOT NULL,
+			batch_id VARCHAR(255) NOT NULL,
+			model VARCHAR(255),
+			endpoint VARCHAR(255),
+			provider_status VARCHAR(50),
+			input_file_id VARCHAR(255),
+			output_file_id VARCHAR(255),
+			error_file_id VARCHAR(255),
+			results_url TEXT,
+			next_check_at DATETIME,
+			poll_attempts INTEGER DEFAULT 0,
+			accounting_status VARCHAR(50) NOT NULL,
+			runner_id VARCHAR(255),
+			claimed_at DATETIME,
+			unpriceable_reason VARCHAR(255),
+			last_error TEXT,
+			aggregate_log_written_at DATETIME,
+			governance_reported_at DATETIME,
+			selected_key_id VARCHAR(255),
+			virtual_key_id VARCHAR(255),
+			budget_ids TEXT,
+			rate_limit_ids TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`).Error)
+
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(`
+		INSERT INTO batch_jobs (id, provider, batch_id, accounting_status, selected_key_id, virtual_key_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tables.BatchJobID("openai", "batch-legacy"), "openai", "batch-legacy",
+		tables.BatchJobAccountingStatusPending, "key-1", "vk-1", now, now).Error)
+
+	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
+
+	mig := db.Migrator()
+	for _, column := range []string{"user_id", "team_id", "customer_id", "source_log_id"} {
+		assert.True(t, mig.HasColumn(&tables.TableBatchJob{}, column), "expected column %s", column)
+	}
+
+	var job tables.TableBatchJob
+	require.NoError(t, db.Where("id = ?", tables.BatchJobID("openai", "batch-legacy")).First(&job).Error)
+	assert.Equal(t, "key-1", job.SelectedKeyID, "pre-existing attribution must survive")
+	require.NotNil(t, job.VirtualKeyID)
+	assert.Equal(t, "vk-1", *job.VirtualKeyID)
+	assert.Nil(t, job.UserID, "a batch created before the column has no user to recover")
+	assert.Nil(t, job.SourceLogID)
+
+	// Migrations are re-run on every boot; the second pass must be a no-op.
+	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
+}
