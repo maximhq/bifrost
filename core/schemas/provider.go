@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"strings"
+	"net/url"
 	"time"
 )
 
@@ -146,7 +146,11 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// starts resolving.
 	if IsSecretRef(alias.BaseURL) {
 		resolved := NewSecretVar(alias.BaseURL).GetValue()
-		if strings.HasPrefix(resolved, "http://") || strings.HasPrefix(resolved, "https://") {
+		// A prefix check alone would accept "https://" with no host at all.
+		// Parse it and require an actual authority, not just a scheme.
+		if resolvedURL, err := url.Parse(resolved); err == nil &&
+			(resolvedURL.Scheme == "http" || resolvedURL.Scheme == "https") &&
+			resolvedURL.Host != "" {
 			nc.BaseURL = resolved
 			nc.baseURLRef = alias.BaseURL
 		} else {
