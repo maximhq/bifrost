@@ -997,8 +997,12 @@ func HandleAnthropicChatCompletionStreaming(
 				continue
 			}
 			var event AnthropicStreamEvent
-			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				logger.Warn("Failed to parse message_start event: %v", err)
+			// Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
+			umErr := sonic.Unmarshal([]byte(eventData), &event)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				logger.Warn("Failed to parse message_start event: %v", umErr)
 				continue
 			}
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
@@ -1172,7 +1176,10 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 			}
 
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)

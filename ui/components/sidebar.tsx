@@ -14,7 +14,6 @@ import {
 	Construction,
 	DatabaseZap,
 	Flag,
-	FlaskConical,
 	FolderGit,
 	Gavel,
 	GitCompareArrows,
@@ -49,7 +48,7 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
-	Webhook,
+	Webhook
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -73,6 +72,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
@@ -975,14 +975,6 @@ export default function AppSidebar() {
 				]
 				: []),
 			{
-				title: "Evals",
-				url: "https://www.getmaxim.ai",
-				icon: FlaskConical,
-				isExternal: true,
-				description: "Evaluations",
-				hasAccess: true,
-			},
-			{
 				title: "Settings",
 				url: "/workspace/config",
 				icon: Settings2Icon,
@@ -1483,8 +1475,8 @@ export default function AppSidebar() {
 					</div>
 				</div>
 			)}
-			<div className="ml-2 mr-3 pb-1 group-data-[collapsible=icon]:hidden">
-				<div className="dark:bg-card relative bg-white rounded-sm">
+			<div className="mr-3 ml-2 pb-1 group-data-[collapsible=icon]:hidden">
+				<div className="dark:bg-card relative rounded-sm bg-white">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
 					<input
 						ref={searchInputRef}
@@ -1533,13 +1525,14 @@ export default function AppSidebar() {
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				<div className="mt-auto flex flex-col gap-4 px-3 pb-3 group-data-[collapsible=icon]:px-1">
+				<div className="mt-auto flex flex-col gap-4 px-3 pb-3.5 group-data-[collapsible=icon]:px-1">
 					<div className="mx-1 group-data-[collapsible=icon]:hidden">
 						<PromoCardStack cards={promoCards} onDismiss={handlePromoDismiss} />
 					</div>
-					{/* Socials, theme toggle and the user/logout menu moved to <Topbar>.
-					    All that remains here is the expand affordance for the collapsed
-					    rail, since the collapsed header doubles as the collapse target. */}
+					{/* Socials, theme toggle, the user/logout menu and the version string
+					    all moved to <Topbar>. All that remains here is the expand
+					    affordance for the collapsed rail, since the collapsed header
+					    doubles as the collapse target. */}
 					<div className="hidden w-full cursor-pointer flex-col items-center group-data-[collapsible=icon]:flex">
 						<button
 							onClick={toggleSidebar}
@@ -1551,11 +1544,9 @@ export default function AppSidebar() {
 							<PanelLeftOpen className="h-4 w-4" />
 						</button>
 					</div>
-					<div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">
-						<div className="font-mono text-xs">{version ?? ""}</div>
-					</div>
 				</div>
 			</SidebarContent>
+			<PoweredByBifrost />
 		</Sidebar>
 	);
 }

@@ -63,6 +63,23 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	return true
 }
 
+// IsModelCheckedWhenPresent reports whether a request type whose model is optional
+// should still be checked against the model allowlist when it does carry one.
+//
+// These are the types IsModelRequiredForRequest excludes because their model may
+// legitimately be absent — a file-based batch names none, passthrough forwards raw
+// routes, video edit lets the provider infer it. "Optional" must not mean
+// "unenforced": when the caller does name a model, the allowlist applies.
+func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
+	switch requestType {
+	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest,
+		schemas.VideoEditRequest, schemas.BatchCreateRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 // parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
 // It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
 // Parameters:

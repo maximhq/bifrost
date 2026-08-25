@@ -187,7 +187,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `mcp_agent_depth` | integer | `10` | Maximum tool-call recursion depth for MCP agent mode |
 | `mcp_tool_execution_timeout` | integer | `30` | Timeout per MCP tool execution in seconds |
 | `mcp_code_mode_binding_level` | string | - | Code mode binding level: `"server"` or `"tool"` |
-| `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = disabled) |
+| `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
 
 ```json
