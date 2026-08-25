@@ -537,8 +537,15 @@ func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoi
 		AccountingStatus: tables.BatchJobAccountingStatusPending,
 		SelectedKeyID:    entry.SelectedKeyID,
 		VirtualKeyID:     entry.VirtualKeyID,
+		UserID:           entry.UserID,
+		TeamID:           entry.TeamID,
+		CustomerID:       entry.CustomerID,
 		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
 		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	if entry.ID != "" {
+		sourceLogID := entry.ID
+		job.SourceLogID = &sourceLogID
 	}
 	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
 		job.ID = tables.BatchJobID(job.Provider, job.BatchID)

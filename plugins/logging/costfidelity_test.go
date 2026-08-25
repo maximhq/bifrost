@@ -1230,3 +1230,64 @@ func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
 	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
 	assertCostsEqual(t, "e2e gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
 }
+
+// test: the background job is the path the /api/logs/recalculate-cost endpoint
+// actually runs, and it persisted pages independently of RecalculateCosts. A batch
+// aggregate row prices to a scalar total with no breakdown, so the job fed nil to
+// CostUpdateFromBreakdown and wrote the resulting zero over an already-correct
+// cost — a full recalculation silently zeroed every settled batch in the window.
+func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	store := plugin.store
+	ctx := context.Background()
+
+	wantGPT4o := 1000*1.25e-06 + 200*5e-06
+	wantGPT4oMini := 500*7.5e-08 + 100*3e-07
+	settledCost := wantGPT4o + wantGPT4oMini
+
+	entry := &logstore.Log{
+		ID:        "batch-job-priced",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "mixed",
+		Status:    "success",
+		Cost:      &settledCost,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_job_priced",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":      batchModelBreakdown(1000, 200),
+					"gpt-4o-mini": batchModelBreakdown(500, 100),
+				},
+			},
+		},
+	}
+	require.NoError(t, store.Create(ctx, entry))
+
+	// MissingCostOnly=false is the "recalculate everything in this window" scope,
+	// which is what visits an already-priced row in the first place.
+	metaJSON, err := plugin.BuildCostRecalcJobMeta(ctx, logstore.SearchFilters{}, false)
+	require.NoError(t, err)
+
+	finalJSON, err := plugin.RunCostRecalcJob(ctx, metaJSON, func(string) error { return nil })
+	require.NoError(t, err)
+
+	var meta CostRecalcJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &meta))
+	require.Equal(t, 1, meta.Updated)
+
+	logged, err := store.FindByID(ctx, "batch-job-priced")
+	require.NoError(t, err)
+	require.NotNil(t, logged.Cost)
+	assertCostsEqual(t, "batch row cost after background recalculation", *logged.Cost, settledCost)
+
+	// The breakdowns must be rewritten alongside the cost, not left behind.
+	require.NotNil(t, logged.BatchDebugParsed)
+	require.NotNil(t, logged.BatchDebugParsed.Accounting)
+	breakdowns := logged.BatchDebugParsed.Accounting.ModelBreakdowns
+	require.NotNil(t, breakdowns["gpt-4o"].Cost)
+	assertCostsEqual(t, "gpt-4o breakdown cost", *breakdowns["gpt-4o"].Cost, wantGPT4o)
+	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
+	assertCostsEqual(t, "gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
+}

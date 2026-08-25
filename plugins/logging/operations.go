@@ -1541,64 +1541,20 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			return nil, err
 		}
 
-		costUpdates := make(map[string]logstore.CostUpdate, len(searchResult.Logs))
-		batchDebugUpdated := 0
+		tally, err := p.persistRecalcOutcomes(ctx, searchResult.Logs, outcomes)
+		if err != nil {
+			return nil, err
+		}
+		result.Updated += tally.updated
+		result.Skipped += tally.skipped
+		result.Unpriceable += tally.unpriceable
+
 		stillMissingInBatch := 0
-
-		for i := range searchResult.Logs {
-			logEntry := searchResult.Logs[i]
-			cost, calcErr := outcomes[i].cost, outcomes[i].err
-			if calcErr != nil {
-				result.Skipped++
-				if errors.Is(calcErr, errPricingInputsUnavailable) {
-					result.Unpriceable++
-				}
+		for _, priced := range tally.priced {
+			if !priced {
 				stillMissingInBatch++
-				p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
-				continue
 			}
-			if cost <= 0 {
-				if outcomes[i].knownZeroCost {
-					costUpdates[logEntry.ID] = logstore.CostUpdate{}
-				} else {
-					result.Skipped++
-					p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
-				}
-				// MissingCostOnly currently includes zero-cost rows, so advance past them
-				// whether they were skipped or updated to avoid recalculating forever.
-				stillMissingInBatch++
-				continue
-			}
-			if outcomes[i].batchDebugUpdate != "" {
-				// A repriced batch aggregate row needs cost and batch_debug written
-				// together so model_breakdowns never disagrees with the row's own
-				// cost, and batch_debug can only be written through a dedicated update
-				// (BulkUpdateCost writes cost and the split columns, but not
-				// batch_debug). This row carries a scalar total only, so derive the
-				// split columns from it the same way CostUpdateFromBreakdown does.
-				update := logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: cost})
-				if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-					"cost":            update.Total,
-					"input_cost":      update.Input,
-					"output_cost":     update.Output,
-					"additional_cost": update.Additional,
-					"batch_debug":     outcomes[i].batchDebugUpdate,
-				}); err != nil {
-					return nil, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
-				}
-				batchDebugUpdated++
-				continue
-			}
-			costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
 		}
-
-		if len(costUpdates) > 0 {
-			if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
-				return nil, fmt.Errorf("failed to bulk update costs: %w", err)
-			}
-			result.Updated += len(costUpdates)
-		}
-		result.Updated += batchDebugUpdated
 
 		if filters.MissingCostOnly {
 			// Updated rows drop out of the result set, so only advance past rows
@@ -1675,6 +1631,83 @@ type billingOutcome struct {
 	// model_breakdowns would stay stuck showing the pre-recalculation (unpriced)
 	// state even after cost is fixed.
 	batchDebugUpdate string
+}
+
+// recalcTally is what persisting one page of billing outcomes did.
+type recalcTally struct {
+	updated     int
+	skipped     int
+	unpriceable int
+	// priced[i] reports whether row i ended the pass carrying a positive cost. Rows
+	// that did not (skips, zero-cost resolutions) still match a MissingCostOnly scan,
+	// so both callers use this to advance their cursor without re-touching or
+	// skipping a row.
+	priced []bool
+}
+
+// persistRecalcOutcomes writes one page of repriced rows and reports what happened.
+//
+// Both recalculation entry points funnel through here. They used to persist the
+// page independently, and the batch-aggregate case — a scalar total plus a
+// batch_debug payload, with no breakdown — was only ever handled in one of them:
+// the background job fed the nil breakdown to CostUpdateFromBreakdown and wrote
+// the resulting zero straight over an already-correct batch cost.
+func (p *LoggerPlugin) persistRecalcOutcomes(ctx context.Context, batch []logstore.Log, outcomes []billingOutcome) (recalcTally, error) {
+	tally := recalcTally{priced: make([]bool, len(batch))}
+	costUpdates := make(map[string]logstore.CostUpdate, len(batch))
+
+	for i := range batch {
+		logEntry := batch[i]
+		cost, calcErr := outcomes[i].cost, outcomes[i].err
+		if calcErr != nil {
+			tally.skipped++
+			if errors.Is(calcErr, errPricingInputsUnavailable) {
+				tally.unpriceable++
+			}
+			p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
+			continue
+		}
+		if cost <= 0 {
+			if outcomes[i].knownZeroCost {
+				costUpdates[logEntry.ID] = logstore.CostUpdate{}
+			} else {
+				tally.skipped++
+				p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
+			}
+			continue
+		}
+		if outcomes[i].batchDebugUpdate != "" {
+			// A repriced batch aggregate row needs cost and batch_debug written
+			// together so model_breakdowns never disagrees with the row's own
+			// cost, and batch_debug can only be written through a dedicated update
+			// (BulkUpdateCost writes cost and the split columns, but not
+			// batch_debug). This row carries a scalar total only, so derive the
+			// split columns from it the same way CostUpdateFromBreakdown does.
+			update := logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: cost})
+			if err := p.store.Update(ctx, logEntry.ID, map[string]any{
+				"cost":            update.Total,
+				"input_cost":      update.Input,
+				"output_cost":     update.Output,
+				"additional_cost": update.Additional,
+				"batch_debug":     outcomes[i].batchDebugUpdate,
+			}); err != nil {
+				return recalcTally{}, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
+			}
+			tally.updated++
+			tally.priced[i] = true
+			continue
+		}
+		costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
+		tally.priced[i] = true
+	}
+
+	if len(costUpdates) > 0 {
+		if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
+			return recalcTally{}, fmt.Errorf("failed to bulk update costs: %w", err)
+		}
+		tally.updated += len(costUpdates)
+	}
+	return tally, nil
 }
 
 // priceLogsInChunks hydrates and prices a batch a few rows at a time, releasing each

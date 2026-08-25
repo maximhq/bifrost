@@ -222,6 +222,12 @@ type GovernanceStore interface {
 	// missing any ID here means that usage vanishes from cluster baselines when the node ghosts.
 	// userID contributes the user-scoped model-config IDs;
 	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+	// CollectModelScopedGovernanceIDs returns the budget and rate-limit IDs owned by
+	// model configs matching (provider, model) across the global, user and virtual-key
+	// scopes. It takes the virtual key's ID rather than its value, so a caller settling
+	// long after the request — batch accounting, which has only a stored row — can
+	// still reach the same configs.
+	CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -3449,6 +3455,59 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 		}
 	}
 
+	return budgetIDs, rateLimitIDs
+}
+
+// CollectModelScopedGovernanceIDs returns only the model-config-owned IDs for a
+// (provider, model) pair, across the global, user and virtual-key scopes.
+//
+// It exists for delayed settlement. CollectApplicableGovernanceIDs is called while
+// the request is in flight, and a batch create carries no top-level model — each
+// input-file row names its own — so collectModelConfigsFor matches only the
+// all-models wildcards and never the exact-model configs. Those are precisely where
+// a model-level budget lives (an access profile's per-model limits materialise as
+// user-scoped configs naming one model and provider), so batch spend never reached
+// them. Settlement does know the models, and calls this per model to charge what
+// the create-time collection could not see.
+//
+// Callers must subtract the IDs already charged for the request: the wildcard tiers
+// returned here overlap CollectApplicableGovernanceIDs by design, since both walk
+// the same four tiers.
+func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+	seenBudgets := map[string]bool{}
+	seenRateLimits := map[string]bool{}
+
+	var providerStr *string
+	if provider != "" {
+		p := string(provider)
+		providerStr = &p
+	}
+	addModelConfigIDs := func(mc *configstoreTables.TableModelConfig) {
+		for i := range mc.Budgets {
+			if id := mc.Budgets[i].ID; !seenBudgets[id] {
+				budgetIDs = append(budgetIDs, id)
+				seenBudgets[id] = true
+			}
+		}
+		if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
+			rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+			seenRateLimits[*mc.RateLimitID] = true
+		}
+	}
+
+	scopes := []struct{ name, id string }{
+		{configstoreTables.ModelConfigScopeGlobal, ""},
+		{configstoreTables.ModelConfigScopeUser, userID},
+		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
+	}
+	for _, scope := range scopes {
+		if scope.name != configstoreTables.ModelConfigScopeGlobal && scope.id == "" {
+			continue
+		}
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
+			addModelConfigIDs(mc)
+		}
+	}
 	return budgetIDs, rateLimitIDs
 }
 
