@@ -1937,6 +1937,14 @@ func billableAnthropicUsage(u *AnthropicUsage) *AnthropicUsage {
 	out.Type = nil
 	out.Model = nil
 	out.Iterations = nil
+	if u.OutputTokensDetails != nil {
+		details := *u.OutputTokensDetails
+		out.OutputTokensDetails = &details
+	}
+	if u.ServerToolUse != nil {
+		serverToolUse := *u.ServerToolUse
+		out.ServerToolUse = &serverToolUse
+	}
 	for i := range u.Iterations {
 		it := &u.Iterations[i]
 		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction {

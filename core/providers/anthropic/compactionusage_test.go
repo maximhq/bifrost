@@ -55,6 +55,50 @@ func TestBillableAnthropicUsage_MessageOnlyIterations(t *testing.T) {
 	}
 }
 
+func TestBillableAnthropicUsage_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	usage := &AnthropicUsage{
+		InputTokens:  100,
+		OutputTokens: 50,
+		OutputTokensDetails: &AnthropicOutputTokensDetails{
+			ThinkingTokens: 10,
+		},
+		ServerToolUse: &AnthropicServerToolUseUsage{
+			WebSearchRequests: 1,
+		},
+		Iterations: []AnthropicUsage{
+			{
+				Type:         schemas.Ptr(AnthropicUsageIterationTypeCompaction),
+				OutputTokens: 500,
+				OutputTokensDetails: &AnthropicOutputTokensDetails{
+					ThinkingTokens: 400,
+				},
+				ServerToolUse: &AnthropicServerToolUseUsage{
+					WebSearchRequests: 5,
+				},
+			},
+		},
+	}
+	origThinking := usage.OutputTokensDetails.ThinkingTokens
+	origWebSearch := usage.ServerToolUse.WebSearchRequests
+
+	got := billableAnthropicUsage(usage)
+
+	if usage.OutputTokensDetails.ThinkingTokens != origThinking {
+		t.Fatalf("mutated input ThinkingTokens: got %d want %d", usage.OutputTokensDetails.ThinkingTokens, origThinking)
+	}
+	if usage.ServerToolUse.WebSearchRequests != origWebSearch {
+		t.Fatalf("mutated input WebSearchRequests: got %d want %d", usage.ServerToolUse.WebSearchRequests, origWebSearch)
+	}
+	if got.OutputTokensDetails == nil || got.OutputTokensDetails.ThinkingTokens != 400 {
+		t.Fatalf("billable ThinkingTokens = %v, want 400", got.OutputTokensDetails)
+	}
+	if got.ServerToolUse == nil || got.ServerToolUse.WebSearchRequests != 5 {
+		t.Fatalf("billable WebSearchRequests = %v, want 5", got.ServerToolUse)
+	}
+}
+
 func TestBillableAnthropicUsage_FallbackIterationsStayTopLevel(t *testing.T) {
 	t.Parallel()
 
