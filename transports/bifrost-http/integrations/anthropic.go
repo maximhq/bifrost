@@ -526,23 +526,30 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 					isNonAnthropicProvider = true
 				}
 				var model *string
+				mixedModels := false
 				requests := make([]schemas.BatchRequestItem, len(anthropicReq.Requests))
 				for i, r := range anthropicReq.Requests {
-					if isNonAnthropicProvider {
-						requestModel, ok := r.Params["model"].(string)
-						if !ok {
+					requestModel, ok := r.Params["model"].(string)
+					if !ok || requestModel == "" {
+						// Only the non-Anthropic providers need a model to route at all.
+						if isNonAnthropicProvider {
 							return nil, errors.New("model is required")
 						}
-						if model == nil {
-							model = schemas.Ptr(requestModel)
-						} else if *model != requestModel {
+					} else if model == nil {
+						model = schemas.Ptr(requestModel)
+					} else if *model != requestModel {
+						if isNonAnthropicProvider {
 							return nil, errors.New("for non-Anthropic providers, model must be the same for all requests")
 						}
+						mixedModels = true
 					}
 					requests[i] = schemas.BatchRequestItem{
 						CustomID: r.CustomID,
 						Params:   r.Params,
 					}
+				}
+				if mixedModels {
+					model = nil
 				}
 				br := &BatchRequest{
 					Type: schemas.BatchCreateRequest,

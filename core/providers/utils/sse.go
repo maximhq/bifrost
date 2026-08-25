@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -66,7 +67,7 @@ func GetSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) SSEDataRead
 			return factory.NewDataReader(reader)
 		}
 	}
-	return newDefaultSSEDataReader(reader)
+	return newDefaultSSEDataReader(ctx, reader)
 }
 
 // GetSSEEventReader returns an SSEEventReader for the given reader.
@@ -96,18 +97,37 @@ type defaultSSEDataReader struct {
 	scanner *bufio.Scanner
 	pending []byte // line carried over from an aborted multi-line JSON accumulation
 	sawDone bool   // stream ended on "data: [DONE]" rather than a bare body EOF
+	// ctx carries the request context so the per-event copy out of the scanner buffer
+	// can be attributed to the "response-parse" stream phase centrally, for every
+	// provider that uses the shared reader — rather than each provider timing its own
+	// copy. Nil-safe: AddStreamParse no-ops when there is no accumulator.
+	ctx *schemas.BifrostContext
 }
 
 // SawDoneMarker implements SSEStreamTerminator.
 func (r *defaultSSEDataReader) SawDoneMarker() bool { return r.sawDone }
 
-func newDefaultSSEDataReader(reader io.Reader) *defaultSSEDataReader {
+func newDefaultSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) *defaultSSEDataReader {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, sseInitialBufSize), sseMaxBufSize)
-	return &defaultSSEDataReader{scanner: scanner}
+	return &defaultSSEDataReader{scanner: scanner, ctx: ctx}
 }
 
 func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
+	// Attribute the SSE framing CPU (scanner buffer splitting, prefix parsing, and the
+	// per-event copy out of the scanner buffer) to the "response-parse" stream phase, for
+	// every provider using the shared reader. The socket-read WAIT interleaved inside the
+	// scanner is already accounted as upstream by the wrapping reader, so subtract the
+	// upstream delta accrued during this call to leave only the CPU — no double count.
+	// AddStreamParse guards non-positive (measurement skew).
+	if r.ctx != nil {
+		upBefore, _ := schemas.GetUpstreamLatency(r.ctx)
+		frameStart := time.Now()
+		defer func() {
+			upAfter, _ := schemas.GetUpstreamLatency(r.ctx)
+			schemas.AddStreamParse(r.ctx, time.Since(frameStart)-(upAfter-upBefore))
+		}()
+	}
 	for {
 		line, ok := r.nextLine()
 		if !ok {
@@ -131,7 +151,9 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 				r.sawDone = true
 				return nil, io.EOF
 			}
-			// Copy to decouple from scanner's internal buffer
+			// Copy to decouple from scanner's internal buffer. This copy, the scanner
+			// split, and the prefix parsing are all attributed to "response-parse" by the
+			// deferred framing timer at the top of this method.
 			return append([]byte(nil), data...), nil
 		}
 

@@ -1448,10 +1448,9 @@ type MCPVKConfigRequest struct {
 // so they reject unit-confused input without constraining any realistic interval.
 // The persisted int seconds cannot wrap within these bounds: that would require a
 // 32-bit int, and sonic (a core dependency) fails to compile on 32-bit by design.
-const (
-	maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
-	minToolSyncIntervalMinutes = int64(math.MinInt64) / int64(time.Minute)
-)
+const maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
+
+const errToolSyncIntervalNegative = "tool_sync_interval must be 0 (use the global setting) or a positive number of minutes"
 
 // MCPClientUpdateRequest is the body for PUT /api/mcp/client/{id}.
 // All fields are optional — omitting a field retains its existing value (PATCH semantics).
@@ -1534,6 +1533,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must not be negative")
 		return
 	}
+	if req.ToolSyncInterval < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, errToolSyncIntervalNegative)
+		return
+	}
+	if int64(req.ToolSyncInterval) > maxToolSyncIntervalMinutes {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes))
+		return
+	}
 	resolvedToolExecutionTimeout := time.Duration(req.ToolExecutionTimeout) * time.Second
 
 	// Handle per-user headers: admin declares the required key names (schema)
@@ -1579,15 +1586,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultConnectionCheckInterval
-		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-		} else {
-			config, cfgErr := h.store.ConfigStore.GetClientConfig(ctx)
-			if cfgErr == nil && config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-			}
-		}
+		// Minutes in; 0 means no per-client override. The runtime resolves 0
+		// against the live global setting and the DB keeps it as 0, so a later
+		// change to the global reaches this client too.
+		toolSyncInterval := time.Duration(req.ToolSyncInterval) * time.Minute
 
 		isPingAvailable := true
 		if req.IsPingAvailable != nil {
@@ -1693,15 +1695,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultConnectionCheckInterval
-		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-		} else {
-			config, cfgErr := h.store.ConfigStore.GetClientConfig(ctx)
-			if cfgErr == nil && config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-			}
-		}
+		// Minutes in; 0 means no per-client override. The runtime resolves 0
+		// against the live global setting and the DB keeps it as 0, so a later
+		// change to the global reaches this client too.
+		toolSyncInterval := time.Duration(req.ToolSyncInterval) * time.Minute
 
 		isPingAvailable := true
 		if req.IsPingAvailable != nil {
@@ -1829,15 +1826,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultConnectionCheckInterval
-		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-		} else {
-			config, err := h.store.ConfigStore.GetClientConfig(ctx)
-			if err == nil && config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-			}
-		}
+		// Minutes in; 0 means no per-client override. The runtime resolves 0
+		// against the live global setting and the DB keeps it as 0, so a later
+		// change to the global reaches this client too.
+		toolSyncInterval := time.Duration(req.ToolSyncInterval) * time.Minute
 
 		isPingAvailable := true
 		if req.IsPingAvailable != nil {
@@ -1923,19 +1915,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultConnectionCheckInterval
-		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-		} else {
-			config, err := h.store.ConfigStore.GetClientConfig(ctx)
-			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
-				return
-			}
-			if config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-			}
-		}
+		// Minutes in; 0 means no per-client override. The runtime resolves 0
+		// against the live global setting and the DB keeps it as 0, so a later
+		// change to the global reaches this client too.
+		toolSyncInterval := time.Duration(req.ToolSyncInterval) * time.Minute
 
 		// Store MCP client config in OAuth provider memory (not in database)
 		// It will be stored in database only after OAuth completion
@@ -1990,19 +1973,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	toolSyncInterval := mcp.DefaultConnectionCheckInterval
-	if req.ToolSyncInterval != 0 {
-		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-	} else {
-		config, err := h.store.ConfigStore.GetClientConfig(ctx)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
-			return
-		}
-		if config != nil {
-			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-		}
-	}
+	// Minutes in; 0 means no per-client override. The runtime resolves 0
+	// against the live global setting and the DB keeps it as 0, so a later
+	// change to the global reaches this client too.
+	toolSyncInterval := time.Duration(req.ToolSyncInterval) * time.Minute
 
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	schemasConfig := &schemas.MCPClientConfig{
@@ -2184,11 +2158,15 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// boundary below; the in-memory duration is the source of truth here.
 	resolvedToolSyncInterval := existingConfig.ToolSyncInterval
 	if req.ToolSyncInterval != nil {
+		if *req.ToolSyncInterval < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, errToolSyncIntervalNegative)
+			return
+		}
 		// Reject values that would overflow the minutes->Duration multiply. Without
 		// this, a caller echoing back the nanosecond value from a GET response wraps
-		// int64 and silently persists a garbage interval of either sign.
-		if int64(*req.ToolSyncInterval) > maxToolSyncIntervalMinutes || int64(*req.ToolSyncInterval) < minToolSyncIntervalMinutes {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tool_sync_interval must be between %d and %d minutes", minToolSyncIntervalMinutes, maxToolSyncIntervalMinutes))
+		// int64 and silently persists a garbage interval.
+		if int64(*req.ToolSyncInterval) > maxToolSyncIntervalMinutes {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes))
 			return
 		}
 		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
@@ -2538,18 +2516,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// 0 means no per-client override: the runtime resolves it against the live
+	// global setting, matching the persisted row above, so a later change to
+	// the global reaches this client too.
 	toolSyncInterval := resolvedToolSyncInterval
-	if toolSyncInterval == 0 {
-		toolSyncInterval = mcp.DefaultConnectionCheckInterval
-		config, err := h.store.ConfigStore.GetClientConfig(ctx)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
-			return
-		}
-		if config != nil {
-			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
-		}
-	}
 	// Build in-memory config from resolved values.
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     id,
@@ -3543,6 +3513,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	// Standard server-level OAuth completion
 	if isUpdateFlow {
 		oldDBConfig := *existingDBConfig
+		// The store writes every editable column unconditionally, so the row
+		// must carry the full config: omitting a field here silently resets
+		// it (a per-client timeout back to the global, or the TLS config).
 		updateReq := &configstoreTables.TableMCPClient{
 			ClientID:                  mcpClientConfig.ID,
 			Name:                      mcpClientConfig.Name,
@@ -3560,6 +3533,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
+			TLSConfig:                 mcpClientConfig.TLSConfig,
 			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
 			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
