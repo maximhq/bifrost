@@ -1179,26 +1179,28 @@ bifrost:
 
   # Guardrails configuration for content moderation and policy enforcement
   guardrails:
-    rules: []
-      # - id: 1
-      #   name: "Block PII"
-      #   description: "Block requests containing PII"
-      #   enabled: true
-      #   target: "llm"     # "llm" (default) | "mcp"
-      #   cel_expression: "true"
-      #   apply_to: "input"
-      #   sampling_rate: 100
-      #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
-      #   max_turns_to_send: 0
-      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
-      #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
+    # Provider configs are referenced by rules via provider_config_ids (id -> rule.provider_config_ids).
     providers: []
       # - id: 1
-      #   provider_name: "bedrock"
-      #   policy_name: "content-filter"
+      #   provider_name: "grayswan"          # Provider name (e.g. grayswan, bedrock, azure)
+      #   policy_name: "production-content-safety"
       #   enabled: true
-      #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
-      #   config: {}
+      #   timeout: 15        # Timeout in seconds for provider execution (default: 30)
+      #   config: {}         # Freeform, provider-specific — see the provider's integration docs
+    rules: []
+      # - id: 101
+      #   name: "anthropic-openai-content-safety"
+      #   description: "Scan Anthropic/OpenAI traffic"
+      #   enabled: true
+      #   target: "llm"     # "llm" (default) | "mcp"
+      #   cel_expression: "provider in [\"anthropic\", \"openai\"]"
+      #   apply_to: "both"  # input | output | both
+      #   sampling_rate: 100
+      #   timeout: 15        # Timeout in seconds for rule execution (default: 60)
+      #   max_turns_to_send: 8   # Historical turns sent to the provider (latest always included); 0 = all
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
+      #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
+      #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above
 
   # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
   # in config.json and reconciled at startup when enabled.
