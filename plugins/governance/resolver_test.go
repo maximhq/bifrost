@@ -689,9 +689,12 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 		{"passthrough stream disallowed model is blocked", "gpt-4o-mini", schemas.PassthroughStreamRequest, DecisionModelBlocked},
 		{"passthrough stream allowed model passes", "gpt-4", schemas.PassthroughStreamRequest, DecisionAllow},
 		{"passthrough stream without model has no restriction", "", schemas.PassthroughStreamRequest, DecisionAllow},
-		// Scoping guard: batch is model-not-required and not passthrough, so its model is never
-		// filtered even when set to a disallowed value (behavior unchanged by the passthrough fix).
-		{"batch with disallowed model is not filtered", "gpt-4o-mini", schemas.BatchCreateRequest, DecisionAllow},
+		// Batch create carries no model of its own for a file-based batch, but an inline
+		// one names a model per item and governance evaluates each — so the allowlist
+		// applies whenever a model is actually present.
+		{"batch with disallowed model is blocked", "gpt-4o-mini", schemas.BatchCreateRequest, DecisionModelBlocked},
+		{"batch with allowed model passes", "gpt-4", schemas.BatchCreateRequest, DecisionAllow},
+		{"batch without model has no restriction", "", schemas.BatchCreateRequest, DecisionAllow},
 	}
 
 	for _, tt := range tests {

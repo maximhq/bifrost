@@ -9,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
@@ -998,7 +999,7 @@ func TestCalculateBatchAggregateCost_MultiModel(t *testing.T) {
 		},
 	}
 
-	cost, batchDebugJSON, err := plugin.calculateBatchAggregateCost(entry)
+	cost, batchDebugJSON, err := plugin.calculateBatchAggregateCost(entry, false)
 	require.NoError(t, err)
 	assert.NotEmpty(t, batchDebugJSON)
 
@@ -1044,7 +1045,7 @@ func TestCalculateBatchAggregateCost_PartiallyUnpriced(t *testing.T) {
 		},
 	}
 
-	cost, _, err := plugin.calculateBatchAggregateCost(entry)
+	cost, _, err := plugin.calculateBatchAggregateCost(entry, false)
 	require.NoError(t, err)
 	assertCostsEqual(t, "partially-unpriced batch total", cost, 1000*1.25e-06+200*5e-06)
 
@@ -1080,14 +1081,14 @@ func TestCalculateBatchAggregateCost_EmbeddingEndpointUsesEmbeddingRates(t *test
 		}
 	}
 
-	cost, _, err := plugin.calculateBatchAggregateCost(newEntry(string(schemas.BatchEndpointEmbeddings)))
+	cost, _, err := plugin.calculateBatchAggregateCost(newEntry(string(schemas.BatchEndpointEmbeddings)), false)
 	require.NoError(t, err)
 	// testdata input_cost_per_token_batches for text-embedding-3-small: 1e-08.
 	assertCostsEqual(t, "embeddings batch total", cost, 1000*1e-08)
 
 	// Rows written before the endpoint was persisted keep the old behavior rather
 	// than being guessed at — for an embedding-only model that still means unpriceable.
-	_, _, err = plugin.calculateBatchAggregateCost(newEntry(""))
+	_, _, err = plugin.calculateBatchAggregateCost(newEntry(""), false)
 	require.ErrorIs(t, err, errPricingInputsUnavailable)
 }
 
@@ -1114,7 +1115,7 @@ func TestCalculateBatchAggregateCost_PartialRepriceMarksIncomplete(t *testing.T)
 		},
 	}
 
-	_, batchDebugJSON, err := plugin.calculateBatchAggregateCost(entry)
+	_, batchDebugJSON, err := plugin.calculateBatchAggregateCost(entry, false)
 	require.NoError(t, err)
 	assert.True(t, entry.BatchDebugParsed.Accounting.Incomplete)
 
@@ -1148,7 +1149,7 @@ func TestCalculateBatchAggregateCost_IncompleteIsNeverCleared(t *testing.T) {
 		},
 	}
 
-	_, _, err := plugin.calculateBatchAggregateCost(entry)
+	_, _, err := plugin.calculateBatchAggregateCost(entry, false)
 	require.NoError(t, err)
 	assert.True(t, entry.BatchDebugParsed.Accounting.Incomplete,
 		"unparseable rows are gone for good; a successful reprice does not recover them")
@@ -1177,7 +1178,7 @@ func TestCalculateBatchAggregateCost_AllUnpriced(t *testing.T) {
 		},
 	}
 
-	_, _, err := plugin.calculateBatchAggregateCost(entry)
+	_, _, err := plugin.calculateBatchAggregateCost(entry, false)
 	require.ErrorIs(t, err, errPricingInputsUnavailable)
 }
 
@@ -1191,7 +1192,7 @@ func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
 	store := plugin.store
 
 	entry := &logstore.Log{
-		ID:        "batch-e2e-mixed",
+		ID:        batchaccounting.AccountingLogID(schemas.OpenAI, "batch_e2e_mixed"),
 		Timestamp: time.Now().UTC(),
 		Object:    string(schemas.BatchResultsRequest),
 		Provider:  string(schemas.OpenAI),
@@ -1214,7 +1215,7 @@ func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Updated)
 
-	logged, err := store.FindByID(context.Background(), "batch-e2e-mixed")
+	logged, err := store.FindByID(context.Background(), batchaccounting.AccountingLogID(schemas.OpenAI, "batch_e2e_mixed"))
 	require.NoError(t, err)
 	require.NotNil(t, logged.Cost)
 
@@ -1246,7 +1247,7 @@ func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
 	settledCost := wantGPT4o + wantGPT4oMini
 
 	entry := &logstore.Log{
-		ID:        "batch-job-priced",
+		ID:        batchaccounting.AccountingLogID(schemas.OpenAI, "batch_job_priced"),
 		Timestamp: time.Now().UTC(),
 		Object:    string(schemas.BatchResultsRequest),
 		Provider:  string(schemas.OpenAI),
@@ -1277,7 +1278,7 @@ func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &meta))
 	require.Equal(t, 1, meta.Updated)
 
-	logged, err := store.FindByID(ctx, "batch-job-priced")
+	logged, err := store.FindByID(ctx, batchaccounting.AccountingLogID(schemas.OpenAI, "batch_job_priced"))
 	require.NoError(t, err)
 	require.NotNil(t, logged.Cost)
 	assertCostsEqual(t, "batch row cost after background recalculation", *logged.Cost, settledCost)
@@ -1290,4 +1291,70 @@ func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
 	assertCostsEqual(t, "gpt-4o breakdown cost", *breakdowns["gpt-4o"].Cost, wantGPT4o)
 	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
 	assertCostsEqual(t, "gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
+}
+
+// TestRecalculateCostsDoesNotBillBatchEchoRow is the regression test for a
+// recalculation turning one batch into N charges. A repeated /results fetch gets
+// its own log row carrying the settled breakdowns and a snapshot cost, and it is
+// indistinguishable from the settlement row by object type — so repricing wrote a
+// full copy of the batch bill onto every one of them. The echo row must keep a
+// NULL cost (it contributes to no total) while the price it displays is refreshed.
+func TestRecalculateCostsDoesNotBillBatchEchoRow(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	store := plugin.store
+	ctx := context.Background()
+
+	const batchID = "batch_echo"
+	aggregateID := batchaccounting.AccountingLogID(schemas.OpenAI, batchID)
+	staleCost := 42.0
+	now := time.Now().UTC()
+
+	breakdowns := func() map[string]schemas.BatchModelBreakdown {
+		return map[string]schemas.BatchModelBreakdown{"gpt-4o": batchModelBreakdown(1000, 200)}
+	}
+	wantCost := 1000*1.25e-06 + 200*5e-06
+
+	aggregate := &logstore.Log{
+		ID:        aggregateID,
+		Timestamp: now,
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID:    batchID,
+			Accounting: &schemas.BatchAccountingDebug{ModelBreakdowns: breakdowns()},
+		},
+	}
+	echo := &logstore.Log{
+		ID:        "echo-results-fetch",
+		Timestamp: now.Add(time.Minute),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID:    batchID,
+			Accounting: &schemas.BatchAccountingDebug{ModelBreakdowns: breakdowns(), Cost: &staleCost},
+		},
+	}
+	require.NoError(t, store.Create(ctx, aggregate))
+	require.NoError(t, store.Create(ctx, echo))
+
+	_, err := plugin.RecalculateCosts(ctx, logstore.SearchFilters{}, 10)
+	require.NoError(t, err)
+
+	settled, err := store.FindByID(ctx, aggregateID)
+	require.NoError(t, err)
+	require.NotNil(t, settled.Cost, "the settlement row owns the bill")
+	assertCostsEqual(t, "aggregate row cost", *settled.Cost, wantCost)
+
+	fetched, err := store.FindByID(ctx, "echo-results-fetch")
+	require.NoError(t, err)
+	require.Nil(t, fetched.Cost, "an echo row must never be billed")
+	require.NotNil(t, fetched.BatchDebugParsed)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting.Cost)
+	assertCostsEqual(t, "echo row displayed cost", *fetched.BatchDebugParsed.Accounting.Cost, wantCost)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting.ModelBreakdowns["gpt-4o"].Cost)
 }
