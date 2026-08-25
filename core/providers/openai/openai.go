@@ -618,7 +618,10 @@ func HandleOpenAITextCompletionStreaming(
 			jsonData := string(data)
 			var response schemas.BifrostTextCompletionResponse
 			if customResponseHandler != nil {
+				// Custom handler decodes the raw event itself -> time as "response-parse" stream phase.
+				parseStart := time.Now()
 				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if handlerErr != nil {
 					// TODO fix this
 					if sendBackRawRequest {
@@ -646,9 +649,14 @@ func HandleOpenAITextCompletionStreaming(
 					}
 				}
 
-				// Parse into bifrost response
-				if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-					logger.Warn("Failed to parse stream response: %v", err)
+				// Parse into bifrost response. Timed as the "response-parse" stream phase
+				// (per-event JSON decode) so it lands in Serialization like unary/Anthropic,
+				// instead of folding into core/provider-internal.
+				parseStart := time.Now()
+				umErr := sonic.UnmarshalString(jsonData, &response)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
 			}
@@ -659,7 +667,11 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			if postResponseConverter != nil {
-				if converted := postResponseConverter(&response); converted != nil {
+				// Per-event mapping -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
+				converted := postResponseConverter(&response)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
+				if converted != nil {
 					response = *converted
 				} else {
 					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
@@ -1263,7 +1275,10 @@ func HandleOpenAIChatCompletionStreaming(
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
 			if customResponseHandler != nil {
+				// Custom handler decodes the raw event itself -> time as "response-parse" stream phase.
+				parseStart := time.Now()
 				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if handlerErr != nil {
 					if sendBackRawRequest {
 						handlerErr.ExtraFields.RawRequest = rawRequest
@@ -1276,8 +1291,12 @@ func HandleOpenAIChatCompletionStreaming(
 					return
 				}
 			} else {
-				if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-					logger.Warn("Failed to parse stream response: %v", err)
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
+				parseStart := time.Now()
+				umErr := sonic.UnmarshalString(jsonData, &response)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
 			}
@@ -1318,7 +1337,10 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 				}
 
+				// Per-event mapping (chat->responses) -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				for _, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
 						bifrostErr := &schemas.BifrostError{
@@ -1361,7 +1383,11 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 			} else {
 				if postResponseConverter != nil {
-					if converted := postResponseConverter(&response); converted != nil {
+					// Per-event mapping -> "convertor" (Convertor) stream phase.
+					convStart := time.Now()
+					converted := postResponseConverter(&response)
+					schemas.AddStreamConvert(ctx, time.Since(convStart))
+					if converted != nil {
 						response = *converted
 					} else {
 						logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
@@ -1943,7 +1969,10 @@ func HandleOpenAIResponsesStreaming(
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
 			if customResponseHandler != nil {
+				// Custom handler decodes the raw event itself -> time as "response-parse" stream phase.
+				parseStart := time.Now()
 				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if bifrostErr != nil {
 					if sendBackRawRequest {
 						bifrostErr.ExtraFields.RawRequest = rawRequest
@@ -1959,13 +1988,21 @@ func HandleOpenAIResponsesStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 			} else {
-				if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-					logger.Warn("Failed to parse stream response: %v", err)
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
+				parseStart := time.Now()
+				umErr := sonic.UnmarshalString(jsonData, &response)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
 
 				if postResponseConverter != nil {
-					if converted := postResponseConverter(&response); converted != nil {
+					// Per-event mapping -> "convertor" (Convertor) stream phase.
+					convStart := time.Now()
+					converted := postResponseConverter(&response)
+					schemas.AddStreamConvert(ctx, time.Since(convStart))
+					if converted != nil {
 						response = *converted
 					} else {
 						logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")

@@ -605,11 +605,12 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											</FormItem>
 										)}
 									/>
+									<div className="flex flex-col gap-4 sm:flex-row sm:items-start">
 									<FormField
 										control={control}
 										name={`${base}.trace_type`}
 										render={({ field }) => (
-											<FormItem className="w-full max-w-xs">
+											<FormItem className="w-full sm:flex-1">
 												<FormLabel>Format</FormLabel>
 												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 													<FormControl>
@@ -638,7 +639,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										control={control}
 										name={`${base}.export_timeout`}
 										render={({ field }) => (
-											<FormItem className="w-full max-w-xs">
+											<FormItem className="w-full sm:flex-1">
 												<FormLabel>Export Timeout (seconds)</FormLabel>
 												<FormControl>
 													<Input
@@ -659,6 +660,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											</FormItem>
 										)}
 									/>
+									</div>
 									<FormField
 										control={control}
 										name={`${base}.request_headers`}

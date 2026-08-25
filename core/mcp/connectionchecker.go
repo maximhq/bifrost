@@ -70,6 +70,10 @@ type ClientConnectionChecker struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	isRunning bool
+	// onSteadyCadence records whether the armed timer was set with the
+	// steady-state cadence (healthyInterval) rather than the tight Unstable
+	// one, so a runtime healthyInterval change knows whether to re-arm it.
+	onSteadyCadence bool
 }
 
 // NewClientConnectionChecker creates a new connection checker for a client.
@@ -123,14 +127,16 @@ func (c *ClientConnectionChecker) Start() {
 		return
 	}
 
+	onSteady := clientState.State == schemas.MCPConnectionStateHealthy
 	firstInterval := c.healthyInterval
-	if clientState.State != schemas.MCPConnectionStateHealthy {
+	if !onSteady {
 		firstInterval = UnstableConnectionCheckInterval
 	}
 
 	c.isRunning = true
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.timer = time.NewTimer(firstInterval)
+	c.onSteadyCadence = onSteady
 
 	go c.checkLoop()
 	c.logger.Debug("%s Connection checker started for client %s", MCPLogPrefix, clientState.ExecutionConfig.Name)
@@ -154,16 +160,59 @@ func (c *ClientConnectionChecker) Stop() {
 	c.logger.Debug("%s Connection checker stopped for client %s", MCPLogPrefix, c.clientID)
 }
 
+// SetHealthyInterval replaces the steady-state cadence at runtime (a global or
+// per-client tool sync interval edit). If the armed timer is currently on the
+// healthy cadence it is re-armed with the new interval from now; a timer on
+// the tight Unstable cadence is left alone so recovery detection is not
+// delayed, and the next successful check picks the new value up by itself. A
+// non-positive interval means "no override" and falls back to
+// DefaultConnectionCheckInterval, mirroring NewClientConnectionChecker.
+func (c *ClientConnectionChecker) SetHealthyInterval(interval time.Duration) {
+	if interval <= 0 {
+		interval = DefaultConnectionCheckInterval
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	previous := c.healthyInterval
+	c.healthyInterval = interval
+	if previous == interval || !c.isRunning || c.timer == nil {
+		return
+	}
+	if c.onSteadyCadence {
+		// Safe even if the timer already fired and a check is in flight: a
+		// receive after Reset never observes a stale value, and checkLoop
+		// re-arms from the updated healthyInterval once the check returns.
+		c.timer.Reset(interval)
+	}
+	c.logger.Debug("%s Connection checker for client %s re-timed from %s to %s", MCPLogPrefix, c.clientID, previous, interval)
+}
+
+// steadyInterval returns healthyInterval under the checker's lock. The field
+// is mutable at runtime via SetHealthyInterval, so the check path must not
+// read it unlocked.
+func (c *ClientConnectionChecker) steadyInterval() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.healthyInterval
+}
+
 func (c *ClientConnectionChecker) checkLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-c.timer.C:
-			next := c.performCheck()
+			next, onSteady := c.performCheck()
 			c.mu.Lock()
 			if c.isRunning {
+				if onSteady {
+					// Re-read rather than trusting the value the check
+					// started with: a SetHealthyInterval that landed while
+					// the check was in flight must win.
+					next = c.healthyInterval
+				}
 				c.timer.Reset(next)
+				c.onSteadyCadence = onSteady
 			}
 			c.mu.Unlock()
 		}
@@ -171,8 +220,10 @@ func (c *ClientConnectionChecker) checkLoop() {
 }
 
 // performCheck runs one check cycle and returns the interval the next one
-// should fire after.
-func (c *ClientConnectionChecker) performCheck() time.Duration {
+// should fire after, plus whether that interval is the steady-state cadence
+// (as opposed to the tight Unstable one).
+func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
+	steady := c.steadyInterval()
 	c.manager.mu.RLock()
 	clientState, exists := c.manager.clientMap[c.clientID]
 	var isDisabled, needsReauth bool
@@ -190,13 +241,13 @@ func (c *ClientConnectionChecker) performCheck() time.Duration {
 
 	if !exists {
 		c.Stop()
-		return c.healthyInterval
+		return steady, true
 	}
 	if isDisabled {
 		// Health monitoring is already stopped for disabled clients
 		// elsewhere (DisableClient) — this is just a sanity check.
 		c.Stop()
-		return c.healthyInterval
+		return steady, true
 	}
 	if needsReauth {
 		// Stay quiet: the credential is confirmed permanently dead (typed
@@ -206,19 +257,25 @@ func (c *ClientConnectionChecker) performCheck() time.Duration {
 		// interval so a stalled reauthorize eventually gets picked up by
 		// something, but do no work — only an explicit reauthorize (or a
 		// direct UpdateClientCredentials success) moves this out.
-		return c.healthyInterval
+		return steady, true
 	}
 	if config == nil {
-		return c.healthyInterval
+		return steady, true
 	}
 
 	clientName := config.Name
 
 	switch {
 	case conn != nil:
-		return c.checkLiveConnection(conn, clientName, connGeneration)
+		if c.checkLiveConnection(conn, clientName, connGeneration) {
+			return steady, true
+		}
+		return UnstableConnectionCheckInterval, false
 	case c.manager.credStore.RequiresPerCallConnection(config):
-		return c.checkPerCall(config, connGeneration)
+		if c.checkPerCall(config, connGeneration) {
+			return steady, true
+		}
+		return UnstableConnectionCheckInterval, false
 	default:
 		// Sticky client with no live connection (e.g. still Unstable from a
 		// prior failed connect). connectToMCPClient sets Healthy/Unstable/
@@ -231,13 +288,14 @@ func (c *ClientConnectionChecker) performCheck() time.Duration {
 				c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 			}
 		}()
-		return UnstableConnectionCheckInterval
+		return UnstableConnectionCheckInterval, false
 	}
 }
 
 // checkLiveConnection runs ping (if supported) + list_tools over an
 // existing shared connection — one call now serving both liveness-check and
-// tool-discovery-refresh duty.
+// tool-discovery-refresh duty. Reports whether the check succeeded; the
+// caller maps that onto the next cadence.
 //
 // ExecuteWithRetry is given context.Background() as its outer ctx, not a
 // short-lived one — mirrors connectToMCPClient's own retry usage (its outer
@@ -247,7 +305,7 @@ func (c *ClientConnectionChecker) performCheck() time.Duration {
 // ProbeRetryConfig's own backoff (up to ~3.5s already, before any attempt's
 // own wall-clock time) off before it ever got to retry — defeating the
 // entire point of adding retry coverage here.
-func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clientName string, connGeneration uint64) time.Duration {
+func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clientName string, connGeneration uint64) bool {
 	if c.isPingAvailable {
 		pingErr := ExecuteWithRetry(context.Background(), func() error {
 			attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
@@ -256,7 +314,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		}, ProbeRetryConfig, c.logger)
 		if pingErr != nil {
 			c.recordFailure(clientName, "ping", pingErr, connGeneration)
-			return UnstableConnectionCheckInterval
+			return false
 		}
 	}
 
@@ -271,18 +329,18 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
 		c.recordFailure(clientName, "list_tools", listErr, connGeneration)
-		return UnstableConnectionCheckInterval
+		return false
 	}
 
 	c.writeBackTools(connGeneration, newTools, newMapping)
 	c.recordSuccess(clientName, connGeneration)
-	return c.healthyInterval
+	return true
 }
 
 // checkPerCall runs the per-call/ephemeral discovery cycle for auth types
 // with no persistent connection to ping or reconnect. Same
 // per-attempt-timeout reasoning as checkLiveConnection above.
-func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, connGeneration uint64) time.Duration {
+func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, connGeneration uint64) bool {
 	var newTools map[string]schemas.ChatTool
 	var newMapping map[string]string
 	err := ExecuteWithRetry(context.Background(), func() error {
@@ -294,12 +352,12 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 	}, ProbeRetryConfig, c.logger)
 	if err != nil {
 		c.recordFailure(config.Name, "admin tool discovery", err, connGeneration)
-		return UnstableConnectionCheckInterval
+		return false
 	}
 
 	c.writeBackTools(connGeneration, newTools, newMapping)
 	c.recordSuccess(config.Name, connGeneration)
-	return c.healthyInterval
+	return true
 }
 
 // markAsCheck wraps ctx as a BifrostContext with the health-check marker set,
@@ -430,6 +488,10 @@ type ConnectionCheckerManager struct {
 	checkers       map[string]*ClientConnectionChecker
 	globalInterval time.Duration
 	mu             sync.RWMutex
+	// retimeMu serializes a global interval change (the store plus the
+	// re-timing sweep that follows it) against per-client re-timing, so a
+	// per-client edit racing a global edit can never apply a stale global.
+	retimeMu sync.Mutex
 }
 
 // NewConnectionCheckerManager creates a new connection checker manager.
@@ -447,7 +509,62 @@ func NewConnectionCheckerManager(globalInterval time.Duration) *ConnectionChecke
 
 // GetGlobalInterval returns the global steady-state check interval.
 func (m *ConnectionCheckerManager) GetGlobalInterval() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.globalInterval
+}
+
+// SetGlobalInterval replaces the stored global steady-state interval. It
+// does not re-time anything; use ApplyGlobalInterval for a runtime change so
+// the checkers that follow the global move with it. A non-positive interval
+// restores the built-in default, as at construction.
+func (m *ConnectionCheckerManager) SetGlobalInterval(interval time.Duration) {
+	if interval <= 0 {
+		interval = DefaultConnectionCheckInterval
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.globalInterval = interval
+}
+
+// ClientIntervalSource pairs a client ID with the config its steady-state
+// cadence resolves from: ApplyGlobalInterval's input.
+type ClientIntervalSource struct {
+	ID     string
+	Config *schemas.MCPClientConfig
+}
+
+// ApplyGlobalInterval replaces the global steady-state interval and re-times
+// every listed client against it, atomically with respect to RetimeClient.
+// Clients with an explicit per-client override resolve to the same cadence
+// as before, so their checker's no-op check leaves them untouched.
+func (m *ConnectionCheckerManager) ApplyGlobalInterval(interval time.Duration, clients []ClientIntervalSource) {
+	m.retimeMu.Lock()
+	defer m.retimeMu.Unlock()
+	m.SetGlobalInterval(interval)
+	global := m.GetGlobalInterval()
+	for _, c := range clients {
+		m.updateInterval(c.ID, ResolveToolSyncInterval(c.Config, global))
+	}
+}
+
+// RetimeClient re-times a running checker's steady-state cadence from the
+// client's current config and the current global, serialized against
+// ApplyGlobalInterval. A no-op for a client with no checker registered
+// (disabled, or never started) and for an unchanged cadence.
+func (m *ConnectionCheckerManager) RetimeClient(clientID string, config *schemas.MCPClientConfig) {
+	m.retimeMu.Lock()
+	defer m.retimeMu.Unlock()
+	m.updateInterval(clientID, ResolveToolSyncInterval(config, m.GetGlobalInterval()))
+}
+
+func (m *ConnectionCheckerManager) updateInterval(clientID string, interval time.Duration) {
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.SetHealthyInterval(interval)
+	}
 }
 
 // StartChecking starts checking a specific client, stopping any pre-existing
@@ -501,16 +618,19 @@ func (m *ConnectionCheckerManager) StopAll() {
 // Priority: per-client override > global setting > default.
 //
 // Per-client semantics:
-//   - Negative value: disabled for this client
-//   - Zero: use global setting
-//   - Positive value: use this interval
+//   - Positive value (at least one second): use this interval
+//   - Zero: use the global setting
 //
-// Returns 0 if checking is disabled for this client.
+// Negative values are rejected at every HTTP, store, and config-file write
+// path; core's own AddClient/UpdateClient (embedded callers) and any legacy
+// stored value treat a negative like zero, since periodic checking cannot be
+// disabled: the same ticker also drives liveness.
 func ResolveToolSyncInterval(clientConfig *schemas.MCPClientConfig, globalInterval time.Duration) time.Duration {
-	if clientConfig.ToolSyncInterval < 0 {
-		return 0
-	}
-	if clientConfig.ToolSyncInterval > 0 {
+	// Sub-second overrides cannot exist through any write path (the store
+	// keeps whole seconds); a stray one, such as a bare integer from a config
+	// file (nanoseconds) reaching an embedded caller, follows the global
+	// rather than spinning the checker.
+	if clientConfig.ToolSyncInterval >= time.Second {
 		return clientConfig.ToolSyncInterval
 	}
 	if globalInterval > 0 {

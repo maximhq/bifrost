@@ -4440,6 +4440,17 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 	return nil
 }
 
+// UpdateMCPToolSyncInterval hot-reloads the global MCP tool sync interval and
+// re-times the periodic checkers of every client that follows the global
+// setting. Pass a non-positive interval to fall back to the built-in default.
+func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	bifrost.MCPManager.UpdateToolSyncInterval(interval)
+	return nil
+}
+
 // PROVIDER MANAGEMENT
 
 // createBaseProvider creates a provider based on the base provider type
