@@ -1152,8 +1152,15 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 	var contentBlocks []BedrockContentBlock
 
 	for _, msg := range msgs {
+		if msg.ChatToolMessage == nil {
+			return BedrockMessage{}, fmt.Errorf("tool message missing required ChatToolMessage")
+		}
+		if msg.ChatToolMessage.ToolCallID == nil {
+			return BedrockMessage{}, fmt.Errorf("tool message missing required ToolCallID")
+		}
+
 		var toolResultContent []BedrockContentBlock
-		if msg.Content.ContentStr != nil {
+		if msg.Content != nil && msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string
 			// Validate and compact JSON without parsing into Go types (preserves key ordering)
 			var buf bytes.Buffer
@@ -1190,7 +1197,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 					})
 				}
 			}
-		} else if msg.Content.ContentBlocks != nil {
+		} else if msg.Content != nil && msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
 				case schemas.ChatContentBlockTypeText:
@@ -1223,14 +1230,6 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 					}
 				}
 			}
-		}
-
-		if msg.ChatToolMessage == nil {
-			return BedrockMessage{}, fmt.Errorf("tool message missing required ChatToolMessage")
-		}
-
-		if msg.ChatToolMessage.ToolCallID == nil {
-			return BedrockMessage{}, fmt.Errorf("tool message missing required ToolCallID")
 		}
 
 		// Create tool result content block for this tool message

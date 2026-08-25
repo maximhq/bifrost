@@ -1,20 +1,28 @@
 package keyselectors
 
 import (
+	"fmt"
 	"math/rand"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+	if len(keys) == 0 {
+		return schemas.Key{}, fmt.Errorf("no keys available for provider %s and model %s", providerKey, model)
+	}
+
 	// Use a weighted random selection based on key weights
 	totalWeight := 0
 	for _, key := range keys {
-		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
+		if key.Weight > 0 {
+			totalWeight += int(key.Weight * 100) // Convert float to int for better performance
+		}
 	}
 
-	// If all keys have zero weight, fall back to uniform random selection
-	if totalWeight == 0 {
+	// If no key has a usable positive weight, fall back to uniform random selection.
+	// This also covers tiny positive weights that truncate to zero at our precision.
+	if totalWeight <= 0 {
 		return keys[rand.Intn(len(keys))], nil
 	}
 
@@ -24,6 +32,9 @@ func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey
 	// Select key based on weight
 	currentWeight := 0
 	for _, key := range keys {
+		if key.Weight <= 0 {
+			continue
+		}
 		currentWeight += int(key.Weight * 100)
 		if randomValue < currentWeight {
 			return key, nil
