@@ -1,3 +1,4 @@
+- fix: harden Bedrock tool results and weighted key selection edge cases [@hbmartin](https://github.com/hbmartin)
 - fix: forward OpenCode Responses requests directly to /v1/responses [@mohammadrezwankhan](https://github.com/mohammadrezwankhan)
 - fix: preserve max_tokens for OpenCode-compatible chat endpoints [@Alex-wangyang](https://github.com/Alex-wangyang)
 - fix: stop treating HuggingFace as a provider that omits the `[DONE]` marker - it does send one, and listing it as not sending one made the shared OpenAI streaming loop `break` on the first `finish_reason`, discarding the trailing usage-only chunk (`choices: []` plus top-level `usage`) that several router inference providers emit after it. Those streams completed with zero tokens and therefore zero cost, while non-streaming calls to the same models priced correctly [@elliottrabac](https://github.com/elliottrabac)
