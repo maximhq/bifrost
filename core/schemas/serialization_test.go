@@ -1235,6 +1235,24 @@ func TestNetworkConfig_BaseURLReferenceResolvesToNonURL(t *testing.T) {
 		"the resolved secret must never appear in serialized output")
 }
 
+// TestNetworkConfig_BaseURLReferenceResolvesToSchemeOnlyURL guards a gap a
+// prefix check alone would miss: a resolved value of exactly "https://" (or
+// "http://") starts with the right prefix but has no host at all, so it is
+// not a usable provider URL. Caught by CodeRabbit on the follow-up commit.
+// This must be treated the same as any other non-URL resolution -- left as
+// the unresolved reference, not accepted as BaseURL.
+func TestNetworkConfig_BaseURLReferenceResolvesToSchemeOnlyURL(t *testing.T) {
+	t.Setenv("TEST_BIFROST_BASE_URL_SCHEME_ONLY", "https://")
+
+	data := []byte(`{"base_url":"env.TEST_BIFROST_BASE_URL_SCHEME_ONLY"}`)
+
+	var decoded NetworkConfig
+	err := json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+	assert.Equal(t, "env.TEST_BIFROST_BASE_URL_SCHEME_ONLY", decoded.BaseURL,
+		"a scheme with no host is not a usable URL and must not be accepted")
+}
+
 // TestNetworkConfig_BaseURLNeverErrorsOnUnmarshal is a root-cause guard, not
 // a duplicate of the tests above: NetworkConfig.UnmarshalJSON also runs
 // inside TableProvider's GORM AfterFind hook (framework/configstore), where
@@ -1263,6 +1281,8 @@ func TestNetworkConfig_BaseURLNeverErrorsOnUnmarshal(t *testing.T) {
 		`{"base_url":"vault.some/path"}`,
 		`{"base_url":""}`,
 		`{"base_url":"not a url at all"}`,
+		`{"base_url":"https://"}`,
+		`{"base_url":"http://"}`,
 		`{}`,
 	}
 	for _, data := range cases {

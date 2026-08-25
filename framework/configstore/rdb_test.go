@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -688,7 +689,17 @@ func TestUpdateProvidersConfig_BrokenBaseURLReferenceDoesNotDropOtherProviders(t
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	// TEST_RDB_BROKEN_BASE_URL_REF is deliberately never set.
+	// TEST_RDB_BROKEN_BASE_URL_REF must be unset for this test. os.Setenv has
+	// no unset counterpart, so guarantee-unset-and-restore by hand: only
+	// touch/clean up the var if it actually had a prior value, same pattern
+	// as core/schemas/serialization_test.go's BaseURL tests.
+	if prev, ok := os.LookupEnv("TEST_RDB_BROKEN_BASE_URL_REF"); ok {
+		require.NoError(t, os.Unsetenv("TEST_RDB_BROKEN_BASE_URL_REF"))
+		t.Cleanup(func() {
+			require.NoError(t, os.Setenv("TEST_RDB_BROKEN_BASE_URL_REF", prev))
+		})
+	}
+
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys:          []schemas.Key{{ID: "key-1", Name: "openai-primary", Value: *schemas.NewSecretVar("sk-key-1"), Weight: 1.0}},
