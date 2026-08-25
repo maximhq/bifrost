@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -17,6 +19,10 @@ import (
 // through a batch prediction job (Vertex JSONL has no native custom_id field; the
 // request — labels included — is echoed back in each output line).
 const vertexBatchCustomIDLabel = "bifrost_custom_id"
+
+// vertexAnthropicBatchVersion is the anthropic_version required by Claude-on-Vertex
+// batch instances (same value the chat path injects via the Vertex build config).
+const vertexAnthropicBatchVersion = "vertex-2023-10-16"
 
 // vertexJobStateToBatchStatus maps Vertex JOB_STATE_* values to Bifrost batch statuses.
 func vertexJobStateToBatchStatus(state string) schemas.BatchStatus {
@@ -142,13 +148,19 @@ func parseVertexJobAPIError(body []byte, statusCode int, op string) *schemas.Bif
 // BatchPredictionJob request. The model, display name and input/output GCS config are
 // mapped explicitly; every other field is taken from extra_params (e.g. modelParameters,
 // labels, modelVersionId, encryptionSpec) and merged verbatim into the job body.
-func ToVertexBatchCreateRequest(request *schemas.BifrostBatchCreateRequest, displayName, inputURI, outputURI string) *VertexBatchCreateRequest {
+func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.BifrostBatchCreateRequest, displayName, inputURI, outputURI string) *VertexBatchCreateRequest {
 	model := ""
 	if request.Model != nil {
 		model = *request.Model
 	}
 	if model != "" && !strings.Contains(model, "/") {
-		model = "publishers/google/models/" + model
+		// Bare model names are resolved to a publisher path; Claude models live under the
+		// Anthropic publisher (publishers/anthropic/models/...), everything else under Google.
+		publisher := "google"
+		if schemas.IsAnthropicModelFamily(ctx, model) {
+			publisher = "anthropic"
+		}
+		model = "publishers/" + publisher + "/models/" + model
 	}
 
 	req := &VertexBatchCreateRequest{
@@ -168,11 +180,28 @@ func ToVertexBatchCreateRequest(request *schemas.BifrostBatchCreateRequest, disp
 	return req
 }
 
+// stripVertexPublisherModelPath reduces a publishers/{publisher}/models/{id} model path to its
+// bare id, reporting whether it matched. Any other shape — a bare name, or a fine-tuned
+// projects/{p}/locations/{l}/models/{id} resource path — is returned unchanged.
+func stripVertexPublisherModelPath(model string) (string, bool) {
+	parts := strings.Split(model, "/")
+	if len(parts) != 4 || parts[0] != "publishers" || parts[2] != "models" || parts[1] == "" || parts[3] == "" {
+		return model, false
+	}
+	return parts[3], true
+}
+
 // vertexConvertRequestsToJSONL converts inline batch request items to Vertex batch JSONL.
-// Each body is converted to Vertex's native GenerateContentRequest shape (the same converter
-// the Gemini provider uses), so OpenAI-style "messages" become "contents"; batchPredictionJobs
-// expects {"request": {contents...}}. Each custom_id is carried in the request labels.
-func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
+// The instance shape depends on the model family (batchPredictionJobs always wraps it under
+// "request"):
+//   - Gemini/Google: bodies are converted to the native GenerateContentRequest shape (OpenAI
+//     "messages" become "contents"), and each custom_id is carried in the request labels.
+//   - Anthropic/Claude: the instance is an Anthropic Messages body with a native top-level
+//     "custom_id"; OpenAI-style bodies are converted to Anthropic shape, Anthropic-native
+//     bodies pass through with "anthropic_version" ensured.
+func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schemas.BatchRequestItem, model string) ([]byte, error) {
+	isAnthropic := schemas.IsAnthropicModelFamily(ctx, model)
+
 	var buf bytes.Buffer
 	for i, item := range requests {
 		body := item.Body
@@ -181,6 +210,25 @@ func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, 
 		}
 		if body == nil {
 			return nil, fmt.Errorf("batch request item %d (custom_id %q) has no body", i, item.CustomID)
+		}
+
+		if isAnthropic {
+			requestBody, err := vertexAnthropicBatchInstance(ctx, body, model)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+			}
+			// Claude-on-Vertex batch has a native top-level custom_id, not Gemini labels.
+			lineObj := map[string]interface{}{"request": requestBody}
+			if item.CustomID != "" {
+				lineObj["custom_id"] = item.CustomID
+			}
+			line, err := providerUtils.MarshalSorted(lineObj)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+			}
+			buf.Write(line)
+			buf.WriteByte('\n')
+			continue
 		}
 
 		// OpenAI-style bodies (with "messages") are converted to Gemini's request shape; native
@@ -227,6 +275,129 @@ func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, 
 		buf.WriteByte('\n')
 	}
 	return buf.Bytes(), nil
+}
+
+// vertexAnthropicBatchInstance builds the per-line "request" body for a Claude-on-Vertex batch
+// instance. OpenAI-shaped bodies are converted to the Anthropic Messages shape via the shared
+// converters; bodies already in Anthropic shape pass through with the job-level model dropped
+// and anthropic_version ensured.
+func vertexAnthropicBatchInstance(ctx *schemas.BifrostContext, body map[string]interface{}, model string) (map[string]interface{}, error) {
+	if bodyLooksLikeOpenAIChat(body) {
+		reqBytes, err := sonic.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		var oaiReq openai.OpenAIChatRequest
+		if err := sonic.Unmarshal(reqBytes, &oaiReq); err != nil {
+			return nil, err
+		}
+		bifrostReq := oaiReq.ToBifrostChatRequest(ctx)
+		if bifrostReq == nil {
+			return nil, fmt.Errorf("could not parse OpenAI-style batch body")
+		}
+		if model != "" {
+			bifrostReq.Model = model
+		}
+		// The Vertex build config injects anthropic_version, strips the model field (model is at
+		// the job level), remaps tool versions and strips cache_control scope — same shaping the
+		// chat path uses for Claude-on-Vertex.
+		anthropicBytes, bErr := anthropic.BuildAnthropicChatRequestBody(ctx, bifrostReq, anthropic.AnthropicRequestBuildConfig{
+			Provider: schemas.Vertex,
+			Model:    model,
+		})
+		if bErr != nil {
+			msg := "anthropic request build failed"
+			if bErr.Error != nil && bErr.Error.Message != "" {
+				msg = bErr.Error.Message
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if len(anthropicBytes) == 0 {
+			// The builder short-circuits to a nil body under large-payload passthrough.
+			return nil, fmt.Errorf("anthropic request build produced an empty body")
+		}
+		out := map[string]interface{}{}
+		if err := sonic.Unmarshal(anthropicBytes, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+
+	// Already Anthropic-shaped: shallow-copy, drop the job-level model, ensure anthropic_version.
+	out := make(map[string]interface{}, len(body)+1)
+	for k, v := range body {
+		out[k] = v
+	}
+	delete(out, "model")
+	if _, ok := out["anthropic_version"]; !ok {
+		out["anthropic_version"] = vertexAnthropicBatchVersion
+	}
+	return out, nil
+}
+
+// bodyLooksLikeOpenAIChat reports whether a batch request body is an OpenAI chat-completions
+// body that must be converted to Anthropic Messages shape. OpenAI and Anthropic both key on
+// "messages", so detection relies on OpenAI-only markers; a plain messages+max_tokens body is
+// valid as-is for Anthropic and is left to pass through. Bodies already declaring
+// anthropic_version are treated as Anthropic-native.
+func bodyLooksLikeOpenAIChat(body map[string]interface{}) bool {
+	if _, ok := body["anthropic_version"]; ok {
+		return false
+	}
+	if _, ok := body["messages"].([]interface{}); !ok {
+		return false
+	}
+	// Top-level keys OpenAI has and the Anthropic Messages body does not. Fields both
+	// APIs share (stream, metadata, service_tier, max_tokens, temperature, top_p) are
+	// deliberately absent — they cannot discriminate.
+	for _, k := range []string{
+		"max_completion_tokens", "frequency_penalty", "presence_penalty", "logit_bias",
+		"response_format", "parallel_tool_calls", "logprobs", "top_logprobs", "n",
+		"stop", "seed", "user", "stream_options", "store", "modalities", "audio",
+		"prediction", "web_search_options", "reasoning_effort", "functions", "function_call",
+	} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	// OpenAI accepts a bare string tool_choice ("auto"/"none"/"required"); Anthropic's is always an object.
+	if _, ok := body["tool_choice"].(string); ok {
+		return true
+	}
+	// OpenAI tool wrapper: {"type": "function", "function": {...}} (Anthropic tools are flat).
+	if tools, ok := body["tools"].([]interface{}); ok {
+		for _, t := range tools {
+			if tm, ok := t.(map[string]interface{}); ok {
+				if tm["type"] == "function" || tm["function"] != nil {
+					return true
+				}
+			}
+		}
+	}
+	messages, _ := body["messages"].([]interface{})
+	for _, m := range messages {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// OpenAI carries system/developer prompts and tool results as message roles; Anthropic
+		// uses a top-level "system" field and tool_result content blocks.
+		switch mm["role"] {
+		case "system", "developer", "tool":
+			return true
+		}
+		if mm["tool_calls"] != nil {
+			return true
+		}
+		if parts, ok := mm["content"].([]interface{}); ok {
+			for _, p := range parts {
+				if pm, ok := p.(map[string]interface{}); ok && pm["type"] == "image_url" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ============================ Integration Converters ============================
@@ -294,8 +465,16 @@ func ToBifrostBatchCreateRequest(job *VertexBatchPredictionJob) *schemas.Bifrost
 	if job == nil {
 		return req
 	}
+	// The key allowlist, model catalog and batch pricing all key on the bare model id, so a
+	// publishers/{publisher}/models/{id} path is reduced here. The caller's exact path is kept
+	// in ExtraParams below so a rebuilt job body re-emits it instead of re-deriving a publisher.
+	qualifiedModel := ""
 	if job.Model != "" {
-		req.Model = schemas.Ptr(job.Model)
+		model := job.Model
+		if bare, isPublisherPath := stripVertexPublisherModelPath(model); isPublisherPath {
+			qualifiedModel, model = model, bare
+		}
+		req.Model = schemas.Ptr(model)
 	}
 	if job.InputConfig.GcsSource != nil && len(job.InputConfig.GcsSource.Uris) > 0 {
 		req.InputFileID = job.InputConfig.GcsSource.Uris[0]
@@ -316,6 +495,9 @@ func ToBifrostBatchCreateRequest(job *VertexBatchPredictionJob) *schemas.Bifrost
 	// merge cleanly into the outbound BatchPredictionJob body. Each is guarded so zero values
 	// are not forwarded (mirroring the native struct's omitempty tags).
 	extra := map[string]interface{}{}
+	if qualifiedModel != "" {
+		extra["model"] = qualifiedModel
+	}
 	if job.ModelVersionID != "" {
 		extra["modelVersionId"] = job.ModelVersionID
 	}

@@ -63,8 +63,13 @@ type TableBatchJob struct {
 
 	SelectedKeyID string  `gorm:"type:varchar(255)" json:"selected_key_id,omitempty"`
 	VirtualKeyID  *string `gorm:"type:varchar(255)" json:"virtual_key_id,omitempty"`
+	UserID        *string `gorm:"type:varchar(255);index" json:"user_id,omitempty"`
+	TeamID        *string `gorm:"type:varchar(255)" json:"team_id,omitempty"`
+	CustomerID    *string `gorm:"type:varchar(255)" json:"customer_id,omitempty"`
 	BudgetIDs     *string `gorm:"type:text" json:"-"`
 	RateLimitIDs  *string `gorm:"type:text" json:"-"`
+
+	SourceLogID *string `gorm:"type:varchar(255)" json:"source_log_id,omitempty"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`

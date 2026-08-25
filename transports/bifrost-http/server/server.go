@@ -1236,6 +1236,18 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		); err != nil {
 			logger.Warn("failed to sync MCP tool manager config during client config reload: %v", err)
 		}
+		// The global tool sync interval is client-config-backed too (minutes).
+		// Re-time the checkers of every client that follows it, and keep the
+		// in-memory MCPConfig aligned so a later reload carries the current
+		// value. This path also serves cluster peers reloading the client
+		// config, so one node's edit re-times every node.
+		syncInterval := time.Duration(s.Config.ClientConfig.MCPToolSyncInterval) * time.Minute
+		if s.Config.MCPConfig != nil {
+			s.Config.MCPConfig.ToolSyncInterval = syncInterval
+		}
+		if err := s.Client.UpdateMCPToolSyncInterval(syncInterval); err != nil {
+			logger.Warn("failed to sync MCP tool sync interval during client config reload: %v", err)
+		}
 	}
 	return nil
 }
@@ -2378,6 +2390,7 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 //   - GET /metrics: For Prometheus metrics
 func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	var err error
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRuntimeVersion, s.Version)
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
