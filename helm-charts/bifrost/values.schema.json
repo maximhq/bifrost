@@ -4702,6 +4702,18 @@
         "primary": {
           "type": "object",
           "properties": {
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the PostgreSQL pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the PostgreSQL pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the PostgreSQL pod assignment"
+            },
             "persistence": {
               "type": "object",
               "properties": {

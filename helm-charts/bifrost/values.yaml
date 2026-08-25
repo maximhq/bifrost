@@ -1650,6 +1650,14 @@ postgresql:
 
     containerSecurityContext: {}
 
+    # Scheduling controls for the PostgreSQL pod. Useful for pinning the
+    # database to dedicated or tainted nodes, away from other workloads.
+    nodeSelector: {}
+
+    tolerations: []
+
+    affinity: {}
+
   metrics:
     enabled: false
 
