@@ -136572,6 +136572,143 @@
           ]
         }
       ]
+    },
+    {
+      "name": "59. Anthropic compaction billing (compaction-billing)",
+      "description": "Regression for Anthropic context_management compaction billing: when usage.iterations contains a compaction pass, Bifrost must bill the sum of compaction + reply tokens (not reply-only top-level usage). Generates a large input in a pre-request script to cross the 50k compaction trigger, streams via native /v1/responses, and asserts terminal usage matches the iteration sum. Persistence is checked via x-bf-expect-cost + x-request-id.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 responses stream compaction-billing sums iterations - compaction-billing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var line = 'Discuss module REPNUM requirements, APIs, errors, retries, and edge cases in detail. ';",
+                  "var parts = [];",
+                  "for (var i = 0; i < 2500; i++) { parts.push(line.replace(\"REPNUM\", String(i))); }",
+                  "var content = parts.join(\"\");",
+                  "var body = {",
+                  "  model: \"anthropic/claude-sonnet-4-6\",",
+                  "  input: [{ type: \"message\", role: \"user\", content: content }],",
+                  "  max_output_tokens: 64,",
+                  "  stream: true,",
+                  "  context_management: {",
+                  "    edits: [{",
+                  "      type: \"compact_20260112\",",
+                  "      trigger: { type: \"input_tokens\", value: 50000 }",
+                  "    }]",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"compactionBillingRequestBody\", JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Anthropic compaction stream completes - compaction-billing', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.text() || \"\";",
+                  "pm.test('terminal response.completed present - compaction-billing', function () {",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected response.completed').to.include('response.completed');",
+                  "});",
+                  "function sumIterations(iterations) {",
+                  "  var uncached = 0, cacheRead = 0, cacheWrite = 0, output = 0;",
+                  "  for (var i = 0; i < iterations.length; i++) {",
+                  "    var it = iterations[i] || {};",
+                  "    var inDet = it.input_tokens_details || {};",
+                  "    uncached += Number(it.input_tokens || 0);",
+                  "    cacheRead += Number(inDet.cached_read_tokens || 0);",
+                  "    cacheWrite += Number(inDet.cached_write_tokens || 0);",
+                  "    output += Number(it.output_tokens || 0);",
+                  "  }",
+                  "  return { uncached: uncached, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output, inputTotal: uncached + cacheRead + cacheWrite };",
+                  "}",
+                  "var usage = null;",
+                  "body.split(\"\\n\").forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try {",
+                  "    var evt = JSON.parse(payload);",
+                  "    if (evt.type === 'response.completed' && evt.response && evt.response.usage) {",
+                  "      usage = evt.response.usage;",
+                  "    }",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('compaction usage present with iterations - compaction-billing', function () {",
+                  "  pm.expect(usage, 'missing terminal usage: ' + body.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(usage.iterations, 'expected usage.iterations when compaction beta is enabled').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (!usage || !usage.iterations || !usage.iterations.length) { return; }",
+                  "var hasCompaction = usage.iterations.some(function (it) { return it && it.type === \"compaction\"; });",
+                  "if (!hasCompaction) {",
+                  "  pm.test('compaction iteration fired on large input - compaction-billing', function () {",
+                  "    pm.expect.fail('compaction did not fire; increase filler or lower trigger for this live case');",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "var sums = sumIterations(usage.iterations);",
+                  "var topInDet = usage.input_tokens_details || {};",
+                  "var topCacheRead = Number(topInDet.cached_read_tokens || 0);",
+                  "var topCacheWrite = Number(topInDet.cached_write_tokens || 0);",
+                  "var topUncached = Number(usage.input_tokens || 0) - topCacheRead - topCacheWrite;",
+                  "pm.test('billed output matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(Number(usage.output_tokens || 0), \"top-level output_tokens\").to.equal(sums.output);",
+                  "});",
+                  "pm.test('billed uncached input matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topUncached, \"uncached input_tokens\").to.equal(sums.uncached);",
+                  "});",
+                  "pm.test('billed cache write matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topCacheWrite, \"cached_write_tokens\").to.equal(sums.cacheWrite);",
+                  "});",
+                  "pm.test('billed cache read matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topCacheRead, \"cached_read_tokens\").to.equal(sums.cacheRead);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "compaction-billing-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{compactionBillingRequestBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
