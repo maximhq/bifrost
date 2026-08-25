@@ -40,6 +40,12 @@ const NetworkConfigSchema = z
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.union([z.string(), secretVarSchema]).optional(),
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
+		stream_throughput_guard: z
+			.object({
+				minimum_output_characters_per_second: z.number().int().min(1).max(100000),
+				probe_window_in_seconds: z.number().int().min(1).max(60).optional(),
+			})
+			.optional(),
 		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),

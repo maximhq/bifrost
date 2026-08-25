@@ -94675,6 +94675,25 @@
             "type": "string",
             "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
           },
+          "stream_throughput_guard": {
+            "type": "object",
+            "description": "Optional pre-commit throughput probe for text streams. Disabled when omitted.",
+            "required": ["minimum_output_characters_per_second"],
+            "additionalProperties": false,
+            "properties": {
+              "minimum_output_characters_per_second": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              },
+              "probe_window_in_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+                "default": 5
+              }
+            }
+          },
           "allow_private_network": {
             "type": "boolean",
             "default": false,

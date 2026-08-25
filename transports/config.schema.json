@@ -3974,6 +3974,27 @@
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
+        "stream_throughput_guard": {
+          "type": "object",
+          "description": "Optional pre-commit throughput probe for text streams. Bifrost buffers initial output and retries or falls back if the provider stays below the configured output-character rate. Disabled when omitted.",
+          "properties": {
+            "minimum_output_characters_per_second": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000,
+              "description": "Minimum emitted text characters per second required before buffered output is committed to the consumer."
+            },
+            "probe_window_in_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60,
+              "default": 5,
+              "description": "Maximum probe window used to verify the configured character rate."
+            }
+          },
+          "required": ["minimum_output_characters_per_second"],
+          "additionalProperties": false
+        },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
@@ -4054,6 +4075,27 @@
           "minimum": 5,
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
+        },
+        "stream_throughput_guard": {
+          "type": "object",
+          "description": "Optional pre-commit throughput probe for text streams. Bifrost buffers initial output and retries or falls back if the provider stays below the configured output-character rate. Disabled when omitted.",
+          "properties": {
+            "minimum_output_characters_per_second": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000,
+              "description": "Minimum emitted text characters per second required before buffered output is committed to the consumer."
+            },
+            "probe_window_in_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60,
+              "default": 5,
+              "description": "Maximum probe window used to verify the configured character rate."
+            }
+          },
+          "required": ["minimum_output_characters_per_second"],
+          "additionalProperties": false
         },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",

@@ -44,7 +44,7 @@ func sseHandler(payloads ...string) http.HandlerFunc {
 
 // anthropicMessagesHandler serves a minimal valid Anthropic Messages API
 // stream that produces the text "hello".
-func anthropicMessagesHandler() http.HandlerFunc {
+func anthropicMessagesHandler(beforeFirstWrite func()) http.HandlerFunc {
 	events := []struct{ typ, data string }{
 		{"message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_tokens":1}}}`},
 		{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
@@ -56,7 +56,10 @@ func anthropicMessagesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
-		for _, e := range events {
+		for i, e := range events {
+			if i == 0 && beforeFirstWrite != nil {
+				beforeFirstWrite()
+			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.typ, e.data)
 			if fl != nil {
 				fl.Flush()
@@ -105,7 +108,7 @@ func TestStreamFallbackAfterFirstChunkError(t *testing.T) {
 	var fallbackHits atomic.Int32
 	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fallbackHits.Add(1)
-		anthropicMessagesHandler()(w, r)
+		anthropicMessagesHandler(nil)(w, r)
 	}))
 	defer fallback.Close()
 
@@ -190,5 +193,104 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 	}
 	if content != "hello" {
 		t.Fatalf("retried stream content = %q, want %q", content, "hello")
+	}
+}
+
+func TestStreamThroughputGuardFallsBackBeforePrimaryOutput(t *testing.T) {
+	primaryCanceled := make(chan struct{})
+	primaryExited := make(chan struct{})
+	var lifecycleOrder atomic.Int32
+	var primaryCanceledOrder atomic.Int32
+	var primaryExitedOrder atomic.Int32
+	var fallbackOutputOrder atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			primaryExitedOrder.Store(lifecycleOrder.Add(1))
+			close(primaryExited)
+		}()
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		flusher.Flush()
+		for i := 0; i < 30; i++ {
+			select {
+			case <-r.Context().Done():
+				primaryCanceledOrder.Store(lifecycleOrder.Add(1))
+				close(primaryCanceled)
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			fmt.Fprint(w, "data: {\"id\":\"slow\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n")
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer primary.Close()
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		anthropicMessagesHandler(func() {
+			fallbackOutputOrder.Store(lifecycleOrder.Add(1))
+		})(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.StreamThroughputGuard = &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 20,
+		ProbeWindowInSeconds:             1,
+	}
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("fallback stream failed: %s", bifrostErr.Error.Message)
+	}
+	content, errs := drainChatStream(stream)
+	if got := fallbackHits.Load(); got != 1 {
+		t.Fatalf("fallback server hits = %d, want 1", got)
+	}
+	if len(errs) > 0 {
+		t.Fatalf("fallback stream emitted error chunks: %v", errs)
+	}
+	if content != "hello" {
+		t.Fatalf("consumer-visible content = %q, want only fallback content %q", content, "hello")
+	}
+	select {
+	case <-primaryCanceled:
+	default:
+		t.Fatal("primary request was not canceled before fallback")
+	}
+	select {
+	case <-primaryExited:
+	default:
+		t.Fatal("primary stream handler did not exit before fallback completed")
+	}
+	fallbackOrder := fallbackOutputOrder.Load()
+	if canceledOrder := primaryCanceledOrder.Load(); canceledOrder >= fallbackOrder {
+		t.Fatalf("primary cancellation order = %d, fallback output order = %d; want cancellation before fallback output", canceledOrder, fallbackOrder)
+	}
+	if exitedOrder := primaryExitedOrder.Load(); exitedOrder >= fallbackOrder {
+		t.Fatalf("primary exit order = %d, fallback output order = %d; want primary exit before fallback output", exitedOrder, fallbackOrder)
 	}
 }

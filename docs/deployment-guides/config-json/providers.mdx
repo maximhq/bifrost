@@ -7,7 +7,12 @@ icon: "plug"
 All providers are configured under `providers` in `config.json`. Each provider entry contains a `keys` array where every key has a `name`, `value`, `models`, and `weight`, plus optional provider-specific config objects.
 
 <Note>
-In DB-backed deployments, provider entries from `config.json` are reconciled into the config store at startup. The default `source_of_truth: "split"` mode preserves UI/API edits while matching file-backed providers are unchanged. With `source_of_truth: "config.json"`, a present `providers` section is authoritative and prunes DB-only providers or keys. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+  In DB-backed deployments, provider entries from `config.json` are reconciled
+  into the config store at startup. The default `source_of_truth: "split"` mode
+  preserves UI/API edits while matching file-backed providers are unchanged.
+  With `source_of_truth: "config.json"`, a present `providers` section is
+  authoritative and prunes DB-only providers or keys. See [Source of Truth &
+  Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 **Supplying credentials:**
@@ -37,35 +42,36 @@ Use the `env.` prefix to reference environment variables - never put API keys di
 
 Every key object supports these fields:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Unique name for this key (used in logs and virtual key pin) |
-| `value` | string | API key value or `env.VAR_NAME` reference |
-| `models` | array | Models this key serves. `["*"]` = all models |
-| `weight` | float | Load balancing weight. Higher = more traffic |
-| `aliases` | object | Map logical name → actual model name for this key |
-| `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
+| Field               | Type    | Description                                                 |
+| ------------------- | ------- | ----------------------------------------------------------- |
+| `name`              | string  | Unique name for this key (used in logs and virtual key pin) |
+| `value`             | string  | API key value or `env.VAR_NAME` reference                   |
+| `models`            | array   | Models this key serves. `["*"]` = all models                |
+| `weight`            | float   | Load balancing weight. Higher = more traffic                |
+| `aliases`           | object  | Map logical name → actual model name for this key           |
+| `use_for_batch_api` | boolean | Mark key as eligible for batch API calls                    |
 
 Per-provider `network_config` options (applies to all standard providers):
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `default_request_timeout_in_seconds` | integer | Per-request timeout |
-| `max_retries` | integer | Retry attempts on transient errors |
-| `retry_backoff_initial` | integer | Initial backoff in milliseconds |
-| `retry_backoff_max` | integer | Maximum backoff in milliseconds |
-| `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
-| `extra_headers` | object | Static headers added to every provider request |
-| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 60) |
-| `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
-| `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
+| Field                                | Type    | Description                                                                             |
+| ------------------------------------ | ------- | --------------------------------------------------------------------------------------- |
+| `default_request_timeout_in_seconds` | integer | Per-request timeout                                                                     |
+| `max_retries`                        | integer | Retry attempts on transient errors                                                      |
+| `retry_backoff_initial`              | integer | Initial backoff in milliseconds                                                         |
+| `retry_backoff_max`                  | integer | Maximum backoff in milliseconds                                                         |
+| `max_conns_per_host`                 | integer | Max TCP connections to the provider endpoint (default: 5000)                            |
+| `extra_headers`                      | object  | Static headers added to every provider request                                          |
+| `stream_idle_timeout_in_seconds`     | integer | Idle timeout per stream chunk (default: 60)                                             |
+| `stream_throughput_guard`            | object  | Optional pre-commit minimum output-character rate for streamed text; omitted by default |
+| `insecure_skip_verify`               | boolean | Disable TLS verification (last resort only)                                             |
+| `ca_cert_pem`                        | string  | PEM-encoded CA for self-signed or private CA endpoints                                  |
 
 Concurrency and buffering per provider:
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field                                     | Type    | Description                              |
+| ----------------------------------------- | ------- | ---------------------------------------- |
 | `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
-| `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
+| `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth                      |
 
 ---
 
@@ -261,7 +267,11 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` - which 
 ```
 
 <Note>
-`aliases` values can also be objects, not just plain strings. The object form lets you tag each alias with a canonical `model_name` (improves pricing/log attribution when the wire ID is opaque), a `model_family` for routing, and per-alias provider overrides like `api_version` or `endpoint`. See [Aliasing Models](/providers/aliasing-models) for the full schema.
+  `aliases` values can also be objects, not just plain strings. The object form
+  lets you tag each alias with a canonical `model_name` (improves pricing/log
+  attribution when the wire ID is opaque), a `model_family` for routing, and
+  per-alias provider overrides like `api_version` or `endpoint`. See [Aliasing
+  Models](/providers/aliasing-models) for the full schema.
 </Note>
 
 **Multi-region failover** (two keys, different regions):
@@ -391,7 +401,7 @@ When only `region` is set, Bifrost inherits credentials from the AWS SDK default
   },
   "aliases": {
     "claude-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "claude-haiku":  "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    "claude-haiku": "us.anthropic.claude-3-5-haiku-20241022-v1:0"
   }
 }
 ```
@@ -623,25 +633,74 @@ These providers follow the same simple pattern - one or more keys with weights. 
       ]
     },
     "cohere": {
-      "keys": [{ "name": "cohere-main", "value": "env.COHERE_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "cohere-main",
+          "value": "env.COHERE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "perplexity": {
-      "keys": [{ "name": "perplexity-main", "value": "env.PERPLEXITY_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "perplexity-main",
+          "value": "env.PERPLEXITY_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "xai": {
-      "keys": [{ "name": "xai-main", "value": "env.XAI_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "xai-main",
+          "value": "env.XAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "cerebras": {
-      "keys": [{ "name": "cerebras-main", "value": "env.CEREBRAS_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "cerebras-main",
+          "value": "env.CEREBRAS_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "deepseek": {
-      "keys": [{ "name": "deepseek-main", "value": "env.DEEPSEEK_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "deepseek-main",
+          "value": "env.DEEPSEEK_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "openrouter": {
-      "keys": [{ "name": "openrouter-main", "value": "env.OPENROUTER_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "openrouter-main",
+          "value": "env.OPENROUTER_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     },
     "nebius": {
-      "keys": [{ "name": "nebius-main", "value": "env.NEBIUS_API_KEY", "models": ["*"], "weight": 1.0 }]
+      "keys": [
+        {
+          "name": "nebius-main",
+          "value": "env.NEBIUS_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
     }
   }
 }
@@ -807,7 +866,12 @@ Route provider traffic through an HTTP or SOCKS5 proxy:
   "providers": {
     "openai": {
       "keys": [
-        { "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }
+        {
+          "name": "primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
       ],
       "proxy_config": {
         "type": "http",
@@ -820,13 +884,13 @@ Route provider traffic through an HTTP or SOCKS5 proxy:
 }
 ```
 
-| Field | Type | Options |
-|-------|------|---------|
-| `proxy_config.type` | string | `"none"`, `"http"`, `"socks5"`, `"environment"` |
-| `proxy_config.url` | string | Proxy server URL |
-| `proxy_config.username` | string | Proxy auth username |
-| `proxy_config.password` | string | Proxy auth password (`env.` supported) |
-| `proxy_config.ca_cert_pem` | string | PEM CA for TLS-intercepting proxies |
+| Field                      | Type   | Options                                         |
+| -------------------------- | ------ | ----------------------------------------------- |
+| `proxy_config.type`        | string | `"none"`, `"http"`, `"socks5"`, `"environment"` |
+| `proxy_config.url`         | string | Proxy server URL                                |
+| `proxy_config.username`    | string | Proxy auth username                             |
+| `proxy_config.password`    | string | Proxy auth password (`env.` supported)          |
+| `proxy_config.ca_cert_pem` | string | PEM CA for TLS-intercepting proxies             |
 
 Use `"type": "environment"` to pick up `HTTP_PROXY` / `HTTPS_PROXY` env vars automatically.
 
@@ -840,17 +904,32 @@ Use `"type": "environment"` to pick up `HTTP_PROXY` / `HTTPS_PROXY` env vars aut
   "providers": {
     "openai": {
       "keys": [
-        { "name": "openai-primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 2.0 }
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 2.0
+        }
       ]
     },
     "anthropic": {
       "keys": [
-        { "name": "anthropic-primary", "value": "env.ANTHROPIC_API_KEY", "models": ["*"], "weight": 1.0 }
+        {
+          "name": "anthropic-primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
       ]
     },
     "groq": {
       "keys": [
-        { "name": "groq-primary", "value": "env.GROQ_API_KEY", "models": ["*"], "weight": 1.0 }
+        {
+          "name": "groq-primary",
+          "value": "env.GROQ_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
       ]
     }
   }

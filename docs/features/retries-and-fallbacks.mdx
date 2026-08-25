@@ -8,7 +8,7 @@ icon: "list-check"
 
 Bifrost provides two complementary layers of resilience:
 
-- **Retries** - When a provider returns a transient server error (network issue, 5xx) or a per-key failure (`429` rate-limit, `401`/`403` auth, `402` billing), Bifrost automatically retries the same request against the same provider. Transient-server retries reuse the same key with exponential backoff; per-key failures rotate to a different API key from your pool. Backoff is skipped only when rotating away from a *permanent* per-key failure (`401`/`402`/`403`) where waiting offers nothing — for `429` rotations a backoff is still applied to let account-level quota windows slide.
+- **Retries** - When a provider returns a transient server error (network issue, 5xx) or a per-key failure (`429` rate-limit, `401`/`403` auth, `402` billing), Bifrost automatically retries the same request against the same provider. Transient-server retries reuse the same key with exponential backoff; per-key failures rotate to a different API key from your pool. Backoff is skipped only when rotating away from a _permanent_ per-key failure (`401`/`402`/`403`) where waiting offers nothing — for `429` rotations a backoff is still applied to let account-level quota windows slide.
 - **Fallbacks** - When the primary provider fails after exhausting all retries, Bifrost moves on to the next provider in your fallback chain. Each fallback provider gets its own full retry budget.
 
 Together, they let you build LLM-powered applications that stay up through rate limits, transient outages, and even full provider failures - with no changes required in your application code.
@@ -23,8 +23,8 @@ When a request fails with a retryable error, Bifrost:
 
 1. Classifies the failure as either a **per-key failure** (the credential / account is the problem — status `401`/`402`/`403`/`429`) or a **transient server failure** (the upstream is the problem — `5xx` / network / DNS).
 2. On **per-key failures**, rotates to a different API key from the pool (if multiple keys are configured). Two sub-cases:
-    - **Permanent per-key failure** (`401`/`402`/`403`): mark the key dead for the remainder of the request and rotate immediately — **no backoff**, since waiting can't revive a bad credential.
-    - **Transient per-key failure** (`429` rate-limit): mark the key as used-this-cycle and rotate, but **still apply backoff** — providers often enforce account-level quotas shared across keys, so the new key may not have fresh capacity until the window slides.
+   - **Permanent per-key failure** (`401`/`402`/`403`): mark the key dead for the remainder of the request and rotate immediately — **no backoff**, since waiting can't revive a bad credential.
+   - **Transient per-key failure** (`429` rate-limit): mark the key as used-this-cycle and rotate, but **still apply backoff** — providers often enforce account-level quotas shared across keys, so the new key may not have fresh capacity until the window slides.
 3. On **transient server failures** (`5xx`, DNS, connection refused): reuse the same key and wait using **exponential backoff with jitter** before the next attempt.
 4. Continues until the request succeeds, `max_retries` is exhausted, or every key is permanently dead (in which case Bifrost returns `502 upstream_credentials_exhausted` rather than the raw `4xx`, to make it clear the caller's Bifrost API key is fine — the configured provider credentials are not).
 
@@ -38,26 +38,26 @@ backoff = min(retry_backoff_initial × 2^attempt, retry_backoff_max) × jitter(0
 
 With the defaults of `retry_backoff_initial = 500ms` and `retry_backoff_max = 5000ms`:
 
-| Attempt | Base backoff | With jitter (approx.) |
-|---------|-------------|----------------------|
-| 1st retry | 500 ms | 400–600 ms |
-| 2nd retry | 1000 ms | 800 ms–1.2 s |
-| 3rd retry | 2000 ms | 1.6–2.4 s |
-| 4th retry | 4000 ms | 3.2–4.8 s |
-| 5th+ retry | 5000 ms (capped) | 4–5 s |
+| Attempt    | Base backoff     | With jitter (approx.) |
+| ---------- | ---------------- | --------------------- |
+| 1st retry  | 500 ms           | 400–600 ms            |
+| 2nd retry  | 1000 ms          | 800 ms–1.2 s          |
+| 3rd retry  | 2000 ms          | 1.6–2.4 s             |
+| 4th retry  | 4000 ms          | 3.2–4.8 s             |
+| 5th+ retry | 5000 ms (capped) | 4–5 s                 |
 
 ### What triggers a retry
 
-| Condition | Retried? | Key rotation? | Backoff before next attempt? |
-|-----------|----------|---------------|-------------------------------|
-| Network error (DNS, connection refused) | Yes | No - same key reused | Yes |
-| `5xx` server errors (500, 502, 503, 504) | Yes | No - same key reused | Yes |
-| Rate limit (`429` or rate-limit message pattern) | Yes | Yes - rate-limited key may be retried later in the cycle | Yes - account-level quotas may be shared across keys |
-| Auth failure (`401`, `403`) | Yes | Yes - failing key marked **permanently dead** for this request | No - waiting can't revive a bad credential |
-| Billing failure (`402`) | Yes | Yes - failing key marked **permanently dead** for this request | No - waiting can't revive a bad credential |
-| Request validation error (`400`/`404`/`422`/...) | No | - | - |
-| Plugin-enforced block | No | - | - |
-| Cancelled request | No | - | - |
+| Condition                                        | Retried? | Key rotation?                                                  | Backoff before next attempt?                         |
+| ------------------------------------------------ | -------- | -------------------------------------------------------------- | ---------------------------------------------------- |
+| Network error (DNS, connection refused)          | Yes      | No - same key reused                                           | Yes                                                  |
+| `5xx` server errors (500, 502, 503, 504)         | Yes      | No - same key reused                                           | Yes                                                  |
+| Rate limit (`429` or rate-limit message pattern) | Yes      | Yes - rate-limited key may be retried later in the cycle       | Yes - account-level quotas may be shared across keys |
+| Auth failure (`401`, `403`)                      | Yes      | Yes - failing key marked **permanently dead** for this request | No - waiting can't revive a bad credential           |
+| Billing failure (`402`)                          | Yes      | Yes - failing key marked **permanently dead** for this request | No - waiting can't revive a bad credential           |
+| Request validation error (`400`/`404`/`422`/...) | No       | -                                                              | -                                                    |
+| Plugin-enforced block                            | No       | -                                                              | -                                                    |
+| Cancelled request                                | No       | -                                                              | -                                                    |
 
 ### Configuring retries
 
@@ -67,12 +67,16 @@ Retries are configured per-provider in `network_config`. The defaults are `max_r
 <Tab title="Web UI">
 
 <Frame>
-  <img src="/media/ui-retries-network-config.png" alt="Retries configuration in the Bifrost Web UI showing Max Retries, Retry Backoff Initial, and Retry Backoff Max fields under Network Config" />
+  <img
+    src="/media/ui-retries-network-config.png"
+    alt="Retries configuration in the Bifrost Web UI showing Max Retries, Retry Backoff Initial, and Retry Backoff Max fields under Network Config"
+  />
 </Frame>
 
 Navigate to **Providers**, select a provider, and open the **Network Config** section.
 
 Set:
+
 - **Max Retries** - number of additional attempts after the first failure (e.g. `3`)
 - **Retry Backoff Initial** - starting backoff in milliseconds (e.g. `500`)
 - **Retry Backoff Max** - maximum backoff cap in milliseconds (e.g. `5000`)
@@ -129,9 +133,24 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
   "providers": {
     "openai": {
       "keys": [
-        { "name": "openai-key-1", "value": "env.OPENAI_KEY_1", "models": ["*"], "weight": 1.0 },
-        { "name": "openai-key-2", "value": "env.OPENAI_KEY_2", "models": ["*"], "weight": 1.0 },
-        { "name": "openai-key-3", "value": "env.OPENAI_KEY_3", "models": ["*"], "weight": 1.0 }
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_KEY_1",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-key-2",
+          "value": "env.OPENAI_KEY_2",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-key-3",
+          "value": "env.OPENAI_KEY_3",
+          "models": ["*"],
+          "weight": 1.0
+        }
       ],
       "network_config": {
         "max_retries": 3,
@@ -143,19 +162,59 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_retries` | integer | `0` | Number of additional attempts after the first failure |
-| `retry_backoff_initial` | integer (ms) | `500` | Starting backoff duration in milliseconds |
-| `retry_backoff_max` | integer (ms) | `5000` | Maximum backoff cap in milliseconds |
+| Field                   | Type         | Default | Description                                           |
+| ----------------------- | ------------ | ------- | ----------------------------------------------------- |
+| `max_retries`           | integer      | `0`     | Number of additional attempts after the first failure |
+| `retry_backoff_initial` | integer (ms) | `500`   | Starting backoff duration in milliseconds             |
+| `retry_backoff_max`     | integer (ms) | `5000`  | Maximum backoff cap in milliseconds                   |
 
 </Tab>
 </Tabs>
 
+### Fallback on abnormally slow streams
+
+An upstream can keep a stream alive while producing text too slowly for an interactive or agent workload. `stream_idle_timeout_in_seconds` does not catch this condition because data is still arriving.
+
+Configure `stream_throughput_guard` on the primary provider to hold its initial text chunks behind a pre-commit probe:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "network_config": {
+        "stream_throughput_guard": {
+          "minimum_output_characters_per_second": 20,
+          "probe_window_in_seconds": 5
+        }
+      }
+    }
+  }
+}
+```
+
+`minimum_output_characters_per_second` is required and must be an integer from 1 to 100,000. `probe_window_in_seconds` is optional, defaults to 5 seconds, and must be an integer from 1 to 60. Unknown fields are rejected.
+
+The guard is disabled when omitted. It applies to streamed text completions, chat completions, and Responses API requests. Bifrost buffers lifecycle and text chunks until the provider emits enough output to pass the configured rate. Healthy streams commit early; if the probe expires first, Bifrost cancels only that provider attempt and uses the existing retry and fallback chain.
+
+The probe target is capped at 256 output characters, and buffered data is capped at 512 chunks or 1 MiB. Probe expiry produces the retryable `stream_throughput_below_minimum` error. Reaching a buffer cap before the rate can be verified produces the retryable `stream_throughput_probe_buffer_exceeded` error. Both paths use the configured retry and fallback chain without exposing the rejected attempt's buffered output.
+
+<Note>
+  The threshold is measured in Unicode output characters per second, not
+  provider-reported tokens per second. Live token counts are generally
+  unavailable until a stream's final usage event. Calibrate the threshold from
+  observed output for each provider and model.
+</Note>
+
+Because no primary chunk is sent before the probe commits, a fallback produces one coherent consumer-visible stream. After the probe commits, Bifrost never switches providers mid-stream: replaying from another provider would duplicate or contradict output the consumer already received. Short responses that finish before filling the sample are returned normally.
+
+The guard can add time to first token, and a rejected primary attempt may still be billed by the upstream before the fallback begins. Keep the probe window and retry budget aligned with your latency and cost limits.
+
 ### Key rotation on per-key failures
 
 <Note>
-Key rotation on retries requires **v1.5.0-prerelease4 or later**. Rotation on auth (401/403) and billing (402) errors (in addition to rate limits) requires the retry-logic-enhancements release.
+  Key rotation on retries requires **v1.5.0-prerelease4 or later**. Rotation on
+  auth (401/403) and billing (402) errors (in addition to rate limits) requires
+  the retry-logic-enhancements release.
 </Note>
 
 When you configure multiple API keys for a provider, Bifrost automatically rotates to a fresh key when the failure is bound to the credential rather than the request:
@@ -169,9 +228,24 @@ When you configure multiple API keys for a provider, Bifrost automatically rotat
   "providers": {
     "openai": {
       "keys": [
-        { "name": "openai-key-1", "value": "env.OPENAI_KEY_1", "models": ["*"], "weight": 1.0 },
-        { "name": "openai-key-2", "value": "env.OPENAI_KEY_2", "models": ["*"], "weight": 1.0 },
-        { "name": "openai-key-3", "value": "env.OPENAI_KEY_3", "models": ["*"], "weight": 1.0 }
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_KEY_1",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-key-2",
+          "value": "env.OPENAI_KEY_2",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-key-3",
+          "value": "env.OPENAI_KEY_3",
+          "models": ["*"],
+          "weight": 1.0
+        }
       ],
       "network_config": {
         "max_retries": 5
@@ -362,7 +436,9 @@ sequenceDiagram
 **Key point:** each provider in the chain - primary and every fallback - gets its own full `max_retries` budget. A primary configured with `max_retries: 3` and two fallbacks each also configured with `max_retries: 3` means up to 12 total attempts before giving up.
 
 <Info>
-The retry budget is set per-provider in `network_config`. If your fallback providers have different retry configurations, each will use their own settings.
+  The retry budget is set per-provider in `network_config`. If your fallback
+  providers have different retry configurations, each will use their own
+  settings.
 </Info>
 
 ---
@@ -373,21 +449,21 @@ Every retry transition and every fallback transition is recorded on the request'
 
 Entries core emits:
 
-| Phase | Level | Shape |
-|---|---|---|
-| Primary failed, entering fallback loop | Info | `Primary <p>/<m> failed (<type> HTTP <code>); evaluating N configured fallback(s)` |
-| Each fallback iteration | Info | `Trying fallback i/N: <p>/<m> (previous attempt failed: <type> HTTP <code>)` |
-| Fallback skipped (no provider config) | Warn | `Fallback <p>/<m> skipped: missing provider config` |
-| Fallback succeeded | Info | `Request served by fallback <p>/<m> (attempt i/N)` |
-| Fallback halted by short-circuit | Error | `Fallback <p>/<m> failed (<type> HTTP <code>); halting further fallbacks` |
-| All fallbacks exhausted | Error | `All N fallback(s) exhausted; returning primary error (<type> HTTP <code>)` |
-| Retry transition (rotated key) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; rotated key=<name>)` |
-| Retry transition (same key) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; same key=<name>)` |
-| Retry transition (keyless provider) | Info | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>)` |
-| Retries succeeded | Info | `Request to <p>/<m> succeeded after N retry attempt(s)` |
-| Retries exhausted | Error | `Retries exhausted for <p>/<m> after N attempt(s); last error: <type> HTTP <code>` |
+| Phase                                  | Level | Shape                                                                                     |
+| -------------------------------------- | ----- | ----------------------------------------------------------------------------------------- |
+| Primary failed, entering fallback loop | Info  | `Primary <p>/<m> failed (<type> HTTP <code>); evaluating N configured fallback(s)`        |
+| Each fallback iteration                | Info  | `Trying fallback i/N: <p>/<m> (previous attempt failed: <type> HTTP <code>)`              |
+| Fallback skipped (no provider config)  | Warn  | `Fallback <p>/<m> skipped: missing provider config`                                       |
+| Fallback succeeded                     | Info  | `Request served by fallback <p>/<m> (attempt i/N)`                                        |
+| Fallback halted by short-circuit       | Error | `Fallback <p>/<m> failed (<type> HTTP <code>); halting further fallbacks`                 |
+| All fallbacks exhausted                | Error | `All N fallback(s) exhausted; returning primary error (<type> HTTP <code>)`               |
+| Retry transition (rotated key)         | Info  | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; rotated key=<name>)` |
+| Retry transition (same key)            | Info  | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>; same key=<name>)`    |
+| Retry transition (keyless provider)    | Info  | `Retry n/N for <p>/<m> (previous attempt failed: <type> HTTP <code>)`                     |
+| Retries succeeded                      | Info  | `Request to <p>/<m> succeeded after N retry attempt(s)`                                   |
+| Retries exhausted                      | Error | `Retries exhausted for <p>/<m> after N attempt(s); last error: <type> HTTP <code>`        |
 
-The failure context attached to each entry is intentionally categorical — only the error type (e.g. `rate_limit_error`) and HTTP status code. The upstream provider message is *never* included, since providers can echo back API keys, tokens, or user input. The key identifier surfaced in retry rotation notes is the user-set key **name**, not the secret value.
+The failure context attached to each entry is intentionally categorical — only the error type (e.g. `rate_limit_error`) and HTTP status code. The upstream provider message is _never_ included, since providers can echo back API keys, tokens, or user input. The key identifier surfaced in retry rotation notes is the user-set key **name**, not the secret value.
 
 When core emits at least one entry on a request, it also adds itself to the request log's `routing_engines_used` field (deduped — `core` appears at most once per request even if both the retry and fallback orchestrators were involved).
 
@@ -413,7 +489,7 @@ Primary: a premium model for quality. Fallback: a cost-effective alternative. Go
 
 **Scenario 5: Revoked credential**
 
-OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff), which succeeds. Future requests will retry key 1 again — the dead-key set is per-request, not persistent. If every configured key was revoked, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
+OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff), which succeeds. Future requests will retry key 1 again — the dead-key set is per-request, not persistent. If every configured key was revoked, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the _caller's_ Bifrost API key is the problem).
 
 ---
 

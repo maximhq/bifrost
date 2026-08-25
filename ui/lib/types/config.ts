@@ -273,12 +273,18 @@ export interface NetworkConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
+	stream_throughput_guard?: StreamThroughputGuardConfig;
 	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
 	http2_ping_interval_in_seconds?: number;
 	beta_header_overrides?: Record<string, boolean>;
 	allow_private_network?: boolean;
+}
+
+export interface StreamThroughputGuardConfig {
+	minimum_output_characters_per_second: number;
+	probe_window_in_seconds?: number;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize
