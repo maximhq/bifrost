@@ -86,8 +86,8 @@ func TestMultiBlockSystemToChatRequest(t *testing.T) {
 	}
 }
 
-// One text block already collapsed to string content before the fix; multi-block user
-// messages must keep their content array (image/file parts depend on it).
+// One text block already collapsed to string content before the fix. Shape coverage
+// that does not involve the Anthropic ingress lives in core/schemas/systemflatten_test.go.
 func TestSystemFlattenShapes(t *testing.T) {
 	buildChat := func(t *testing.T, bodyJSON string) *schemas.BifrostChatRequest {
 		t.Helper()
@@ -114,61 +114,4 @@ func TestSystemFlattenShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("multi-block developer message flattens to string", func(t *testing.T) {
-		devRole := schemas.ResponsesInputMessageRoleDeveloper
-		chatMessages := schemas.ToChatMessages([]schemas.ResponsesMessage{
-			{
-				Role: &devRole,
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("dev block A")},
-						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("dev block B")},
-					},
-				},
-			},
-		})
-		if len(chatMessages) != 1 {
-			t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
-		}
-		dev := chatMessages[0]
-		if dev.Role != schemas.ChatMessageRoleDeveloper {
-			t.Fatalf("expected developer role, got %s", dev.Role)
-		}
-		if dev.Content == nil || dev.Content.ContentStr == nil {
-			t.Fatalf("expected multi-block developer message to flatten to string content, got: %+v", dev.Content)
-		}
-		if want := "dev block A\n\ndev block B"; *dev.Content.ContentStr != want {
-			t.Errorf("flattened developer prompt mismatch:\ngot:  %q\nwant: %q", *dev.Content.ContentStr, want)
-		}
-	})
-
-	t.Run("multi-block user message keeps content array", func(t *testing.T) {
-		// Flattening applies to system/developer roles only: user messages keep their
-		// content array through ToChatMessages (image/file parts depend on it).
-		userRole := schemas.ResponsesInputMessageRoleUser
-		chatMessages := schemas.ToChatMessages([]schemas.ResponsesMessage{
-			{
-				Role: &userRole,
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("part one")},
-						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("part two")},
-					},
-				},
-			},
-		})
-		if len(chatMessages) != 1 {
-			t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
-		}
-		user := chatMessages[0]
-		if user.Role != schemas.ChatMessageRoleUser {
-			t.Fatalf("expected user role, got %s", user.Role)
-		}
-		if user.Content == nil || user.Content.ContentBlocks == nil {
-			t.Fatalf("expected multi-block user message to keep content array, got: %+v", user.Content)
-		}
-		if len(user.Content.ContentBlocks) != 2 {
-			t.Fatalf("expected 2 user content blocks, got %d", len(user.Content.ContentBlocks))
-		}
-	})
 }

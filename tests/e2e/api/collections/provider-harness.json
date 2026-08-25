@@ -136765,6 +136765,82 @@
           ]
         }
       ]
+    },
+    {
+      "name": "59. Multi-Block System Flatten to Chat Providers (#6245 / PR #6367)",
+      "description": "Issue #6245: an Anthropic-format request with a multi-block top-level `system` field (what Claude Code sends) reaches chat-style providers via ToChatRequest/ToChatMessages. Before the fix the content-parts array survived the hop, and OpenAI-compatible upstreams (e.g. ollama) expand a parts array into one message per part, so a 3-block system message became [system, system, system] and was rejected with 'system message must be at the beginning'. The fix flattens multi-block all-text system/developer content to a single string on the Responses-to-Chat conversion. This case pins the wire shape through a real chat-fallback provider (deepseek routes Responses through ToChatRequest unless use_anthropic_endpoints is set): the outbound request must carry exactly one system message, at position 0, with plain string content joining all three blocks.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash multi-block system flattens to one string system message - #6245",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"You are a helpful assistant.\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"Answer concisely.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"Respond in English.\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek multi-block system: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek multi-block system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var msgs = rr.messages || [];",
+                  "var sys = msgs.filter(function (m) { return m.role === 'system'; });",
+                  "pm.test('deepseek multi-block system: exactly one system message on the wire', function () {",
+                  "  pm.expect(sys.length, 'messages: ' + JSON.stringify(msgs)).to.eql(1);",
+                  "});",
+                  "pm.test('deepseek multi-block system: system message is first', function () {",
+                  "  pm.expect(msgs.length, 'no messages in raw_request').to.be.above(0);",
+                  "  pm.expect(msgs[0].role, 'messages: ' + JSON.stringify(msgs)).to.eql('system');",
+                  "});",
+                  "if (sys.length === 0) { return; }",
+                  "pm.test('deepseek multi-block system: content flattened to a single string', function () {",
+                  "  pm.expect(typeof sys[0].content, 'system content: ' + JSON.stringify(sys[0].content)).to.eql('string');",
+                  "  pm.expect(sys[0].content).to.include('You are a helpful assistant.');",
+                  "  pm.expect(sys[0].content).to.include('Answer concisely.');",
+                  "  pm.expect(sys[0].content).to.include('Respond in English.');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

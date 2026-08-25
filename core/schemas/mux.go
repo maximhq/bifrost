@@ -715,8 +715,6 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 	return messages
 }
 
-// ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
-// This handles the aggregation of function_call messages back into assistant messages with tool calls
 // flattenSystemTextBlocks joins multi-block all-text system/developer content into a
 // single string prompt. Chat-style providers reached via this conversion (e.g. ollama's
 // OpenAI-compatible server) expand a content-parts array into one message per part,
@@ -728,16 +726,21 @@ func flattenSystemTextBlocks(role ChatMessageRole, blocks []ResponsesMessageCont
 	if len(blocks) < 2 {
 		return "", false
 	}
-	texts := make([]string, len(blocks))
-	for i, block := range blocks {
+	texts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
 		if (block.Type != ResponsesInputMessageContentBlockTypeText && block.Type != ResponsesOutputMessageContentTypeText) || block.Text == nil {
 			return "", false
 		}
-		texts[i] = *block.Text
+		if strings.TrimSpace(*block.Text) == "" {
+			continue
+		}
+		texts = append(texts, *block.Text)
 	}
 	return strings.Join(texts, "\n\n"), true
 }
 
+// ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
+// This handles the aggregation of function_call messages back into assistant messages with tool calls
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
