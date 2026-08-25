@@ -758,10 +758,6 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
-              "business_unit_id": {
-                "type": "string",
-                "description": "Associated business unit ID"
-              },
               "profile": {
                 "type": "object",
                 "description": "Team profile data"
@@ -792,7 +788,7 @@
         },
         "business_units": {
           "type": "array",
-          "description": "Business unit configurations with optional team assignments",
+          "description": "Business unit configurations with optional user assignments",
           "items": {
             "type": "object",
             "properties": {
@@ -824,9 +820,9 @@
                 "type": "object",
                 "description": "Business unit claims data"
               },
-              "team_ids": {
+              "user_ids": {
                 "type": "array",
-                "description": "Team IDs to assign to this business unit",
+                "description": "User IDs to assign to this business unit",
                 "items": {
                   "type": "string"
                 }
