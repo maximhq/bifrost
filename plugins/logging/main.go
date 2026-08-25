@@ -537,8 +537,15 @@ func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoi
 		AccountingStatus: tables.BatchJobAccountingStatusPending,
 		SelectedKeyID:    entry.SelectedKeyID,
 		VirtualKeyID:     entry.VirtualKeyID,
+		UserID:           entry.UserID,
+		TeamID:           entry.TeamID,
+		CustomerID:       entry.CustomerID,
 		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
 		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	if entry.ID != "" {
+		sourceLogID := entry.ID
+		job.SourceLogID = &sourceLogID
 	}
 	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
 		job.ID = tables.BatchJobID(job.Provider, job.BatchID)
@@ -2061,7 +2068,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	}
 	// Per-span self-time decomposition of overhead, attached to the same terminal
 	// row that receives the overhead number below.
-	overheadBreakdown := computeOverheadBreakdown(trace, overheadMs, ovOK, upstreamMs, upOK)
+	overheadBreakdown, measuredOverheadMs, isStreaming := computeOverheadBreakdown(trace, overheadMs, ovOK, upstreamMs, upOK)
 
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
@@ -2092,20 +2099,41 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 				entry.UpstreamLatency = nil
 				entry.OverheadLatency = nil
 			}
-			if upOK {
-				u := upstreamMs
-				entry.UpstreamLatency = &u
-			}
-			if ovOK {
-				o := overheadMs
-				entry.OverheadLatency = &o
-			}
-			// Latency = full-request wall-clock = upstream + overhead. Summing (not
-			// the raw span duration) keeps latency >= upstream when overhead clamps
-			// to zero, so the breakdown always adds up.
-			if upOK && ovOK {
+			if isStreaming && upOK && ovOK {
+				// Streaming: overhead is the measured Bifrost CPU (the breakdown buckets),
+				// not total-upstream. The remainder (total - upstream - measured) is the
+				// off-CPU relay/scheduler wait the request goroutine spends parked between
+				// provider chunks — not Bifrost work — so it is folded into upstream. This
+				// makes the overhead number reflect actual Bifrost cost while keeping
+				// latency = upstream + overhead and the breakdown buckets summing to overhead.
 				total := upstreamMs + overheadMs
+				measured := measuredOverheadMs
+				if measured > overheadMs {
+					measured = overheadMs // measurement skew: never exceed total-upstream
+				}
+				if measured < 0 {
+					measured = 0
+				}
+				up := total - measured
+				entry.UpstreamLatency = &up
+				entry.OverheadLatency = &measured
 				entry.Latency = &total
+			} else {
+				if upOK {
+					u := upstreamMs
+					entry.UpstreamLatency = &u
+				}
+				if ovOK {
+					o := overheadMs
+					entry.OverheadLatency = &o
+				}
+				// Latency = full-request wall-clock = upstream + overhead. Summing (not
+				// the raw span duration) keeps latency >= upstream when overhead clamps
+				// to zero, so the breakdown always adds up.
+				if upOK && ovOK {
+					total := upstreamMs + overheadMs
+					entry.Latency = &total
+				}
 			}
 			if len(overheadBreakdown) > 0 {
 				entry.OverheadBreakdownParsed = overheadBreakdown
@@ -2213,9 +2241,14 @@ func overheadBucketName(s *schemas.Span) string {
 // derived from overheadMs (which already excludes upstream), not from the root
 // span's self-time, so it never picks up streaming socket reads. Buckets are
 // returned with microsecond values, measured spans first (chronological) then core.
-func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstreamMs float64, upstreamOK bool) []logstore.OverheadBucket {
+// computeOverheadBreakdown returns the per-phase buckets, the measured Bifrost-CPU
+// total in ms (the sum of those buckets), and whether this was a streaming request.
+// For streams the caller uses measuredMs as the overhead (see Inject): total-upstream
+// over-counts stream overhead because it includes off-CPU relay/scheduler wait between
+// chunks, which is not Bifrost work.
+func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstreamMs float64, upstreamOK bool) ([]logstore.OverheadBucket, float64, bool) {
 	if trace == nil || len(trace.Spans) == 0 {
-		return nil
+		return nil, 0, false
 	}
 	// Sum direct-children time per parent, over ALL spans (upstream ones too), so
 	// excluded child spans are still removed from their parent's self-time. Only the
@@ -2331,10 +2364,25 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 	// an existing one — can never silently inflate "core"; it lands here instead, and its
 	// size tells us a provider needs finer spans. Summed across attempts: retries create
 	// one llm.call span each, and upstream latency likewise accumulates across them.
-	// Streaming is excluded implicitly: its llm.call span ends when the channel is handed
-	// off (before the stream drains), so its self-time is small and the difference falls
-	// below the threshold; stream phases are decomposed via the stream attributes above.
-	if upstreamOK {
+	//
+	// STREAMING IS EXCLUDED. For a streamed response the llm.call span is DEFERRED — it
+	// covers the entire stream (ended on the final chunk), not just setup — while upstream
+	// is only time-to-first-byte. So llm.call self - upstream would capture the whole
+	// per-chunk relay, which is instead decomposed by the stream phases above
+	// (response-parse / convertor / backpressure via the stream accumulator). Computing
+	// provider-internal there would double-count that work and mislabel it. Detect
+	// streaming by the presence of any stream-overhead attribute on the root span.
+	isStreaming := false
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		a := trace.RootSpan.Attributes
+		for _, k := range []string{schemas.AttrBifrostStreamParseMs, schemas.AttrBifrostStreamConvertMs, schemas.AttrBifrostStreamBackpressureMs} {
+			if _, ok := a[k]; ok {
+				isStreaming = true
+				break
+			}
+		}
+	}
+	if upstreamOK && !isStreaming {
 		var llmSelfNs int64
 		var firstLLM time.Time
 		for _, s := range trace.Spans {
@@ -2376,19 +2424,34 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 		return buckets[out[i].Name].first.Before(buckets[out[j].Name].first)
 	})
 
-	// Attribute whatever overhead is left over to Bifrost core. Skip when the
-	// measured spans already exceed the total (upstream over-counting): a negative
-	// core is a diagnostic signal, not a bucket, and is surfaced in the UI footer.
-	if overheadOK {
-		coreUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
-		if coreUs > 0.5 {
-			out = append(out, logstore.OverheadBucket{Name: "core", Kind: "core", DurationUs: coreUs})
+	measuredMs := float64(measuredNs) / float64(time.Millisecond)
+
+	// Unary requests: whatever overhead is left over after every instrumented phase is
+	// the residual between phases — goroutine-scheduling latency (the request hops across
+	// the HTTP, core-pipeline and provider-worker goroutines) plus any not-yet-spanned
+	// transport edge. Now that the code phases are instrumented, this is small and
+	// dominated by scheduling, so it is surfaced as "scheduling" rather than an opaque
+	// "core". Skip when measured spans already exceed the total (upstream over-counting):
+	// a negative value is a diagnostic signal, not a bucket, surfaced in the UI footer.
+	//
+	// STREAMING IS EXCLUDED. For a stream, total-upstream is NOT Bifrost overhead: it
+	// includes the off-CPU relay/scheduler wait the request goroutine spends parked
+	// between provider chunks (confirmed ~2% CPU under load). All actual Bifrost CPU is
+	// already measured in the buckets above (parse/convert accumulators, aggregated
+	// per-chunk plugin timing, transport marshal/write). Emitting a residual bucket there
+	// would resurrect the misleading "scheduling = 95% of overhead" figure. Instead the
+	// caller takes measuredMs as the stream's overhead and folds the off-CPU remainder
+	// into upstream, so latency = upstream + overhead still holds.
+	if overheadOK && !isStreaming {
+		schedulingUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
+		if schedulingUs > 0.5 {
+			out = append(out, logstore.OverheadBucket{Name: "scheduling", Kind: "scheduling", DurationUs: schedulingUs})
 		}
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, measuredMs, isStreaming
 	}
-	return out
+	return out, measuredMs, isStreaming
 }
 
 // traceAttrFloatMs reads a millisecond span attribute, tolerating int/int64/float64.

@@ -1521,7 +1521,91 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 		}
 	}
 
+	if usage.UserID != "" {
+		billingKey := fmt.Sprintf("%s:user-rate-limit:%s", usage.RequestID, usage.UserID)
+		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
+			if err := p.store.UpdateUserRateLimitUsageInMemory(ctx, usage.UserID, usage.TokensUsed, true, true); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	if usage.UserID != "" && usage.Cost > 0 {
+		billingKey := fmt.Sprintf("%s:user-budget:%s", usage.RequestID, usage.UserID)
+		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
+			if err := p.store.UpdateUserBudgetUsageInMemory(ctx, usage.UserID, usage.Cost); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	errs = append(errs, p.reportBatchModelUsage(ctx, usage)...)
+
 	return errors.Join(errs...)
+}
+
+// reportBatchModelUsage charges the budgets and rate limits that are scoped to one
+// specific model.
+//
+// They are missing from usage.BudgetIDs by construction: those ids were collected
+// while the request was in flight, and a batch create carries no top-level model
+// (each input-file row names its own), so only the all-models wildcards matched.
+// An access profile's per-model limits materialise as user-scoped configs naming
+// exactly one model and provider, which is why a model-level budget never moved for
+// a batch. Settlement does know the models, so each one is resolved and charged with
+// its own share here.
+//
+// Ids already charged above are subtracted rather than skipped by construction: the
+// wildcard tiers legitimately match both collections, and charging them twice would
+// bill the batch's whole cost a second time.
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
+	if len(usage.ModelUsage) == 0 {
+		return nil
+	}
+	alreadyCharged := make(map[string]bool, len(usage.BudgetIDs)+len(usage.RateLimitIDs))
+	for _, id := range usage.BudgetIDs {
+		alreadyCharged["budget:"+id] = true
+	}
+	for _, id := range usage.RateLimitIDs {
+		alreadyCharged["rate-limit:"+id] = true
+	}
+
+	var errs []error
+	for _, modelUsage := range usage.ModelUsage {
+		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+		if modelUsage.Cost > 0 {
+			for _, budgetID := range budgetIDs {
+				if alreadyCharged["budget:"+budgetID] {
+					continue
+				}
+				// Keyed per model: one budget reached by two models must take both shares.
+				billingKey := fmt.Sprintf("%s:model-budget:%s:%s", usage.RequestID, modelUsage.Model, budgetID)
+				if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+					continue
+				}
+				if err := p.store.BumpBudgetUsage(ctx, budgetID, modelUsage.Cost); err != nil {
+					p.tracker.releaseBatchBilling(billingKey)
+					errs = append(errs, err)
+				}
+			}
+		}
+		for _, rateLimitID := range rateLimitIDs {
+			if alreadyCharged["rate-limit:"+rateLimitID] {
+				continue
+			}
+			billingKey := fmt.Sprintf("%s:model-rate-limit:%s:%s", usage.RequestID, modelUsage.Model, rateLimitID)
+			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+				continue
+			}
+			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, true); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
 }
 
 // GenerateVirtualKey is a helper function

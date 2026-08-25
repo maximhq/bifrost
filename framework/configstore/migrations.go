@@ -474,6 +474,55 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_input_cost_per_query_column"}, run: migrationAddInputCostPerQueryColumn},
 	{IDs: []string{"add_ultrafast_pricing_columns"}, run: migrationAddUltrafastPricingColumns},
 	{IDs: []string{"add_image_size_quality_pricing_columns"}, run: migrationAddImageSizeQualityPricingColumns},
+	{IDs: []string{"add_batch_jobs_attribution_columns"}, run: migrationAddBatchJobsAttributionColumns},
+}
+
+// migrationAddBatchJobsAttributionColumns adds the requester-identity columns to
+// batch_jobs. Before these, a settled batch could only be attributed to its virtual
+// key — which an access profile shares across users — and the sweeper, having no
+// request context at all, wrote its cost row with no user, team, or customer.
+func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_batch_jobs_attribution_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"user_id", "team_id", "customer_id", "source_log_id"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, column := range columns {
+				if mig.HasColumn(&tables.TableBatchJob{}, column) {
+					continue
+				}
+				if err := mig.AddColumn(&tables.TableBatchJob{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column to batch_jobs: %w", column, err)
+				}
+			}
+			// Backs per-user cost lookups over in-flight and settled batches.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_batch_jobs_user_id ON batch_jobs (user_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if err := tx.Exec("DROP INDEX IF EXISTS idx_batch_jobs_user_id").Error; err != nil {
+				return fmt.Errorf("failed to drop index idx_batch_jobs_user_id: %w", err)
+			}
+			for _, column := range columns {
+				if !mig.HasColumn(&tables.TableBatchJob{}, column) {
+					continue
+				}
+				if err := mig.DropColumn(&tables.TableBatchJob{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column from batch_jobs: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
