@@ -335,50 +335,50 @@ bifrost:
   # Use direct values or env.VAR_NAME syntax (required when keys come from providerSecrets).
   # See https://getbifrost.ai/schema for the full provider schema.
   providers: {}
-    # openai:
-    #   keys:
-    #     - name: "primary-key"         # Key name (required, must be unique)
-    #       value: "sk-..."             # Direct value
-    #       weight: 1
-    #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
-    #       use_for_batch_api: false     # Whether this key can be used for batch API
-    #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
-    #                                         # and responses through Anthropic-compatible endpoints (also
-    #                                         # settable per-alias alongside use_deployments_endpoint)
-    #     - name: "secondary-key"
-    #       value: "env.OPENAI_KEY"     # Reference to environment variable
-    #       weight: 1
-    #   # Network configuration (optional, per-provider)
-    #   network_config:
-    #     base_url: ""                                  # Custom base URL (required for Ollama)
-    #     extra_headers: {}                             # Additional headers to send with requests
-    #     default_request_timeout_in_seconds: 300       # Request timeout
-    #     max_retries: 3                                # Maximum number of retries
-    #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
-    #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
-    #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
-    #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
-    #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
-    #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
-    #     http2_ping_interval_in_seconds: 0              # Idle seconds before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2). Max 3600.
-    #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
-    #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
-    #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
-    #     beta_header_overrides:                         # Override Anthropic beta header support (optional)
-    #       redact-thinking-: true                       # Enable/disable specific beta headers by prefix
-    #   # Concurrency configuration (optional)
-    #   concurrency_and_buffer_size:
-    #     concurrency: 100                              # Number of concurrent requests
-    #     buffer_size: 200                              # Buffer size for requests
-    #   # Proxy configuration (optional)
-    #   proxy_config:
-    #     type: "none"                  # Options: none, http, socks5, environment
-    #     url: ""
-    #     username: ""
-    #     password: ""
-    #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
-    #   send_back_raw_response: false   # Include raw response in BifrostResponse
-  #   store_raw_request_response: false # Capture raw payloads for plugins only; not returned to client
+  # openai:
+  #   keys:
+  #     - name: "primary-key"         # Key name (required, must be unique)
+  #       value: "sk-..."             # Direct value
+  #       weight: 1
+  #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
+  #       use_for_batch_api: false    # Whether this key can be used for batch API
+  #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
+  #                                         # and responses through Anthropic-compatible endpoints (also
+  #                                         # settable per-alias alongside use_deployments_endpoint)
+  #     - name: "secondary-key"
+  #       value: "env.OPENAI_KEY"     # Reference to environment variable
+  #       weight: 1
+  #   # Network configuration (optional, per-provider)
+  #   network_config:
+  #     base_url: ""                                  # Custom base URL (required for Ollama)
+  #     extra_headers: {}                             # Additional headers to send with requests
+  #     default_request_timeout_in_seconds: 300       # Request timeout
+  #     max_retries: 3                                # Maximum number of retries
+  #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
+  #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
+  #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
+  #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
+  #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
+  #     enforce_http2: false                          # Force HTTP/2 on provider connections (e.g. Bedrock)
+  #     http2_ping_interval_in_seconds: 0             # Idle seconds before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2). Max 3600.
+  #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
+  #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
+  #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
+  #     beta_header_overrides:                        # Override Anthropic beta header support (optional)
+  #       redact-thinking-: true                      # Enable/disable specific beta headers by prefix
+  #   # Concurrency configuration (optional)
+  #   concurrency_and_buffer_size:
+  #     concurrency: 100                              # Number of concurrent requests
+  #     buffer_size: 200                              # Buffer size for requests
+  #   # Proxy configuration (optional)
+  #   proxy_config:
+  #     type: "none"                  # Options: none, http, socks5, environment
+  #     url: ""
+  #     username: ""
+  #     password: ""
+  #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
+  #   send_back_raw_response: false      # Include raw response in BifrostResponse
+  #   store_raw_request_response: false  # Capture raw payloads for plugins only; not returned to client
   #
   # anthropic:
   #   keys:
@@ -392,11 +392,11 @@ bifrost:
   #     - name: "azure-key"
   #       value: "..."
   #       weight: 1
+  #       models: ["gpt-4o"]           # The model name is used as the Azure deployment name
+  #       aliases:                     # Map a model name to a different deployment name (only when they differ).
+  #         gpt-4o: "my-gpt4o-deployment"
   #       azure_key_config:
   #         endpoint: "https://your-resource.openai.azure.com"
-  #         api_version: "2024-02-15-preview"
-  #         deployments:
-  #           gpt-4o: "my-gpt4o-deployment"
   #
   # # Google Vertex AI example (requires vertex_key_config)
   # vertex:
