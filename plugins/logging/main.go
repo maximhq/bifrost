@@ -450,6 +450,7 @@ func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBa
 			accounting := &schemas.BatchAccountingDebug{
 				ModelBreakdowns: summary.ModelBreakdowns,
 				Incomplete:      !summary.Complete,
+				Echo:            true,
 			}
 			if summary.Complete {
 				cost := summary.Cost
