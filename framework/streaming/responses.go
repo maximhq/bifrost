@@ -1026,6 +1026,9 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
+		if streamChunk.BillingAttemptStartedAt != nil {
+			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+		}
 	}
 
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
@@ -1095,6 +1098,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
+		}
+		if result.ResponsesStreamResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.ResponsesStreamResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {

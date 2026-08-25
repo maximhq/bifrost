@@ -473,6 +473,9 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
+		if streamChunk.BillingAttemptStartedAt != nil {
+			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+		}
 	}
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
 	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
@@ -591,6 +594,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		}
 		if result.ChatResponse.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
+		}
+		if result.ChatResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.ChatResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {

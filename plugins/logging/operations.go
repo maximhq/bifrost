@@ -423,6 +423,9 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	if streamResponse.Data.ServiceTier != nil {
 		entry.ServiceTier = new(string(*streamResponse.Data.ServiceTier))
 	}
+	if streamResponse.Data.BillingAttemptStartedAt != nil {
+		entry.BillingAttemptStartedAt = cloneTime(streamResponse.Data.BillingAttemptStartedAt)
+	}
 	// Speed/InferenceGeo come off the usage struct (the provider sets them there for
 	// exactly this reason). ServiceTier is accumulated separately from the streamed
 	// response envelope above.
@@ -629,6 +632,9 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		entry.TotalTokens = usage.TotalTokens
 	}
 	applyServedTierToEntry(entry, result, usage)
+	if result.GetExtraFields().BillingAttemptStartedAt != nil {
+		entry.BillingAttemptStartedAt = cloneTime(result.GetExtraFields().BillingAttemptStartedAt)
+	}
 
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
@@ -2095,12 +2101,13 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	extraFields := schemas.BifrostResponseExtraFields{
-		RequestType:            requestType,
-		Provider:               schemas.ModelProvider(logEntry.Provider),
-		OriginalModelRequested: originalModelRequested,
-		ResolvedModelUsed:      logEntry.Model,
-		CacheDebug:             cacheDebug,
-		GuardrailDebug:         guardrailDebug,
+		RequestType:             requestType,
+		BillingAttemptStartedAt: cloneTime(logEntry.BillingAttemptStartedAt),
+		Provider:                schemas.ModelProvider(logEntry.Provider),
+		OriginalModelRequested:  originalModelRequested,
+		ResolvedModelUsed:       logEntry.Model,
+		CacheDebug:              cacheDebug,
+		GuardrailDebug:          guardrailDebug,
 		RoutingInfo: schemas.RoutingInfo{
 			Provider: schemas.ModelProvider(logEntry.Provider),
 			Model:    originalModelRequested,

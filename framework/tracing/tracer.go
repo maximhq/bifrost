@@ -785,6 +785,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		// response envelope, so it has to be copied across explicitly or the tier the
 		// accumulator resolved across chunks is lost and the row reprices at standard
 		// rates.
+		accResult.BillingAttemptStartedAt = processedResp.Data.BillingAttemptStartedAt
 		accResult.ServiceTier = processedResp.Data.ServiceTier
 		accResult.Cost = processedResp.Data.Cost
 		accResult.CacheDebug = processedResp.Data.CacheDebug

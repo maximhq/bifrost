@@ -5187,6 +5187,23 @@ func populateLatencyExtraFields(ctx *schemas.BifrostContext, resp *schemas.Bifro
 	if start, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
 		resp.PopulateOverheadLatency(ctx, time.Since(start))
 	}
+	if start, ok := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
+		startCopy := start
+		resp.GetExtraFields().BillingAttemptStartedAt = &startCopy
+	}
+}
+
+// populateBillingAttemptExtraFields stamps the current attempt's start time on
+// errors carrying billed usage. It is separate from response latency population
+// because errors may be produced before a BifrostResponse exists.
+func populateBillingAttemptExtraFields(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if bifrostErr == nil {
+		return
+	}
+	if start, ok := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
+		startCopy := start
+		bifrostErr.ExtraFields.BillingAttemptStartedAt = &startCopy
+	}
 }
 
 // handleRequest handles the request to the provider based on the request type
@@ -5701,6 +5718,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		if ph := bifrost.startCoreSpan(msg.Context, "pipeline-post"); ph.h != nil {
 			defer bifrost.endCoreSpan(ph)
 		}
+		populateBillingAttemptExtraFields(msg.Context, bifrostErrPtr)
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -6022,6 +6040,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Marking final chunk
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
+		populateBillingAttemptExtraFields(ctx, &bifrostErrVal)
 		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
 		if recoveredErr != nil {
 			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -6307,6 +6326,11 @@ func executeRequestWithRetries[T any](
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
+		// Record the provider attempt's start before dispatch. Retry and fallback
+		// attempts overwrite this value, so time-based pricing always uses the
+		// attempt that actually produced the billed usage, never completion time.
+		attemptStartedAt := time.Now()
+		ctx.SetValue(schemas.BifrostContextKeyBillingAttemptStartTime, attemptStartedAt)
 
 		// Start span for LLM call (or retry attempt)
 		tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
@@ -7111,6 +7135,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// a concurrent request can then reuse it and overwrite RequestType.
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
+				// Snapshot the attempt start for the same reason: this post-hook runs
+				// asynchronously, and a retry/fallback may already have overwritten the
+				// shared context with a later attempt's timestamp.
+				attemptBillingStartedAt, _ := req.Context.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time)
 				pipeline := bifrost.getPluginPipeline()
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
@@ -7119,10 +7147,18 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// reference would let a later retry's alias bleed into this attempt's chunks.
 					if result != nil {
 						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						if !attemptBillingStartedAt.IsZero() {
+							startedAt := attemptBillingStartedAt
+							result.GetExtraFields().BillingAttemptStartedAt = &startedAt
+						}
 						result.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						if !attemptBillingStartedAt.IsZero() {
+							startedAt := attemptBillingStartedAt
+							err.ExtraFields.BillingAttemptStartedAt = &startedAt
+						}
 						err.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
@@ -7130,12 +7166,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						drainAndAttachPluginLogs(ctx)
 					}
 					if bifrostErr != nil {
+						if !attemptBillingStartedAt.IsZero() {
+							startedAt := attemptBillingStartedAt
+							bifrostErr.ExtraFields.BillingAttemptStartedAt = &startedAt
+						}
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
 						return nil, bifrostErr
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
+						if !attemptBillingStartedAt.IsZero() {
+							startedAt := attemptBillingStartedAt
+							resp.GetExtraFields().BillingAttemptStartedAt = &startedAt
+						}
 					}
 					return resp, nil
 				}
@@ -7201,6 +7245,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if bifrostError != nil {
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
+			if start, ok := req.Context.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
+				startCopy := start
+				bifrostError.ExtraFields.BillingAttemptStartedAt = &startCopy
+			}
 
 			// Send error with context awareness to prevent deadlock
 			deliveryTimer.Reset(5 * time.Second)
@@ -7223,6 +7271,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 				result.PopulateRoutingInfo(attemptRoutingInfo)
+				if start, ok := req.Context.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
+					startCopy := start
+					result.GetExtraFields().BillingAttemptStartedAt = &startCopy
+				}
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock

@@ -221,6 +221,15 @@ func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.resolveContentPolicy(ctx).storeContent
 }
 
+// cloneTime returns an owned copy of a timestamp before storing it on a log entry.
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
 // applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context.
 func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
 	if ctx == nil || entry == nil {
@@ -251,7 +260,14 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 // when stream accumulation didn't already capture it, but cost is (re)computed
 // whenever it is still missing - independent of whether tokens were already
 // parsed, since a streaming error can populate usage without a cost.
-func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostContext, entry *logstore.Log, billed *schemas.BifrostLLMUsage, requestType schemas.RequestType) {
+func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostContext, entry *logstore.Log, bifrostErr *schemas.BifrostError, requestType schemas.RequestType) {
+	billed := (*schemas.BifrostLLMUsage)(nil)
+	if bifrostErr != nil {
+		billed = bifrostErr.ExtraFields.BilledUsage
+		if bifrostErr.ExtraFields.BillingAttemptStartedAt != nil {
+			entry.BillingAttemptStartedAt = cloneTime(bifrostErr.ExtraFields.BillingAttemptStartedAt)
+		}
+	}
 	if billed == nil {
 		return
 	}
@@ -1711,7 +1727,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// processed tokens (carried on BilledUsage). Record cost + tokens so the
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
-		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr, requestType)
 		p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
@@ -1768,7 +1784,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			// A stream error can arrive with a response chunk, bypassing Path A.
 			// Preserve provider-billed usage and the sidecar calls in that case.
-			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr, requestType)
 			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have

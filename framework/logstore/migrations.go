@@ -294,6 +294,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
+	{IDs: []string{"logs_add_billing_attempt_start_time_column"}, run: migrationAddBillingAttemptStartTimeColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -693,6 +694,33 @@ func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding overhead_breakdown column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBillingAttemptStartTimeColumn adds the attempt-start timestamp used by
+// time-based pricing. It is separate from log Timestamp/CreatedAt: both describe log
+// creation after the provider attempt completed, while schedule evaluation must remain
+// deterministic for retries, fallbacks, and historical recomputation.
+func migrationAddBillingAttemptStartTimeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_billing_attempt_start_time_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &Log{}, "billing_attempt_started_at")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &Log{}, "billing_attempt_started_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding billing_attempt_started_at column: %s", err.Error())
 	}
 	return nil
 }

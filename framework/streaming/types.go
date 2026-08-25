@@ -22,30 +22,31 @@ const (
 
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
-	RequestID             string
-	Model                 string
-	Status                string
-	Stream                bool
-	Latency               int64 // in milliseconds
-	TimeToFirstToken      int64 // Time to first token in milliseconds (streaming only)
-	StartTimestamp        time.Time
-	EndTimestamp          time.Time
-	OutputMessage         *schemas.ChatMessage
-	OutputMessages        []schemas.ResponsesMessage // For responses API
-	ToolCalls             []schemas.ChatAssistantMessageToolCall
-	ErrorDetails          *schemas.BifrostError
-	TokenUsage            *schemas.BifrostLLMUsage
-	ServiceTier           *schemas.BifrostServiceTier
-	CacheDebug            *schemas.BifrostCacheDebug
-	GuardrailDebug        *schemas.BifrostGuardrailDebug
-	Cost                  *float64
-	AudioOutput           *schemas.BifrostSpeechResponse
-	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
-	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
-	PassthroughOutput     *schemas.BifrostPassthroughResponse // For passthrough streaming
-	FinishReason          *string
-	LogProbs              *schemas.BifrostLogProbs
-	RawResponse           *string
+	RequestID               string
+	Model                   string
+	Status                  string
+	Stream                  bool
+	Latency                 int64 // in milliseconds
+	TimeToFirstToken        int64 // Time to first token in milliseconds (streaming only)
+	StartTimestamp          time.Time
+	EndTimestamp            time.Time
+	OutputMessage           *schemas.ChatMessage
+	OutputMessages          []schemas.ResponsesMessage // For responses API
+	ToolCalls               []schemas.ChatAssistantMessageToolCall
+	ErrorDetails            *schemas.BifrostError
+	TokenUsage              *schemas.BifrostLLMUsage
+	BillingAttemptStartedAt *time.Time
+	ServiceTier             *schemas.BifrostServiceTier
+	CacheDebug              *schemas.BifrostCacheDebug
+	GuardrailDebug          *schemas.BifrostGuardrailDebug
+	Cost                    *float64
+	AudioOutput             *schemas.BifrostSpeechResponse
+	TranscriptionOutput     *schemas.BifrostTranscriptionResponse
+	ImageGenerationOutput   *schemas.BifrostImageGenerationResponse
+	PassthroughOutput       *schemas.BifrostPassthroughResponse // For passthrough streaming
+	FinishReason            *string
+	LogProbs                *schemas.BifrostLogProbs
+	RawResponse             *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -76,33 +77,35 @@ type TranscriptionStreamChunk struct {
 
 // ChatStreamChunk represents a single streaming chunk
 type ChatStreamChunk struct {
-	Timestamp          time.Time                              // When chunk was received
-	Delta              *schemas.ChatStreamResponseChoiceDelta // The actual delta content
-	FinishReason       *string                                // If this is the final chunk
-	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
-	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
-	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
-	GuardrailDebug     *schemas.BifrostGuardrailDebug         // Guardrail debug if available
-	Cost               *float64                               // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError                  // Error if any
-	ChunkIndex         int                                    // Index of the chunk in the stream
-	RawResponse        *string                                // Raw response if available
+	Timestamp               time.Time                              // When chunk was received
+	Delta                   *schemas.ChatStreamResponseChoiceDelta // The actual delta content
+	FinishReason            *string                                // If this is the final chunk
+	LogProbs                *schemas.BifrostLogProbs               // LogProbs if available
+	TokenUsage              *schemas.BifrostLLMUsage               // Token usage if available
+	BillingAttemptStartedAt *time.Time                             // Attempt start for time-based pricing
+	ServiceTier             *schemas.BifrostServiceTier            // Served OpenAI tier if available
+	SemanticCacheDebug      *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	GuardrailDebug          *schemas.BifrostGuardrailDebug         // Guardrail debug if available
+	Cost                    *float64                               // Cost in dollars from pricing plugin
+	ErrorDetails            *schemas.BifrostError                  // Error if any
+	ChunkIndex              int                                    // Index of the chunk in the stream
+	RawResponse             *string                                // Raw response if available
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
 type ResponsesStreamChunk struct {
-	Timestamp          time.Time                               // When chunk was received
-	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
-	FinishReason       *string                                 // If this is the final chunk
-	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
-	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
-	GuardrailDebug     *schemas.BifrostGuardrailDebug          // Guardrail debug if available
-	Cost               *float64                                // Cost in dollars from pricing plugin
-	ErrorDetails       *schemas.BifrostError                   // Error if any
-	ChunkIndex         int                                     // Index of the chunk in the stream
-	RawResponse        *string
+	Timestamp               time.Time                               // When chunk was received
+	StreamResponse          *schemas.BifrostResponsesStreamResponse // The actual stream response
+	FinishReason            *string                                 // If this is the final chunk
+	TokenUsage              *schemas.BifrostLLMUsage                // Token usage if available
+	BillingAttemptStartedAt *time.Time                              // Attempt start for time-based pricing
+	ServiceTier             *schemas.BifrostServiceTier             // Served OpenAI tier if available
+	SemanticCacheDebug      *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	GuardrailDebug          *schemas.BifrostGuardrailDebug          // Guardrail debug if available
+	Cost                    *float64                                // Cost in dollars from pricing plugin
+	ErrorDetails            *schemas.BifrostError                   // Error if any
+	ChunkIndex              int                                     // Index of the chunk in the stream
+	RawResponse             *string
 }
 
 // ImageStreamChunk represents a single image streaming chunk
@@ -349,11 +352,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 
 		resp.TextCompletionResponse = textResp
 		resp.TextCompletionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.TextCompletionRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.TextCompletionRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			resp.TextCompletionResponse.ExtraFields.RawRequest = p.RawRequest
@@ -404,11 +408,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 
 		resp.ChatResponse = chatResp
 		resp.ChatResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.ChatCompletionRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.ChatCompletionRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			resp.ChatResponse.ExtraFields.RawRequest = p.RawRequest
@@ -432,11 +437,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			responsesResp.Usage = p.Data.TokenUsage.ToResponsesResponseUsage()
 		}
 		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.ResponsesRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.ResponsesRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			responsesResp.ExtraFields.RawRequest = p.RawRequest
@@ -458,11 +464,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.SpeechResponse = speechResp
 		resp.SpeechResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.SpeechRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.SpeechRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			resp.SpeechResponse.ExtraFields.RawRequest = p.RawRequest
@@ -483,11 +490,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.TranscriptionResponse = transcriptionResp
 		resp.TranscriptionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.TranscriptionRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.TranscriptionRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest

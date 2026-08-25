@@ -907,7 +907,9 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 	billed := entry.TokenUsageParsed
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, &schemas.BifrostError{
+		ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed},
+	}, schemas.ChatCompletionStreamRequest)
 
 	if entry.Cost == nil {
 		t.Fatal("expected cost to be computed even though token usage was already parsed")
@@ -997,7 +999,9 @@ func TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed(t *test
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, &schemas.BifrostError{
+		ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed},
+	}, schemas.ChatCompletionStreamRequest)
 
 	if entry.TokenUsageParsed == nil || entry.TotalTokens != promptTokens+completionTokens {
 		t.Fatalf("expected tokens backfilled, got %+v", entry.TokenUsageParsed)
