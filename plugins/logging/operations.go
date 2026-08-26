@@ -2309,5 +2309,11 @@ func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScope
 		SelectedKeyID: logEntry.SelectedKeyID,
 		VirtualKeyID:  virtualKeyID,
 		UserID:        userID,
+		// Price against when the request ran, not when the reprice runs. The row's
+		// Timestamp is stamped in PreLLMHook, so it is the same instant the live
+		// path reads off the context. Without it a model on a peak/off-peak
+		// schedule reprices against the wall clock and the same row yields a
+		// different cost on every run.
+		BilledAt: logEntry.Timestamp,
 	}
 }
