@@ -125,6 +125,15 @@ spec:
                   name: {{ .Values.postgresql.auth.existingSecret }}
                   key: {{ .Values.postgresql.auth.passwordKey | default "password" }}
             {{- end }}
+            {{- /* Separate logs-store PostgreSQL password from existing secret. Only inject when the logs store is enabled and resolves to postgres, mirroring the config block. */ -}}
+            {{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
+            {{- if and .Values.storage.logsStore.enabled (eq $logsStoreType "postgres") (dig "postgres" "enabled" false .Values.storage.logsStore) (dig "postgres" "existingSecret" "" .Values.storage.logsStore) }}
+            - name: BIFROST_LOGS_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.postgres.existingSecret }}
+                  key: {{ .Values.storage.logsStore.postgres.passwordKey | default "password" }}
+            {{- end }}
             {{- /* Redis password from existing secret */ -}}
             {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.external.enabled .Values.vectorStore.redis.external.existingSecret }}
             - name: BIFROST_REDIS_PASSWORD
