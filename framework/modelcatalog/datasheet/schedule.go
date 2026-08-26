@@ -117,7 +117,14 @@ func ValidatePricingTimeSchedule(schedule *PricingTimeSchedule) error {
 	for i := 0; i < len(schedule.Rules); i++ {
 		for j := i + 1; j < len(schedule.Rules); j++ {
 			if pricingRulesOverlap(schedule.Rules[i], schedule.Rules[j], daySets[i], daySets[j]) {
-				return fmt.Errorf("pricing schedule rules %d and %d overlap", i, j)
+				if schedule.Rules[i].Multiplier == schedule.Rules[j].Multiplier {
+					// Identical-multiplier overlaps are deterministic: the first
+					// matching rule yields the same result either way. This also
+					// lets a weekend full-day rule coexist with a weekday
+					// cross-midnight window that spills into Saturday morning.
+					continue
+				}
+				return fmt.Errorf("pricing schedule rules %d and %d overlap with different multipliers", i, j)
 			}
 		}
 	}
