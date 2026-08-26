@@ -59,6 +59,40 @@ func TestNormalizeImageURLsForGeminiResponsesConvertsHTTPToInlineData(t *testing
 	assert.Equal(t, encoded, out.Contents[0].Parts[1].InlineData.Data)
 }
 
+func TestGeminiChatRequestWithNormalizedImageURLsDoesNotMutateOriginal(t *testing.T) {
+	remoteURL := "https://cdn.example.com/image.jpeg"
+	encoded := base64.StdEncoding.EncodeToString([]byte("\xff\xd8\xff\xe0fake jpeg bytes"))
+	stubGeminiImageFetch(t, func(context.Context, string) (string, string, error) {
+		return "image/jpeg", encoded, nil
+	})
+
+	req := geminiChatImageRequest(remoteURL)
+	got, err := geminiChatRequestWithNormalizedImageURLs(nil, req)
+	require.NoError(t, err)
+	require.NotSame(t, req, got)
+
+	assert.Equal(t, remoteURL, req.Input[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+	assert.Equal(t, "data:image/jpeg;base64,"+encoded, got.Input[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+}
+
+func TestGeminiResponsesRequestWithNormalizedImageURLsDoesNotMutateOriginal(t *testing.T) {
+	remoteURL := "https://cdn.example.com/image.jpeg"
+	encoded := base64.StdEncoding.EncodeToString([]byte("\xff\xd8\xff\xe0fake jpeg bytes"))
+	stubGeminiImageFetch(t, func(context.Context, string) (string, string, error) {
+		return "image/jpeg", encoded, nil
+	})
+
+	req := geminiResponsesImageRequest(remoteURL)
+	got, err := geminiResponsesRequestWithNormalizedImageURLs(nil, req)
+	require.NoError(t, err)
+	require.NotSame(t, req, got)
+
+	require.NotNil(t, req.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+	require.NotNil(t, got.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+	assert.Equal(t, remoteURL, *req.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+	assert.Equal(t, "data:image/jpeg;base64,"+encoded, *got.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+}
+
 func TestNormalizeImageURLsForGeminiLeavesDataURLInline(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nfake png bytes"))
 	dataURL := "data:image/png;base64," + encoded

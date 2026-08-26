@@ -73,6 +73,67 @@ func normalizeImageURLsForGeminiResponses(ctx *schemas.BifrostContext, request *
 	return nil
 }
 
+func geminiChatRequestWithNormalizedImageURLs(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, error) {
+	if request == nil || shouldSkipGeminiImageURLInlining(ctx) || !geminiChatRequestHasImageURLs(request) {
+		return request, nil
+	}
+
+	requestCopy := *request
+	requestCopy.Input = make([]schemas.ChatMessage, len(request.Input))
+	for i, msg := range request.Input {
+		requestCopy.Input[i] = schemas.DeepCopyChatMessage(msg)
+	}
+	if err := normalizeImageURLsForGeminiChat(ctx, &requestCopy); err != nil {
+		return nil, err
+	}
+	return &requestCopy, nil
+}
+
+func geminiResponsesRequestWithNormalizedImageURLs(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, error) {
+	if request == nil || shouldSkipGeminiImageURLInlining(ctx) || !geminiResponsesRequestHasImageURLs(request) {
+		return request, nil
+	}
+
+	requestCopy := *request
+	requestCopy.Input = make([]schemas.ResponsesMessage, len(request.Input))
+	for i, msg := range request.Input {
+		requestCopy.Input[i] = schemas.DeepCopyResponsesMessage(msg)
+	}
+	if err := normalizeImageURLsForGeminiResponses(ctx, &requestCopy); err != nil {
+		return nil, err
+	}
+	return &requestCopy, nil
+}
+
+func geminiChatRequestHasImageURLs(request *schemas.BifrostChatRequest) bool {
+	for _, msg := range request.Input {
+		if msg.Content == nil {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.ImageURLStruct != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func geminiResponsesRequestHasImageURLs(request *schemas.BifrostResponsesRequest) bool {
+	for _, msg := range request.Input {
+		if msg.Content == nil {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.ResponsesInputMessageContentBlockImage != nil &&
+				block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func normalizeGeminiImageURL(ctx *schemas.BifrostContext, imageURL string) (string, bool, error) {
 	sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 	if err != nil {
