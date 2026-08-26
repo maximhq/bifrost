@@ -484,6 +484,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
+	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -12808,6 +12809,45 @@ func migrationAddDatabricksKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running databricks key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTimeOfDayPricingColumns adds the peak/off-peak pricing columns to
+// governance_model_pricing. Providers such as DeepSeek bill the same model at
+// two different rates depending on the time of day; off_peak_cost_multiplier
+// scales usage-based charges outside the windows declared in peak_hours.
+func migrationAddTimeOfDayPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_time_of_day_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"off_peak_cost_multiplier",
+		"peak_hours",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
