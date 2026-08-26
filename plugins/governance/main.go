@@ -1587,6 +1587,13 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
+// ResolveModelUsageGovernanceIDs snapshots the model-scoped targets that apply to
+// a settled model. The virtual key and user are read from the batch attribution
+// record; provider and model are discovered from the batch results.
+func (p *GovernancePlugin) ResolveModelUsageGovernanceIDs(ctx context.Context, provider schemas.ModelProvider, model string, usage batchaccounting.BatchModelUsage) ([]string, []string) {
+	return p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, provider, model)
+}
+
 func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
@@ -1601,7 +1608,18 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batc
 
 	var errs []error
 	for _, modelUsage := range usage.ModelUsage {
-		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+		budgetIDs, rateLimitIDs := modelUsage.BudgetIDs, modelUsage.RateLimitIDs
+		// Nil means a legacy aggregate row predates snapshots. Keep the fallback so
+		// existing batches remain settleable; an explicitly empty snapshot must not.
+		if budgetIDs == nil || rateLimitIDs == nil {
+			resolvedBudgetIDs, resolvedRateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+			if budgetIDs == nil {
+				budgetIDs = resolvedBudgetIDs
+			}
+			if rateLimitIDs == nil {
+				rateLimitIDs = resolvedRateLimitIDs
+			}
+		}
 		if modelUsage.Cost > 0 {
 			for _, budgetID := range budgetIDs {
 				if alreadyCharged["budget:"+budgetID] {

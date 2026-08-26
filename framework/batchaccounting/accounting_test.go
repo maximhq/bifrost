@@ -278,6 +278,10 @@ func (r *fakeUsageReporter) ReportBatchUsage(ctx context.Context, report BatchUs
 	return nil
 }
 
+func (r *fakeUsageReporter) ResolveModelUsageGovernanceIDs(ctx context.Context, provider schemas.ModelProvider, model string, usage BatchModelUsage) ([]string, []string) {
+	return nil, nil
+}
+
 func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {
 	store := newFakeAccountingStore()
 	baseLog := &logstore.Log{

@@ -416,18 +416,19 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	p.mu.Unlock()
 
 	summary, err := batchaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, batchaccounting.Request{
-		Provider:      schemas.ModelProvider(entry.Provider),
-		BatchID:       batchResp.BatchID,
-		FallbackModel: entry.Model,
-		Endpoint:      batchResp.Endpoint,
-		Results:       batchResp.Results,
-		ParseErrors:   batchResp.ExtraFields.ParseErrors,
-		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
-		BaseLog:       entry,
-		Emitter:       p,
-		UsageReporter: usageReporter,
-		ClaimedBy:     claimedBy,
-		Scopes:        pricingScopes,
+		Provider:           schemas.ModelProvider(entry.Provider),
+		BatchID:            batchResp.BatchID,
+		FallbackModel:      entry.Model,
+		Endpoint:           batchResp.Endpoint,
+		Results:            batchResp.Results,
+		ParseErrors:        batchResp.ExtraFields.ParseErrors,
+		BatchJob:           batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		BaseLog:            entry,
+		Emitter:            p,
+		UsageReporter:      usageReporter,
+		ModelUsageResolver: usageReporter,
+		ClaimedBy:          claimedBy,
+		Scopes:             pricingScopes,
 	})
 	if err != nil {
 		p.logger.Warn("failed to account batch results for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, err)
@@ -795,7 +796,7 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
-	batchUsageReporter           batchaccounting.UsageReporter
+	batchUsageReporter           batchaccounting.BatchUsageReporter
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
@@ -1003,7 +1004,7 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.logCallback = callback
 }
 
-func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.UsageReporter) {
+func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.BatchUsageReporter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.batchUsageReporter = reporter
