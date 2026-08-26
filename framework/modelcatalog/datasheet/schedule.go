@@ -96,7 +96,8 @@ func ValidatePricingTimeSchedule(schedule *PricingTimeSchedule) error {
 		return nil
 	}
 
-	if _, err := normalizePricingScheduleCalendar(schedule.Calendar); err != nil {
+	calendar, err := normalizePricingScheduleCalendar(schedule.Calendar)
+	if err != nil {
 		return err
 	}
 	if _, err := time.LoadLocation(strings.TrimSpace(schedule.Timezone)); err != nil {
@@ -108,10 +109,15 @@ func ValidatePricingTimeSchedule(schedule *PricingTimeSchedule) error {
 
 	daySets := make([]map[string]struct{}, len(schedule.Rules))
 	for index, rule := range schedule.Rules {
-		if err := rule.validate(); err != nil {
+		if err := rule.validate(calendar); err != nil {
 			return fmt.Errorf("pricing schedule rule %d: %w", index, err)
 		}
 		daySets[index] = rule.daySet()
+		// calendar=none ignores Dates/Days; all rules therefore share the same
+		// virtual day and must use the full weekday set during overlap checks.
+		if calendar == PricingScheduleCalendarNone {
+			daySets[index] = allPricingDays()
+		}
 	}
 
 	for i := 0; i < len(schedule.Rules); i++ {
@@ -140,7 +146,7 @@ func normalizePricingScheduleCalendar(calendar string) (string, error) {
 	}
 }
 
-func (rule PricingTimeRule) validate() error {
+func (rule PricingTimeRule) validate(calendar string) error {
 	if rule.Multiplier <= 0 {
 		return fmt.Errorf("multiplier must be greater than zero")
 	}
@@ -150,18 +156,21 @@ func (rule PricingTimeRule) validate() error {
 	if _, err := parsePricingClock(rule.EndTime); err != nil {
 		return fmt.Errorf("invalid end_time %q: %w", rule.EndTime, err)
 	}
+	if calendar == PricingScheduleCalendarISOWeekday {
+		for day := range rule.daySet() {
+			if !isPricingDay(day) {
+				return fmt.Errorf("unknown weekday %q", day)
+			}
+		}
+	}
 	return nil
 }
 
 func (rule PricingTimeRule) matches(at time.Time, calendar string) (bool, error) {
-	if err := rule.validate(); err != nil {
+	if err := rule.validate(calendar); err != nil {
 		return false, err
 	}
 
-	days := rule.daySet()
-	if calendar == PricingScheduleCalendarISOWeekday && len(days) != 0 && !containsPricingDay(days, at.Weekday()) {
-		return false, nil
-	}
 	startMinute, startErr := parsePricingClockMinutes(rule.StartTime)
 	if startErr != nil {
 		return false, startErr
@@ -171,15 +180,35 @@ func (rule PricingTimeRule) matches(at time.Time, calendar string) (bool, error)
 		return false, endErr
 	}
 
-	duration := endMinute - startMinute
-	if duration == 0 {
+	currentMinute := clockMinutes(at)
+	if startMinute == endMinute {
+		days := rule.daySet()
+		if calendar == PricingScheduleCalendarISOWeekday && len(days) != 0 && !containsPricingDay(days, at.Weekday()) {
+			return false, nil
+		}
 		return true, nil
 	}
+
+	effectiveAt := at
+	if startMinute > endMinute && currentMinute < endMinute {
+		// The morning tail of a wrapped window belongs to the previous weekday.
+		effectiveAt = at.AddDate(0, 0, -1)
+	}
+
+	duration := endMinute - startMinute
 	if duration < 0 {
 		duration += 24 * 60
 	}
-	offset := (clockMinutes(at) - startMinute + 24*60) % (24 * 60)
-	return offset < duration, nil
+	offset := (currentMinute - startMinute + 24*60) % (24 * 60)
+	if offset >= duration {
+		return false, nil
+	}
+
+	days := rule.daySet()
+	if calendar == PricingScheduleCalendarISOWeekday && len(days) != 0 && !containsPricingDay(days, effectiveAt.Weekday()) {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (rule PricingTimeRule) daySet() map[string]struct{} {
@@ -202,15 +231,24 @@ func parsePricingClock(value string) (time.Duration, error) {
 }
 
 func parsePricingClockMinutes(value string) (int, error) {
-	if len(value) != 5 || value[2] != ':' {
+	if len(value) != 5 || value[2] != ':' ||
+		value[0] < '0' || value[0] > '9' ||
+		value[1] < '0' || value[1] > '9' ||
+		value[3] < '0' || value[3] > '9' ||
+		value[4] < '0' || value[4] > '9' {
 		return 0, fmt.Errorf("must be HH:MM")
 	}
 	hour := int(value[0]-'0')*10 + int(value[1]-'0')
 	minute := int(value[3]-'0')*10 + int(value[4]-'0')
-	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+	if hour > 23 || minute > 59 {
 		return 0, fmt.Errorf("must be between 00:00 and 23:59")
 	}
 	return hour*60 + minute, nil
+}
+
+func isPricingDay(day string) bool {
+	_, ok := allPricingDays()[day]
+	return ok
 }
 
 func containsPricingDay(days map[string]struct{}, weekday time.Weekday) bool {
