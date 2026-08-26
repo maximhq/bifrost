@@ -5746,6 +5746,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
+			populateBillingAttemptExtraFields(msg.Context, bifrostErrPtr)
 		} else if resp != nil {
 			resp.PopulateExtraFields(req.RequestType, provider, model, model)
 		}
@@ -6068,6 +6069,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
 		if recoveredErr != nil {
 			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			populateBillingAttemptExtraFields(ctx, recoveredErr)
 		} else if recoveredResp != nil {
 			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
 			populateBillingAttemptStartTime(ctx, recoveredResp)
