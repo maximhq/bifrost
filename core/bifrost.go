@@ -5200,6 +5200,16 @@ func populateLatencyExtraFields(ctx *schemas.BifrostContext, resp *schemas.Bifro
 // populateBillingAttemptExtraFields stamps the current attempt's start time on
 // errors carrying billed usage. It is separate from response latency population
 // because errors may be produced before a BifrostResponse exists.
+func populateBillingAttemptStartTime(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil {
+		return
+	}
+	if start, ok := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
+		startCopy := start
+		resp.GetExtraFields().BillingAttemptStartedAt = &startCopy
+	}
+}
+
 func populateBillingAttemptExtraFields(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
 	if bifrostErr == nil {
 		return
@@ -6066,6 +6076,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if recoveredResp != nil {
 			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
+			populateBillingAttemptStartTime(ctx, recoveredResp)
 		}
 		drainAndAttachPluginLogs(ctx)
 		bifrost.releaseChannelMessage(msg)
