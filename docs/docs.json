@@ -293,6 +293,7 @@
             "icon": "bolt",
             "pages": [
               "enterprise/user-provisioning",
+              "enterprise/how-identity-sync-works",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
