@@ -92,6 +92,9 @@ type HandlerStore interface {
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
 	GetMCPExternalClientURL() string
+	// GetMaxRequestBodySizeMB returns the configured maximum request body size in megabytes.
+	// Returns the configured value or 100 MB if not set.
+	GetMaxRequestBodySizeMB() int
 }
 
 // Retry backoff constants for validation
@@ -5283,6 +5286,18 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 // if not configured. Resolves env var references automatically.
 func (c *Config) GetMCPExternalClientURL() string {
 	return c.ClientConfig.MCPExternalClientURL.GetValue()
+}
+
+// DefaultMaxRequestBodySizeMB is the default maximum request body size in megabytes.
+const DefaultMaxRequestBodySizeMB = 100
+
+// GetMaxRequestBodySizeMB returns the configured maximum request body size in megabytes.
+// Returns the configured value or 100 MB if not set (default).
+func (c *Config) GetMaxRequestBodySizeMB() int {
+	if c.ClientConfig == nil || c.ClientConfig.MaxRequestBodySizeMB <= 0 {
+		return DefaultMaxRequestBodySizeMB
+	}
+	return c.ClientConfig.MaxRequestBodySizeMB
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

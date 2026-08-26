@@ -3319,6 +3319,7 @@ type GeminiResumableUploadSession struct {
 	VirtualKey  string
 	Chunks      map[int64][]byte
 	NextOffset  int64
+	Finalizing  bool
 }
 
 // GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.

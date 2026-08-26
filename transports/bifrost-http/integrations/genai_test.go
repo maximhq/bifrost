@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -31,6 +32,12 @@ type fileUploadTestHandlerStore struct {
 	*mockHandlerStore
 	kvStore *kvstore.Store
 }
+
+const (
+	bytesPerKB        = 1024
+	bytesPerMB        = 1024 * bytesPerKB
+	testUploadLimitKB = 100
+)
 
 func (m *fileUploadTestHandlerStore) GetKVStore() *kvstore.Store {
 	return m.kvStore
@@ -611,8 +618,8 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
-// Test that PostCallback preserves session for upload-only commands and deletes only on finalize.
-func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
+// Test that PostCallback deletes the session after successful finalization.
+func TestFileUploadPostCallback_DeletesSessionAfterFinalization(t *testing.T) {
 	t.Parallel()
 
 	kvStore, err := kvstore.New(kvstore.Config{})
@@ -629,9 +636,9 @@ func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
 
-	uploadID := "upload-retry-id"
+	uploadID := "finalize-id"
 	session := &gemini.GeminiResumableUploadSession{
-		DisplayName: "upload-retry-test.pdf",
+		DisplayName: "finalize-test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
 	}
@@ -640,28 +647,24 @@ func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID: uploadID,
-		FileData: []byte("first chunk"),
+		UploadID:      uploadID,
+		FileData:      []byte("final chunk"),
+		UploadCommand: "upload,finalize",
 	}
 
-	// Upload without finalize should keep the session active.
+	// Finalize request succeeds - PostCallback is called and deletes session.
 	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.Set("X-Goog-Upload-Command", "upload")
 
 	err = route.PostCallback(ctx, req, nil)
 	require.NoError(t, err)
 
-	// Response should indicate that the upload is still active.
-	assert.Equal(t, "active", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
+	// Response should indicate that the upload is finalized.
+	assert.Equal(t, "final", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
 
-	// Session should still exist for subsequent chunks/retries.
+	// Session should be deleted after successful finalization.
 	stored, err := kvStore.Get(uploadID)
-	require.NoError(t, err)
-	require.NotNil(t, stored)
-
-	storedSession, ok := stored.(*gemini.GeminiResumableUploadSession)
-	require.True(t, ok)
-	assert.Equal(t, "upload-retry-test.pdf", storedSession.DisplayName)
+	assert.Error(t, err, "session should be deleted after finalization")
+	assert.Nil(t, stored)
 }
 
 // Test that the request is rejected without an upload session.
@@ -975,15 +978,67 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	require.NoError(t, err)
 	defer retryResponse.Body.Close()
 
-	require.Equalf(t, http.StatusOK, retryResponse.StatusCode, "retry response body: %s", retryResponseBody)
-
+	require.Equal(t, http.StatusOK, retryResponse.StatusCode, "retry body: %s", retryResponseBody)
 	assert.Equal(t, "final", retryResponse.Header.Get("X-Goog-Upload-Status"))
 
-	// Provider was called once initially and once for the retry.
+	// A retry is allowed after the failed provider request cleared Finalizing.
 	assert.Equal(t, int32(2), providerCallCount.Load())
+	assert.Equal(t, int32(1), providerFailureCount.Load())
 
 	_, err = kvStore.Get(uploadID)
-	assert.ErrorIs(t, err, kvstore.ErrNotFound)
+	assert.ErrorIs(t, err, kvstore.ErrNotFound, "successful retry should delete the upload session")
+}
+
+// A non-final upload chunk within the configured size limit should be accepted.
+func TestFileRequestConverter_AllowsNonFinalChunkWithinConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "large-intermediate-chunk"
+	require.NoError(t, kvStore.SetWithTTL(uploadID, &gemini.GeminiResumableUploadSession{
+		Provider: schemas.Gemini,
+		Chunks:   make(map[int64][]byte),
+	}, time.Minute))
+
+	const largeChunkSizeKB = 11
+	largeChunk := make([]byte, largeChunkSizeKB*bytesPerKB)
+	firstReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		FileData:        largeChunk,
+	}
+
+	fileReq, err := route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), firstReq)
+	require.NoError(t, err)
+	require.NotNil(t, fileReq)
+	assert.True(t, fileReq.Handled)
+
+	secondReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		UploadOffset:    int64(len(largeChunk)),
+		FileData:        []byte("tail"),
+	}
+	fileReq, err = route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), secondReq)
+	require.NoError(t, err)
+	require.NotNil(t, fileReq)
+	assert.True(t, fileReq.Handled)
+
+	stored, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(largeChunk)+len("tail")), stored.(*gemini.GeminiResumableUploadSession).NextOffset)
 }
 
 func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
@@ -1189,6 +1244,103 @@ func TestFileRequestConverter_ConcurrentRequestsSameUploadID(t *testing.T) {
 	assert.Equal(t, []byte("chunk"), storedSession.Chunks[0])
 }
 
+// Test that concurrent finalize requests only allow one to reach the provider.
+// The second finalize request should be rejected with an error.
+func TestFileRequestConverter_ConcurrentFinalizeRequestsOnlyOneReachesProvider(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "concurrent-finalize"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "concurrent-final.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		NextOffset:  5,
+		Chunks: map[int64][]byte{
+			0: []byte("chunk"),
+		},
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req1 := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload,finalize",
+		HasUploadOffset: true,
+		UploadOffset:    5,
+		FileData:        []byte("final"),
+	}
+
+	req2 := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload,finalize",
+		HasUploadOffset: true,
+		UploadOffset:    5,
+		FileData:        []byte("final"),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var err1, err2 error
+	var fileReq1, fileReq2 *FileRequest
+
+	go func() {
+		defer wg.Done()
+		fileReq1, err1 = route.FileRequestConverter(ctx1, req1)
+	}()
+
+	go func() {
+		defer wg.Done()
+		fileReq2, err2 = route.FileRequestConverter(ctx2, req2)
+	}()
+
+	wg.Wait()
+
+	// One request should succeed (no error), the other should fail with "already being finalized" error
+	successCount := 0
+	if err1 == nil {
+		successCount++
+		require.NotNil(t, fileReq1)
+	}
+	if err2 == nil {
+		successCount++
+		require.NotNil(t, fileReq2)
+	}
+
+	assert.Equal(t, 1, successCount, "exactly one finalize request should succeed")
+
+	// Check that one has the error indicating concurrent finalization
+	if err1 != nil {
+		assert.Contains(t, err1.Error(), "already being finalized")
+	}
+	if err2 != nil {
+		assert.Contains(t, err2.Error(), "already being finalized")
+	}
+
+	// Verify session is marked as finalizing
+	storedValue, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession := storedValue.(*gemini.GeminiResumableUploadSession)
+	assert.True(t, storedSession.Finalizing, "session should be marked as finalizing")
+}
+
 func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
 	t.Parallel()
 
@@ -1243,6 +1395,8 @@ func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
 // Total upload size exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 	t.Parallel()
+	const finalChunkSizeKB = 10
+	maxUploadSize := testUploadLimitKB * bytesPerKB
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
@@ -1253,7 +1407,7 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(maxUploadSize))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1265,9 +1419,9 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  90 * 1024 * 1024,
+		NextOffset:  int64(maxUploadSize - finalChunkSizeKB*bytesPerKB),
 		Chunks: map[int64][]byte{
-			0: make([]byte, 90*1024*1024),
+			0: make([]byte, maxUploadSize-finalChunkSizeKB*bytesPerKB),
 		},
 	}
 
@@ -1276,13 +1430,13 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
-	// Add the final 10 MB chunk to reach exactly 100 MB.
+	// Add the final chunk to reach the configured maximum.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    90 * 1024 * 1024,
+		UploadOffset:    int64(maxUploadSize - finalChunkSizeKB*bytesPerKB),
 		HasUploadOffset: true,
-		FileData:        make([]byte, 10*1024*1024),
+		FileData:        make([]byte, finalChunkSizeKB*bytesPerKB),
 	}
 
 	result, err := converter(ctx, req)
@@ -1295,6 +1449,8 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 // Upload exceeding the 100 MB total size limit should fail.
 func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 	t.Parallel()
+	const finalChunkSizeKB = 10
+	maxUploadSize := testUploadLimitKB * bytesPerKB
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
@@ -1305,7 +1461,7 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(maxUploadSize))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1317,9 +1473,9 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  91 * 1024 * 1024,
+		NextOffset:  int64(maxUploadSize - (finalChunkSizeKB-1)*bytesPerKB),
 		Chunks: map[int64][]byte{
-			0: make([]byte, 91*1024*1024),
+			0: make([]byte, maxUploadSize-(finalChunkSizeKB-1)*bytesPerKB),
 		},
 	}
 
@@ -1328,26 +1484,27 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
-	// The chunk itself is within the 10 MB limit,
-	// but 91 MB + 10 MB would exceed the 100 MB total limit.
+	// The chunk itself is within the request limit, but the cumulative total exceeds the configured limit.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    91 * 1024 * 1024,
+		UploadOffset:    int64(maxUploadSize - (finalChunkSizeKB-1)*bytesPerKB),
 		HasUploadOffset: true,
-		FileData:        make([]byte, 10*1024*1024),
+		FileData:        make([]byte, finalChunkSizeKB*bytesPerKB),
 	}
 
 	result, err := converter(ctx, req)
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Contains(t, err.Error(), "resumable upload exceeds maximum size of 100 MB")
+	require.Contains(t, err.Error(), "resumable upload exceeds maximum size")
 }
 
 // Multiple chunks that total exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 	t.Parallel()
+	const chunkSizeKB = 10
+	maxUploadSize := testUploadLimitKB * bytesPerKB
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
@@ -1358,7 +1515,7 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(maxUploadSize))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1370,9 +1527,9 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  90 * 1024 * 1024,
+		NextOffset:  int64(maxUploadSize - chunkSizeKB*bytesPerKB),
 		Chunks: map[int64][]byte{
-			0: make([]byte, 90*1024*1024),
+			0: make([]byte, maxUploadSize-chunkSizeKB*bytesPerKB),
 		},
 	}
 
@@ -1381,13 +1538,13 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
-	// Add a 10 MB chunk to reach exactly the 100 MB total upload limit.
+	// Add one chunk to reach exactly the configured total upload limit.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    90 * 1024 * 1024,
+		UploadOffset:    int64(maxUploadSize - chunkSizeKB*bytesPerKB),
 		HasUploadOffset: true,
-		FileData:        make([]byte, 10*1024*1024),
+		FileData:        make([]byte, chunkSizeKB*bytesPerKB),
 	}
 
 	result, err := converter(ctx, req)
@@ -1402,7 +1559,45 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 
 	updatedSession, ok := value.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
-	require.Equal(t, int64(100*1024*1024), updatedSession.NextOffset)
+	require.Equal(t, int64(maxUploadSize), updatedSession.NextOffset)
+}
+
+// A single-shot upload and finalize request within the configured size limit should succeed.
+func TestFileRequestConverter_AllowsSingleShotFinalizeWithinConfiguredLimit(t *testing.T) {
+	t.Parallel()
+	const uploadSize = 11 * bytesPerKB
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, uploadSize)
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "single-shot-over-ten-mb"
+	require.NoError(t, kvStore.SetWithTTL(uploadID, &gemini.GeminiResumableUploadSession{
+		DisplayName: "large.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		Chunks:      make(map[int64][]byte),
+	}, time.Minute))
+
+	fileReq, err := route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload,finalize",
+		UploadOffset:    0,
+		HasUploadOffset: true,
+		FileData:        make([]byte, uploadSize),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, fileReq)
+	require.NotNil(t, fileReq.UploadRequest)
+	assert.Len(t, fileReq.UploadRequest.File, uploadSize)
 }
 
 // Retried chunk should not be counted twice
@@ -1418,7 +1613,7 @@ func TestFileRequestConverter_RetryDoesNotIncreaseUploadSize(t *testing.T) {
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(testUploadLimitKB*bytesPerKB))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1426,13 +1621,14 @@ func TestFileRequestConverter_RetryDoesNotIncreaseUploadSize(t *testing.T) {
 
 	uploadID := "test-upload-retry"
 
-	chunk := make([]byte, 10*1024*1024)
+	const chunkSizeKB = 10
+	chunk := make([]byte, chunkSizeKB*bytesPerKB)
 
 	session := &gemini.GeminiResumableUploadSession{
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  10 * 1024 * 1024,
+		NextOffset:  int64(chunkSizeKB * bytesPerKB),
 		Chunks: map[int64][]byte{
 			0: chunk,
 		},
@@ -1464,11 +1660,11 @@ func TestFileRequestConverter_RetryDoesNotIncreaseUploadSize(t *testing.T) {
 	updatedSession, ok := value.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
 
-	require.Equal(t, int64(10*1024*1024), updatedSession.NextOffset)
+	require.Equal(t, int64(chunkSizeKB*bytesPerKB), updatedSession.NextOffset)
 }
 
-// A single chunk larger than the per-chunk limit should fail.
-func TestFileRequestConverter_RejectsChunkExceedingMaxSize(t *testing.T) {
+// A single request body larger than the configured request-body limit should fail.
+func TestFileRequestConverter_RejectsRequestExceedingMaxSize(t *testing.T) {
 	t.Parallel()
 
 	kvStore, err := kvstore.New(kvstore.Config{})
@@ -1480,7 +1676,7 @@ func TestFileRequestConverter_RejectsChunkExceedingMaxSize(t *testing.T) {
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(testUploadLimitKB*bytesPerKB))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1506,14 +1702,72 @@ func TestFileRequestConverter_RejectsChunkExceedingMaxSize(t *testing.T) {
 		UploadCommand:   "upload",
 		UploadOffset:    0,
 		HasUploadOffset: true,
-		FileData:        make([]byte, 11*1024*1024),
+		FileData:        make([]byte, testUploadLimitKB*bytesPerKB+1),
 	}
 
 	result, err := converter(ctx, req)
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Contains(t, err.Error(), "chunk size exceeds maximum allowed size")
+	require.Contains(t, err.Error(), "upload exceeds maximum size")
+}
+
+func TestFileRequestConverter_UsesConfiguredRequestBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	const configuredLimitKB = 5
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{maxRequestBodySizeMB: lib.DefaultMaxRequestBodySizeMB},
+		kvStore:          kvStore,
+	}
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, configuredLimitKB*bytesPerKB)
+	converter := routes[0].FileRequestConverter
+	require.NotNil(t, converter)
+
+	underLimitID := "configured-limit-under"
+
+	underLimit := make([]byte, configuredLimitKB*bytesPerKB-1)
+	require.NoError(t, kvStore.SetWithTTL(underLimitID, &gemini.GeminiResumableUploadSession{
+		Provider: schemas.Gemini,
+		Chunks:   make(map[int64][]byte),
+	}, time.Minute))
+
+	underLimitReq, err := converter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        underLimitID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		FileData:        underLimit,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, underLimitReq)
+	assert.True(t, underLimitReq.Handled)
+
+	// Construct another route set with a different limit. The first route set
+	// must retain its captured 5 MB limit.
+	handlerStore.mockHandlerStore.maxRequestBodySizeMB = lib.DefaultMaxRequestBodySizeMB
+	defaultRoutes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotNil(t, defaultRoutes[0].FileRequestConverter)
+
+	overLimitID := "configured-limit-over"
+	require.NoError(t, kvStore.SetWithTTL(overLimitID, &gemini.GeminiResumableUploadSession{
+		Provider: schemas.Gemini,
+		Chunks:   make(map[int64][]byte),
+	}, time.Minute))
+
+	overLimitReq, err := converter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        overLimitID,
+		UploadCommand:   "upload",
+		HasUploadOffset: true,
+		FileData:        make([]byte, configuredLimitKB*bytesPerKB+1),
+	})
+	require.Error(t, err)
+	assert.Nil(t, overLimitReq)
+	assert.Contains(t, err.Error(), "upload exceeds maximum size")
 }
 
 func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing.T) {
@@ -1528,7 +1782,7 @@ func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(testUploadLimitKB*bytesPerKB))
 	require.NotEmpty(t, routes)
 
 	converter := routes[0].FileRequestConverter
@@ -1550,7 +1804,9 @@ func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing
 	ctx := &schemas.BifrostContext{}
 
 	// Upload 11 valid chunks of 9 MB each = 99 MB.
-	chunkSize := int64(9 * 1024 * 1024)
+	const chunkSizeKB = 9
+	const finalChunkSizeKB = 2
+	chunkSize := int64(chunkSizeKB * bytesPerKB)
 
 	for i := int64(0); i < 11; i++ {
 		req := &gemini.GeminiFileUploadHandlerReq{
@@ -1573,14 +1829,14 @@ func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    99 * 1024 * 1024,
+		UploadOffset:    int64(11) * chunkSize,
 		HasUploadOffset: true,
-		FileData:        make([]byte, 2*1024*1024),
+		FileData:        make([]byte, finalChunkSizeKB*bytesPerKB),
 	}
 
 	result, err := converter(ctx, req)
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Contains(t, err.Error(), "resumable upload exceeds maximum size of 100 MB")
+	require.Contains(t, err.Error(), "resumable upload exceeds maximum size")
 }

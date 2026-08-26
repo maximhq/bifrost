@@ -31,6 +31,7 @@ type mockHandlerStore struct {
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
+	maxRequestBodySizeMB       int
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -75,6 +76,13 @@ func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 
 func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
+}
+
+func (m *mockHandlerStore) GetMaxRequestBodySizeMB() int {
+	if m.maxRequestBodySizeMB > 0 {
+		return m.maxRequestBodySizeMB
+	}
+	return lib.DefaultMaxRequestBodySizeMB
 }
 
 func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
