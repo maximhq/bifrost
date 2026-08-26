@@ -8,10 +8,10 @@ import Topbar from "@/components/topbar";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { useStoreSync } from "@/hooks/useStoreSync";
 import { useNotificationSync } from "@/hooks/useNotificationSync";
-import { TopbarProvider } from "@/lib/contexts/topbarContext";
+import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
+import { TopbarProvider } from "@/lib/contexts/topbarContext";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
@@ -132,7 +132,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 							    60px topbar so its top edge lands on the same line as the sidebar's
 							    search input, and --app-content-viewport compensates so full-height
 							    pages still measure to the card's inner height. */}
-							<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-2 md:mb-2 md:rounded-md md:px-10 dark:border-zinc-800">
+							<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md md:px-10 dark:border-zinc-800">
 								<TrialExpiryBanner />
 								<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:p-4">
 									{isLoading ? (

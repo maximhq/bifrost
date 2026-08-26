@@ -8,6 +8,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGeminiFileResultToBatchResultItem(t *testing.T) {
+	t.Run("NativeGenerateContentResponse", func(t *testing.T) {
+		var line GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"key":"request-1","response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"totalTokenCount":9}}}`), &line))
+
+		item, err := geminiFileResultToBatchResultItem(line, "fallback")
+		require.NoError(t, err)
+		assert.Equal(t, "request-1", item.CustomID)
+		require.NotNil(t, item.Response)
+		assert.Equal(t, 200, item.Response.StatusCode)
+		assert.Equal(t, "hello", item.Response.Body["text"])
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.EqualValues(t, 7, usage["prompt_tokens"])
+		assert.EqualValues(t, 2, usage["completion_tokens"])
+		assert.EqualValues(t, 9, usage["total_tokens"])
+	})
+
+	t.Run("CompatibilityEnvelope", func(t *testing.T) {
+		var line GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"custom_id":"request-2","response":{"status_code":200,"body":{"model":"gemini-test","usage":{"promptTokens":3,"completionTokens":1,"totalTokens":4}}}}`), &line))
+
+		item, err := geminiFileResultToBatchResultItem(line, "fallback")
+		require.NoError(t, err)
+		require.NotNil(t, item.Response)
+		assert.Equal(t, 200, item.Response.StatusCode)
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.EqualValues(t, 3, usage["prompt_tokens"])
+		assert.EqualValues(t, 1, usage["completion_tokens"])
+		assert.EqualValues(t, 4, usage["total_tokens"])
+	})
+
+	t.Run("RejectsMissingResponseAndError", func(t *testing.T) {
+		item, err := geminiFileResultToBatchResultItem(GeminiBatchFileResultLine{Key: "request-3"}, "fallback")
+		require.Error(t, err)
+		assert.Empty(t, item)
+		assert.Contains(t, err.Error(), "neither response nor error")
+
+		var nullResponse GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"key":"request-4","response":null}`), &nullResponse))
+		item, err = geminiFileResultToBatchResultItem(nullResponse, "fallback")
+		require.Error(t, err)
+		assert.Empty(t, item)
+	})
+}
+
+func TestParseGeminiBatchResultsJSONLUsesSourceLineIndex(t *testing.T) {
+	body := []byte("{malformed}\n" +
+		`{"response":{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}}` + "\n")
+
+	results, parseErrors := parseGeminiBatchResultsJSONL(body, nil)
+	require.Len(t, parseErrors, 1)
+	require.Len(t, results, 1)
+	assert.Equal(t, "request-1", results[0].CustomID)
+}
+
 // TestGeminiBatchOutput locks in the fix for issue #3951: the generativelanguage batch
 // REST API reports output under the Operation's `response` field (mirrored in
 // `metadata.output`), never under `dest`. Inline responses are nested one level deep

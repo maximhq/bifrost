@@ -376,8 +376,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -1485,6 +1485,10 @@ func (m *MockConfigStore) GetAdminOauthTokensByMCPClientIDs(ctx context.Context,
 	return map[string]*tables.TableMCPOauthToken{}, nil
 }
 
+func (m *MockConfigStore) GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	return map[string]*tables.TableMCPOauthToken{}, nil
+}
+
 func (m *MockConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oauthConfigID, mcpClientID string) error {
 	return nil
 }
@@ -1740,6 +1744,43 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 }
 
 func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
+// Batch jobs
+func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
 	return nil
 }
 
@@ -19579,6 +19620,99 @@ func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
 }
 
 // =============================================================================
+// AddProviderKey / UpdateProviderKey ErrAlreadyExists Tests
+// =============================================================================
+//
+// parseGormError (framework/configstore/rdb.go) names the constraint that
+// actually fired — e.g. the key-name unique index vs. the key-ID unique index —
+// in its wrapped error message. Config.AddProviderKey/UpdateProviderKey used to
+// discard that message and return a bare ErrAlreadyExists, so the constraint
+// detail never reached the handler's warn log. These tests pin that the
+// original message survives the collapse.
+
+// mockConfigStoreAddProviderKey is a ConfigStore mock that allows controlling CreateProviderKey behavior.
+type mockConfigStoreAddProviderKey struct {
+	MockConfigStore
+	createProviderKeyErr error
+}
+
+func (m *mockConfigStoreAddProviderKey) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	if m.createProviderKeyErr != nil {
+		return m.createProviderKeyErr
+	}
+	return m.MockConfigStore.CreateProviderKey(ctx, provider, key, tx...)
+}
+
+func TestAddProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	// Simulates parseGormError's message for a key-ID unique-index hit, distinct
+	// from the generic "already exists" the collapse used to leave behind.
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreAddProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		createProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.AddProviderKey(context.Background(), "test-provider", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// mockConfigStoreUpdateProviderKey is a ConfigStore mock that allows controlling UpdateProviderKey behavior.
+type mockConfigStoreUpdateProviderKey struct {
+	MockConfigStore
+	updateProviderKeyErr error
+}
+
+func (m *mockConfigStoreUpdateProviderKey) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	if m.updateProviderKeyErr != nil {
+		return m.updateProviderKeyErr
+	}
+	return m.MockConfigStore.UpdateProviderKey(ctx, provider, keyID, key, tx...)
+}
+
+func TestUpdateProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreUpdateProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		updateProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {Keys: []schemas.Key{{ID: "key-1", Value: *schemas.NewSecretVar("test-key")}}},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.UpdateProviderKey(context.Background(), "test-provider", "key-1", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// =============================================================================
 // RemoveProvider Tests
 // =============================================================================
 
@@ -21106,4 +21240,197 @@ func TestResolveSetupToken_TrimsSurroundingWhitespace(t *testing.T) {
 	t.Setenv("BIFROST_SETUP_TOKEN", "")
 	configData := &ConfigData{SetupToken: schemas.NewSecretVar("  my-token  ")}
 	assert.Equal(t, "my-token", resolveSetupToken(configData))
+}
+
+func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
+	tests := []struct {
+		name            string
+		fileInterval    time.Duration
+		fileIsTruth     bool
+		startingMinutes int
+		expectedMinutes int
+		expectPersisted bool
+		// expectedMCPCfg is what bifrost.Init receives afterwards: the file
+		// value when one is declared, the stored value backfilled when the
+		// store is authoritative and the file declares none.
+		expectedMCPCfg time.Duration
+	}{
+		{
+			name:            "zero with file as source of truth clears an existing value",
+			fileInterval:    0,
+			fileIsTruth:     true,
+			startingMinutes: 10,
+			expectedMinutes: 0,
+			expectPersisted: true,
+			expectedMCPCfg:  0,
+		},
+		{
+			name:            "zero with store as source of truth keeps the stored value and backfills the MCP config",
+			fileInterval:    0,
+			fileIsTruth:     false,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "zero with no existing value is a no-op",
+			fileInterval:    0,
+			startingMinutes: 0,
+			expectedMinutes: 0,
+			expectPersisted: false,
+			expectedMCPCfg:  0,
+		},
+		{
+			name:            "whole minute converts and persists",
+			fileInterval:    5 * time.Minute,
+			startingMinutes: 10,
+			expectedMinutes: 5,
+			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Minute,
+		},
+		{
+			name:            "whole minute overrides the stored value even when the store is source of truth",
+			fileInterval:    5 * time.Minute,
+			fileIsTruth:     false,
+			startingMinutes: 10,
+			expectedMinutes: 5,
+			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Minute,
+		},
+		{
+			name:            "whole hour converts to minutes",
+			fileInterval:    5 * time.Hour,
+			startingMinutes: 0,
+			expectedMinutes: 300,
+			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Hour,
+		},
+		{
+			name:            "non-minute duration is ignored as unset: stored value kept and handed to Init",
+			fileInterval:    90 * time.Second,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "negative duration is rejected as unset: stored value kept and handed to Init",
+			fileInterval:    -time.Minute,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "negative duration with file as source of truth still keeps the stored value",
+			fileInterval:    -time.Minute,
+			fileIsTruth:     true,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "non-minute duration with file as source of truth still keeps the stored value",
+			fileInterval:    90 * time.Second,
+			fileIsTruth:     true,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initTestLogger()
+			dir := t.TempDir()
+			store := createTestSQLiteConfigStore(t, dir)
+			ctx := context.Background()
+
+			clientConfig := &configstore.ClientConfig{MCPToolSyncInterval: tt.startingMinutes}
+			require.NoError(t, store.UpdateClientConfig(ctx, clientConfig))
+
+			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
+			mcpCfg := &schemas.MCPConfig{ToolSyncInterval: tt.fileInterval}
+
+			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tt.fileIsTruth)
+
+			assert.Equal(t, tt.expectedMinutes, cfg.ClientConfig.MCPToolSyncInterval, "in-memory value")
+			assert.Equal(t, tt.expectedMCPCfg, mcpCfg.ToolSyncInterval, "value handed to bifrost.Init")
+
+			persisted, err := store.GetClientConfig(ctx)
+			require.NoError(t, err)
+			if tt.expectPersisted {
+				assert.Equal(t, tt.expectedMinutes, persisted.MCPToolSyncInterval, "persisted value")
+			} else {
+				assert.Equal(t, tt.startingMinutes, persisted.MCPToolSyncInterval, "value must not be persisted when unchanged/ignored")
+			}
+		})
+	}
+}
+
+// TestGetMCPConfig_CarriesGlobalToolSyncInterval pins that the MCP config
+// loaded from the store carries the client-config-backed global tool sync
+// interval, so a boot without an mcp section in config.json still hands
+// bifrost.Init the configured value instead of a zero that silently falls
+// back to the built-in default.
+func TestGetMCPConfig_CarriesGlobalToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 7}))
+
+	mcpCfg, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpCfg)
+	assert.Equal(t, 7*time.Minute, mcpCfg.ToolSyncInterval)
+}
+
+// TestMCPClientConfigToTable_RejectsNegativeToolSyncInterval pins the config
+// file write path: a negative per-client interval is an error (the client is
+// skipped with a warning), not a third semantic.
+func TestMCPClientConfigToTable_RejectsNegativeToolSyncInterval(t *testing.T) {
+	_, err := mcpClientConfigToTable(&schemas.MCPClientConfig{ID: "neg", Name: "neg", ToolSyncInterval: -time.Minute})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_sync_interval must be 0")
+}
+
+// TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval pins the store's
+// update path, which used to let a negative through while create rejected it.
+func TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "neg-update",
+		Name:             "neg-update",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"),
+	}))
+	err := store.UpdateMCPClientConfig(ctx, "neg-update", &configstoreTables.TableMCPClient{
+		ClientID:         "neg-update",
+		Name:             "neg-update",
+		ConnectionType:   "http",
+		ToolSyncInterval: -60,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_sync_interval must be non-negative")
+}
+
+// TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval pins that an
+// explicit 0 (the built-in default) survives the store's delete+create even
+// though the column carries a non-zero GORM default, so "0 = default" reads
+// back as 0 rather than 10.
+func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 5}))
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 0}))
+
+	persisted, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
 }

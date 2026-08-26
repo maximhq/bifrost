@@ -1,1 +1,4 @@
-- chore: upgraded core to v1.7.11 and framework to v1.5.9
+- feat: `addLatencyTags` forwards `upstream_latency_ms` and `overhead_latency_ms` as tags on both the generation and the trace, leaving unmeasured values unreported (#6345)
+- fix: sensitive and identity-aware-proxy request headers are redacted in `PostLLMHook` before export (#6371)
+- feat: add a no-op `HTTPTransportPreAuthHook` for the new pre-authentication transport phase (#6375)
+- chore: upgraded core to v1.8.0 and framework to v1.6.0

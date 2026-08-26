@@ -336,7 +336,7 @@ export default function ComplexityRouterPage() {
 	const hasErrors = Boolean(boundaryErrors || keywordErrors);
 
 	return (
-		<div className="no-padding-parent flex h-[calc(var(--app-content-viewport)_-_16px)] min-w-0 flex-col">
+		<div className="no-padding-parent flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-w-0 flex-col">
 			<ScrollArea className="min-h-0 w-full flex-1">
 				<form
 					id="complexity-router-form"

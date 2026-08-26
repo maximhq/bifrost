@@ -2888,7 +2888,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests, *request.Model)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}
@@ -2927,7 +2927,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexBatchCreateRequest(request, jobName, inputFileID, outputURI), nil
+			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI), nil
 		},
 	)
 	if bodyErr != nil {
@@ -3417,13 +3417,18 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 			if err := sonic.Unmarshal(rawLine, &line); err != nil {
 				continue // skip malformed lines rather than failing the whole result set
 			}
+			// Anthropic/Claude jobs echo a native top-level custom_id; Gemini jobs carry it in labels.
+			customID := line.CustomID
+			if customID == "" {
+				customID = line.Request.Labels[vertexBatchCustomIDLabel]
+			}
 			item := schemas.BatchResultItem{
-				CustomID: line.Request.Labels[vertexBatchCustomIDLabel],
+				CustomID: customID,
 			}
 			if line.Response != nil {
 				item.Response = &schemas.BatchResultResponse{
 					StatusCode: 200,
-					Body:       line.Response,
+					Body:       vertexNormalizeBatchUsage(line.Response),
 				}
 			} else {
 				item.Error = &schemas.BatchResultError{Message: line.Status}
@@ -3432,13 +3437,45 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 	}
 
-	return &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
+	batchResultsResp := &schemas.BifrostBatchResultsResponse{
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: time.Since(startTime).Milliseconds(),
 		},
-	}, nil
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = results
+	}
+	return batchResultsResp, nil
+}
+
+func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
+	raw, ok := body["usageMetadata"]
+	if !ok {
+		return body
+	}
+	metaBytes, err := sonic.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	var meta gemini.GenerateContentResponseUsageMetadata
+	if err := sonic.Unmarshal(metaBytes, &meta); err != nil {
+		return body
+	}
+	usage := map[string]any{
+		"prompt_tokens":     meta.PromptTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount,
+		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.CachedContentTokenCount > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": meta.CachedContentTokenCount,
+		}
+	}
+	body["usage"] = usage
+	return body
 }
 
 // gcsListAllObjects lists every object under a prefix, following pagination.
@@ -3529,7 +3566,6 @@ const (
 	gcsStorageBase = "https://storage.googleapis.com/storage/v1"
 	gcsUploadBase  = "https://storage.googleapis.com/upload/storage/v1"
 )
-
 
 // --- GCS helpers ---
 

@@ -19,6 +19,7 @@ import (
 var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
+	schemas.Runware:    true,
 }
 
 // GetModelsForProvider returns the effective allowed model set for the

@@ -189,7 +189,7 @@ type BillingPayloadBackfill struct {
 //
 // Safe because pricing is the last thing that reads these: the recalc job keeps only
 // the ID, timestamp and computed cost afterwards, and the rows are never written back
-// (BulkUpdateCost takes an id → cost map).
+// (BulkUpdateCost takes an id → CostUpdate map).
 func ReleaseBillingPayloads(logs []*Log) {
 	for _, l := range logs {
 		if l != nil {

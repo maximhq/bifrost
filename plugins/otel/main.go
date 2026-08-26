@@ -728,6 +728,12 @@ func (p *OtelPlugin) RedactConfig(raw map[string]any) (map[string]any, error) {
 	return result, nil
 }
 
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*OtelPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 // HTTPTransportPreHook is not used for this plugin
 func (p *OtelPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
@@ -992,9 +998,40 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 }
 
 // getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
-// is a meaningful value distinct from "absent" — an upstream total of 0 (a cache
+// is a meaningful value distinct from "absent": an upstream total of 0 (a cache
 // hit, or a request rejected before any provider call) means all of the elapsed
 // time was Bifrost's, whereas a missing attribute means it was never measured.
+func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+// overheadMicrosFromTrace reads Bifrost's own cost (in microseconds) off the root
+// span, where the tracer stamps it as AttrBifrostOverheadDurationMs (root duration
+// minus the upstream total, in ms). Reading the stamped value rather than recomputing
+// keeps the overhead metric and the span attribute in lockstep. Returns false when the
+// request carried no measurement; absent must not be reported as zero overhead.
+func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
+	if trace == nil || trace.RootSpan == nil {
+		return 0, false
+	}
+	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	if !ok {
+		return 0, false
+	}
+	return overheadMs * 1000.0, true
+}
+
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
@@ -1002,18 +1039,18 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	if method == "" {
 		method = span.Name
 	}
-	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
-	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrCustomerID, schemas.AttrCustomerName)
+	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
+	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
 	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
 		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
 		method,
-		getStringAttr(attrs, schemas.AttrVirtualKeyID),
-		getStringAttr(attrs, schemas.AttrVirtualKeyName),
-		getStringAttr(attrs, schemas.AttrSelectedKeyID),
-		getStringAttr(attrs, schemas.AttrSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrFallbackIndex),
+		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyID),
+		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyName),
+		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyID),
+		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyName),
+		getIntAttr(attrs, schemas.AttrBifrostFallbackIndex),
 		teamIDs,
 		teamNames,
 		customerIDs,
@@ -1172,6 +1209,19 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		}
 	}
 
+	// Bifrost's own overhead. Derived once per trace from the root span, the only
+	// span whose duration covers the whole request (queue wait, plugin hooks and
+	// transport work no llm.call span sees). Labelled off the final attempt span so
+	// provider/model dimensions match the other per-request metrics; the root span
+	// carries only HTTP attributes.
+	if overheadMicros, ok := overheadMicrosFromTrace(trace); ok {
+		labelSpan := finalSpan
+		if labelSpan == nil {
+			labelSpan = trace.RootSpan
+		}
+		exporter.RecordOverheadLatency(ctx, overheadMicros, buildSpanAttrs(labelSpan)...)
+	}
+
 	if finalSpan == nil {
 		finalSpan = trace.RootSpan
 	}
@@ -1191,22 +1241,16 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 	// Record retries used for this request. Read off the final span (the last attempt's
 	// attempt index) so the value is "total retries used", matching the Prometheus side.
-	retries := getIntAttr(attrs, schemas.AttrNumberOfRetries)
+	retries := getIntAttr(attrs, schemas.AttrBifrostRetries)
 	exporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
-	// Record token usage - try both naming conventions
-	inputTokens := getIntAttr(attrs, schemas.AttrPromptTokens)
-	if inputTokens == 0 {
-		inputTokens = getIntAttr(attrs, schemas.AttrInputTokens)
-	}
+	// Record token usage
+	inputTokens := getIntAttr(attrs, schemas.AttrInputTokens)
 	if inputTokens > 0 {
 		exporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
 	}
 
-	outputTokens := getIntAttr(attrs, schemas.AttrCompletionTokens)
-	if outputTokens == 0 {
-		outputTokens = getIntAttr(attrs, schemas.AttrOutputTokens)
-	}
+	outputTokens := getIntAttr(attrs, schemas.AttrOutputTokens)
 	if outputTokens > 0 {
 		exporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
 	}
@@ -1218,10 +1262,9 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	}
 
 	// Record streaming latency metrics if available
-	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstToken)
+	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
 	if ttft > 0 {
-		// Convert from nanoseconds to seconds if needed (check the unit)
-		exporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
+		exporter.RecordStreamFirstTokenLatency(ctx, ttft, otelAttrs...)
 	}
 
 	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the

@@ -5,8 +5,12 @@ package logging
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -251,15 +256,21 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 		return
 	}
 	if entry.TokenUsageParsed == nil {
-		entry.TokenUsageParsed = billed
+		entry.TokenUsageParsed = billed.DeepCopy()
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
 	if entry.Cost == nil && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
-			entry.Cost = &cost
+		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
+			total := bd.TotalCost
+			entry.Cost = &total
+			// Attach the breakdown to the stored usage so SerializeFields
+			// denormalizes the input/output/additional split, not just the total.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = bd
+			}
 		}
 	}
 }
@@ -281,21 +292,40 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	var cost float64
+	var cacheCost, guardrailCost float64
 	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
-		cost += p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
 	}
 	if guardrailDebug != nil {
-		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
 	}
+	cost := cacheCost + guardrailCost
 	if cost <= 0 {
 		return
 	}
 	if entry.Cost == nil {
 		entry.Cost = &cost
-		return
+	} else {
+		*entry.Cost += cost
 	}
-	*entry.Cost += cost
+
+	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
+	// write the additional_cost column directly. Don't synthesize a carrier: that
+	// suppresses the deferred-usage watcher.
+	sidecar := &schemas.BifrostCost{TotalCost: cost}
+	if cacheCost > 0 || guardrailCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost
+		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
+			SemanticCacheCost: cacheCost,
+			GuardrailCost:     guardrailCost,
+		}
+	}
+	if entry.TokenUsageParsed != nil {
+		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
+	} else {
+		entry.AdditionalCost += cacheCost + guardrailCost
+	}
 }
 
 const (
@@ -322,6 +352,205 @@ func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
 	case <-p.ctx.Done():
 		return false
 	}
+}
+
+// batchAccountingTimeout bounds inline batch settlement on the /results response
+// path so a stalled store or reporter cannot hang the caller. Anything that times
+// out is not lost: the job stays due and the sweeper re-drives it.
+const batchAccountingTimeout = 30 * time.Second
+
+// batchRunnerProcessID distinguishes this process when no cluster node id is set.
+// Deliberately random rather than PID-based: two replicas on different hosts can
+// share a PID, and this identity is what keeps their batch claims apart.
+var batchRunnerProcessID = newBatchRunnerProcessID()
+
+func newBatchRunnerProcessID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand is effectively infallible here; a time-based value still
+		// separates processes far better than a shared constant would.
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// batchRunnerID builds the ownership-fence identity for a batch accounting worker.
+//
+// Batch claims are fenced on this value, so it must differ between workers that
+// could contend for the same job. SetClusterNodeID supplies a stable id in
+// clustered deployments, but it is never called in OSS — so without the
+// per-process fallback every replica sharing a database would present the same
+// identity ("logging" / "batch-sweeper") and the fence would not tell them apart.
+// A per-process id is the right granularity: the fence only needs to separate
+// live workers, and a restarted process should not inherit its predecessor's
+// claims — those are recovered through the staleness path instead.
+func (p *LoggerPlugin) batchRunnerID(prefix string) string {
+	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+		return prefix + ":" + nodeID
+	}
+	return prefix + ":" + batchRunnerProcessID
+}
+
+func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
+	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil || p.batchStore == nil {
+		return
+	}
+	batchResp := result.BatchResultsResponse
+	if batchResp.BatchID == "" {
+		return
+	}
+
+	// This runs inline on the /results response path, and settlement touches the
+	// config store, the log store and the governance reporter. p.ctx is the
+	// plugin's lifetime context and has no deadline, so any one of those stalling
+	// would hang the caller's HTTP response indefinitely. Bound the whole
+	// settlement instead; the sweeper re-drives anything that times out, since a
+	// job left un-accounted stays due.
+	ctx, cancel := context.WithTimeout(p.ctx, batchAccountingTimeout)
+	defer cancel()
+
+	claimedBy := p.batchRunnerID("logging")
+	p.mu.Lock()
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+
+	summary, err := batchaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, batchaccounting.Request{
+		Provider:      schemas.ModelProvider(entry.Provider),
+		BatchID:       batchResp.BatchID,
+		FallbackModel: entry.Model,
+		Endpoint:      batchResp.Endpoint,
+		Results:       batchResp.Results,
+		ParseErrors:   batchResp.ExtraFields.ParseErrors,
+		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		BaseLog:       entry,
+		Emitter:       p,
+		UsageReporter: usageReporter,
+		ClaimedBy:     claimedBy,
+		Scopes:        pricingScopes,
+	})
+	if err != nil {
+		p.logger.Warn("failed to account batch results for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, err)
+		return
+	}
+	if summary != nil && summary.Accounted {
+		p.logger.Info("accounted batch results for provider=%s batch_id=%s cost=%f log_id=%s", entry.Provider, batchResp.BatchID, summary.Cost, summary.LogID)
+	}
+	attachBatchResultsDisplay(entry, batchResp, summary)
+}
+
+func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *batchaccounting.Summary) {
+	debug := &schemas.BifrostBatchDebug{BatchID: batchResp.BatchID}
+	if counts := schemas.BatchRequestCountsFromResults(batchResp.Results); !counts.IsZero() {
+		debug.RequestCounts = &counts
+	}
+	if summary != nil {
+		debug.Status = summary.Status
+		if summary.Complete || len(summary.ModelBreakdowns) > 0 {
+			accounting := &schemas.BatchAccountingDebug{
+				ModelBreakdowns: summary.ModelBreakdowns,
+				Incomplete:      !summary.Complete,
+				Echo:            true,
+			}
+			if summary.Complete {
+				cost := summary.Cost
+				accounting.Cost = &cost
+			}
+			debug.Accounting = accounting
+		}
+	}
+	if debug.IsZero() {
+		return
+	}
+	entry.BatchDebugParsed = debug
+}
+
+func (p *LoggerPlugin) EmitBatchAggregateLog(ctx context.Context, entry *logstore.Log) {
+	p.makePostWriteCallback(nil)(entry)
+}
+
+func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil || result == nil || p.batchStore == nil {
+		return
+	}
+
+	var job *tables.TableBatchJob
+	now := time.Now().UTC()
+	switch {
+	case result.BatchCreateResponse != nil:
+		resp := result.BatchCreateResponse
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job.InputFileID = resp.InputFileID
+		job.OutputFileID = resp.OutputFileID
+		job.ErrorFileID = resp.ErrorFileID
+		job.ResultsURL = resp.ResultsURL
+		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
+	case result.BatchRetrieveResponse != nil:
+		resp := result.BatchRetrieveResponse
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job.InputFileID = resp.InputFileID
+		job.OutputFileID = resp.OutputFileID
+		job.ErrorFileID = resp.ErrorFileID
+		job.ResultsURL = resp.ResultsURL
+		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
+	default:
+		return
+	}
+
+	if job.BatchID == "" {
+		return
+	}
+	if !tables.IsTerminalBatchProviderStatus(job.ProviderStatus) {
+		next := now.Add(time.Minute)
+		job.NextCheckAt = &next
+	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
+		job.ProviderStatus == string(schemas.BatchStatusEnded) {
+		job.NextCheckAt = &now
+	}
+	if err := p.batchStore.UpsertBatchJob(p.ctx, job); err != nil {
+		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.BatchID, err)
+	}
+}
+
+// addBatchDetailToLog records which batch a batch_create / batch_retrieve row
+// addressed and the provider's progress counts for it.
+func addBatchDetailToLog(entry *logstore.Log, batchID string, status string, counts schemas.BatchRequestCounts) {
+	if entry == nil {
+		return
+	}
+	debug := &schemas.BifrostBatchDebug{BatchID: batchID, Status: status}
+	if !counts.IsZero() {
+		debug.RequestCounts = &counts
+	}
+	if debug.IsZero() {
+		return
+	}
+	entry.BatchDebugParsed = debug
+}
+
+func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableBatchJob {
+	job := &tables.TableBatchJob{
+		Provider:         entry.Provider,
+		BatchID:          batchID,
+		Model:            model,
+		Endpoint:         endpoint,
+		ProviderStatus:   status,
+		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    entry.SelectedKeyID,
+		VirtualKeyID:     entry.VirtualKeyID,
+		UserID:           entry.UserID,
+		TeamID:           entry.TeamID,
+		CustomerID:       entry.CustomerID,
+		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
+		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	if entry.ID != "" {
+		sourceLogID := entry.ID
+		job.SourceLogID = &sourceLogID
+	}
+	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
+		job.ID = tables.BatchJobID(job.Provider, job.BatchID)
+	}
+	return job
 }
 
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
@@ -552,6 +781,7 @@ type compiledUserAgentMapping struct {
 type LoggerPlugin struct {
 	ctx                          context.Context
 	store                        logstore.LogStore
+	batchStore                   batchaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
@@ -565,6 +795,7 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
+	batchUsageReporter           batchaccounting.UsageReporter
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
@@ -582,14 +813,17 @@ type LoggerPlugin struct {
 	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
 	batchCancel                  context.CancelFunc    // Cancels batchCtx
+	batchSweeperCancel           context.CancelFunc    // Cancels the batch accounting sweeper, when enabled
 	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
 	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
-// Init creates new logger plugin with given log store
-func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
+// Init creates new logger plugin with given log store. batchStore is the
+// configstore-backed coordination store for delayed batch accounting; it may be
+// nil, which disables batch accounting.
+func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, batchStore batchaccounting.SweepStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -619,6 +853,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	plugin := &LoggerPlugin{
 		ctx:                          ctx,
 		store:                        logsStore,
+		batchStore:                   batchStore,
 		pricingManager:               pricingManager,
 		mcpCatalog:                   mcpCatalog,
 		disableContentLogging:        config.DisableContentLogging,
@@ -768,9 +1003,67 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.logCallback = callback
 }
 
+func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.UsageReporter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.batchUsageReporter = reporter
+}
+
+func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
+		if p.logger != nil {
+			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
+		}
+		return func() {}
+	}
+	if kvStore == nil && p.logger != nil {
+		p.logger.Debug("batch accounting sweeper starting without KV store")
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.mu.Lock()
+	// Cleanup sets p.closed and cancels the sweeper under this same lock before it
+	// reaches p.wg.Wait(), so checking it here is what keeps the wg.Add below from
+	// racing that Wait — a reload wiring a sweeper onto an instance already shutting
+	// down would otherwise violate the WaitGroup contract and start a goroutine
+	// writing through a closed plugin.
+	if p.closed.Load() {
+		p.mu.Unlock()
+		cancel()
+		if p.logger != nil {
+			p.logger.Warn("batch accounting sweeper not started: logging plugin is shutting down")
+		}
+		return func() {}
+	}
+	if p.batchSweeperCancel != nil {
+		p.batchSweeperCancel()
+	}
+	p.batchSweeperCancel = cancel
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+	claimedBy := p.batchRunnerID("batch-sweeper")
+	sweeper := batchaccounting.NewSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
+		Interval:  interval,
+		ClaimedBy: claimedBy,
+		KVStore:   kvStore,
+		Logger:    p.logger,
+	})
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		sweeper.Run(ctx)
+	}()
+	return cancel
+}
+
 // GetName returns the name of the plugin
 func (p *LoggerPlugin) GetName() string {
 	return PluginName
+}
+
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*LoggerPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // HTTPTransportPreHook is not used for this plugin
@@ -1520,6 +1813,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
+		// Attach the per-category cost split to the accumulated stream usage so
+		// log detail views can surface input / output / cache costs.
+		p.attachCostBreakdown(ctx, entry, result)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
@@ -1550,6 +1846,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
+	if bifrostErr == nil && (requestType == schemas.BatchCreateRequest || requestType == schemas.BatchRetrieveRequest) {
+		p.recordBatchJobLifecycle(entry, result)
+	}
 
 	// Calculate cost
 	var cacheDebug *schemas.BifrostCacheDebug
@@ -1559,8 +1858,29 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
+			cost := breakdown.TotalCost
 			entry.Cost = &cost
+			// Attach the per-category split (input / output / cache) to the
+			// stored usage so log detail views can surface it. Preserve any
+			// provider-supplied breakdown.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = breakdown
+			} else if entry.TokenUsageParsed == nil {
+				// No usage carrier: OCRUsageInfo has no tokens, so OCR is never
+				// aliased into TokenUsageParsed. SerializeFields skips its cost
+				// block when TokenUsageParsed is nil, so denormalize the split
+				// directly here for the columns to reconcile to the cost column.
+				entry.InputCost = breakdown.InputCost
+				entry.OutputCost = breakdown.OutputCost
+				entry.AdditionalCost = breakdown.AdditionalCost
+			}
+		}
+		if bifrostErr == nil &&
+			requestType == schemas.BatchResultsRequest &&
+			result != nil &&
+			result.BatchResultsResponse != nil {
+			p.accountBatchResults(entry, result, pricingScopes)
 		}
 	}
 
@@ -1596,15 +1916,25 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // cannot wedge the server's overall 30s shutdown budget.
 func (p *LoggerPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
+		p.mu.Lock()
+		// Under the same lock as the sweeper cancel, and before anything below can
+		// reach p.wg.Wait(): StartBatchAccountingSweeper reads this flag while holding
+		// p.mu, so once it is set no further wg.Add can slip in behind the Wait.
+		p.closed.Store(true)
+		if p.batchSweeperCancel != nil {
+			p.batchSweeperCancel()
+			p.batchSweeperCancel = nil
+		}
+		p.mu.Unlock()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
 		// Signal the cleanup worker to stop.
 		close(p.done)
-		// Stop new producers before killing batchWriter so the channel does
-		// not grow further while we drain it ourselves. Any producer that raced
-		// past this check is absorbed by the enqueue recover path.
-		p.closed.Store(true)
+		// p.closed was already set above (it doubles as the sweeper-start guard),
+		// which is what stops new producers before we kill batchWriter so the queue
+		// does not grow while we drain it. Any producer that raced past that check is
+		// absorbed by the enqueue recover path.
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
 		p.batchCancel()
@@ -1694,6 +2024,11 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	}
 }
 
+// ConsumesOverheadSpans opts this plugin into receiving the internal overhead-breakdown
+// spans (implements schemas.OverheadSpanConsumer). computeOverheadBreakdown needs them;
+// every other connector gets a trace with those spans stripped.
+func (p *LoggerPlugin) ConsumesOverheadSpans() bool { return true }
+
 // Inject receives a completed trace and writes the log entries with plugin logs to DB.
 // This implements the ObservabilityPlugin interface.
 func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
@@ -1728,6 +2063,9 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		upstreamMs, upOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
 		overheadMs, ovOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
+	// Per-span self-time decomposition of overhead, attached to the same terminal
+	// row that receives the overhead number below.
+	overheadBreakdown, measuredOverheadMs, isStreaming := computeOverheadBreakdown(trace, overheadMs, ovOK, upstreamMs, upOK)
 
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
@@ -1758,20 +2096,44 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 				entry.UpstreamLatency = nil
 				entry.OverheadLatency = nil
 			}
-			if upOK {
-				u := upstreamMs
-				entry.UpstreamLatency = &u
-			}
-			if ovOK {
-				o := overheadMs
-				entry.OverheadLatency = &o
-			}
-			// Latency = full-request wall-clock = upstream + overhead. Summing (not
-			// the raw span duration) keeps latency >= upstream when overhead clamps
-			// to zero, so the breakdown always adds up.
-			if upOK && ovOK {
+			if isStreaming && upOK && ovOK {
+				// Streaming: overhead is the measured Bifrost CPU (the breakdown buckets),
+				// not total-upstream. The remainder (total - upstream - measured) is the
+				// off-CPU relay/scheduler wait the request goroutine spends parked between
+				// provider chunks — not Bifrost work — so it is folded into upstream. This
+				// makes the overhead number reflect actual Bifrost cost while keeping
+				// latency = upstream + overhead and the breakdown buckets summing to overhead.
 				total := upstreamMs + overheadMs
+				measured := measuredOverheadMs
+				if measured > overheadMs {
+					measured = overheadMs // measurement skew: never exceed total-upstream
+				}
+				if measured < 0 {
+					measured = 0
+				}
+				up := total - measured
+				entry.UpstreamLatency = &up
+				entry.OverheadLatency = &measured
 				entry.Latency = &total
+			} else {
+				if upOK {
+					u := upstreamMs
+					entry.UpstreamLatency = &u
+				}
+				if ovOK {
+					o := overheadMs
+					entry.OverheadLatency = &o
+				}
+				// Latency = full-request wall-clock = upstream + overhead. Summing (not
+				// the raw span duration) keeps latency >= upstream when overhead clamps
+				// to zero, so the breakdown always adds up.
+				if upOK && ovOK {
+					total := upstreamMs + overheadMs
+					entry.Latency = &total
+				}
+			}
+			if len(overheadBreakdown) > 0 {
+				entry.OverheadBreakdownParsed = overheadBreakdown
 			}
 		} else if upOK || ovOK {
 			entry.UpstreamLatency = nil
@@ -1793,6 +2155,300 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 		return ""
 	}
 	return string(data)
+}
+
+// spanWall is a span's wall-clock duration, guarding against unfinished spans
+// (zero or non-monotonic EndTime) which would otherwise read as huge negatives.
+func spanWall(s *schemas.Span) time.Duration {
+	if s.EndTime.IsZero() || !s.EndTime.After(s.StartTime) {
+		return 0
+	}
+	return s.EndTime.Sub(s.StartTime)
+}
+
+// spanOverlap is the duration of child that falls inside parent's time window. For a
+// genuinely nested child this equals the child's wall duration, so self-time is
+// unchanged; for a child re-parented by ID but running outside the parent (a
+// sequential sibling in wall-clock terms) it is zero. Guards unfinished spans.
+func spanOverlap(parent, child *schemas.Span) time.Duration {
+	if parent.EndTime.IsZero() || !parent.EndTime.After(parent.StartTime) {
+		return 0
+	}
+	if child.EndTime.IsZero() || !child.EndTime.After(child.StartTime) {
+		return 0
+	}
+	start := child.StartTime
+	if parent.StartTime.After(start) {
+		start = parent.StartTime
+	}
+	end := child.EndTime
+	if parent.EndTime.Before(end) {
+		end = parent.EndTime
+	}
+	if !end.After(start) {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+// isOverheadSpanKind reports whether a span's self-time counts as attributable
+// Bifrost overhead. Only spans that tightly bracket Bifrost's own code qualify:
+// plugin hooks and internal operations (key.selection, etc). Deliberately excluded:
+//   - llm.call/retry/fallback and the media provider kinds: the upstream side.
+//   - the root http.request span: its self-time is the glue between child spans,
+//     which for streaming also contains response-body socket reads that happen
+//     outside any child span. That time is real upstream (and is already in the
+//     upstream accumulator), so counting it here would double-report it as overhead.
+//
+// Excluded spans still subtract from their parent's self-time via childDur, so their
+// time is removed from any bucket rather than mislabeled. The gap between the summed
+// buckets and the stamped overhead number is surfaced as the reconciliation line.
+func isOverheadSpanKind(kind schemas.SpanKind) bool {
+	switch kind {
+	case schemas.SpanKindPlugin, schemas.SpanKindInternal:
+		return true
+	default:
+		return false
+	}
+}
+
+// overheadBucketName maps an overhead-side span to its breakdown bucket.
+func overheadBucketName(s *schemas.Span) string {
+	if s.Kind == schemas.SpanKindPlugin {
+		// plugin.<name>.<phase> -> plugin.<name>, collapsing the hook phases.
+		n := strings.TrimPrefix(s.Name, "plugin.")
+		if i := strings.LastIndex(n, "."); i > 0 {
+			n = n[:i]
+		}
+		return "plugin." + n
+	}
+	return s.Name // key.selection and other internal spans keep their name
+}
+
+// computeOverheadBreakdown decomposes Bifrost overhead across spans by self-time:
+// each span's own wall duration minus the wall duration of its direct children.
+// Self-times across the tree are non-overlapping and sum to the root duration, so
+// summing the overhead-side buckets is an independent measure of overhead that does
+// not depend on the upstream socket accumulator. Only overhead-side spans produce a
+// bucket; provider/upstream spans still subtract from their parent's self-time.
+//
+// The remaining overhead (the stamped total, minus the measured plugin/internal
+// self-time) is attributed to a final "core" bucket: transport parsing, routing, and
+// request/response marshalling that Bifrost does outside any plugin span. It is
+// derived from overheadMs (which already excludes upstream), not from the root
+// span's self-time, so it never picks up streaming socket reads. Buckets are
+// returned with microsecond values, measured spans first (chronological) then core.
+// computeOverheadBreakdown returns the per-phase buckets, the measured Bifrost-CPU
+// total in ms (the sum of those buckets), and whether this was a streaming request.
+// For streams the caller uses measuredMs as the overhead (see Inject): total-upstream
+// over-counts stream overhead because it includes off-CPU relay/scheduler wait between
+// chunks, which is not Bifrost work.
+func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstreamMs float64, upstreamOK bool) ([]logstore.OverheadBucket, float64, bool) {
+	if trace == nil || len(trace.Spans) == 0 {
+		return nil, 0, false
+	}
+	// Sum direct-children time per parent, over ALL spans (upstream ones too), so
+	// excluded child spans are still removed from their parent's self-time. Only the
+	// portion of a child that temporally OVERLAPS its parent counts: a child
+	// re-parented for trace-hierarchy reasons but running outside the parent's window
+	// (e.g. llm.call is linked under key.selection but starts after it ends) then
+	// correctly subtracts nothing, instead of driving the parent's self-time negative.
+	spanByID := make(map[string]*schemas.Span, len(trace.Spans))
+	for _, s := range trace.Spans {
+		if s != nil && s.SpanID != "" {
+			spanByID[s.SpanID] = s
+		}
+	}
+	childDur := make(map[string]time.Duration, len(trace.Spans))
+	for _, s := range trace.Spans {
+		if s == nil || s.ParentID == "" {
+			continue
+		}
+		parent := spanByID[s.ParentID]
+		if parent == nil {
+			continue
+		}
+		childDur[s.ParentID] += spanOverlap(parent, s)
+	}
+
+	type agg struct {
+		dur   time.Duration
+		kind  schemas.SpanKind
+		first time.Time
+	}
+	buckets := make(map[string]*agg)
+	for _, s := range trace.Spans {
+		if s == nil || !isOverheadSpanKind(s.Kind) {
+			continue
+		}
+		self := spanWall(s) - childDur[s.SpanID]
+		if self <= 0 {
+			continue
+		}
+		name := overheadBucketName(s)
+		b := buckets[name]
+		if b == nil {
+			b = &agg{kind: s.Kind, first: s.StartTime}
+			buckets[name] = b
+		}
+		b.dur += self
+		if s.StartTime.Before(b.first) {
+			b.first = s.StartTime
+		}
+	}
+
+	// Streaming runs no per-chunk spans: the relay loop's JSON decode, struct->unified
+	// mapping, and downstream-backpressure stall are stamped as root-span attributes at
+	// stream end. Fold them into the same buckets as their unary equivalents (decode ->
+	// response-parse/Serialization, mapping -> convertor/Convertor) so a stream's numbers
+	// read like a unary request's. Backpressure has no unary twin and is not Bifrost CPU,
+	// so it gets its own bucket. Seeding the map here means measuredNs and core pick them
+	// up on the existing path, with no separate bookkeeping.
+	if trace.RootSpan != nil {
+		attrs := trace.RootSpan.Attributes
+		addStreamBucketMs := func(name string, ms float64) {
+			if ms <= 0 {
+				return
+			}
+			b := buckets[name]
+			if b == nil {
+				b = &agg{kind: schemas.SpanKindInternal, first: trace.RootSpan.StartTime}
+				buckets[name] = b
+			}
+			b.dur += time.Duration(ms * float64(time.Millisecond))
+		}
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamParseMs); ok {
+			addStreamBucketMs("response-parse", ms)
+		}
+		// Inbound per-chunk mapping (provider->Bifrost) is conversion work: it belongs
+		// in the Convertor category, as its own member so the stream split is visible.
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamConvertMs); ok {
+			addStreamBucketMs("convertor.stream-in", ms)
+		}
+		// Backpressure is the provider-side downstream wait that IS in the overhead
+		// total. Split it into (A) client-write vs (B) transport CPU using the transport
+		// goroutine's concurrent measurements as weights (those run in parallel and are
+		// not themselves in the total, so they weight rather than add). The (B) share is
+		// the outbound per-chunk mapping (Bifrost->client) -- also conversion work, so it
+		// joins the Convertor category as the outbound member. The (A) share is the client
+		// socket write and stays its own bucket. No transport timing (raw passthrough, or a
+		// client that disconnected) falls back to a single undifferentiated bucket.
+		if bp, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamBackpressureMs); ok && bp > 0 {
+			cpuMs, _ := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamTransportCPUMs)
+			writeMs, _ := traceAttrFloatMs(attrs, schemas.AttrBifrostStreamClientWriteMs)
+			if total := cpuMs + writeMs; total > 0 {
+				addStreamBucketMs("stream-client-write", bp*writeMs/total)
+				addStreamBucketMs("convertor.stream-out", bp*cpuMs/total)
+			} else {
+				addStreamBucketMs("stream-backpressure", bp)
+			}
+		}
+		// Worker->caller goroutine-hop latency (unary path): scheduling wall-time
+		// inside the overhead window that sits on no span. Carve it into its own
+		// bucket so it stops inflating "core". The reverse hop is the queue-wait span.
+		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostWorkerHandoffMs); ok {
+			addStreamBucketMs("worker-handoff", ms)
+		}
+	}
+
+	// Provider-agnostic catch-all. Every provider call runs inside an llm.call span
+	// (SpanKindLLMCall), which is not itself a bucket but envelops the upstream network
+	// call plus ALL provider-side glue: request conversion/marshal/signing, response
+	// read/decompress/parse, header and endpoint work. Its self-time (wall minus the
+	// child phase spans) is therefore exactly upstream + whatever provider work no phase
+	// span captured. Subtracting the measured upstream leaves that uncaptured remainder,
+	// surfaced as "provider-internal" so a brand-new provider — or an unspanned step in
+	// an existing one — can never silently inflate "core"; it lands here instead, and its
+	// size tells us a provider needs finer spans. Summed across attempts: retries create
+	// one llm.call span each, and upstream latency likewise accumulates across them.
+	//
+	// STREAMING IS EXCLUDED. For a streamed response the llm.call span is DEFERRED — it
+	// covers the entire stream (ended on the final chunk), not just setup — while upstream
+	// is only time-to-first-byte. So llm.call self - upstream would capture the whole
+	// per-chunk relay, which is instead decomposed by the stream phases above
+	// (response-parse / convertor / backpressure via the stream accumulator). Computing
+	// provider-internal there would double-count that work and mislabel it. Detect
+	// streaming by the presence of any stream-overhead attribute on the root span.
+	isStreaming := false
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		a := trace.RootSpan.Attributes
+		for _, k := range []string{schemas.AttrBifrostStreamParseMs, schemas.AttrBifrostStreamConvertMs, schemas.AttrBifrostStreamBackpressureMs} {
+			if _, ok := a[k]; ok {
+				isStreaming = true
+				break
+			}
+		}
+	}
+	if upstreamOK && !isStreaming {
+		var llmSelfNs int64
+		var firstLLM time.Time
+		for _, s := range trace.Spans {
+			if s == nil || s.Kind != schemas.SpanKindLLMCall {
+				continue
+			}
+			if self := spanWall(s) - childDur[s.SpanID]; self > 0 {
+				llmSelfNs += self.Nanoseconds()
+			}
+			if firstLLM.IsZero() || s.StartTime.Before(firstLLM) {
+				firstLLM = s.StartTime
+			}
+		}
+		// llmSelfNs and upstream are both provider-side wall time; the difference is the
+		// uninstrumented glue. Guard on a small floor so measurement skew (upstream
+		// stamped slightly larger than the enveloping span) never emits a noise bucket.
+		providerInternalUs := float64(llmSelfNs)/1000.0 - upstreamMs*1000.0
+		if providerInternalUs > 0.5 {
+			b := buckets["provider-internal"]
+			if b == nil {
+				b = &agg{kind: schemas.SpanKindInternal, first: firstLLM}
+				buckets["provider-internal"] = b
+			}
+			b.dur += time.Duration(providerInternalUs * float64(time.Microsecond))
+		}
+	}
+
+	out := make([]logstore.OverheadBucket, 0, len(buckets)+1)
+	var measuredNs int64
+	for name, b := range buckets {
+		measuredNs += b.dur.Nanoseconds()
+		out = append(out, logstore.OverheadBucket{
+			Name:       name,
+			Kind:       string(b.kind),
+			DurationUs: float64(b.dur.Nanoseconds()) / 1000.0,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return buckets[out[i].Name].first.Before(buckets[out[j].Name].first)
+	})
+
+	measuredMs := float64(measuredNs) / float64(time.Millisecond)
+
+	// Unary requests: whatever overhead is left over after every instrumented phase is
+	// the residual between phases — goroutine-scheduling latency (the request hops across
+	// the HTTP, core-pipeline and provider-worker goroutines) plus any not-yet-spanned
+	// transport edge. Now that the code phases are instrumented, this is small and
+	// dominated by scheduling, so it is surfaced as "scheduling" rather than an opaque
+	// "core". Skip when measured spans already exceed the total (upstream over-counting):
+	// a negative value is a diagnostic signal, not a bucket, surfaced in the UI footer.
+	//
+	// STREAMING IS EXCLUDED. For a stream, total-upstream is NOT Bifrost overhead: it
+	// includes the off-CPU relay/scheduler wait the request goroutine spends parked
+	// between provider chunks (confirmed ~2% CPU under load). All actual Bifrost CPU is
+	// already measured in the buckets above (parse/convert accumulators, aggregated
+	// per-chunk plugin timing, transport marshal/write). Emitting a residual bucket there
+	// would resurrect the misleading "scheduling = 95% of overhead" figure. Instead the
+	// caller takes measuredMs as the stream's overhead and folds the off-CPU remainder
+	// into upstream, so latency = upstream + overhead still holds.
+	if overheadOK && !isStreaming {
+		schedulingUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
+		if schedulingUs > 0.5 {
+			out = append(out, logstore.OverheadBucket{Name: "scheduling", Kind: "scheduling", DurationUs: schedulingUs})
+		}
+	}
+	if len(out) == 0 {
+		return nil, measuredMs, isStreaming
+	}
+	return out, measuredMs, isStreaming
 }
 
 // traceAttrFloatMs reads a millisecond span attribute, tolerating int/int64/float64.

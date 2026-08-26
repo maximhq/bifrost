@@ -169,6 +169,18 @@ func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// OverheadBucket is one slice of the Bifrost overhead, attributed to a span (or
+// group of spans) by self-time: the span's own wall duration minus the wall
+// duration of its direct children. Self-times across the whole span tree are
+// non-overlapping and sum to the root duration, so summing the overhead-side
+// buckets gives an independent measure of overhead that does not rely on the
+// upstream socket accumulator. DurationUs is microseconds (overhead runs small).
+type OverheadBucket struct {
+	Name       string  `json:"name"` // e.g. "key.selection", "plugin.governance", "mcp", "core"
+	Kind       string  `json:"kind"` // originating span kind, for grouping/coloring
+	DurationUs float64 `json:"duration_us"`
+}
+
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
@@ -242,26 +254,37 @@ type Log struct {
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
 	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
-	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
-	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
-	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
-	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
-	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
-	RawRequest              string    `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
-	RawResponse             string    `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
-	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
-	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
-	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
-	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
-	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
-	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
-	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
-	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
+	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown       string    `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
+	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Denormalized cost split for per-category quota aggregation. input + output +
+	// additional reconcile to the cost column. Additional holds internal sidecar
+	// costs with no input/output token category (guardrail, MCP).
+	InputCost      float64  `gorm:"default:0" json:"-"`
+	OutputCost     float64  `gorm:"default:0" json:"-"`
+	AdditionalCost float64  `gorm:"default:0" json:"-"`
+	Cost           *float64 `gorm:"index" json:"cost,omitempty"` // Cost in dollars (total cost of the request - includes cache lookup cost)
+	// Virtual: one cost breakdown the UI reads across every row type. Assembled in
+	// DeserializeFields from token_usage.cost when present (full detail), else from
+	// the denormalized columns. Never stored.
+	CostBreakdown           *schemas.BifrostCost `gorm:"-" json:"cost_breakdown,omitempty"`
+	Status                  string               `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string              `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
+	ErrorDetails            string               `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                  bool                 `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary          string               `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
+	RawRequest              string               `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
+	RawResponse             string               `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string               `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string               `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs       string               `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
+	PluginLogs              string               `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string              `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
+	IsLargePayloadRequest   bool                 `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse  bool                 `gorm:"default:false" json:"is_large_payload_response"`
+	HasObject               bool                 `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
+	ContentHidden           bool                 `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
 	// Aggregates over this log's child rows (rows whose parent_request_id equals
 	// this log's ID, i.e. fallback attempts). Populated only on roots_only list
@@ -299,7 +322,14 @@ type Log struct {
 	// `json:"-"`, so they never appear in any serialized usage payload. Without
 	// these columns tierFromResponse sees nothing and reprices flex traffic at
 	// standard rates.
-	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier: "priority" / "flex" / "default"
+	// Batch detail for batch_create / batch_retrieve rows and for the aggregate
+	// cost row. Like the served-tier fields below, this is deliberately NOT a
+	// payload field (see payload.go): request counts and per-model pricing are
+	// operational records rather than request content, so they must survive
+	// object-storage offload and content-hidden rows.
+	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+
+	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
 
@@ -329,6 +359,7 @@ type Log struct {
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
@@ -340,6 +371,7 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	OverheadBreakdownParsed     []OverheadBucket                        `gorm:"-" json:"overhead_breakdown,omitempty"`
 	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
@@ -652,6 +684,20 @@ func (l *Log) SerializeFields() error {
 		if l.TokenUsageParsed.PromptTokensDetails != nil {
 			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
 		}
+		// Denormalize the input/output/additional cost split so it can be summed in SQL.
+		if l.TokenUsageParsed.Cost != nil {
+			l.InputCost = l.TokenUsageParsed.Cost.InputCost
+			l.OutputCost = l.TokenUsageParsed.Cost.OutputCost
+			l.AdditionalCost = l.TokenUsageParsed.Cost.AdditionalCost
+		}
+	}
+
+	// Some providers report only an opaque total (e.g. xAI usd-ticks, Runware),
+	// leaving the per-category split empty. Attribute the total to the input side
+	// so the denormalized columns still reconcile to the cost column
+	// (input + output + additional == total) instead of summing short.
+	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && l.Cost != nil && *l.Cost > 0 {
+		l.InputCost = *l.Cost
 	}
 
 	if l.ErrorDetailsParsed != nil {
@@ -667,6 +713,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.CacheDebug = string(data)
+		}
+	}
+
+	if !l.BatchDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.BatchDebugParsed); err != nil {
+			return err
+		} else {
+			l.BatchDebug = string(data)
 		}
 	}
 
@@ -686,6 +740,16 @@ func (l *Log) SerializeFields() error {
 		}
 	} else {
 		l.AttemptTrail = ""
+	}
+
+	if len(l.OverheadBreakdownParsed) > 0 {
+		if data, err := sonic.Marshal(l.OverheadBreakdownParsed); err != nil {
+			return err
+		} else {
+			l.OverheadBreakdown = string(data)
+		}
+	} else {
+		l.OverheadBreakdown = ""
 	}
 
 	if l.MetadataParsed != nil {
@@ -997,6 +1061,13 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.BatchDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.BatchDebug), &l.BatchDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.BatchDebugParsed = nil
+		}
+	}
+
 	if l.GuardrailDebug != "" {
 		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -1007,6 +1078,12 @@ func (l *Log) DeserializeFields() error {
 	if l.AttemptTrail != "" {
 		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
 			l.AttemptTrailParsed = nil
+		}
+	}
+
+	if l.OverheadBreakdown != "" {
+		if err := sonic.Unmarshal([]byte(l.OverheadBreakdown), &l.OverheadBreakdownParsed); err != nil {
+			l.OverheadBreakdownParsed = nil
 		}
 	}
 
@@ -1094,7 +1171,79 @@ func (l *Log) DeserializeFields() error {
 		l.usageRebuiltFromColumns = true
 	}
 
+	l.assembleCostBreakdown()
+
 	return nil
+}
+
+// assembleCostBreakdown builds the cost_breakdown the UI reads. The top-level
+// input/output/additional/total split comes from the denormalized columns: they
+// are the authoritative source (a reprice via BulkUpdateCost updates the columns
+// and the cost column but NOT the token_usage blob, so token_usage.cost goes
+// stale on recompute) and they survive OCR, offloaded, content-hidden, and
+// rebuilt-stub rows where token_usage.cost is gone. The finer per-category detail
+// objects live only in token_usage.cost, so graft them in, but only per category
+// where the payload still reconciles with the columns, so stale detail from an
+// old reprice never contradicts the fresh split. Presence tracks the scalar Cost
+// field, so cost and cost_breakdown appear together.
+func (l *Log) assembleCostBreakdown() {
+	hasColumns := l.Cost != nil || l.InputCost != 0 || l.OutputCost != 0 || l.AdditionalCost != 0
+	if !hasColumns {
+		// No columns (e.g. a projection that selected token_usage but not the cost
+		// columns): fall back to whatever the payload carries.
+		if l.TokenUsageParsed != nil && l.TokenUsageParsed.Cost != nil {
+			l.CostBreakdown = l.TokenUsageParsed.Cost
+		}
+		return
+	}
+
+	total := l.InputCost + l.OutputCost + l.AdditionalCost
+	if l.Cost != nil {
+		total = *l.Cost
+	}
+	inputCost := l.InputCost
+	// Legacy rows written before the split columns existed carry only the total.
+	// Attribute it to input so the breakdown reconciles, mirroring SerializeFields
+	// and CostUpdateFromBreakdown's handling of opaque provider totals.
+	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
+		inputCost = total
+	}
+	cb := &schemas.BifrostCost{
+		InputCost:      inputCost,
+		OutputCost:     l.OutputCost,
+		AdditionalCost: l.AdditionalCost,
+		TotalCost:      total,
+	}
+	if l.TokenUsageParsed != nil && l.TokenUsageParsed.Cost != nil {
+		d := l.TokenUsageParsed.Cost
+		if costsReconcile(d.InputCost, l.InputCost) {
+			cb.InputCostDetails = d.InputCostDetails
+		}
+		if costsReconcile(d.OutputCost, l.OutputCost) {
+			cb.OutputCostDetails = d.OutputCostDetails
+		}
+		if costsReconcile(d.AdditionalCost, l.AdditionalCost) {
+			cb.AdditionalCostDetails = d.AdditionalCostDetails
+		}
+	}
+	l.CostBreakdown = cb
+}
+
+// costsReconcile reports whether two cost figures match within float noise, used
+// to gate grafting token_usage detail onto the authoritative column split.
+func costsReconcile(a, b float64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	scale := a
+	if b > scale {
+		scale = b
+	}
+	if scale < 0 {
+		scale = -scale
+	}
+	return diff <= 1e-9*(1+scale)
 }
 
 // MCPToolLog represents a log entry for MCP tool executions
@@ -1925,7 +2074,12 @@ type ModelRankingEntry struct {
 	SuccessRate        float64 `json:"success_rate"`
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalCost          float64 `json:"total_cost"`
-	AvgLatency         float64 `json:"avg_latency"`
+	// Per-category cost split; sums to TotalCost. AdditionalCost holds internal
+	// sidecar costs with no input/output token category (guardrail, MCP).
+	InputCost      float64 `json:"input_cost"`
+	OutputCost     float64 `json:"output_cost"`
+	AdditionalCost float64 `json:"additional_cost"`
+	AvgLatency     float64 `json:"avg_latency"`
 	// Throughput is aggregate token-generation rate (tokens/sec) for this model:
 	// SUM(completion_tokens) / (SUM(latency_ms)/1000) over successful rows with
 	// latency > 0 — the same definition as the throughput histogram.

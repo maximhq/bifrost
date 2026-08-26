@@ -19,6 +19,37 @@ const (
 	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
+// CostUpdate is the repriced cost for a single log row, applied in bulk by
+// BulkUpdateCost. It carries the per-category split alongside the total so a
+// reprice keeps the denormalized input/output/additional cost columns in sync
+// with the cost column (they otherwise go stale on recompute). Input + Output +
+// Additional == Total, mirroring schemas.BifrostCost.
+type CostUpdate struct {
+	Total      float64
+	Input      float64
+	Output     float64
+	Additional float64
+}
+
+// CostUpdateFromBreakdown builds a CostUpdate from a cost breakdown, falling back
+// to attributing an unsplit total to the input side (mirrors the SerializeFields
+// reconciliation for opaque provider totals).
+func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
+	if bd == nil {
+		return CostUpdate{}
+	}
+	u := CostUpdate{
+		Total:      bd.TotalCost,
+		Input:      bd.InputCost,
+		Output:     bd.OutputCost,
+		Additional: bd.AdditionalCost,
+	}
+	if u.Input == 0 && u.Output == 0 && u.Additional == 0 && u.Total > 0 {
+		u.Input = u.Total
+	}
+	return u
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	Ping(ctx context.Context) error
@@ -95,7 +126,7 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
-	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error

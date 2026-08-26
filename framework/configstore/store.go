@@ -539,6 +539,12 @@ type ConfigStore interface {
 	// of the given MCP client IDs in one query, keyed by MCPClientID. Not
 	// filtered by status; clients with no admin row are absent from the map.
 	GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error)
+	// GetSharedOauthTokensByConfigIDs is GetSharedOauthTokenByConfigID's batch
+	// counterpart: resolves the shared-mode token row for each of the given
+	// oauth config IDs in one query, keyed by OauthConfigID. Same
+	// active-first ordering, so a stale duplicate can't shadow the live row.
+	// Not filtered by status; configs with no shared row are absent.
+	GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error)
 	// PromoteSharedOauthTokenToAdmin transactionally installs the config's
 	// fresh shared-mode token as the retained admin-mode discovery credential
 	// for mcpClientID: if an admin row already exists its credential fields
@@ -885,6 +891,17 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+
+	// Batch jobs - mutable coordination state for delayed batch accounting
+	UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error
+	GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error)
+	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error)
+	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

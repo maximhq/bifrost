@@ -277,7 +277,7 @@
         "mcp_tool_sync_interval": {
           "type": "integer",
           "minimum": 0,
-          "description": "DEPRECATED: Global tool sync interval in minutes (0 = disabled). Use mcp.tool_sync_interval.",
+          "description": "DEPRECATED: Global tool sync interval in minutes (0 = default of 10 minutes). Use mcp.tool_sync_interval.",
           "default": 10
         },
         "mcp_disable_auto_tool_inject": {
@@ -1502,14 +1502,16 @@
           "$ref": "#/$defs/mcp_tool_manager_config"
         },
         "tool_sync_interval": {
-          "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default). Legacy numeric nanoseconds are also supported for backward compatibility.",
+          "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
           "oneOf": [
             {
               "type": "string",
-              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+              "pattern": "^(?:0|0s|0m|0h|(?:\\d+h)?\\d+m|\\d+h)$"
             },
             {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "multipleOf": 60000000000
             }
           ]
         },
@@ -2307,6 +2309,18 @@
             "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
             "optional": true,
             "default": 0
+          },
+          "semaphore_size": {
+            "type": "integer",
+            "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+            "default": 10000,
+            "minimum": 1
+          },
+          "inject_timeout": {
+            "type": "string",
+            "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+            "default": "5s"
           }
         },
         "allOf": [
@@ -4271,13 +4285,6 @@
                   "type": "string",
                   "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)."
                 },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
-                },
                 "batch_s3_config": {
                   "type": "object",
                   "description": "S3 bucket configuration for Bedrock batch operations",
@@ -4658,6 +4665,9 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
+        },
+        "openai_config": {
+          "$ref": "#/$defs/openai_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -5260,14 +5270,16 @@
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
         },
         "tool_sync_interval": {
-          "description": "Per-client override for tool sync interval. Prefer Go duration strings (e.g. '10m', '-1s', '0s' = use global). Legacy integer nanoseconds are also supported for backward compatibility.",
+          "description": "Per-client override for tool sync interval as a Go duration string in whole seconds (e.g. '10m', '90s'; '0s' or omitted = use global). Legacy integer nanoseconds are also accepted and must be a whole number of seconds.",
           "oneOf": [
             {
               "type": "string",
-              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+              "pattern": "^(?:0|\\d+h(?:\\d+m)?(?:\\d+s)?|\\d+m(?:\\d+s)?|\\d+s)$"
             },
             {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "multipleOf": 1000000000
             }
           ]
         },

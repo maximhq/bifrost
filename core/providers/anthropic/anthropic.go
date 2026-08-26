@@ -544,12 +544,16 @@ func HandleAnthropicChatCompletionRequest(
 	response := AcquireAnthropicMessageResponse()
 	defer ReleaseAnthropicMessageResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
 	// Create final response
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostChatResponse(ctx)
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -778,7 +782,7 @@ func HandleAnthropicChatCompletionStreaming(
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
 	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
-	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
+	providerUtils.SetPassthroughHeadersForStreaming(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -993,8 +997,12 @@ func HandleAnthropicChatCompletionStreaming(
 				continue
 			}
 			var event AnthropicStreamEvent
-			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				logger.Warn("Failed to parse message_start event: %v", err)
+			// Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
+			umErr := sonic.Unmarshal([]byte(eventData), &event)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				logger.Warn("Failed to parse message_start event: %v", umErr)
 				continue
 			}
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
@@ -1168,7 +1176,10 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 			}
 
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
@@ -1432,7 +1443,7 @@ func HandleAnthropicResponsesStream(
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
 	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
-	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
+	providerUtils.SetPassthroughHeadersForStreaming(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1636,8 +1647,11 @@ func HandleAnthropicResponsesStream(
 				continue
 			}
 			var event AnthropicStreamEvent
-			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				logger.Warn("Failed to parse message_start event: %v", err)
+			parseStart := time.Now()
+			umErr := sonic.Unmarshal([]byte(eventData), &event)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				logger.Warn("Failed to parse message_start event: %v", umErr)
 				continue
 			}
 			if event.Message != nil && modelName == "" {
@@ -1688,7 +1702,9 @@ func HandleAnthropicResponsesStream(
 				}
 			}
 
+			convCallStart := time.Now()
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convCallStart))
 			// Propagate message_delta emission flag to context so the output converter
 			// (ToAnthropicResponsesStreamResponse) can skip synthesizing a duplicate.
 			if streamState.HasEmittedMessageDelta {
@@ -2282,11 +2298,16 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		})
 
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpointMessages,
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: latency.Milliseconds(),
 			},
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			batchResultsResp.ExtraFields.RawResponse = results
 		}
 
 		if len(parseResult.Errors) > 0 {
