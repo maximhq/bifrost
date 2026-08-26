@@ -2969,6 +2969,8 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 				ctx.SetValue(k, true)
 			}
 
+			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+
 			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
 
 			for _, k := range flagKeys {
@@ -2977,6 +2979,69 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 				if got != want {
 					t.Errorf("flag %v = %v, want %v", k, got, want)
 				}
+			}
+
+			// SkipKeySelection must survive: it also drives IsClaudeCodeMaxMode, which suppresses
+			// x-api-key on the Anthropic provider. Clearing it here would make an Anthropic
+			// fallback after a non-native attempt send the account key alongside the caller's
+			// OAuth token. The flag is gated at the key-selection read site instead —
+			// see isKeySkippingAllowed.
+			if skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+				t.Error("SkipKeySelection was cleared; it must be gated at the read site, not mutated per attempt")
+			}
+		})
+	}
+}
+
+// TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider verifies that the
+// Claude Code OAuth key-selection skip applies only when the attempt resolved to Anthropic. A
+// governance routing rule can rewrite provider/model after the transport set the flag, and every
+// non-Anthropic provider authenticates with its own configured key — so it must still get one.
+func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider(t *testing.T) {
+	account := NewMockAccount()
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "anthropic-key", Name: "anthropic-key", Value: schemas.SecretVar{Val: "sk-ant"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	account.SetKeysForProvider(schemas.Fireworks, []schemas.Key{
+		{ID: "fireworks-key", Name: "fireworks-key", Value: schemas.SecretVar{Val: "fw-key"}, Models: []string{"*"}, Weight: 1.0, UseAnthropicEndpoints: schemas.Ptr(true)},
+	})
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	tests := []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		wantKeyID string // "" means the pool must be empty (key selection skipped)
+	}{
+		{"anthropic keeps the skip", schemas.Anthropic, "claude-opus-4-5", ""},
+		{"fireworks selects its own key", schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+
+			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ResponsesRequest, tt.provider, tt.model, tt.provider)
+			if err != nil {
+				t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+			}
+			if canRotate {
+				t.Error("canRotate = true, want false")
+			}
+			if tt.wantKeyID == "" {
+				if len(keys) != 0 {
+					t.Fatalf("got %d keys, want an empty pool (key selection skipped)", len(keys))
+				}
+				return
+			}
+			if len(keys) != 1 || keys[0].ID != tt.wantKeyID {
+				t.Fatalf("got %v, want a single key %q", keys, tt.wantKeyID)
+			}
+			// The regression: without a key, UseAnthropicEndpoints is unreadable and the request
+			// is built with the OpenAI schema, which Fireworks rejects for missing max_tokens.
+			if keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints {
+				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
 	}
