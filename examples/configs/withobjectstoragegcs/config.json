@@ -9,7 +9,7 @@
     "object_storage": {
       "type": "gcs",
       "bucket": "env.GCS_BUCKET",
-      "credentials": "env.GCS_KEY",
+      "credentials_json": "env.GCS_KEY",
       "prefix":"bifrost/logs"
     }
   }

@@ -604,10 +604,10 @@ bifrost:
       enabled: false
       version: 1
       config:
-        # Semantic caching mode (dimension > 1): requires provider, keys, and embedding_model
-        # Direct caching mode (dimension: 1): hash-based exact matching, no embedding provider needed
+        # Semantic mode (dimension > 1): set provider + embedding_model. The provider's API keys
+        #   are inherited from bifrost.providers, so configure that provider there (not here).
+        # Direct mode (dimension: 1): hash-based exact matching, no embedding provider needed.
         provider: "openai"
-        keys: []
         embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.8

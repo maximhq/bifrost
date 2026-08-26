@@ -960,13 +960,6 @@
                         "huggingface"
                       ]
                     },
-                    "keys": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "API keys for embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)"
-                    },
                     "embedding_model": {
                       "type": "string"
                     },
