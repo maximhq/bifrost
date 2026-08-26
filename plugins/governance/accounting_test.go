@@ -219,3 +219,165 @@ func TestAccounting_ZeroCostFailureNotBilled(t *testing.T) {
 	assert.Equal(t, int64(0), f.requests(), "no-usage failure counts no request")
 	assert.Equal(t, int64(0), f.tokens(), "no-usage failure counts no tokens")
 }
+
+// userUsageSpy records the user-entity bumps a batch settlement makes. The OSS
+// store implements them as no-ops (user governance is enterprise), so the spy is
+// what pins the contract an enterprise store relies on.
+type userUsageSpy struct {
+	GovernanceStore
+	budgetBumps    []float64
+	rateLimitBumps []int64
+	users          []string
+}
+
+func (s *userUsageSpy) UpdateUserBudgetUsageInMemory(ctx context.Context, userID string, cost float64) error {
+	s.users = append(s.users, userID)
+	s.budgetBumps = append(s.budgetBumps, cost)
+	return nil
+}
+
+func (s *userUsageSpy) UpdateUserRateLimitUsageInMemory(ctx context.Context, userID string, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
+	s.rateLimitBumps = append(s.rateLimitBumps, tokensUsed)
+	return nil
+}
+
+// A user's own budget has no id in BudgetIDs, so before this it was never charged
+// for batch spend — the gap that let a batch bypass every per-user limit under an
+// access profile, where the virtual key is shared and the user is the only thing
+// separating one person's spend from another's.
+func TestReportBatchUsage_ChargesUserEntity(t *testing.T) {
+	f := newAccountingFixture(t)
+	spy := &userUsageSpy{GovernanceStore: f.store}
+	plugin := &GovernancePlugin{store: spy, tracker: f.tracker}
+	report := batchaccounting.BatchUsageReport{
+		RequestID:    "batch-cost:openai:batch-user",
+		Provider:     schemas.OpenAI,
+		Model:        "gpt-4o-mini",
+		Cost:         12.5,
+		TokensUsed:   123,
+		BudgetIDs:    []string{"budget1"},
+		RateLimitIDs: []string{"rl1"},
+		UserID:       "user-alice",
+	}
+
+	// Settlement is at-least-once, so a repeated report must not double-charge.
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+
+	assert.Equal(t, []string{"user-alice"}, spy.users)
+	assert.Equal(t, []float64{12.5}, spy.budgetBumps)
+	assert.Equal(t, []int64{123}, spy.rateLimitBumps)
+	// The budget-id tier is charged exactly once as well, and stays independent of
+	// the user tier: the ids carry the user's model-config scopes, not the user.
+	assert.Equal(t, 12.5, f.cost())
+}
+
+// No user on the report (no user auth, or a pre-migration batch job) must leave the
+// user tier entirely alone.
+func TestReportBatchUsage_WithoutUserSkipsUserEntity(t *testing.T) {
+	f := newAccountingFixture(t)
+	spy := &userUsageSpy{GovernanceStore: f.store}
+	plugin := &GovernancePlugin{store: spy, tracker: f.tracker}
+
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), batchaccounting.BatchUsageReport{
+		RequestID:    "batch-cost:openai:batch-nouser",
+		Provider:     schemas.OpenAI,
+		Cost:         3.0,
+		TokensUsed:   10,
+		BudgetIDs:    []string{"budget1"},
+		RateLimitIDs: []string{"rl1"},
+	}))
+
+	assert.Empty(t, spy.users)
+	assert.Empty(t, spy.budgetBumps)
+	assert.Empty(t, spy.rateLimitBumps)
+}
+
+// modelScopedFixture wires a user-scoped per-model budget (how an access profile's
+// model-level limits are stored) alongside a user-scoped all-models wildcard, so a
+// settlement can be checked for charging the first and not double-charging the second.
+type modelScopedFixture struct {
+	store   GovernanceStore
+	tracker *UsageTracker
+}
+
+func newModelScopedFixture(t *testing.T) *modelScopedFixture {
+	t.Helper()
+	logger := NewMockLogger()
+	providerName := "openai"
+	userID := "user-alice"
+
+	perModel := buildBudgetWithUsage("model-budget", 1_000_000.0, 0.0, "1d")
+	perModelRL := buildRateLimit("model-rl", 1_000_000_000, 1_000_000)
+	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, perModelRL)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
+	perModelMC.ScopeID = &userID
+
+	wildcard := buildBudgetWithUsage("wildcard-budget", 1_000_000.0, 0.0, "1d")
+	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
+	wildcardMC.ScopeID = &userID
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
+		Budgets:      []configstoreTables.TableBudget{*perModel, *wildcard},
+		RateLimits:   []configstoreTables.TableRateLimit{*perModelRL},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	t.Cleanup(func() { _ = tracker.Cleanup() })
+
+	return &modelScopedFixture{store: store, tracker: tracker}
+}
+
+func (f *modelScopedFixture) budgetUsage(id string) float64 {
+	return f.store.GetGovernanceData(context.Background()).Budgets[id].CurrentUsage
+}
+
+func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
+	f := newModelScopedFixture(t)
+	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
+
+	// What a settled batch looks like: the wildcard budget was collected at create
+	// time (and so is already charged the full total), the per-model budget was not.
+	report := batchaccounting.BatchUsageReport{
+		RequestID:    "batch-cost:openai:batch-models",
+		Provider:     schemas.OpenAI,
+		Cost:         30.0,
+		TokensUsed:   300,
+		BudgetIDs:    []string{"wildcard-budget"},
+		UserID:       "user-alice",
+		ModelUsage: []batchaccounting.BatchModelUsage{
+			{Model: "gpt-5", Cost: 20.0, TokensUsed: 200},
+			{Model: "gpt-4o", Cost: 10.0, TokensUsed: 100},
+		},
+	}
+
+	// Settlement is at-least-once, so a repeat must not double-charge.
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+
+	assert.Equal(t, 20.0, f.budgetUsage("model-budget"), "the gpt-5 budget takes gpt-5's share, not the batch total")
+	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
+}
+
+// A batch whose models carry no per-model config must behave exactly as before.
+func TestReportBatchUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
+	f := newModelScopedFixture(t)
+	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
+
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), batchaccounting.BatchUsageReport{
+		RequestID:  "batch-cost:openai:batch-nomodels",
+		Provider:   schemas.OpenAI,
+		Cost:       12.0,
+		TokensUsed: 100,
+		BudgetIDs:  []string{"wildcard-budget"},
+		UserID:     "user-alice",
+		ModelUsage: []batchaccounting.BatchModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
+	}))
+
+	assert.Equal(t, 0.0, f.budgetUsage("model-budget"), "a model with no config of its own charges nothing extra")
+	assert.Equal(t, 12.0, f.budgetUsage("wildcard-budget"))
+}

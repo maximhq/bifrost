@@ -12,6 +12,8 @@ Where an operation has no dedicated Bifrost endpoint, a neutral `type` parameter
 
 ### Supported Operations
 
+<Info>Upscaling, background removal, masking/segmentation, ControlNet preprocessing, and vectorize are available in **Bifrost v2.0.0 and above**.</Info>
+
 | Operation | Supported | Endpoint | Task Type |
 |-----------|-----------|----------|-----------|
 | Image Generation | ✅ | `/v1/images/generations` | `imageInference` |
@@ -118,19 +120,20 @@ curl -X POST http://localhost:8080/v1/images/generations \
 
 ## Edit (`POST /v1/images/edits`)
 
-This endpoint is **multipart/form-data only** - a JSON body is rejected. Alongside file uploads it accepts `image_url` / `image_url[]` form fields, which pass a URL straight to Runware instead of round-tripping the asset through the gateway as base64.
+This endpoint accepts **JSON** and **multipart/form-data**. Use multipart to upload the image as a file; use JSON to reference it by URL, which passes straight to Runware instead of round-tripping the asset through the gateway as base64.
 
 | Parameter | Runware field | Notes |
 |-----------|---------------|-------|
-| `image[]` / `image` | input image | File upload (bytes → data URI) |
-| `image_url[]` / `image_url` | input image | Runware asset UUID or public URL |
+| `images` | input image | JSON only; a URL string, a Runware asset UUID, or `{ "image": "<base64>" }` |
+| `image[]` / `image` | input image | Multipart only; file upload (bytes → data URI) |
+| `image_url[]` / `image_url` | input image | Multipart only; Runware asset UUID or public URL |
 | `mask` | mask image | Inpainting mask (bytes → data URI) |
 | `prompt` | `positivePrompt` | Edit instruction; not required for the operation types below |
 | `type` | `taskType` | Selects the operation - see the table below |
 | `negative_prompt`, `size`, `num_inference_steps`, `seed`, `n`, `response_format`, `output_format`, `output_compression` | same as [Image Generation](#1-image-generation) | |
 | `upscale_factor`, `target_megapixels` | `upscaleFactor`, `targetMegapixels` | `type: "upscale"` only; mutually exclusive |
 
-**Extra Params**: provider-native fields (`strength`, `maskMargin`, `outpaint`, `settings`, ...) are forwarded as-is - no header required.
+**Extra Params**: provider-native fields (`strength`, `maskMargin`, `outpaint`, `settings`, `providerSettings`, ...) are forwarded as-is - no header required. Multipart carries every value as a string, so send JSON when a model's parameters are numbers, booleans or nested objects.
 
 ### Operation types
 
@@ -175,12 +178,21 @@ curl -X POST http://localhost:8080/v1/images/edits \
 </Tab>
 <Tab title="Upscale">
 
+Per-model tuning that has no Bifrost equivalent goes in `settings`, which reaches Runware with its JSON types intact.
+
 ```bash
 curl -X POST http://localhost:8080/v1/images/edits \
-  --form 'model="runware/topazlabs:wonder@3.5"' \
-  --form 'image_url="https://example.com/teapot.jpg"' \
-  --form 'type="upscale"' \
-  --form 'upscale_factor="2"'
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "runware/topazlabs:wonder@3.5",
+    "images": ["https://example.com/teapot.jpg"],
+    "type": "upscale",
+    "upscale_factor": 4,
+    "settings": {
+      "enhancementStrength": "high",
+      "grain": { "size": 1.5 }
+    }
+  }'
 ```
 
 </Tab>
@@ -188,7 +200,7 @@ curl -X POST http://localhost:8080/v1/images/edits \
 
 ```bash
 curl -X POST http://localhost:8080/v1/images/edits \
-  --form 'model="runware/runware:110@1"' \
+  --form 'model="runware/ideogram:remove-background@0"' \
   --form 'image_url="https://example.com/teapot.jpg"' \
   --form 'type="background_removal"'
 ```

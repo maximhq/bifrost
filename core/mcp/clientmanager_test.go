@@ -274,23 +274,95 @@ func TestEnableClient_GuardLostLeavesDisabledUntouched(t *testing.T) {
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State)
 }
 
-// TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicable
-// pins the bug reported against a shared-OAuth client (auth_type='oauth')
-// running in per-call mode: needs_session_stickiness nil/false — the default
-// for a newly created or config.json-bootstrapped client that predates this
-// field — routes RequiresPerCallConnection through the same per-call branch
-// a genuine per-user client uses. UpdateClientCredentials's guard used to
-// return a bare "per-user auth clients" error for this case even though the
-// client is genuinely shared, just with no persistent connection to
-// reconnect (the fresh OAuth token is already live for the next per-call
-// dial). Callers must be able to tell this "nothing to do" case apart from a
-// real failure via the same ErrMCPReconnectNotApplicable sentinel
-// ReconnectClient/CloseAndMarkNeedsReauth already use for the analogous case.
-func TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicable(t *testing.T) {
+// TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronously
+// pins the per-call half of the reauthorize symmetry: a sticky client's
+// credential update goes through connectToMCPClient, which always re-runs
+// tool discovery, while a per-call shared client used to return the
+// not-applicable sentinel and keep serving its stale tool list until the
+// periodic checker's next tick (minutes away on a Healthy client). A
+// credential update on an already-verified per-call shared client must
+// instead refresh tools synchronously with the now-current credential.
+func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronously(t *testing.T) {
+	ts, _ := buildAdminDiscoveryHTTPServer(t)
+
 	// nil credStore: NewMCPManager defaults to a real credstore.CredStore,
 	// whose RequiresPerCallConnection actually ANDs auth type with
-	// NeedsSessionStickiness — unlike expiredOAuthCredStore (used elsewhere
-	// in this file), which hardcodes false regardless of either.
+	// NeedsSessionStickiness (unlike expiredOAuthCredStore, used elsewhere
+	// in this file, which hardcodes false regardless of either).
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:               "client-shared-percall-refresh",
+		Name:             "shared-percall-client-refresh",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer rotated-token")},
+		// NeedsSessionStickiness left nil on purpose: the default value.
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap:         make(map[string]schemas.ChatTool),
+		ToolNameMapping: make(map[string]string),
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.NoError(t, err, "a per-call shared client's credential update must succeed by refreshing tools, not report not-applicable")
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
+}
+
+// TestSetClientTools_ReplacesStaleTools pins SetClientTools' replace
+// semantics: every caller passes a complete discovery result, so a tool the
+// upstream removed between discoveries must disappear from the in-memory
+// ToolMap. The old merge behavior kept such tools alive in memory (and on
+// the hosted MCP surface, which serves from ToolMap) while the DB, persisted
+// from the passed-in set via the tools-change callback, had already dropped
+// them.
+func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{ID: "client-replace-tools", Name: "replace-tools-client"}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap: map[string]schemas.ChatTool{
+			"replace-tools-client-removed": {},
+		},
+		ToolNameMapping: map[string]string{"replace-tools-client-removed": "removed"},
+	}
+	m.mu.Unlock()
+
+	m.SetClientTools(config.ID,
+		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
+		map[string]string{"replace-tools-client-kept": "kept"},
+	)
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
+	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
+	assert.Equal(t, map[string]string{"replace-tools-client-kept": "kept"}, state.ToolNameMapping)
+}
+
+// TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate
+// pins the strict half of the same symmetry: a sticky reconnect whose
+// tools/list fails is a failed reconnect, so a per-call refresh whose
+// discovery fails must fail the update with a real error, not the
+// not-applicable sentinel; the periodic checker retries on its own cadence
+// afterwards. No OAuth provider is configured here, so resolving the shared
+// credential for discovery fails deterministically.
+func TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "client-shared-percall",
@@ -310,7 +382,67 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 
 	err := m.UpdateClientCredentials(config.ID, config)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable), "a per-call shared-oauth client must report the same not-applicable sentinel as a genuine per-user client, not an opaque failure")
+	assert.False(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable), "a failed tool refresh is a real failure, not the not-applicable no-op")
+	assert.Contains(t, err.Error(), "tool discovery")
+}
+
+// TestUpdateClientCredentials_PerCallPerUser_ReturnsReconnectNotApplicable
+// pins that per-user auth types keep the not-applicable sentinel: the
+// credentials updated through here are never the retained admin discovery
+// credential (the admin-verify paths own that flow and re-discover
+// themselves), so there is genuinely nothing to refresh.
+func TestUpdateClientCredentials_PerCallPerUser_ReturnsReconnectNotApplicable(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:             "client-per-user-creds",
+		Name:           "per-user-creds-client",
+		AuthType:       schemas.MCPAuthTypePerUserOauth,
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+}
+
+// TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh pins the
+// Disabled guard on the per-call refresh: SetClientTools forces a client
+// back to Healthy, so a disabled client must keep the sentinel (the fresh
+// credential is picked up when the client is re-enabled, which runs its own
+// discovery) rather than get resurrected by a credential update.
+func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:             "client-shared-percall-disabled",
+		Name:           "shared-percall-client-disabled",
+		AuthType:       schemas.MCPAuthTypeOauth,
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateDisabled,
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a credential update must not resurrect a disabled client")
 }
 
 // TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy
@@ -361,10 +493,15 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	assert.True(t, hasChecker, "must start a connection checker so tools actually get discovered")
 
 	// A second call, now that the client is already Healthy, is the plain
-	// reauthorize case: genuinely nothing left to do.
+	// reauthorize case: it must attempt a synchronous tool refresh with the
+	// updated credential rather than report not-applicable. No OAuth
+	// provider is configured here, so resolving the credential for that
+	// discovery fails, and the failure must surface as a real error (not
+	// the sentinel).
 	err = m.UpdateClientCredentials(config.ID, config)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+	assert.False(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+	assert.Contains(t, err.Error(), "tool discovery")
 }
 
 // TestUpdateClientCredentials_PerCallSharedType_PendingVerification_DiscoversToolsSynchronously

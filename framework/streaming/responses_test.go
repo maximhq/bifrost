@@ -428,3 +428,110 @@ func TestDeepCopyResponsesStreamResponsePreservesAllFields(t *testing.T) {
 		t.Errorf("Item.Phase aliased original: got %q", *copied.Item.Phase)
 	}
 }
+
+// TestBuildResponsesMessageKeepsServerToolPayloadFromItemDone verifies that a server-side
+// tool item keeps the payload that only arrives on output_item.done. output_item.added is a
+// bare shell for these items, so dropping the done event loses the search queries entirely.
+func TestBuildResponsesMessageKeepsServerToolPayloadFromItemDone(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	queries := []string{"positive good news August 24 2026", "site:apnews.com positive news"}
+	chunks := []*ResponsesStreamChunk{
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("ws_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: schemas.Ptr("in_progress"),
+				},
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("ws_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+								Type:    "search",
+								Query:   schemas.Ptr(queries[0]),
+								Queries: queries,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for i, c := range chunks {
+		c.ChunkIndex = i
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].Status)
+	require.Equal(t, "completed", *msgs[0].Status)
+	require.NotNil(t, msgs[0].ResponsesToolMessage)
+	require.NotNil(t, msgs[0].ResponsesToolMessage.Action)
+	require.NotNil(t, msgs[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction)
+	require.Equal(t, queries, msgs[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Queries)
+}
+
+// TestBuildResponsesMessageItemDoneKeepsStreamedText verifies that adopting the done event does
+// not clobber content that arrived as deltas: the assembled text wins, the final status is taken.
+func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("msg_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Status: schemas.Ptr("in_progress"),
+				},
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				ItemID:       schemas.Ptr("msg_1"),
+				ContentIndex: schemas.Ptr(0),
+				Delta:        schemas.Ptr("hello "),
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				ItemID:       schemas.Ptr("msg_1"),
+				ContentIndex: schemas.Ptr(0),
+				Delta:        schemas.Ptr("world"),
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("msg_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Status: schemas.Ptr("completed"),
+				},
+			},
+		},
+	}
+	for i, c := range chunks {
+		c.ChunkIndex = i
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].Status)
+	require.Equal(t, "completed", *msgs[0].Status)
+	require.NotNil(t, msgs[0].Content)
+	require.Len(t, msgs[0].Content.ContentBlocks, 1)
+	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
+	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
+}

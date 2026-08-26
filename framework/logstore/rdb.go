@@ -424,7 +424,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if filters.MissingCostOnly {
 		// cost is null and status is not error
-		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
+		baseQuery = baseQuery.Where(
+			"(cost IS NULL OR cost <= 0) AND status NOT IN ('error') AND COALESCE(batch_debug, '') NOT LIKE ?",
+			"%\"echo\":true%")
 	}
 	if len(filters.CacheHitTypes) > 0 {
 		// Only keep allowed values to avoid passing arbitrary input into the JSON path expression.
@@ -1257,6 +1259,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
+		"batch_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",

@@ -1707,6 +1707,35 @@ func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHa
 	return startPhaseSpan(ctx, "response-parse")
 }
 
+// StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
+// so provider/auth code outside this package can carve its own work out of the residual
+// "core" bucket. name becomes the breakdown bucket; keep it stable and descriptive
+// (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
+func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, name)
+}
+
+// StartScopedPhaseSpan opens a phase span like StartPhaseSpan and additionally installs
+// it as the ACTIVE parent on ctx, so phase spans opened afterward with the same ctx nest
+// as its children. The overhead breakdown subtracts direct children from a span's
+// self-time, so a nested span opened without this would be a sibling and its time would
+// be counted in BOTH buckets. The returned restore func MUST be called when the phase
+// ends (before EndSpan) to reinstate the prior parent. Nil-safe: returns a nil
+// tracer/handle and a no-op restore when no trace is active.
+func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tracer, schemas.SpanHandle, func()) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil, func() {}
+	}
+	prev := ctx.Value(schemas.BifrostContextKeySpanID)
+	id, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	if h == nil {
+		return nil, nil, func() {}
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
@@ -1724,6 +1753,11 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if err != nil {
 			if ct != nil {
 				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+			}
+			// Caller-fault refusals carry their own 400; everything else is a conversion
+			// bug on our side and keeps the 500 default.
+			if badRequest, ok := AsBifrostBadRequestError(err); ok {
+				return nil, badRequest
 			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
 		}
@@ -2422,6 +2456,45 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 	}
 }
 
+// invalidRequestError marks a converter failure as caller input rather than an internal
+// Bifrost fault. Converters return a plain error (see the note on ResolveChatFileURLs for
+// why), and CheckContextAndGetRequestBody wraps whatever comes back as
+// ErrRequestBodyConversion, which the HTTP layer defaults to 500. That default is right for
+// a genuine conversion bug and wrong for a request that can never succeed as written: the
+// caller cannot fix a 5xx by retrying, and 5xx is what infrastructure alerting pages on.
+type invalidRequestError struct{ msg string }
+
+func (e *invalidRequestError) Error() string { return e.msg }
+
+// InvalidRequestErrorf builds the error a request converter returns when the caller's own
+// input is the problem. CheckContextAndGetRequestBody promotes it to a 400; anything the
+// converter wraps it in with %w still promotes, so intermediate context lines are free.
+func InvalidRequestErrorf(format string, args ...any) error {
+	return &invalidRequestError{msg: fmt.Sprintf(format, args...)}
+}
+
+// AsBifrostBadRequestError converts a converter error into a 400 when it (or anything it
+// wraps) was built by InvalidRequestErrorf. The BifrostError carries the converter's own
+// message rather than the wrapped chain, because the outer "failed to convert messages:"
+// prefixes describe Bifrost's call stack, not the caller's mistake.
+func AsBifrostBadRequestError(err error) (*schemas.BifrostError, bool) {
+	var invalid *invalidRequestError
+	if errors.As(err, &invalid) {
+		return NewBifrostBadRequestError(invalid.msg), true
+	}
+	return nil, false
+}
+
+// IsInvalidRequestError reports whether err, or anything it wraps, was built by
+// InvalidRequestErrorf. It answers the same question as AsBifrostBadRequestError without
+// building a BifrostError, for converters that are still deep in the conversion path and
+// want to keep returning a plain error up their own call chain. Use it to tell a caller
+// mistake apart from a transient fault at a site that otherwise tolerates failure.
+func IsInvalidRequestError(err error) bool {
+	var invalid *invalidRequestError
+	return errors.As(err, &invalid)
+}
+
 // NewBifrostUpstreamConnectionError creates a standardized error for upstream
 // connectivity failures where Bifrost successfully dispatched to the provider
 // but the provider failed to return a response body (DNS lookup failure,
@@ -2733,7 +2806,11 @@ func ProcessAndSendResponse(
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	// Time the send: a block here is the transport/client failing to drain (downstream
+	// backpressure), which the overhead breakdown attributes separately from Bifrost CPU.
+	sendStart := time.Now()
 	GateSendChunk(ctx, streamResponse, responseChan)
+	schemas.AddStreamBackpressure(ctx, time.Since(sendStart))
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -3388,8 +3465,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock, schemas.BedrockMantle:
-		// Cerebras, Perplexity, HuggingFace, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
+		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -3808,6 +3885,7 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Stamp now the stream has drained; the handler returned long ago. Before the
 	// guard below so it still runs when there is no deferred span.
 	ctx.StampUpstreamLatency()
+	ctx.StampStreamOverhead()
 
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
@@ -3830,7 +3908,6 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
 	if ttftNs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)              // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk
 		tracer.SetAttribute(handle, schemas.AttrTimeToFirstChunk, float64(ttftNs)/1e9) // spec: seconds
 	}
 	if chunkCount > 0 {

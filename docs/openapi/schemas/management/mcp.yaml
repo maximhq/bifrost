@@ -251,10 +251,10 @@ MCPClientCreateRequestBase:
         are always sticky.
     tool_sync_interval:
       type: integer
+      minimum: 0
       description: |
         Per-client tool-list sync interval in minutes. 0 (or omitted) falls back
-        to the global mcp_tool_sync_interval client config; a negative value
-        disables periodic tool sync for this client.
+        to the global mcp_tool_sync_interval client config.
     tool_execution_timeout:
       type: integer
       minimum: 0
@@ -442,10 +442,10 @@ MCPClientUpdateRequest:
         "stdio" — both are always sticky.
     tool_sync_interval:
       type: integer
+      minimum: 0
       description: |
         Per-client tool-list sync interval in minutes. 0 falls back to the
-        global mcp_tool_sync_interval client config; a negative value disables
-        periodic tool sync for this client.
+        global mcp_tool_sync_interval client config.
     tool_execution_timeout:
       type: integer
       minimum: 0

@@ -268,3 +268,59 @@ func TestListDueBatchJobsFiltersByDueAndStatus(t *testing.T) {
 	require.Len(t, due, 1)
 	assert.Equal(t, "due", due[0].BatchID)
 }
+
+// Attribution is create-time state. A later upsert — the /results path builds a job
+// from the fetching request's own log entry — must not be able to move the bill onto
+// whoever happened to settle the batch.
+func TestUpsertBatchJobDoesNotOverwriteAttribution(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+
+	creatorVK := "vk-creator"
+	creatorUser := "user-alice"
+	creatorBudgets := `["budget-creator"]`
+	sourceLog := "req-create"
+	id := tables.BatchJobID("openai", "batch-attr")
+
+	require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
+		ID:               id,
+		Provider:         "openai",
+		BatchID:          "batch-attr",
+		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    "key-creator",
+		VirtualKeyID:     &creatorVK,
+		UserID:           &creatorUser,
+		BudgetIDs:        &creatorBudgets,
+		SourceLogID:      &sourceLog,
+	}))
+
+	fetcherVK := "vk-fetcher"
+	fetcherUser := "user-bob"
+	fetcherBudgets := `["budget-fetcher"]`
+	fetcherLog := "req-results"
+	require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
+		ID:               id,
+		Provider:         "openai",
+		BatchID:          "batch-attr",
+		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		ProviderStatus:   string(schemas.BatchStatusCompleted),
+		SelectedKeyID:    "key-fetcher",
+		VirtualKeyID:     &fetcherVK,
+		UserID:           &fetcherUser,
+		BudgetIDs:        &fetcherBudgets,
+		SourceLogID:      &fetcherLog,
+	}))
+
+	job := getBatchJob(t, store, id)
+	assert.Equal(t, "key-creator", job.SelectedKeyID)
+	require.NotNil(t, job.VirtualKeyID)
+	assert.Equal(t, creatorVK, *job.VirtualKeyID)
+	require.NotNil(t, job.UserID)
+	assert.Equal(t, creatorUser, *job.UserID)
+	require.NotNil(t, job.BudgetIDs)
+	assert.Equal(t, creatorBudgets, *job.BudgetIDs)
+	require.NotNil(t, job.SourceLogID)
+	assert.Equal(t, sourceLog, *job.SourceLogID)
+	// Lifecycle state, unlike identity, is expected to advance.
+	assert.Equal(t, string(schemas.BatchStatusCompleted), job.ProviderStatus)
+}

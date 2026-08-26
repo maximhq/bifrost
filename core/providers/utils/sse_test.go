@@ -28,7 +28,7 @@ func TestSSEDataReader_DataLinesAndDone(t *testing.T) {
 		"\n" +
 		"data: {\"b\":2}\n" +
 		"data: [DONE]\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 2 || payloads[0] != `{"a":1}` || payloads[1] != `{"b":2}` {
 		t.Errorf("unexpected payloads: %#v", payloads)
 	}
@@ -38,7 +38,7 @@ func TestSSEDataReader_DataLinesAndDone(t *testing.T) {
 // reader must record which one it was — that flag is the only way a provider
 // loop can tell a finished stream from a dead upstream connection.
 func TestSSEDataReader_SawDoneMarkerOnDone(t *testing.T) {
-	reader := newDefaultSSEDataReader(strings.NewReader("data: {\"a\":1}\n\ndata: [DONE]\n\n"))
+	reader := newDefaultSSEDataReader(nil, strings.NewReader("data: {\"a\":1}\n\ndata: [DONE]\n\n"))
 	drainSSEDataReader(t, reader)
 	if !reader.SawDoneMarker() {
 		t.Error("expected SawDoneMarker to be true after reading [DONE]")
@@ -51,7 +51,7 @@ func TestSSEDataReader_SawDoneMarkerOnDone(t *testing.T) {
 // A stream that just stops (upstream connection died on a chunk boundary) ends
 // with the same io.EOF but no marker.
 func TestSSEDataReader_SawDoneMarkerAbsentOnBareEOF(t *testing.T) {
-	reader := newDefaultSSEDataReader(strings.NewReader("data: {\"a\":1}\n\n"))
+	reader := newDefaultSSEDataReader(nil, strings.NewReader("data: {\"a\":1}\n\n"))
 	drainSSEDataReader(t, reader)
 	if reader.SawDoneMarker() {
 		t.Error("expected SawDoneMarker to be false when the body ended without [DONE]")
@@ -64,7 +64,7 @@ func TestSSEDataReader_SawDoneMarkerAbsentOnBareEOF(t *testing.T) {
 // A reader with no bytes at all (upstream died before its first byte) must also
 // report no marker.
 func TestSSEDataReader_SawDoneMarkerAbsentOnEmptyStream(t *testing.T) {
-	reader := newDefaultSSEDataReader(strings.NewReader(""))
+	reader := newDefaultSSEDataReader(nil, strings.NewReader(""))
 	drainSSEDataReader(t, reader)
 	if SSEStreamEndedOnMarker(reader) {
 		t.Error("expected SSEStreamEndedOnMarker to be false for an empty stream")
@@ -87,7 +87,7 @@ func TestSSEStreamEndedOnMarker_UnknownReaderDefaultsTrue(t *testing.T) {
 
 func TestSSEDataReader_SingleLineRawJSONFallback(t *testing.T) {
 	stream := `{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}` + "\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 1 || payloads[0] != `{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}` {
 		t.Errorf("unexpected payloads: %#v", payloads)
 	}
@@ -104,7 +104,7 @@ func TestSSEDataReader_MultilineErrorReassembly(t *testing.T) {
 		"    \"status\": \"RESOURCE_EXHAUSTED\"\n" +
 		"  }\n" +
 		"}\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 2 {
 		t.Fatalf("expected 2 payloads, got %d: %#v", len(payloads), payloads)
 	}
@@ -122,7 +122,7 @@ func TestSSEDataReader_MultilineErrorReassembly(t *testing.T) {
 func TestSSEDataReader_AccumulationAbortedByDataLine(t *testing.T) {
 	stream := "{\n" +
 		"data: {\"b\":2}\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 2 || payloads[0] != "{" || payloads[1] != `{"b":2}` {
 		t.Errorf("unexpected payloads: %#v", payloads)
 	}
@@ -133,7 +133,7 @@ func TestSSEDataReader_MultilineReassemblyWithLeadingWhitespace(t *testing.T) {
 	stream := "  {\n" +
 		"    \"error\": {\"code\": 429}\n" +
 		"  }\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	want := "  {\n    \"error\": {\"code\": 429}\n  }"
 	if len(payloads) != 1 || payloads[0] != want {
 		t.Errorf("unexpected payloads: %#v", payloads)
@@ -145,7 +145,7 @@ func TestSSEDataReader_MultilineReassemblyWithLeadingWhitespace(t *testing.T) {
 func TestSSEDataReader_PartialObjectAtEOF(t *testing.T) {
 	stream := "{\n" +
 		"  \"error\": {\n"
-	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))
+	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 1 || payloads[0] != "{\n  \"error\": {" {
 		t.Errorf("unexpected payloads: %#v", payloads)
 	}

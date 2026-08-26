@@ -124,7 +124,7 @@ ImageGenerationRequest:
         fallbacks:
           type: array
           items:
-            $ref: './common.yaml#/Fallback'
+            $ref: "./common.yaml#/Fallback"
           description: Fallback models to try if primary model fails
 
 ImageGenerationResponse:
@@ -143,7 +143,7 @@ ImageGenerationResponse:
     data:
       type: array
       items:
-        $ref: '#/ImageData'
+        $ref: "#/ImageData"
       description: Array of generated images
     background:
       type: string
@@ -171,9 +171,9 @@ ImageGenerationResponse:
         - "auto"
       description: Size of the generated image
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"
 
 ImageData:
   type: object
@@ -199,7 +199,7 @@ ImageData:
     detections:
       type: array
       items:
-        $ref: '#/ImageDetection'
+        $ref: "#/ImageDetection"
       description: Regions located by a masking or segmentation operation
 
 ImageDetection:
@@ -234,7 +234,7 @@ ImageUsage:
       type: integer
       description: Number of input tokens
     input_tokens_details:
-      $ref: '#/ImageTokenDetails'
+      $ref: "#/ImageTokenDetails"
     total_tokens:
       type: integer
       description: Total tokens used
@@ -242,7 +242,7 @@ ImageUsage:
       type: integer
       description: Number of output tokens
     output_tokens_details:
-      $ref: '#/ImageTokenDetails'
+      $ref: "#/ImageTokenDetails"
 
 ImageTokenDetails:
   type: object
@@ -321,18 +321,209 @@ ImageGenerationStreamResponse:
       type: string
       description: Revised prompt
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
       description: Token usage
     error:
-      $ref: './common.yaml#/BifrostError'
+      $ref: "./common.yaml#/BifrostError"
       description: Error information if generation failed
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"
 
-# Image Edit Schemas (multipart/form-data)
+# Image Edit Schemas (application/json and multipart/form-data)
+
+ImageInput:
+  description: |
+    One source image, either as a bare string - the form `input_images` takes on
+    /v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept
+    a given form reject it.
+  oneOf:
+    - type: string
+      description: |
+        Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object
+        form's `url`.
+    - type: object
+      description: Exactly one of the two properties is expected.
+      properties:
+        url:
+          type: string
+          description: |
+            Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches
+            the asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as
+            base64.
+        image:
+          type: string
+          format: byte
+          description: Base64-encoded image bytes
 
 ImageEditRequest:
   type: object
+  description: |
+    JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form
+    /v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the
+    provider as extra params with their JSON types intact, which is what a model's nested tuning
+    object needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,
+    post `multipart/form-data` instead - see `ImageEditMultipartRequest`.
+  required:
+    - model
+    - images
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    images:
+      type: array
+      items:
+        $ref: "#/ImageInput"
+      description: |
+        Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no
+        usable image is rejected. Providers treat the first image as the primary one (Runware's seed
+        image, Bedrock's style-transfer base), so the order is part of the contract. Only the
+        reference-image models accept more than one; elsewhere images after the first are dropped.
+    prompt:
+      type: string
+      description: |
+        Text prompt describing the edit. Required except for the operation types that are driven
+        purely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,
+        `mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.
+    mask:
+      type: string
+      format: byte
+      description: |
+        Optional base64-encoded mask image for inpainting (transparent areas indicate regions to
+        edit). Dropped for models that declare no mask input.
+    type:
+      type: string
+      enum:
+        - "inpainting"
+        - "outpainting"
+        - "background_removal"
+        - "remove_background"
+        - "remove_bg"
+        - "erase_object"
+        - "recolor"
+        - "search_replace"
+        - "control_sketch"
+        - "control_structure"
+        - "style_guide"
+        - "style_transfer"
+        - "upscale"
+        - "upscale_fast"
+        - "upscale_creative"
+        - "upscale_conservative"
+        - "mask"
+        - "segmentation"
+        - "vectorize"
+        - "controlnet_preprocess"
+        - "controlnet"
+        - "preprocess"
+      description: |
+        Type of edit operation. Support varies by provider; unsupported values are dropped and the
+        request runs as a standard edit.
+    upscale_factor:
+      type: integer
+      description: |
+        Multiply each dimension by this factor. `type: "upscale"` only; mutually exclusive with
+        `target_megapixels`.
+    target_megapixels:
+      type: integer
+      description: |
+        Target output size in megapixels. `type: "upscale"` only; mutually exclusive with
+        `upscale_factor`.
+    n:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: Number of images to generate
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the output image
+    response_format:
+      type: string
+      enum:
+        - "url"
+        - "b64_json"
+        - "data_uri"
+      default: "url"
+      description: |
+        Format of the response. `data_uri` is supported by providers that return an inline
+        data URI (e.g. Runware).
+    stream:
+      type: boolean
+      default: false
+      description: When true, stream the response via Server-Sent Events
+    background:
+      type: string
+      enum:
+        - "transparent"
+        - "opaque"
+        - "auto"
+      description: Background type for the image
+    input_fidelity:
+      type: string
+      enum:
+        - "low"
+        - "high"
+      description: How closely to follow the original image
+    partial_images:
+      type: integer
+      minimum: 0
+      maximum: 3
+      description: Number of partial images to generate when streaming
+    quality:
+      type: string
+      enum:
+        - "auto"
+        - "high"
+        - "medium"
+        - "low"
+        - "standard"
+      description: Quality of the output image
+    output_format:
+      type: string
+      enum:
+        - "png"
+        - "webp"
+        - "jpeg"
+        - "tiff"
+        - "svg"
+      description: Output image format. `svg` applies to vectorize operations
+    num_inference_steps:
+      type: integer
+      description: Number of inference steps
+    seed:
+      type: integer
+      description: Seed for reproducible editing
+    output_compression:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: Compression level (0-100%)
+    negative_prompt:
+      type: string
+      description: What to avoid in the edit
+    user:
+      type: string
+      description: User identifier for tracking
+    fallbacks:
+      type: array
+      items:
+        $ref: "./common.yaml#/Fallback"
+      description: Fallback models to try if primary model fails
+
+ImageEditMultipartRequest:
+  type: object
+  description: |
+    Multipart encoding of an image edit, and the only encoding that can upload the image as a file.
+    This is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a
+    string, so provider-native extra params arrive as strings; post `application/json` instead when
+    a provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.
   required:
     - model
   properties:
@@ -487,7 +678,7 @@ ImageEditRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        $ref: "./common.yaml#/Fallback"
       description: Fallback models to try if primary model fails
 
 # Image Variation Schemas (multipart/form-data)
@@ -536,7 +727,7 @@ ImageVariationRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        $ref: "./common.yaml#/Fallback"
       description: Fallback models to try if primary model fails
 
 # Image Edit Streaming (SSE)
@@ -594,10 +785,10 @@ ImageEditStreamResponse:
       type: string
       description: Revised prompt
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
       description: Token usage
     error:
-      $ref: './common.yaml#/BifrostError'
+      $ref: "./common.yaml#/BifrostError"
       description: Error information if edit failed
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"

@@ -41,7 +41,7 @@ type TableMCPClient struct {
 	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
 	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
 	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
-	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
 	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
