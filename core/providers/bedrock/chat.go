@@ -39,7 +39,7 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	}
 
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(ctx, input)
+	messages, systemMessages, err := convertMessages(ctx, capModel, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}

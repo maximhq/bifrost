@@ -108,7 +108,7 @@ func TestMidConversationSystemReminderPreservesCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -146,7 +146,7 @@ func TestMidConversationDeveloperReminderPreservesCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -166,7 +166,7 @@ func TestMidConversationSystemReminderContentStrAddsNoCachePoint(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -191,7 +191,7 @@ func TestMidConversationSystemRemindersRespectCheckpointBudget(t *testing.T) {
 		userReminderTextMsg("what next?"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -211,7 +211,7 @@ func TestLeadingSystemRunCachePointsUnaffected(t *testing.T) {
 		cachedRoleMsg(schemas.ResponsesInputMessageRoleUser, "Reminder: stay concise."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -247,7 +247,7 @@ func claudeCodeShape(reminderRole schemas.ResponsesMessageRoleType) []schemas.Re
 // cachePoints must reach Bedrock: 2 hoisted into system, 1 on the inlined reminder.
 func TestInlinedSystemReminder_KeepsCachePoint(t *testing.T) {
 	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -260,7 +260,7 @@ func TestInlinedSystemReminder_KeepsCachePoint(t *testing.T) {
 // so it must come after the text it closes over, never before and never first.
 func TestInlinedSystemReminder_CachePointFollowsText(t *testing.T) {
 	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
 	require.NoError(t, err)
 
 	for _, msg := range messages {
@@ -278,7 +278,7 @@ func TestInlinedSystemReminder_CachePointFollowsText(t *testing.T) {
 // it already worked and must keep working identically.
 func TestInlinedSystemReminder_UserRoleTailUnchanged(t *testing.T) {
 	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleUser), true)
+		context.Background(), anthropicModel, claudeCodeShape(schemas.ResponsesInputMessageRoleUser), true)
 	require.NoError(t, err)
 
 	inSystem, inMessages := countCachePoints(messages, systemMessages)
@@ -303,7 +303,7 @@ func TestInlinedSystemReminder_MultipleBreakpointsEmitOne(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	_, inMessages := countCachePoints(messages, nil)
@@ -329,7 +329,7 @@ func TestInlinedSystemReminder_PreservesOneHourTTL(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	var checked bool
@@ -389,7 +389,7 @@ func TestMidconvAnthropicWireShapeReachesBedrockWithAllBreakpoints(t *testing.T)
 		require.NotNil(t, bifrostReq)
 
 		messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
-			context.Background(), bifrostReq.Input, true)
+			context.Background(), anthropicModel, bifrostReq.Input, true)
 		require.NoError(t, err)
 		return messages, systemMessages
 	}

@@ -145,8 +145,8 @@ Sources:
 - [ ] **`fine-grained-tool-streaming-2025-05-14`**
 - [ ] **`extended-thinking-2025-01-15`**
 - [ ] **`fast-mode-2026-02-01`** (Opus 4.6 only)
-- [ ] **`compact-2025-09-15`** (compaction)
-- [ ] **`context-management-2025-09-15` / `context-1m-2025-09-15`**
+- [x] **`compact-2025-09-15`** (compaction) — accept-path smoke in Round 10; live compaction-billing iteration sum pinned in folder 59
+- [x] **`context-management-2025-09-15` / `context-1m-2025-09-15`** — compaction billing via `compact_20260112` on `/v1/responses` (folder 59)
 - [ ] **`files-api-2025-04-14`**
 - [ ] **`mcp-client-2025-09-15`**
 - [ ] **`tool-examples-2025-10-29`**

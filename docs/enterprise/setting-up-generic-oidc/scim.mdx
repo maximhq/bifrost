@@ -92,9 +92,10 @@ bifrost:
         groups:
           attributeType: "group"        # "user" (SCIM User attribute) or "group" (match SCIM Group)
           attributeValue: "displayName"
+      claimsSyncMode: "both"                                # provisioning source: "both" (SCIM + login claims) or "scim" (SCIM only - ignore login claims)
 ```
 
-The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under `scim_config.config` in a raw `config.json`.
+The same keys (`provisioningToken`, `claimScimAttributes`, `claimsSyncMode`) apply directly under `scim_config.config` in a raw `config.json`.
 
 </Step>
 
@@ -105,6 +106,21 @@ The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under 
 </Warning>
 
 Then use this token as the **Bearer Token** and your deployment's SCIM endpoint as the **SCIM Base URL** in [Step 2](#step-2-configure-your-idp-to-push-scim-to-bifrost) below.
+
+---
+
+### Provisioning source
+
+The provider configuration includes a **Provisioning source** setting that controls whether IdP login claims still provision users, or whether SCIM is the sole source of truth:
+
+| Option | Config value | Behavior |
+| --- | --- | --- |
+| **SCIM and login claims** (default) | `both` | Both SCIM and IdP login / token-refresh claims create and update users, roles, teams, and business units. |
+| **SCIM only - ignore login claims** | `scim` | SCIM is the sole source of truth. OIDC claims will be ignored and will never create or update users from claims - new users must be pushed by SCIM. Users not already provisioned by SCIM are denied access at login. |
+
+Choose **SCIM only** when provisioning must be fully controlled by your IdP's SCIM app and login-time claim changes should never alter membership. Leave it on the default **SCIM and login claims** if users are also provisioned just-in-time on first login.
+
+This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM is disabled - claims always sync then.
 
 ---
 

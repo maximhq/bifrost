@@ -761,7 +761,7 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
 								{c.label}
 								{/* normal-case: keep the unit as "µs" — uppercasing mangles the micro sign into "ΜS" (reads as ms) */}
-								<span className="tabular-nums normal-case">{formatMicros(c.totalUs)}</span>
+								<span className="normal-case tabular-nums">{formatMicros(c.totalUs)}</span>
 							</div>
 							<div className="space-y-1 pl-3">
 								{c.members.map((m) => (
@@ -1346,6 +1346,17 @@ export function LogDetailView({
 									{log.metadata.realtime_voice}
 								</Badge>
 							)}
+							{batchDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{batchDebug.status.replace(/_/g, " ")}
+								</Badge>
+							)}
 						</div>
 						<div className="mt-3 flex items-center gap-2">
 							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
@@ -1926,11 +1937,7 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Input Cost"
-											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
-										/>
+										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
@@ -2138,10 +2145,14 @@ export function LogDetailView({
 											/>
 										)}
 										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
-											<div className="grid w-full grid-cols-1 md:grid-cols-3 items-start justify-between gap-4">
+											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 												{batchDebug.request_counts && (
 													<>
-														<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+														<LogEntryDetailsView
+															className="w-full"
+															label="Total Requests"
+															value={String(batchDebug.request_counts.total)}
+														/>
 														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
 															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
 														))}
@@ -2348,7 +2359,11 @@ export function LogDetailView({
 						)}
 				</div>
 			</details>
-			<Tabs key={log.id} defaultValue={showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins"} className="gap-2">
+			<Tabs
+				key={log.id}
+				defaultValue={showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins"}
+				className="gap-2"
+			>
 				<TabsList className="bg-muted/60 h-10 w-fit">
 					{showBatchDetailsTab && (
 						<TabsTrigger value="details" className="px-3">
@@ -2409,7 +2424,7 @@ export function LogDetailView({
 				{showBatchDetailsTab && (
 					<TabsContent value="details" className="space-y-4">
 						{(batchId || batchStatus || (batchInlineRequests.length === 0 && batchInputFileId)) && (
-							<div className="bg-card rounded-sm border p-5 space-y-4">
+							<div className="bg-card space-y-4 rounded-sm border p-5">
 								{batchId && (
 									<LogEntryDetailsView
 										label="Batch ID"
@@ -2438,7 +2453,10 @@ export function LogDetailView({
 										value={
 											<Badge
 												variant="outline"
-												className={cn("rounded-sm px-2 py-0.5 font-medium uppercase", batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault)}
+												className={cn(
+													"rounded-sm px-2 py-0.5 font-medium uppercase",
+													batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault,
+												)}
 											>
 												{batchStatus.replace(/_/g, " ")}
 											</Badge>
@@ -2504,9 +2522,7 @@ export function LogDetailView({
 																{result.model}
 															</Badge>
 														)}
-														{result.errorMessage && (
-															<span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>
-														)}
+														{result.errorMessage && <span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>}
 													</span>
 												</AccordionTrigger>
 												<AccordionContent className="space-y-3 pb-2">

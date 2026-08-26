@@ -201,6 +201,25 @@ git log ${BASE}..HEAD --oneline --no-merges -- framework/
 # etc.
 ```
 
+#### One Entry Per Feature (Collapse Follow-Ups)
+
+A release window usually contains several commits for the same piece of work: one that introduces a feature and a tail of follow-up fixes, polish and additions to it. Group the commits by feature **before** writing anything, then write **one entry per feature that describes what ships**, not the history of how it got there.
+
+- A follow-up fix to a feature introduced in the same release window is **not a bug fix** for the reader: no released version ever had the broken behaviour. Fold it into the feature's entry, or drop it if it adds nothing the reader can observe. Never write "feat: X" and then "fix: Y in X" for the same window.
+- Follow-up additions to an in-window feature (extra fields, another provider, a UI surface, an example plugin, a migration) fold into the same entry as part of the feature's scope.
+- Cite every PR that contributed in the entry's PR list, so the trail survives the merge.
+- An entry goes under `fix:` / `## 🐞 Fixed` **only when the bug existed in a previously released version**. A `fix:` commit prefix does not decide this; classify by what a user of the previous release would have seen. When in doubt, check whether the code being fixed exists at the previous release tag:
+
+```bash
+# 0 files means the symbol was introduced in this window: the fix is a follow-up, fold it into the feature entry
+git grep -l 'ConnectionCheckerManager' <previous-tag> -- core/ framework/ plugins/ transports/ ui/ | wc -l
+```
+
+- The same rule applies to roll-up changelogs (for example a GA release consolidating several prereleases): the "previous release" is the one the roll-up is written against, so fixes to anything introduced in the consolidated prereleases fold into the corresponding feature entry.
+- Independent fixes to pre-existing behaviour that happen to share one PR stay separate entries only if they describe different user-visible problems; one user-visible problem with several root causes is one entry.
+
+Worked example: a window containing `feat: add batch accounting engine`, `feat: report batch usage to governance`, `fix: handle log cost recalculation for batch`, `fix: stop background recalculation zeroing batch rows` and `fix: adds batch types in filters` produces a single `Batch Accounting` entry describing settlement, governance reporting, recalculation and the log filters, citing all five PRs, and nothing under Fixed.
+
 #### Credit Outside Contributors
 
 For each commit that references a PR number (e.g., `#1234`), check if the author is an outside contributor:
@@ -287,6 +306,7 @@ If only one upstream changed, mention just that one (e.g., `- chore: upgraded co
 - Use `fix:`, `feat:`, `hotfix:`, or `chore:` prefixes
 - Breaking changes get a `<Note>` or `<Warning>` block indented under the entry
 - Keep entries concise - 1 line per change unless a breaking change note is needed
+- One entry per feature: follow-up fixes and additions to a feature introduced in the same window fold into that feature's `feat:` entry, and `fix:` is reserved for bugs that existed in the previous release (see "One Entry Per Feature" above)
 
 #### transports/changelog.md (Enterprise-Style Format)
 
@@ -318,7 +338,7 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - Each entry uses **bold name** followed by a spaced hyphen ( - ) and description
 - **Never use em dashes (—) or en dashes (–)** anywhere in changelog output - not in transports/changelog.md, per-module changelog.md files, or docs MDX. Use a spaced hyphen ( - ), a colon, or a sentence break instead. This applies to every section, including issue titles copied from GitHub: rewrite em and en dashes in a copied title to a spaced hyphen. Leave ordinary hyphens alone - they are part of the words themselves (`tool-use`, `non-WAV`, `openai-go`), and rewriting them corrupts the title.
 - Keep descriptions concise - 1-2 lines max per bullet
-- Group related commits into a single bullet point
+- Group related commits into a single bullet point: one bullet per feature, with its in-window follow-up fixes and additions folded in and all contributing PRs cited (see "One Entry Per Feature" above); `## 🐞 Fixed` is reserved for bugs that existed in the previous release
 - Include changes from ALL modules (transports is the top-level summary)
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)

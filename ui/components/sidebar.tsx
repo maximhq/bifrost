@@ -14,7 +14,6 @@ import {
 	Construction,
 	DatabaseZap,
 	Flag,
-	FlaskConical,
 	FolderGit,
 	Gavel,
 	GitCompareArrows,
@@ -73,6 +72,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
@@ -977,14 +977,6 @@ export default function AppSidebar() {
 					]
 				: []),
 			{
-				title: "Evals",
-				url: "https://www.getmaxim.ai",
-				icon: FlaskConical,
-				isExternal: true,
-				description: "Evaluations",
-				hasAccess: true,
-			},
-			{
 				title: "Settings",
 				url: "/workspace/config",
 				icon: Settings2Icon,
@@ -1535,7 +1527,7 @@ export default function AppSidebar() {
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				<div className="mt-auto flex flex-col gap-4 px-3 pb-3 group-data-[collapsible=icon]:px-1">
+				<div className="mt-auto flex flex-col gap-4 px-3 pb-3.5 group-data-[collapsible=icon]:px-1">
 					<div className="mx-1 group-data-[collapsible=icon]:hidden">
 						<PromoCardStack cards={promoCards} onDismiss={handlePromoDismiss} />
 					</div>
@@ -1556,6 +1548,7 @@ export default function AppSidebar() {
 					</div>
 				</div>
 			</SidebarContent>
+			<PoweredByBifrost />
 		</Sidebar>
 	);
 }

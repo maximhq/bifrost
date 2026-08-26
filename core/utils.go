@@ -136,8 +136,11 @@ func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
-func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
+// isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
+// is set only for Claude Code OAuth passthrough, where the caller's token is the upstream
+// credential — and only the Anthropic provider forwards it.
+func isKeySkippingAllowed(baseProvider schemas.ModelProvider) bool {
+	return baseProvider == schemas.Anthropic
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -351,6 +354,8 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
+	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)

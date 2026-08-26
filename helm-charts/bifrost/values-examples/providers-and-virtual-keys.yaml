@@ -91,7 +91,8 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
-    enforceGovernanceHeader: false
+    # Require auth (VK / API key / user token) on inference endpoints. Set true to enforce the virtual keys defined below
+    enforceAuthOnInference: false
     maxRequestBodySizeMb: 100
 
   # ==========================================================================
@@ -314,14 +315,14 @@ bifrost:
           value: "env.AZURE_API_KEY"
           weight: 1
           models: ["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]
+          # aliases map a model name to its Azure deployment name (replaces the
+          # removed azure_key_config.deployments field). Omit when they match.
+          aliases:
+            gpt-4o: "gpt-4o-prod"
+            gpt-4o-mini: "gpt-4o-mini-prod"
+            text-embedding-3-small: "embeddings-prod"
           azure_key_config:
-            endpoint: "env.AZURE_ENDPOINT" # e.g. https://my-resource.openai.azure.com
-            api_version: "2024-10-21"
-            deployments:
-              # Logical model name -> Azure deployment name
-              gpt-4o: "gpt-4o-prod"
-              gpt-4o-mini: "gpt-4o-mini-prod"
-              text-embedding-3-small: "embeddings-prod"
+            endpoint: "env.AZURE_ENDPOINT" # e.g. https://my-resource.openai.azure.com. Uses the Azure v1 API — no api_version.
         - name: "azure-managed-identity"
           # Pure identity inheritance: empty `value` triggers DefaultAzureCredential.
           # Works out-of-the-box on AKS with workload identity, Azure VMs with
@@ -329,11 +330,10 @@ bifrost:
           value: ""
           weight: 1
           models: ["gpt-4o"]
+          aliases:
+            gpt-4o: "gpt-4o-prod"
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT"
-            api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-prod"
 
     # Google Vertex AI — two auth modes:
     #   1. vertex-sa-key:       explicit service-account key JSON via env var.

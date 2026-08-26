@@ -36,6 +36,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 	if au == nil {
 		return nil
 	}
+	au = billableAnthropicUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
 	if total == 0 {
@@ -119,6 +120,8 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	if u == nil {
 		return a.usage()
 	}
+
+	u = billableAnthropicUsage(u)
 
 	a.seen = true
 	c := &a.combined

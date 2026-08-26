@@ -1,8 +1,7 @@
-import { Check, Laptop, Moon, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
-
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Check, Laptop, Moon, Sun } from "lucide-react";
+import { useTheme } from "next-themes";
 
 const THEMES = [
 	{ value: "light", label: "Light", icon: Sun },
@@ -39,7 +38,7 @@ export function ThemeToggle() {
 					size="icon"
 					// size-8 box around a size-4 glyph, matching the notification and menu triggers. Equal boxes are
 					// what keep the topbar icons evenly spaced and open their menus on the same line.
-					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground data-[state=open]:border size-8 border-0 ring-offset-0 outline-none select-none focus-visible:ring-0"
+					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground size-8 border-0 ring-offset-0 outline-none select-none focus-visible:ring-0 data-[state=open]:border"
 				>
 					<Sun className="size-4 scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" strokeWidth={2} />
 					<Moon className="absolute size-4 scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" strokeWidth={2} />

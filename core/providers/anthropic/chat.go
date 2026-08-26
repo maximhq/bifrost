@@ -1313,24 +1313,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Convert usage information
 	if response.Usage != nil {
+		billable := billableAnthropicUsage(response.Usage)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
-			CachedReadTokens:  response.Usage.CacheReadInputTokens,
-			CachedWriteTokens: response.Usage.CacheCreationInputTokens,
+			CachedReadTokens:  billable.CacheReadInputTokens,
+			CachedWriteTokens: billable.CacheCreationInputTokens,
 		}
-		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: response.Usage.CacheCreation.Ephemeral5mInputTokens,
-				CachedWriteTokens1h: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
 			PromptTokensDetails: promptTokensDetails,
-			CompletionTokens:    response.Usage.OutputTokens,
+			CompletionTokens:    billable.OutputTokens,
 		}
 		// Forward web search request count so server-tool use is billed.
-		if response.Usage.ServerToolUse != nil && response.Usage.ServerToolUse.WebSearchRequests > 0 {
-			n := response.Usage.ServerToolUse.WebSearchRequests
+		if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
+			n := billable.ServerToolUse.WebSearchRequests
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
@@ -1338,25 +1339,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
 		// ReasoningTokens <= CompletionTokens — so no folding is required here.
-		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+		if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
 			if bifrostResponse.Usage.CompletionTokensDetails == nil {
 				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
-			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = response.Usage.OutputTokensDetails.ThinkingTokens
+			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = billable.OutputTokensDetails.ThinkingTokens
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
-		if response.Usage.ServiceTier != nil {
-			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+		if billable.ServiceTier != nil {
+			mapped := MapAnthropicServiceTierToBifrost(*billable.ServiceTier)
 			bifrostResponse.ServiceTier = &mapped
 		}
 		// Forward the speed actually served (fast mode) — drives fast-mode billing.
-		if response.Usage.Speed != nil {
-			bifrostResponse.Speed = response.Usage.Speed
+		if billable.Speed != nil {
+			bifrostResponse.Speed = billable.Speed
 		}
 		// Forward the inference geography served — drives the data-residency multiplier.
-		if response.Usage.InferenceGeo != nil {
-			bifrostResponse.InferenceGeo = response.Usage.InferenceGeo
+		if billable.InferenceGeo != nil {
+			bifrostResponse.InferenceGeo = billable.InferenceGeo
 		}
 	}
 

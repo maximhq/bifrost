@@ -44437,7 +44437,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -44720,7 +44721,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -45003,7 +45005,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -45309,7 +45312,8 @@
                   },
                   "tool_sync_interval": {
                     "type": "integer",
-                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config; a negative value disables\nperiodic tool sync for this client.\n"
+                    "minimum": 0,
+                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config.\n"
                   },
                   "tool_execution_timeout": {
                     "type": "integer",
@@ -93024,7 +93028,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -93354,7 +93359,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",

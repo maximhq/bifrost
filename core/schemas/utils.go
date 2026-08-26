@@ -1748,6 +1748,33 @@ func BedrockModelSupportsExtendedCacheTTL(model string) bool {
 	return IsAnthropicModel(model)
 }
 
+// BedrockModelSupportsS3Location reports whether the model's Converse backend actually
+// resolves the s3Location member of an image/document/video source union.
+//
+// s3Location is part of the Converse schema for every model, but the API reference is
+// explicit that reading it is not: "To see which models support S3 uploads, see Supported
+// models and features for Converse."
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
+//
+// The gate has to exist because an unsupported model does not produce an s3Location error.
+// Converse validates the union, translates the request into the model's native format, and
+// drops the member when that format has no S3 source type. Anthropic's does not, so the
+// model receives an empty source and answers in its own vocabulary:
+//
+//	messages.0.content.0.document.source.type: Field required
+//
+// naming a field Converse has never had. Nothing upstream of the model ever touches S3, so
+// the object's existence and the caller's permissions are irrelevant to that failure.
+//
+// Allowlist rather than a denylist: AWS folded the per-model matrix into its model cards
+// and no longer publishes an S3 column, so "supported" is only knowable where it has been
+// observed. Nova is the family AWS's own Converse S3 examples use. Add families here as
+// they are confirmed - a model missing from this list is refused with an actionable error
+// rather than silently mangled, which is the safer way to be wrong.
+func BedrockModelSupportsS3Location(model string) bool {
+	return IsNovaModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")

@@ -1915,6 +1915,74 @@ type AnthropicOutputTokensDetails struct {
 // handoff. Declining attempts appear as ordinary "message" entries.
 const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
 
+// AnthropicUsageIterationTypeCompaction marks the usage.iterations entry for the
+// compaction summarization pass when context_management compaction fires.
+const AnthropicUsageIterationTypeCompaction = "compaction"
+
+// billableAnthropicUsage returns the usage Anthropic actually charges for billing.
+// Top-level input/output/cache fields mirror the reply (message) pass only; the
+// compaction pass is listed separately under usage.iterations. When iterations
+// are present, fold compaction iteration token counts into the top-level fields.
+// Server-side fallback iterations are not added — top-level already mirrors the
+// billed serving attempt and declining attempts must not be summed. When
+// iterations are absent, top-level fields are already complete.
+func billableAnthropicUsage(u *AnthropicUsage) *AnthropicUsage {
+	if u == nil {
+		return nil
+	}
+	if len(u.Iterations) == 0 {
+		return u
+	}
+	out := *u
+	out.Type = nil
+	out.Model = nil
+	out.Iterations = nil
+	if u.OutputTokensDetails != nil {
+		details := *u.OutputTokensDetails
+		out.OutputTokensDetails = &details
+	}
+	if u.ServerToolUse != nil {
+		serverToolUse := *u.ServerToolUse
+		out.ServerToolUse = &serverToolUse
+	}
+	for i := range u.Iterations {
+		it := &u.Iterations[i]
+		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction {
+			continue
+		}
+		addAnthropicUsageTokenFields(&out, it)
+	}
+	return &out
+}
+
+func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheReadInputTokens += src.CacheReadInputTokens
+	dst.CacheCreationInputTokens += src.CacheCreationInputTokens
+	dst.CacheCreation.Ephemeral5mInputTokens += src.CacheCreation.Ephemeral5mInputTokens
+	dst.CacheCreation.Ephemeral1hInputTokens += src.CacheCreation.Ephemeral1hInputTokens
+	if src.OutputTokensDetails != nil && src.OutputTokensDetails.ThinkingTokens > 0 {
+		if dst.OutputTokensDetails == nil {
+			dst.OutputTokensDetails = &AnthropicOutputTokensDetails{}
+		}
+		if src.OutputTokensDetails.ThinkingTokens > dst.OutputTokensDetails.ThinkingTokens {
+			dst.OutputTokensDetails.ThinkingTokens = src.OutputTokensDetails.ThinkingTokens
+		}
+	}
+	if src.ServerToolUse != nil {
+		if dst.ServerToolUse == nil {
+			dst.ServerToolUse = &AnthropicServerToolUseUsage{}
+		}
+		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
+			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
+		}
+	}
+}
+
 // ServerSideFallbackModel returns the model named by the fallback_message entry in
 // usage.iterations — the attempt whose token counts the top-level usage mirrors,
 // and therefore the model those tokens must be priced against. Returns nil on

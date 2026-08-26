@@ -2267,6 +2267,78 @@ func (u *BifrostLLMUsage) NormalizeProviderCost() {
 	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
 }
 
+// DeepCopy returns a copy whose mutable pointer children are all cloned, so a
+// caller can attach cost or edit any nested field without mutating a usage shared
+// with the client-facing response. Returns nil for a nil receiver.
+func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
+	if u == nil {
+		return nil
+	}
+	c := *u
+	if u.PromptTokensDetails != nil {
+		pd := *u.PromptTokensDetails
+		if u.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			cw := *u.PromptTokensDetails.CachedWriteTokenDetails
+			pd.CachedWriteTokenDetails = &cw
+		}
+		c.PromptTokensDetails = &pd
+	}
+	if u.CompletionTokensDetails != nil {
+		cd := *u.CompletionTokensDetails
+		cd.CitationTokens = copyIntPtr(u.CompletionTokensDetails.CitationTokens)
+		cd.NumSearchQueries = copyIntPtr(u.CompletionTokensDetails.NumSearchQueries)
+		cd.ImageTokens = copyIntPtr(u.CompletionTokensDetails.ImageTokens)
+		c.CompletionTokensDetails = &cd
+	}
+	if u.SearchUnits != nil {
+		su := *u.SearchUnits
+		c.SearchUnits = &su
+	}
+	if u.Cost != nil {
+		cost := *u.Cost
+		if u.Cost.InputCostDetails != nil {
+			d := *u.Cost.InputCostDetails
+			cost.InputCostDetails = &d
+		}
+		if u.Cost.OutputCostDetails != nil {
+			d := *u.Cost.OutputCostDetails
+			cost.OutputCostDetails = &d
+		}
+		if u.Cost.AdditionalCostDetails != nil {
+			d := *u.Cost.AdditionalCostDetails
+			cost.AdditionalCostDetails = &d
+		}
+		c.Cost = &cost
+	}
+	if u.CostInUsdTicks != nil {
+		t := *u.CostInUsdTicks
+		c.CostInUsdTicks = &t
+	}
+	if u.Speed != nil {
+		s := *u.Speed
+		c.Speed = &s
+	}
+	if u.InferenceGeo != nil {
+		g := *u.InferenceGeo
+		c.InferenceGeo = &g
+	}
+	if u.ServerSideFallbackModel != nil {
+		m := *u.ServerSideFallbackModel
+		c.ServerSideFallbackModel = &m
+	}
+	return &c
+}
+
+// copyIntPtr returns an independent copy of an *int (nil-safe), for deep-copying
+// the optional token-detail counters.
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 type SearchResult struct {
 	Title       string  `json:"title"`
 	URL         string  `json:"url"`

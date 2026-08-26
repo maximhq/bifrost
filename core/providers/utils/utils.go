@@ -1754,6 +1754,11 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			if ct != nil {
 				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
 			}
+			// Caller-fault refusals carry their own 400; everything else is a conversion
+			// bug on our side and keeps the 500 default.
+			if badRequest, ok := AsBifrostBadRequestError(err); ok {
+				return nil, badRequest
+			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
 		}
 		if ct != nil {
@@ -2449,6 +2454,45 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 			Type:    &errorType,
 		},
 	}
+}
+
+// invalidRequestError marks a converter failure as caller input rather than an internal
+// Bifrost fault. Converters return a plain error (see the note on ResolveChatFileURLs for
+// why), and CheckContextAndGetRequestBody wraps whatever comes back as
+// ErrRequestBodyConversion, which the HTTP layer defaults to 500. That default is right for
+// a genuine conversion bug and wrong for a request that can never succeed as written: the
+// caller cannot fix a 5xx by retrying, and 5xx is what infrastructure alerting pages on.
+type invalidRequestError struct{ msg string }
+
+func (e *invalidRequestError) Error() string { return e.msg }
+
+// InvalidRequestErrorf builds the error a request converter returns when the caller's own
+// input is the problem. CheckContextAndGetRequestBody promotes it to a 400; anything the
+// converter wraps it in with %w still promotes, so intermediate context lines are free.
+func InvalidRequestErrorf(format string, args ...any) error {
+	return &invalidRequestError{msg: fmt.Sprintf(format, args...)}
+}
+
+// AsBifrostBadRequestError converts a converter error into a 400 when it (or anything it
+// wraps) was built by InvalidRequestErrorf. The BifrostError carries the converter's own
+// message rather than the wrapped chain, because the outer "failed to convert messages:"
+// prefixes describe Bifrost's call stack, not the caller's mistake.
+func AsBifrostBadRequestError(err error) (*schemas.BifrostError, bool) {
+	var invalid *invalidRequestError
+	if errors.As(err, &invalid) {
+		return NewBifrostBadRequestError(invalid.msg), true
+	}
+	return nil, false
+}
+
+// IsInvalidRequestError reports whether err, or anything it wraps, was built by
+// InvalidRequestErrorf. It answers the same question as AsBifrostBadRequestError without
+// building a BifrostError, for converters that are still deep in the conversion path and
+// want to keep returning a plain error up their own call chain. Use it to tell a caller
+// mistake apart from a transient fault at a site that otherwise tolerates failure.
+func IsInvalidRequestError(err error) bool {
+	var invalid *invalidRequestError
+	return errors.As(err, &invalid)
 }
 
 // NewBifrostUpstreamConnectionError creates a standardized error for upstream
