@@ -87,10 +87,11 @@ func TestChatStreamForwardsRoleOnlyOpeningDelta(t *testing.T) {
 }
 
 // A refusal-only delta carries payload and must be forwarded too; it fell into
-// the same skip branch as the role-only opener.
+// the same skip branch as the role-only opener. The fixture deliberately
+// carries no role, so this pins the Refusal condition on its own.
 func TestChatStreamForwardsRefusalOnlyDelta(t *testing.T) {
 	head := `data: {"id":"chatcmpl-6523r","object":"chat.completion.chunk","created":1,"model":"repro-model",`
-	body := head + `"choices":[{"index":0,"delta":{"role":"assistant","refusal":"I cannot help with that."},"finish_reason":null}]}` + "\n\n" +
+	body := head + `"choices":[{"index":0,"delta":{"refusal":"I cannot help with that."},"finish_reason":null}]}` + "\n\n" +
 		head + `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
 		"data: [DONE]\n\n"
 
