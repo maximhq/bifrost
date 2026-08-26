@@ -4280,13 +4280,6 @@
                   "type": "string",
                   "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)."
                 },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
-                },
                 "batch_s3_config": {
                   "type": "object",
                   "description": "S3 bucket configuration for Bedrock batch operations",
