@@ -4507,55 +4507,57 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		return nil
 	}
 
+	billable := billableAnthropicUsage(anthropicUsage)
+
 	bifrostUsage := &schemas.ResponsesResponseUsage{
 		Type:         anthropicUsage.Type,
 		Model:        anthropicUsage.Model,
-		InputTokens:  anthropicUsage.InputTokens,
-		OutputTokens: anthropicUsage.OutputTokens,
-		TotalTokens:  anthropicUsage.InputTokens + anthropicUsage.OutputTokens,
+		InputTokens:  billable.InputTokens,
+		OutputTokens: billable.OutputTokens,
+		TotalTokens:  billable.InputTokens + billable.OutputTokens,
 	}
 
 	// Handle cache read tokens
-	if anthropicUsage.CacheReadInputTokens > 0 {
+	if billable.CacheReadInputTokens > 0 {
 		if bifrostUsage.InputTokensDetails == nil {
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.InputTokensDetails.CachedReadTokens = anthropicUsage.CacheReadInputTokens
-		bifrostUsage.InputTokens = bifrostUsage.InputTokens + anthropicUsage.CacheReadInputTokens
-		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + anthropicUsage.CacheReadInputTokens
+		bifrostUsage.InputTokensDetails.CachedReadTokens = billable.CacheReadInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + billable.CacheReadInputTokens
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheReadInputTokens
 	}
 
 	// Handle cache creation tokens
-	if anthropicUsage.CacheCreationInputTokens > 0 {
+	if billable.CacheCreationInputTokens > 0 {
 		if bifrostUsage.InputTokensDetails == nil {
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.InputTokensDetails.CachedWriteTokens = anthropicUsage.CacheCreationInputTokens
-		if anthropicUsage.CacheCreation.Ephemeral5mInputTokens > 0 || anthropicUsage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		bifrostUsage.InputTokensDetails.CachedWriteTokens = billable.CacheCreationInputTokens
+		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			bifrostUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: anthropicUsage.CacheCreation.Ephemeral5mInputTokens,
-				CachedWriteTokens1h: anthropicUsage.CacheCreation.Ephemeral1hInputTokens,
+				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
-		bifrostUsage.InputTokens = bifrostUsage.InputTokens + anthropicUsage.CacheCreationInputTokens
-		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + anthropicUsage.CacheCreationInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + billable.CacheCreationInputTokens
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheCreationInputTokens
 	}
 
 	// Propagate server tool use (web search) counts
-	if anthropicUsage.ServerToolUse != nil && anthropicUsage.ServerToolUse.WebSearchRequests > 0 {
+	if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
 		if bifrostUsage.OutputTokensDetails == nil {
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
-		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(anthropicUsage.ServerToolUse.WebSearchRequests)
+		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
 	}
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
 	// carries across unchanged and OutputTokens/TotalTokens are left alone.
-	if anthropicUsage.OutputTokensDetails != nil && anthropicUsage.OutputTokensDetails.ThinkingTokens > 0 {
+	if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
 		if bifrostUsage.OutputTokensDetails == nil {
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
-		bifrostUsage.OutputTokensDetails.ReasoningTokens = anthropicUsage.OutputTokensDetails.ThinkingTokens
+		bifrostUsage.OutputTokensDetails.ReasoningTokens = billable.OutputTokensDetails.ThinkingTokens
 	}
 
 	// Recursively convert iterations
