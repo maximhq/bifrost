@@ -36,7 +36,14 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 	if au == nil {
 		return nil
 	}
-	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
+	// cache_creation is the 5m/1h split OF cache_creation_input_tokens, so it is a breakdown and
+	// not an addend — fall back to it only when the top-level counter is absent, or a frame that
+	// carries both would be double-counted.
+	cacheCreation := au.CacheCreationInputTokens
+	if cacheCreation == 0 {
+		cacheCreation = au.CacheCreation.Ephemeral5mInputTokens + au.CacheCreation.Ephemeral1hInputTokens
+	}
+	totalInput := au.InputTokens + au.CacheReadInputTokens + cacheCreation
 	total := totalInput + au.OutputTokens
 	if total == 0 {
 		return nil
@@ -48,10 +55,10 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		TotalTokens:      total,
 	}
 
-	if au.CacheReadInputTokens > 0 || au.CacheCreationInputTokens > 0 {
+	if au.CacheReadInputTokens > 0 || cacheCreation > 0 {
 		details := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  au.CacheReadInputTokens,
-			CachedWriteTokens: au.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if au.CacheCreation.Ephemeral5mInputTokens > 0 || au.CacheCreation.Ephemeral1hInputTokens > 0 {
 			details.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -95,11 +102,56 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 // AnthropicPassthroughStreamUsage incrementally merges /v1/messages stream usage across events
 // without retaining the response body. Anthropic splits usage: message_start nests it under
 // message.usage (input, cache tokens incl. 5m/1h split, service_tier), while message_delta has
-// it at the top level (final output). Taking the max of each field across events combines them
-// order-independently — the same merge the native Anthropic stream does (anthropic.go).
+// it at the top level (final output). Every field except input_tokens is combined by taking the
+// max across events, which is order-independent. input_tokens is the exception — see the
+// looseInput/authInput note below — because its meaning varies by upstream.
+//
+// Note this is NOT the same merge as the native Anthropic stream: accumulateAnthropicResponsesUsage
+// (anthropic.go) still takes an unconditional max of input_tokens and therefore still has the
+// double-count this type fixes. That is tracked separately as #5354 / PR #5355.
 type AnthropicPassthroughStreamUsage struct {
 	combined AnthropicUsage
 	seen     bool
+
+	// input_tokens is not the same quantity on every Anthropic-dialect upstream, so it cannot be
+	// max-merged across events unconditionally. Anthropic documents it as EXCLUDING the cache
+	// counters (see AnthropicUsage), which is what makes summing input + cache_read +
+	// cache_creation correct. Some upstreams (observed: QwenCloud, Moonshot/Kimi) instead report a
+	// prompt-scale input_tokens on message_start while its cache counters are still zero or absent,
+	// and send the real cache-aware split only on message_delta. Max-merging both kept the
+	// cache-less figure and then added cache_read on top of a total that already included it,
+	// roughly doubling prompt_tokens on every cached streaming request.
+	//
+	// An event whose cache counters are actually populated is therefore authoritative for
+	// input_tokens; one without them is only a fallback, used until an authoritative event turns
+	// up. Among authoritative events, input_tokens is LATCHED from the single event with the
+	// largest cache total rather than max-merged: max-merging input_tokens, cache_read and
+	// cache_creation independently can assemble a prompt total out of values that never coexisted
+	// in one frame. A message_start carrying a prompt-scale input_tokens together with a partially
+	// known cache_read is exactly that shape — it clears any authority test, and an independent max
+	// then keeps the inflated input_tokens.
+	//
+	// Tie-break on equal cache totals prefers the SMALLER input_tokens, because the premise of this
+	// whole split is that the prompt-scale value is the untrustworthy one. For a compliant upstream
+	// input_tokens does not vary across frames, so the tie-break never fires there.
+	//
+	// The test is on the VALUES, not on whether the fields were present: Kimi sends
+	// "cache_read_input_tokens": 0 explicitly on message_start, so a presence check would wrongly
+	// trust that frame. authSeen keeps the merge order-independent.
+	//
+	// Monotonicity is a property of the two accumulators, not of what is emitted: looseInput and
+	// authInput never decrease, but the emitted combined.InputTokens does drop — from the loose
+	// figure to the authoritative one — on the event where authSeen first flips. That is safe here
+	// because StreamPassthrough (core/providers/utils/passthrough_stream.go) keeps the LAST non-nil
+	// observation and the authoritative message_delta is last, so the billed figure is the
+	// authoritative one. A client that disconnects between message_start and message_delta is
+	// billed the loose figure, which is exactly the pre-fix behaviour. Upstreams that already
+	// report correctly never populate the loose bucket ahead of an authoritative event, so they
+	// are unaffected.
+	looseInput     int
+	authInput      int
+	authCacheTotal int
+	authSeen       bool
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -122,8 +174,29 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 
 	a.seen = true
 	c := &a.combined
-	if u.InputTokens > c.InputTokens {
-		c.InputTokens = u.InputTokens
+	// cache_creation is documented as the 5m/1h split OF cache_creation_input_tokens, so it is a
+	// breakdown, not an addend — only fall back to it when the top-level total is absent.
+	cacheTotal := u.CacheReadInputTokens + u.CacheCreationInputTokens
+	if u.CacheCreationInputTokens == 0 {
+		cacheTotal += u.CacheCreation.Ephemeral5mInputTokens + u.CacheCreation.Ephemeral1hInputTokens
+	}
+	if cacheTotal > 0 {
+		// Latch input_tokens from the event with the STRONGEST cache evidence, rather than taking
+		// a max across events. See the type doc for why a max can build a total out of values that
+		// never coexisted in one frame.
+		if !a.authSeen || cacheTotal > a.authCacheTotal ||
+			(cacheTotal == a.authCacheTotal && u.InputTokens < a.authInput) {
+			a.authSeen = true
+			a.authCacheTotal = cacheTotal
+			a.authInput = u.InputTokens
+		}
+	} else if u.InputTokens > a.looseInput {
+		a.looseInput = u.InputTokens
+	}
+	if a.authSeen {
+		c.InputTokens = a.authInput
+	} else {
+		c.InputTokens = a.looseInput
 	}
 	if u.OutputTokens > c.OutputTokens {
 		c.OutputTokens = u.OutputTokens
