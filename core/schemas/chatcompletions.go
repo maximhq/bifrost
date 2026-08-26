@@ -679,9 +679,11 @@ func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		data, err = ReorderJSONKeys(data, []string{"type", "description", "properties", "required"})
-		if err != nil {
-			return nil, err
+		if len(t.keyOrder.keys) == 0 {
+			data, err = ReorderJSONKeys(data, jsonSchemaPriorityOrder)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	return t.keyOrder.Apply(data)
@@ -799,7 +801,7 @@ func (t *ToolFunctionParameters) hasDefinedSchemaFields() bool {
 	if t == nil {
 		return false
 	}
-	if t.Type != "" || t.Description != nil || t.Required != nil || t.AdditionalProperties != nil || len(t.Enum) > 0 {
+	if t.Type != "" || t.Description != nil || t.AdditionalProperties != nil || len(t.Enum) > 0 {
 		return true
 	}
 	if t.Properties != nil || t.Defs != nil || t.Definitions != nil || t.Ref != nil {
