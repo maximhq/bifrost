@@ -68,7 +68,7 @@ export default function NotificationCenter() {
 					// share one box: Radix anchors sideOffset to the trigger's bounding box, so a shorter trigger
 					// opens its surface higher than its neighbours even at an identical offset, and a narrower one
 					// breaks the even horizontal rhythm of the icon row.
-					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground data-[state=open]:border flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
+					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 				>
 					{/* The badge hangs off the glyph, not the 32px hit area, so widening the button does not fling
 					    the count into the corner. */}

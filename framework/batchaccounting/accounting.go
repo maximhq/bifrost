@@ -82,7 +82,7 @@ type BatchUsageReport struct {
 	RateLimitIDs []string
 	UserID       string
 	VirtualKeyID string
-	ModelUsage []BatchModelUsage
+	ModelUsage   []BatchModelUsage
 }
 
 // BatchModelUsage is one model's share of a settled batch.

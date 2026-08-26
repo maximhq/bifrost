@@ -576,17 +576,21 @@ spec:
 
 ## Consul Discovery
 
-**Best for:** Consul service mesh environments, multi-datacenter deployments
+**Best for:** Consul service mesh environments, and environments where the Consul agent lives in a non-default datacenter, namespace, or partition (set via standard `CONSUL_*` environment variables - see [Consul Authentication and TLS](#consul-authentication-and-tls))
 
 Consul discovery integrates with HashiCorp Consul for service registration and discovery. Ideal for environments already using Consul for service mesh or service discovery.
 
+<Note>
+Consul is external infrastructure - it is not bundled with the Bifrost image and Bifrost does not run or manage a Consul agent for you. You need a reachable Consul deployment (your own, or one your organization already operates) before enabling this discovery type. Bifrost acts only as a Consul client: each node registers itself with, and queries, the Consul agent at `consul_address`.
+</Note>
+
 ### How It Works
 
-1. Each Bifrost node registers itself with Consul on startup
-2. Nodes query Consul to discover other Bifrost instances
-3. Consul performs health checks on each node
-4. Unhealthy nodes are automatically deregistered
-5. Supports multi-datacenter deployments
+1. On startup, each Bifrost node registers itself with Consul as a service instance (ID `<service_name>-<hostname>-<gossip_port>`, tagged `bifrost`, `cluster`), advertising its own address and **gossip** port.
+2. Consul attaches a TCP health check to that registration, dialing the node's gossip port every 10s with a 5s timeout.
+3. About 1 second after registering, the node queries Consul's catalog for all healthy instances of the same `service_name` and joins them via gossip.
+4. Discovery keeps running in the background on an adaptive interval - starting at 1 minute, doubling (up to a 30-minute ceiling) each time a poll finds no new peers, and resetting straight back to 1 minute if cluster health degrades or the member count drops. A node with no peers yet always retries at the 1-minute floor rather than backing off, so it converges quickly once others appear.
+5. If a node's check goes critical (e.g. it crashes or is network-partitioned), Consul removes it from the catalog automatically 30 seconds later. A node that shuts down gracefully deregisters itself immediately instead of waiting out that window.
 
 ### Configuration
 
@@ -619,10 +623,41 @@ Consul discovery integrates with HashiCorp Consul for service registration and d
 | `consul_address` | No | Consul agent address | `"localhost:8500"`, `"consul.service.consul:8500"` (default: `localhost:8500`) |
 
 <Note>
-Consul discovery automatically registers each node with health checks. The health check monitors the gossip port (TCP).
+Consul discovery automatically registers each node with a health check. The check is a **TCP dial against the node's gossip port only** (interval 10s, timeout 5s) - it does not check the gRPC port. A node can show healthy in Consul while still failing to form the gRPC application-state mesh; if the cluster looks unhealthy in the topology view despite Consul showing all nodes passing, check gRPC (`10102`) connectivity separately.
+</Note>
+
+### Consul Authentication and TLS
+
+`consul_address` is the only Consul-specific field in `cluster_config.discovery` - there is no `config.json` field for an ACL token, TLS client certificates, namespace, or datacenter. Bifrost builds its Consul client from the standard Consul Go client's default configuration, which reads these values directly from the process environment - so set the corresponding standard Consul environment variable on the Bifrost process to reach a Consul agent that requires ACLs, TLS, or a non-default namespace/datacenter. These are the same variables the Consul CLI and other official Consul clients read:
+
+| Environment variable | Purpose |
+|-----------------------|---------|
+| `CONSUL_HTTP_TOKEN` | ACL token sent with every request |
+| `CONSUL_HTTP_TOKEN_FILE` | Path to a file containing the ACL token |
+| `CONSUL_HTTP_SSL` | Set to `true` to connect over HTTPS |
+| `CONSUL_HTTP_SSL_VERIFY` | Set to `false` to skip TLS certificate verification (not recommended in production) |
+| `CONSUL_CACERT` | Path to the CA certificate file used to verify the Consul agent's TLS certificate |
+| `CONSUL_CAPATH` | Path to a directory of CA certificates |
+| `CONSUL_CLIENT_CERT` / `CONSUL_CLIENT_KEY` | Client certificate/key for mutual TLS |
+| `CONSUL_TLS_SERVER_NAME` | Server name used for TLS verification (SNI) when it differs from the address |
+| `CONSUL_HTTP_AUTH` | HTTP basic auth credentials, in `username:password` form |
+| `CONSUL_NAMESPACE` | Consul Enterprise namespace to register and query against |
+| `CONSUL_PARTITION` | Consul Enterprise admin partition |
+| `CONSUL_DATACENTER` | Datacenter to target |
+
+<Warning>
+Set these on every node that uses `discovery.type: "consul"` - each node registers itself and queries Consul independently, so a missing token or CA file on one node causes that node's registration or discovery to fail even if the others are configured correctly.
+</Warning>
+
+<Note>
+`consul_address` in `config.json` takes precedence over `CONSUL_HTTP_ADDR` - if `consul_address` is set (non-empty), Bifrost uses it and ignores `CONSUL_HTTP_ADDR`. `CONSUL_HTTP_ADDR` only takes effect when `consul_address` is omitted from `config.json`. All other settings (token, TLS, namespace, partition, datacenter) are read exclusively from their environment variables - there's no config.json equivalent to override them.
 </Note>
 
 ### Docker Compose with Consul
+
+<Warning>
+This example runs Consul with `agent -dev`, which disables ACLs and TLS and keeps all state in memory. It's fine for trying discovery out locally, but is not a production Consul deployment. A production setup needs a real multi-server Consul cluster with ACLs and TLS enabled, and the corresponding `CONSUL_*` environment variables set on each Bifrost node - see [Consul Authentication and TLS](#consul-authentication-and-tls).
+</Warning>
 
 ```yaml
 version: '3.8'
@@ -688,7 +723,7 @@ networks:
 **Solutions**:
 - Verify Consul agent is accessible at configured address
 - Check Consul agent logs for registration errors
-- Ensure Consul ACL token has write permissions if ACLs enabled
+- Ensure `CONSUL_HTTP_TOKEN` (or `CONSUL_HTTP_TOKEN_FILE`) is set on the Bifrost process to a token with write permissions if ACLs are enabled - see [Consul Authentication and TLS](#consul-authentication-and-tls)
 - Verify network connectivity between Bifrost and Consul
 - Check firewall rules allow connections to port 8500
 </Accordion>
@@ -697,22 +732,23 @@ networks:
 **Symptoms**: Consul UI shows services but nodes don't join cluster
 
 **Solutions**:
-- Verify `service_name` matches across all nodes
-- Check Consul service health checks are passing
-- Ensure gossip port is accessible between nodes
-- Verify nodes are registered in correct datacenter
+- Verify `service_name` matches across all nodes - a mismatch means nodes register into different catalog entries and never see each other
+- Check Consul service health checks are passing (the query only returns healthy instances)
+- Ensure the gossip port (10101) is reachable between nodes - this is what both Consul's health check and the actual gossip join use
+- Verify `CONSUL_DATACENTER` (and `CONSUL_NAMESPACE`/`CONSUL_PARTITION` on Consul Enterprise) is either unset or set to the **same value** on every node - Bifrost's Consul client scopes both registration and catalog queries to whatever these env vars resolve to, so a node with a different value registers into, and queries, an entirely different partition of the catalog
 - Check for DNS resolution issues if using service DNS names
+- If nodes only just started, allow up to a minute - discovery polls on an adaptive interval starting at 1 minute, not continuously
 </Accordion>
 
 <Accordion title="Health checks failing">
 **Symptoms**: Services show as critical in Consul UI
 
 **Solutions**:
-- Verify gossip port (10101) and gRPC port (10102) are accessible
-- Check Consul agent can reach node's gossip port
-- Increase health check timeout in Consul if needed
-- Review Bifrost logs for startup errors
-- Ensure nodes have correct IP addresses registered
+- The check only dials the node's **gossip port (10101)** over TCP - gRPC (10102) reachability does not affect this check, so don't spend time on gRPC connectivity for this specific symptom
+- Check Consul agent can reach node's gossip port (10101) - firewalls/NetworkPolicies/security groups between the Consul agent and Bifrost nodes are the usual cause
+- The check uses a 10s interval and 5s timeout by default; a node that's healthy but briefly unresponsive under load can flap critical - review Bifrost logs for startup or resource-pressure errors around the same time
+- Ensure nodes have correct IP addresses registered (check `service.Address`/`service.ServiceAddress` in Consul's catalog against the node's actual reachable IP)
+- Remember a critical check auto-deregisters the node after 30 seconds - if a node keeps reappearing and disappearing, look for the underlying cause (network flakiness, resource exhaustion) rather than the deregistration itself, which is expected behavior
 </Accordion>
 
 ---

@@ -1555,6 +1555,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 				stillMissingInBatch++
 			}
 		}
+		result.Updated += batchDebugUpdated
 
 		if filters.MissingCostOnly {
 			// Updated rows drop out of the result set, so only advance past rows

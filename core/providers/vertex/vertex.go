@@ -3478,6 +3478,33 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	return body
 }
 
+func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
+	raw, ok := body["usageMetadata"]
+	if !ok {
+		return body
+	}
+	metaBytes, err := sonic.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	var meta gemini.GenerateContentResponseUsageMetadata
+	if err := sonic.Unmarshal(metaBytes, &meta); err != nil {
+		return body
+	}
+	usage := map[string]any{
+		"prompt_tokens":     meta.PromptTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount,
+		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.CachedContentTokenCount > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": meta.CachedContentTokenCount,
+		}
+	}
+	body["usage"] = usage
+	return body
+}
+
 // gcsListAllObjects lists every object under a prefix, following pagination.
 func (provider *VertexProvider) gcsListAllObjects(ctx *schemas.BifrostContext, authHeader, bucket, prefix string) ([]gcsObjectMetadata, *schemas.BifrostError) {
 	var objects []gcsObjectMetadata

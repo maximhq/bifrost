@@ -85,6 +85,21 @@ To control which Google Workspace groups are synced as Bifrost teams, configure 
 
 ---
 
+### Provisioning source
+
+The provider configuration includes a **Provisioning source** setting that controls whether IdP login claims still provision users, or whether SCIM is the sole source of truth:
+
+| Option | Config value | Behavior |
+| --- | --- | --- |
+| **SCIM and login claims** (default) | `both` | Both SCIM and IdP login / token-refresh claims create and update users, roles, teams, and business units. |
+| **SCIM only - ignore login claims** | `scim` | SCIM is the sole source of truth. Login and token refresh never create or update users from claims - new users must be pushed by SCIM, and an unknown user signing in is denied with a message to contact their administrator. |
+
+Choose **SCIM only** when provisioning must be fully controlled by your IdP's SCIM app and login-time claim changes should never alter membership. Leave it on the default **SCIM and login claims** if users are also provisioned just-in-time on first login.
+
+This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM is disabled - claims always sync then.
+
+---
+
 ## Step 3: Trigger and verify sync
 
 <Steps>

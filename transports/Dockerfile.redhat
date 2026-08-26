@@ -47,7 +47,7 @@ RUN go build \
 
 # Verify build succeeded
 RUN test -f /app/main || (echo "Build failed" && exit 1)
-  
+
 # --- Runtime Stage: Red Hat UBI 9 Minimal ---
 FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:8eb2830d0936237fc13a1f2f7e45aecf90d69043380ad167fad0343632937f41
 
