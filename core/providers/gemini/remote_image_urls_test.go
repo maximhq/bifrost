@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInlineRemoteImageURLsForGeminiChatConvertsHTTPToInlineData(t *testing.T) {
+func TestNormalizeImageURLsForGeminiChatConvertsHTTPToInlineData(t *testing.T) {
 	remoteURL := "https://cdn.example.com/image.jpeg?sig=secret"
 	imageBytes := []byte("\x89PNG\r\n\x1a\nfake png bytes")
 	encoded := base64.StdEncoding.EncodeToString(imageBytes)
@@ -24,7 +24,7 @@ func TestInlineRemoteImageURLsForGeminiChatConvertsHTTPToInlineData(t *testing.T
 	})
 
 	req := geminiChatImageRequest(remoteURL)
-	require.NoError(t, inlineRemoteImageURLsForGeminiChat(nil, req))
+	require.NoError(t, normalizeImageURLsForGeminiChat(nil, req))
 	assert.Equal(t, "data:image/png;base64,"+encoded, req.Input[0].Content.ContentBlocks[1].ImageURLStruct.URL)
 
 	out, err := ToGeminiChatCompletionRequest(nil, req)
@@ -37,7 +37,7 @@ func TestInlineRemoteImageURLsForGeminiChatConvertsHTTPToInlineData(t *testing.T
 	assert.Equal(t, encoded, out.Contents[0].Parts[1].InlineData.Data)
 }
 
-func TestInlineRemoteImageURLsForGeminiResponsesConvertsHTTPToInlineData(t *testing.T) {
+func TestNormalizeImageURLsForGeminiResponsesConvertsHTTPToInlineData(t *testing.T) {
 	remoteURL := "https://cdn.example.com/image.jpeg"
 	encoded := base64.StdEncoding.EncodeToString([]byte("\xff\xd8\xff\xe0fake jpeg bytes"))
 	stubGeminiImageFetch(t, func(_ context.Context, gotURL string) (string, string, error) {
@@ -46,7 +46,7 @@ func TestInlineRemoteImageURLsForGeminiResponsesConvertsHTTPToInlineData(t *test
 	})
 
 	req := geminiResponsesImageRequest(remoteURL)
-	require.NoError(t, inlineRemoteImageURLsForGeminiResponses(nil, req))
+	require.NoError(t, normalizeImageURLsForGeminiResponses(nil, req))
 	require.Equal(t, "data:image/jpeg;base64,"+encoded, *req.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
 
 	out, err := ToGeminiResponsesRequest(nil, req)
@@ -59,7 +59,7 @@ func TestInlineRemoteImageURLsForGeminiResponsesConvertsHTTPToInlineData(t *test
 	assert.Equal(t, encoded, out.Contents[0].Parts[1].InlineData.Data)
 }
 
-func TestInlineRemoteImageURLsForGeminiLeavesDataURLInline(t *testing.T) {
+func TestNormalizeImageURLsForGeminiLeavesDataURLInline(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nfake png bytes"))
 	dataURL := "data:image/png;base64," + encoded
 	stubGeminiImageFetch(t, func(context.Context, string) (string, string, error) {
@@ -68,7 +68,7 @@ func TestInlineRemoteImageURLsForGeminiLeavesDataURLInline(t *testing.T) {
 	})
 
 	req := geminiChatImageRequest(dataURL)
-	require.NoError(t, inlineRemoteImageURLsForGeminiChat(nil, req))
+	require.NoError(t, normalizeImageURLsForGeminiChat(nil, req))
 	assert.Equal(t, dataURL, req.Input[0].Content.ContentBlocks[1].ImageURLStruct.URL)
 
 	out, err := ToGeminiChatCompletionRequest(nil, req)
@@ -77,7 +77,34 @@ func TestInlineRemoteImageURLsForGeminiLeavesDataURLInline(t *testing.T) {
 	assert.Equal(t, encoded, out.Contents[0].Parts[1].InlineData.Data)
 }
 
-func TestInlineRemoteImageURLsForGeminiReportsInvalidRequest(t *testing.T) {
+func TestNormalizeImageURLsForGeminiForwardsGeminiFileAPIURL(t *testing.T) {
+	fileURI := "https://generativelanguage.googleapis.com/v1beta/files/abc"
+	stubGeminiImageFetch(t, func(context.Context, string) (string, string, error) {
+		t.Fatal("Gemini Files API URLs must be forwarded as fileData.fileUri")
+		return "", "", nil
+	})
+
+	chatReq := geminiChatImageRequest(fileURI)
+	require.NoError(t, normalizeImageURLsForGeminiChat(nil, chatReq))
+	assert.Equal(t, fileURI, chatReq.Input[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+
+	chatOut, err := ToGeminiChatCompletionRequest(nil, chatReq)
+	require.NoError(t, err)
+	require.NotNil(t, chatOut.Contents[0].Parts[1].FileData)
+	assert.Equal(t, fileURI, chatOut.Contents[0].Parts[1].FileData.FileURI)
+
+	responsesReq := geminiResponsesImageRequest(fileURI)
+	require.NoError(t, normalizeImageURLsForGeminiResponses(nil, responsesReq))
+	require.NotNil(t, responsesReq.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+	assert.Equal(t, fileURI, *responsesReq.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage.ImageURL)
+
+	responsesOut, err := ToGeminiResponsesRequest(nil, responsesReq)
+	require.NoError(t, err)
+	require.NotNil(t, responsesOut.Contents[0].Parts[1].FileData)
+	assert.Equal(t, fileURI, responsesOut.Contents[0].Parts[1].FileData.FileURI)
+}
+
+func TestNormalizeImageURLsForGeminiReportsInvalidRequest(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -112,7 +139,7 @@ func TestInlineRemoteImageURLsForGeminiReportsInvalidRequest(t *testing.T) {
 				})
 			}
 
-			err := inlineRemoteImageURLsForGeminiChat(nil, geminiChatImageRequest(tt.url))
+			err := normalizeImageURLsForGeminiChat(nil, geminiChatImageRequest(tt.url))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "messages[0].content[1].image_url")
 			assert.Contains(t, err.Error(), tt.want)
@@ -120,8 +147,8 @@ func TestInlineRemoteImageURLsForGeminiReportsInvalidRequest(t *testing.T) {
 	}
 }
 
-func TestInlineRemoteImageURLsForGeminiBlocksPrivateURL(t *testing.T) {
-	err := inlineRemoteImageURLsForGeminiChat(nil, geminiChatImageRequest("https://127.0.0.1/private.png?X-Amz-Signature=deadbeefcafe"))
+func TestNormalizeImageURLsForGeminiBlocksPrivateURL(t *testing.T) {
+	err := normalizeImageURLsForGeminiChat(nil, geminiChatImageRequest("https://127.0.0.1/private.png?X-Amz-Signature=deadbeefcafe"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "messages[0].content[1].image_url")
 	assert.NotContains(t, err.Error(), "deadbeefcafe")

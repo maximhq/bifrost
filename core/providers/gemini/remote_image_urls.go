@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -11,7 +12,14 @@ import (
 
 var fetchAndEncodeGeminiImageURL = providerUtils.FetchAndEncodeImageURL
 
-func inlineRemoteImageURLsForGeminiChat(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) error {
+type geminiImageURLDisposition int
+
+const (
+	geminiImageURLForward geminiImageURLDisposition = iota
+	geminiImageURLFetchInline
+)
+
+func normalizeImageURLsForGeminiChat(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) error {
 	if request == nil || shouldSkipGeminiImageURLInlining(ctx) {
 		return nil
 	}
@@ -26,19 +34,19 @@ func inlineRemoteImageURLsForGeminiChat(ctx *schemas.BifrostContext, request *sc
 			if img == nil {
 				continue
 			}
-			inlinedURL, changed, err := inlineGeminiImageURL(ctx, img.URL)
+			normalizedURL, changed, err := normalizeGeminiImageURL(ctx, img.URL)
 			if err != nil {
 				return providerUtils.InvalidRequestErrorf("messages[%d].content[%d].image_url: %s", mi, bi, err)
 			}
 			if changed {
-				img.URL = inlinedURL
+				img.URL = normalizedURL
 			}
 		}
 	}
 	return nil
 }
 
-func inlineRemoteImageURLsForGeminiResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) error {
+func normalizeImageURLsForGeminiResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) error {
 	if request == nil || shouldSkipGeminiImageURLInlining(ctx) {
 		return nil
 	}
@@ -53,25 +61,26 @@ func inlineRemoteImageURLsForGeminiResponses(ctx *schemas.BifrostContext, reques
 			if img == nil || img.ImageURL == nil {
 				continue
 			}
-			inlinedURL, changed, err := inlineGeminiImageURL(ctx, *img.ImageURL)
+			normalizedURL, changed, err := normalizeGeminiImageURL(ctx, *img.ImageURL)
 			if err != nil {
 				return providerUtils.InvalidRequestErrorf("input[%d].content[%d].image_url: %s", mi, bi, err)
 			}
 			if changed {
-				*img.ImageURL = inlinedURL
+				*img.ImageURL = normalizedURL
 			}
 		}
 	}
 	return nil
 }
 
-func inlineGeminiImageURL(ctx *schemas.BifrostContext, imageURL string) (string, bool, error) {
+func normalizeGeminiImageURL(ctx *schemas.BifrostContext, imageURL string) (string, bool, error) {
 	sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 	if err != nil {
 		return "", false, fmt.Errorf("invalid image_url %q: %s", providerUtils.RedactURLForError(imageURL), err)
 	}
 
-	if strings.HasPrefix(sanitizedURL, "data:") {
+	switch classifyGeminiImageURL(sanitizedURL) {
+	case geminiImageURLForward:
 		return sanitizedURL, sanitizedURL != imageURL, nil
 	}
 
@@ -81,6 +90,24 @@ func inlineGeminiImageURL(ctx *schemas.BifrostContext, imageURL string) (string,
 	}
 
 	return "data:" + mediaType + ";base64," + encoded, true, nil
+}
+
+func classifyGeminiImageURL(imageURL string) geminiImageURLDisposition {
+	if strings.HasPrefix(imageURL, "data:") || isGeminiFileAPIURL(imageURL) {
+		return geminiImageURLForward
+	}
+	return geminiImageURLFetchInline
+}
+
+func isGeminiFileAPIURL(imageURL string) bool {
+	parsed, err := url.Parse(imageURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	if !strings.EqualFold(parsed.Hostname(), "generativelanguage.googleapis.com") {
+		return false
+	}
+	return strings.Contains(parsed.EscapedPath(), "/files/")
 }
 
 func shouldSkipGeminiImageURLInlining(ctx *schemas.BifrostContext) bool {
