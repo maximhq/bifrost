@@ -103,6 +103,21 @@ func TestFunctionDeclarationSnakeCaseAliases(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit camelCase null wins over snake_case value", func(t *testing.T) {
+		// An explicit null decodes to nil just like an omitted key; presence of
+		// the camelCase key must still block the snake_case fallback.
+		fd := unmarshalSingleDeclTool(t, `{
+			"functionDeclarations": [{
+				"name": "get_weather",
+				"parametersJsonSchema": null,
+				"parameters_json_schema": {"type": "object", "marker": "snake"}
+			}]
+		}`)
+		if fd.ParametersJSONSchema != nil {
+			t.Errorf("explicit camelCase null must not be overridden by snake_case, got %+v", fd.ParametersJSONSchema)
+		}
+	})
+
 	t.Run("plain parameters still binds through the shim", func(t *testing.T) {
 		fd := unmarshalSingleDeclTool(t, `{
 			"function_declarations": [{
