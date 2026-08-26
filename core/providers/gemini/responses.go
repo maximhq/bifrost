@@ -356,18 +356,36 @@ func thoughtTextParts(msg *schemas.ResponsesMessage) []*Part {
 	if msg == nil {
 		return nil
 	}
-	var parts []*Part
-	if msg.Content != nil {
-		for _, block := range msg.Content.ContentBlocks {
-			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning &&
-				block.Text != nil && *block.Text != "" {
-				parts = append(parts, &Part{Text: *block.Text, Thought: true})
-			}
-		}
-	}
-	if len(parts) > 0 || msg.ResponsesReasoning == nil {
+	if parts := reasoningBlockThoughtParts(msg); len(parts) > 0 {
 		return parts
 	}
+	return reasoningSummaryThoughtParts(msg)
+}
+
+// reasoningBlockThoughtParts renders the reasoning content blocks of a reasoning
+// item as Gemini thought parts.
+func reasoningBlockThoughtParts(msg *schemas.ResponsesMessage) []*Part {
+	if msg == nil || msg.Content == nil {
+		return nil
+	}
+	var parts []*Part
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning &&
+			block.Text != nil && *block.Text != "" {
+			parts = append(parts, &Part{Text: *block.Text, Thought: true})
+		}
+	}
+	return parts
+}
+
+// reasoningSummaryThoughtParts renders a reasoning item's Summary array as Gemini
+// thought parts. Callers that have already emitted the item's content blocks
+// through another path use this directly instead of thoughtTextParts.
+func reasoningSummaryThoughtParts(msg *schemas.ResponsesMessage) []*Part {
+	if msg == nil || msg.ResponsesReasoning == nil {
+		return nil
+	}
+	var parts []*Part
 	for _, summaryBlock := range msg.ResponsesReasoning.Summary {
 		if summaryBlock.Text == "" {
 			continue
@@ -626,16 +644,13 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					continue
 				}
 
-				// Reasoning content is in the Summary array
-				if len(msg.ResponsesReasoning.Summary) > 0 {
-					for _, summaryBlock := range msg.ResponsesReasoning.Summary {
-						if summaryBlock.Text != "" {
-							currentParts = append(currentParts, &Part{
-								Text:    summaryBlock.Text,
-								Thought: true,
-							})
-						}
-					}
+				// The content-block loop above already emitted this item's reasoning
+				// content blocks as thought parts, so fall back to the Summary array
+				// only when the item carries no thought text in its content blocks
+				// (the same content-first rule as thoughtTextParts). Text present in
+				// both places must not be emitted twice.
+				if len(reasoningBlockThoughtParts(&msg)) == 0 {
+					currentParts = append(currentParts, reasoningSummaryThoughtParts(&msg)...)
 				}
 				if msg.ResponsesReasoning.EncryptedContent != nil {
 					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
@@ -3531,17 +3546,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 
 			case part.ThoughtSignature != nil:
 				// Handle thought signature
-				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-				msg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + schemas.GetRandomString(50)),
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-					ResponsesReasoning: &schemas.ResponsesReasoning{
-						Summary:          []schemas.ResponsesReasoningSummary{},
-						EncryptedContent: &thoughtSig,
-					},
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
 				}
-				messages = append(messages, msg)
 			}
 		}
 

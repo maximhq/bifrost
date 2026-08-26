@@ -165,3 +165,74 @@ func TestReasoningItemRoundTripToGeminiContents(t *testing.T) {
 		}
 	})
 }
+
+// ToGeminiResponsesResponse is the other Responses -> Gemini reader. Its generic
+// content-block path already emits reasoning content blocks as thought parts, so its
+// reasoning branch must only fall back to the Summary array — an item carrying the
+// same text in both places (content blocks from the Gemini converter, summary from an
+// OpenAI-ingress mirror) must produce exactly one thought part, and a summary-only
+// item must still produce it.
+func TestReasoningItemNoDuplicateThoughtInGeminiResponse(t *testing.T) {
+	collectThoughtTexts := func(resp *GenerateContentResponse) []string {
+		var texts []string
+		if resp == nil {
+			return texts
+		}
+		for _, cand := range resp.Candidates {
+			if cand == nil || cand.Content == nil {
+				continue
+			}
+			for _, p := range cand.Content.Parts {
+				if p.Thought && p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
+		}
+		return texts
+	}
+
+	reasoningItem := func(withBlock, withSummary bool) schemas.ResponsesMessage {
+		txt := "Reasoning here."
+		msg := schemas.ResponsesMessage{
+			ID:                 schemas.Ptr("rs_x"),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+		}
+		if withBlock {
+			msg.Content = &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: &txt},
+				},
+			}
+		}
+		if withSummary {
+			msg.ResponsesReasoning.Summary = []schemas.ResponsesReasoningSummary{
+				{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: txt},
+			}
+		}
+		return msg
+	}
+
+	t.Run("text in both content blocks and summary emits one part", func(t *testing.T) {
+		resp := ToGeminiResponsesResponse(&schemas.BifrostResponsesResponse{
+			Model:  "gemini-2.5-pro",
+			Output: []schemas.ResponsesMessage{reasoningItem(true, true)},
+		})
+		texts := collectThoughtTexts(resp)
+		if len(texts) != 1 || texts[0] != "Reasoning here." {
+			t.Errorf("expected exactly one thought part, got %q", texts)
+		}
+	})
+
+	t.Run("summary-only item still emits its part", func(t *testing.T) {
+		resp := ToGeminiResponsesResponse(&schemas.BifrostResponsesResponse{
+			Model:  "gemini-2.5-pro",
+			Output: []schemas.ResponsesMessage{reasoningItem(false, true)},
+		})
+		texts := collectThoughtTexts(resp)
+		if len(texts) != 1 || texts[0] != "Reasoning here." {
+			t.Errorf("expected the summary fallback to emit one thought part, got %q", texts)
+		}
+	})
+}
