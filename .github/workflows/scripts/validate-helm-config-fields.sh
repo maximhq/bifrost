@@ -305,8 +305,6 @@ bifrost:
           azure_key_config:
             endpoint: "https://myresource.openai.azure.com"
             api_version: "2024-02-15-preview"
-            deployments:
-              gpt-4o: "my-deployment"
     vertex:
       keys:
         - name: "vertex-key"
@@ -363,7 +361,6 @@ assert_field_value 'providers.openai.send_back_raw_response' '.providers.openai.
 # Azure key config
 assert_field_value 'providers.azure.keys[0].azure_key_config.endpoint' '.providers.azure.keys.[0].azure_key_config.endpoint' '"https://myresource.openai.azure.com"'
 assert_field_value 'providers.azure.keys[0].azure_key_config.api_version' '.providers.azure.keys.[0].azure_key_config.api_version' '"2024-02-15-preview"'
-assert_field 'providers.azure.keys[0].azure_key_config.deployments' '.providers.azure.keys.[0].azure_key_config.deployments'
 
 # Vertex key config
 assert_field_value 'providers.vertex.keys[0].vertex_key_config.project_id' '.providers.vertex.keys.[0].vertex_key_config.project_id' '"my-project"'

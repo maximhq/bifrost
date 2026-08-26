@@ -1,8 +1,7 @@
-import { Check, Laptop, Moon, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
-import { TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Check, Laptop, Moon, Sun } from "lucide-react";
+import { useTheme } from "next-themes";
 
 const THEMES = [
 	{ value: "light", label: "Light", icon: Sun },
