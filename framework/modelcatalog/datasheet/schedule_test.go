@@ -117,7 +117,7 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 				Timezone: "UTC", Calendar: PricingScheduleCalendarISOWeekday,
 				Rules: []PricingTimeRule{
 					{StartTime: "09:00", EndTime: "10:00", Multiplier: 1},
-					{StartTime: "09:30", EndTime: "10:30", Multiplier: 1},
+					{StartTime: "09:30", EndTime: "10:30", Multiplier: 2},
 				},
 			},
 		},
@@ -127,7 +127,7 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 				Timezone: "UTC", Calendar: PricingScheduleCalendarISOWeekday,
 				Rules: []PricingTimeRule{
 					{Days: []string{"monday"}, StartTime: "00:00", EndTime: "00:00", Multiplier: 1},
-					{StartTime: "09:00", EndTime: "10:00", Multiplier: 1},
+					{StartTime: "09:00", EndTime: "10:00", Multiplier: 2},
 				},
 			},
 		},
@@ -137,7 +137,7 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 				Timezone: "UTC", Calendar: PricingScheduleCalendarISOWeekday,
 				Rules: []PricingTimeRule{
 					{Days: []string{"monday"}, StartTime: "22:00", EndTime: "02:00", Multiplier: 1},
-					{Days: []string{"tuesday"}, StartTime: "00:00", EndTime: "03:00", Multiplier: 1},
+					{Days: []string{"tuesday"}, StartTime: "00:00", EndTime: "03:00", Multiplier: 2},
 				},
 			},
 		},
@@ -149,6 +149,20 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 				t.Fatal("expected invalid schedule")
 			}
 		})
+	}
+}
+
+func TestValidatePricingTimeScheduleAllowsIdenticalMultiplierOverlaps(t *testing.T) {
+	schedule := &PricingTimeSchedule{
+		Timezone: "UTC",
+		Calendar: PricingScheduleCalendarISOWeekday,
+		Rules: []PricingTimeRule{
+			{Days: []string{"saturday", "sunday"}, StartTime: "00:00", EndTime: "00:00", Multiplier: 0.5},
+			{Days: []string{"monday", "tuesday", "wednesday", "thursday", "friday"}, StartTime: "16:30", EndTime: "00:30", Multiplier: 0.5},
+		},
+	}
+	if err := ValidatePricingTimeSchedule(schedule); err != nil {
+		t.Fatalf("expected valid DeepSeek-style schedule: %v", err)
 	}
 }
 
