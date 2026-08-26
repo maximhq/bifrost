@@ -399,6 +399,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_image_above_1024_and_1536_pixels_standard_quality` | Generated image at or above 1024×1536, standard quality |
 | `output_cost_per_image_above_1536_and_1024_pixels_standard_quality` | Generated image at or above 1536×1024, standard quality |
 
+<Info>The megapixel rates are available in **Bifrost v2.0.0 and above**.</Info>
+
 When several per-image rates could apply, the most specific one wins: a joint size and quality
 rate first, then a quality-only rate, then a size-only rate, then the flat `output_cost_per_image`.
 The 1024×1536 and 1536×1024 thresholds have the same pixel count, so they are matched on width
@@ -420,6 +422,8 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
 ### Other costs
+
+<Info>`input_cost_per_query` and `cost_per_request` are available in **Bifrost v2.0.0 and above**.</Info>
 
 | Field | Description |
 |-------|-------------|

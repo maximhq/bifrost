@@ -1,6 +1,6 @@
 import NotificationCenter from "@/components/notificationCenter";
 import { ThemeToggle } from "@/components/themeToggle";
-import { deriveTitleFromPathname, TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
+import { deriveTitleFromPathname } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -14,7 +14,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useDescriptionSlotRef, useMobileFilterSlotRef, useTopbarTitle } from "@/lib/contexts/topbarContext";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useLogoutMutation } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
@@ -34,29 +34,29 @@ const externalLinks: {
 	icon: React.ComponentType<Record<string, unknown>>;
 	strokeWidth?: number;
 }[] = [
-		{
-			title: "Discord Server",
-			url: "https://discord.gg/exN5KAydbU",
-			icon: DiscordLogoIcon,
-		},
-		{
-			title: "GitHub Repository",
-			url: "https://github.com/maximhq/bifrost",
-			icon: GithubLogoIcon,
-		},
-		{
-			title: "Report a bug",
-			url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-			icon: BugIcon,
-			strokeWidth: 1.5,
-		},
-		{
-			title: "Full Documentation",
-			url: "https://docs.getbifrost.ai",
-			icon: BooksIcon,
-			strokeWidth: 1,
-		},
-	];
+	{
+		title: "Discord Server",
+		url: "https://discord.gg/exN5KAydbU",
+		icon: DiscordLogoIcon,
+	},
+	{
+		title: "GitHub Repository",
+		url: "https://github.com/maximhq/bifrost",
+		icon: GithubLogoIcon,
+	},
+	{
+		title: "Report a bug",
+		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
+		icon: BugIcon,
+		strokeWidth: 1.5,
+	},
+	{
+		title: "Full Documentation",
+		url: "https://docs.getbifrost.ai",
+		icon: BooksIcon,
+		strokeWidth: 1,
+	},
+];
 
 /**
  * Resolves the topbar title. A page can name itself via useSetTopbarTitle();
@@ -90,6 +90,8 @@ export default function Topbar() {
 	const navigate = useNavigate();
 	const [logout] = useLogoutMutation();
 	const { data: coreConfig } = useGetCoreConfigQuery({});
+	// Shares the sidebar's RTK Query cache entry, so this costs no extra request.
+	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
 
@@ -121,7 +123,7 @@ export default function Topbar() {
 	};
 
 	return (
-		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-2" data-testid="topbar-container-root">
+		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-0" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
 				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
@@ -146,7 +148,7 @@ export default function Topbar() {
 							type="button"
 							data-testid="topbar-user-pill"
 							aria-label="Account menu"
-							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground md:border-border md:bg-card/60 md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
+							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground md:border-border md:bg-card md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
 						>
 							<span className="bg-muted text-muted-foreground hidden size-6 shrink-0 items-center justify-center rounded-full md:flex">
 								<User className="size-3.5" strokeWidth={2} />
@@ -163,14 +165,14 @@ export default function Topbar() {
 							type="button"
 							data-testid="topbar-menu-btn"
 							aria-label="Open menu"
-							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
+							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 						>
 							<Menu className="size-4" strokeWidth={2} />
 						</button>
 					)}
 				</DropdownMenuTrigger>
 
-				<DropdownMenuContent align="end" sideOffset={TOPBAR_MENU_SIDE_OFFSET} className="w-60">
+				<DropdownMenuContent align="end" sideOffset={2} className="w-60">
 					{showUserPill && (
 						<>
 							<DropdownMenuLabel className="flex min-w-0 flex-col gap-0.5 py-2">
@@ -199,6 +201,18 @@ export default function Topbar() {
 								<LogOut className="size-4" strokeWidth={2} />
 								<span>Sign out</span>
 							</DropdownMenuItem>
+						</>
+					)}
+
+					{/* Informational tail row: a Label, not an Item, so it never takes
+					    keyboard focus, highlights, or closes the menu on click. */}
+					{version && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuLabel className="text-muted-foreground flex items-center justify-between gap-2 py-1.5 text-xs font-normal">
+								<span>Version</span>
+								<span className="truncate font-mono">{version}</span>
+							</DropdownMenuLabel>
 						</>
 					)}
 				</DropdownMenuContent>

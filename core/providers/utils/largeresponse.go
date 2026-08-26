@@ -137,7 +137,20 @@ func FinalizeResponseWithLargeDetection(
 	ctx *schemas.BifrostContext,
 	resp *fasthttp.Response,
 	logger schemas.Logger,
-) ([]byte, bool, *schemas.BifrostError) {
+) (body []byte, isLarge bool, finalizeErr *schemas.BifrostError) {
+	// "response-finalize" overhead phase: reading, decompressing (gzip/br/zstd), and
+	// copying the provider response body is payload-scaled work that otherwise hides in
+	// "core". Nil-safe; folds away when no trace is active.
+	if ft, fh := startPhaseSpan(ctx, "response-finalize"); ft != nil {
+		defer func() {
+			if finalizeErr != nil {
+				ft.EndSpan(fh, schemas.SpanStatusError, "response finalize failed")
+			} else {
+				ft.EndSpan(fh, schemas.SpanStatusOk, "")
+			}
+		}()
+	}
+
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
 
 	// No threshold — normal buffered read (feature-off path)

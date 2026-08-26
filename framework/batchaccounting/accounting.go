@@ -3,6 +3,7 @@ package batchaccounting
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -79,6 +80,16 @@ type BatchUsageReport struct {
 	TokensUsed   int64
 	BudgetIDs    []string
 	RateLimitIDs []string
+	UserID       string
+	VirtualKeyID string
+	ModelUsage   []BatchModelUsage
+}
+
+// BatchModelUsage is one model's share of a settled batch.
+type BatchModelUsage struct {
+	Model      string
+	Cost       float64
+	TokensUsed int64
 }
 
 type PricingManager interface {
@@ -95,6 +106,7 @@ type Request struct {
 	RequestCounts *schemas.BatchRequestCounts
 	BatchJob      *cstables.TableBatchJob
 	BaseLog       *logstore.Log
+	SourceLog     *logstore.Log
 	Emitter       AggregateLogEmitter
 	UsageReporter UsageReporter
 	ClaimedBy     string
@@ -230,6 +242,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 		mergeBatchJobHints(job, persisted)
 	}
 	req.BatchJob = job
+	req.SourceLog = resolveSourceLog(ctx, logStore, job, req.BaseLog)
 	if req.FallbackModel == "" {
 		req.FallbackModel = job.Model
 	}
@@ -284,7 +297,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 		// row's stored usage). Skipping the write would lose the usage for good — the
 		// raw provider results are not persisted anywhere else.
 		if computed != nil && summary.Usage.TotalTokens > 0 && job.AggregateLogWrittenAt == nil {
-			entry := buildAggregateLog(req, summary, now)
+			entry := buildAggregateLog(req, summary, now, userAgentFromContext(ctx))
 			// Unknown, not zero — a zero cost would read as "this batch was free".
 			entry.Cost = nil
 			if computed.UnpricedModel != "" {
@@ -323,7 +336,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 	summary.FailedCount = computed.FailedCount
 	summary.Complete = computed.Complete
 
-	entry := buildAggregateLog(req, summary, now)
+	entry := buildAggregateLog(req, summary, now, userAgentFromContext(ctx))
 	if !summary.Complete {
 		// Some usage priced and some did not. summary.Cost is therefore only the known
 		// part of the bill, and persisting it as the row's cost would be a lie with
@@ -427,18 +440,14 @@ func mergeBatchJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob
 	}
 	dst.AggregateLogWrittenAt = src.AggregateLogWrittenAt
 	dst.GovernanceReportedAt = src.GovernanceReportedAt
-	if dst.SelectedKeyID == "" {
-		dst.SelectedKeyID = src.SelectedKeyID
-	}
-	if dst.VirtualKeyID == nil {
-		dst.VirtualKeyID = src.VirtualKeyID
-	}
-	if dst.BudgetIDs == nil {
-		dst.BudgetIDs = src.BudgetIDs
-	}
-	if dst.RateLimitIDs == nil {
-		dst.RateLimitIDs = src.RateLimitIDs
-	}
+	dst.SelectedKeyID = src.SelectedKeyID
+	dst.VirtualKeyID = src.VirtualKeyID
+	dst.UserID = src.UserID
+	dst.TeamID = src.TeamID
+	dst.CustomerID = src.CustomerID
+	dst.BudgetIDs = src.BudgetIDs
+	dst.RateLimitIDs = src.RateLimitIDs
+	dst.SourceLogID = src.SourceLogID
 }
 
 func pricingScopesForBatchJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *cstables.TableBatchJob) *modelcatalog.PricingLookupScopes {
@@ -472,10 +481,42 @@ func batchUsageReportFromLog(provider schemas.ModelProvider, entry *logstore.Log
 		BudgetIDs:    stringSliceFromParsedOrJSON(entry.BudgetIDsParsed, entry.BudgetIDs),
 		RateLimitIDs: stringSliceFromParsedOrJSON(entry.RateLimitIDsParsed, entry.RateLimitIDs),
 	}
+	if entry.UserID != nil {
+		report.UserID = *entry.UserID
+	}
+	if entry.VirtualKeyID != nil {
+		report.VirtualKeyID = *entry.VirtualKeyID
+	}
+	report.ModelUsage = modelUsageFromLog(entry)
 	if entry.Cost != nil {
 		report.Cost = *entry.Cost
 	}
 	return report
+}
+
+// modelUsageFromLog reads the settled row's per-model split.
+func modelUsageFromLog(entry *logstore.Log) []BatchModelUsage {
+	if entry.BatchDebugParsed == nil || entry.BatchDebugParsed.Accounting == nil {
+		return nil
+	}
+	breakdowns := entry.BatchDebugParsed.Accounting.ModelBreakdowns
+	if len(breakdowns) == 0 {
+		return nil
+	}
+	usage := make([]BatchModelUsage, 0, len(breakdowns))
+	for model, breakdown := range breakdowns {
+		if model == "" {
+			continue
+		}
+		cost := 0.0
+		if breakdown.Cost != nil {
+			cost = *breakdown.Cost
+		}
+		usage = append(usage, BatchModelUsage{Model: model, Cost: cost, TokensUsed: int64(breakdown.Usage.TotalTokens)})
+	}
+	// These become billing keys, so order must be stable across retries.
+	sort.Slice(usage, func(i, j int) bool { return usage[i].Model < usage[j].Model })
+	return usage
 }
 
 func stringSliceFromParsedOrJSON(parsed []string, raw *string) []string {
@@ -490,6 +531,14 @@ func stringSliceFromParsedOrJSON(parsed []string, raw *string) []string {
 		return nil
 	}
 	return values
+}
+
+// userAgentFromContext builds the user agent for bifrost workers.
+func userAgentFromContext(ctx context.Context) string {
+	if version, ok := ctx.Value(schemas.BifrostContextKeyRuntimeVersion).(string); ok && version != "" {
+		return "bifrost/" + version
+	}
+	return "bifrost"
 }
 
 // accountingLogNamespace is the UUIDv5 namespace for aggregate cost log ids.
@@ -898,7 +947,7 @@ func firstNonZero(values ...int) int {
 	return 0
 }
 
-func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.Log {
+func buildAggregateLog(req Request, summary *Summary, now time.Time, userAgent string) *logstore.Log {
 	model := req.FallbackModel
 	if len(summary.ModelBreakdowns) == 1 {
 		for key := range summary.ModelBreakdowns {
@@ -945,6 +994,7 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 		TotalTokens:      summary.Usage.TotalTokens,
 		CreatedAt:        now,
 		BatchDebugParsed: batchDebug,
+		UserAgent:        &userAgent,
 	}
 	// Attribution must not depend on who happens to settle the batch first. The
 	// sweeper reaches here with only the job; a /results call reaches here with the
@@ -952,20 +1002,22 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 	// the creator's budgets or the fetcher's depending on a race, so an admin reading
 	// someone else's results absorbed the entire bill. The batch job's create-time
 	// attribution is the one identity that does not move, so it wins whenever it
-	// exists; BaseLog only fills the display/denormalization fields the job does not
-	// persist, and only when it is demonstrably the same virtual key (otherwise the
-	// row would carry one identity's ids under another's names). A batch first seen at
-	// /results has no create-time attribution to prefer, so it keeps using BaseLog.
+	// exists.
+	//
+	// The display names come from SourceLog — the creating request's own log row —
+	// rather than from whoever is settling. Matching the two on virtual key was not
+	// enough to keep identities apart: an access profile hands one virtual key to
+	// many users, so two different people compared equal and the settling user's name
+	// landed on the creator's cost row. A batch first seen at /results has no
+	// create-time attribution to prefer, so it keeps using BaseLog.
 	if req.BatchJob != nil && hasBatchJobAttribution(req.BatchJob) {
+		if req.SourceLog != nil {
+			applyLogDenormalizations(entry, req.SourceLog)
+		}
 		applyBatchJobAttribution(entry, req.BatchJob)
-		if req.BaseLog != nil {
-			// Provenance, not attribution: which request triggered this settlement.
-			if req.BaseLog.ID != "" {
-				entry.ParentRequestID = &req.BaseLog.ID
-			}
-			if sameVirtualKey(req.BatchJob.VirtualKeyID, req.BaseLog.VirtualKeyID) {
-				applyLogDenormalizations(entry, req.BaseLog)
-			}
+		// Provenance, not attribution: which request triggered this settlement.
+		if req.BaseLog != nil && req.BaseLog.ID != "" {
+			entry.ParentRequestID = &req.BaseLog.ID
 		}
 		return entry
 	}
@@ -979,6 +1031,24 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 	return entry
 }
 
+// resolveSourceLog loads the log row of the request that created the batch, for the
+// display names batch_jobs does not carry. Best-effort by design: the names are
+// cosmetic, the ids on the job are what bills, so a log row that has been rotated
+// away or cannot be read costs nothing but the labels.
+func resolveSourceLog(ctx context.Context, logStore AggregateLogStore, job *cstables.TableBatchJob, baseLog *logstore.Log) *logstore.Log {
+	if job == nil || job.SourceLogID == nil || *job.SourceLogID == "" {
+		return nil
+	}
+	if baseLog != nil && baseLog.ID == *job.SourceLogID {
+		return baseLog
+	}
+	source, err := logStore.FindByID(ctx, *job.SourceLogID)
+	if err != nil {
+		return nil
+	}
+	return source
+}
+
 // hasBatchJobAttribution reports whether the job captured who to bill at create
 // time. Batches created outside Bifrost (first seen at /results) carry none.
 func hasBatchJobAttribution(job *cstables.TableBatchJob) bool {
@@ -986,20 +1056,6 @@ func hasBatchJobAttribution(job *cstables.TableBatchJob) bool {
 		return true
 	}
 	return (job.BudgetIDs != nil && *job.BudgetIDs != "") || (job.RateLimitIDs != nil && *job.RateLimitIDs != "")
-}
-
-// sameVirtualKey treats nil and "" alike: neither side claiming a virtual key is
-// not a conflict of identity, only a mismatch between two named ones is.
-func sameVirtualKey(a, b *string) bool {
-	left := ""
-	if a != nil {
-		left = *a
-	}
-	right := ""
-	if b != nil {
-		right = *b
-	}
-	return left == right
 }
 
 func requestCountsForAggregateLog(req Request) schemas.BatchRequestCounts {
@@ -1055,4 +1111,13 @@ func applyBatchJobAttribution(entry *logstore.Log, job *cstables.TableBatchJob) 
 	entry.VirtualKeyID = job.VirtualKeyID
 	entry.BudgetIDs = job.BudgetIDs
 	entry.RateLimitIDs = job.RateLimitIDs
+	if job.UserID != nil {
+		entry.UserID = job.UserID
+	}
+	if job.TeamID != nil {
+		entry.TeamID = job.TeamID
+	}
+	if job.CustomerID != nil {
+		entry.CustomerID = job.CustomerID
+	}
 }

@@ -297,7 +297,7 @@ func TestStreamingReasoningReplaySerialisesForBedrock(t *testing.T) {
 		)
 	}
 
-	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", input, false)
 	require.NoError(t, err)
 
 	raw, err := sonic.Marshal(messages)

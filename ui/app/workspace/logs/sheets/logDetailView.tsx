@@ -44,7 +44,8 @@ import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
-import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/redaction";
+import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
+import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -61,6 +62,10 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+
+// Full-precision cost for the detail view; per-request costs are often < $0.01,
+// where formatCost's 2-4 dp rounding would hide the value.
+const formatCostPrecise = (value?: number): string => `$${parseFloat((value ?? 0).toFixed(6))}`;
 
 const formatRealtimeTransport = (value: unknown): string => {
 	const transport = String(value ?? "").trim();
@@ -114,9 +119,12 @@ const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, st
 		text = msg.content
 			.filter(
 				(b: any) =>
-					b && b.text && (b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
+					b &&
+					(b.text || b.refusal) &&
+					(b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
 			)
-			.map((b: any) => b.text as string)
+			// Refusal blocks carry their text in `refusal`, not `text`.
+			.map((b: any) => (b.text ?? b.refusal) as string)
 			.join("\n");
 	} else if (typeof (msg as any).arguments === "string") {
 		text = (msg as any).arguments as string;
@@ -388,6 +396,9 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
+// Helper to detect batch operations (they carry no messages or tool declarations)
+const isBatchOperation = (object: string) => object.startsWith("batch_");
+
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
@@ -485,13 +496,14 @@ function formatMicros(us: number): string {
 	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
 }
 
-// Top-level overhead categories. The four JSON (un)marshalling phases fold into one
-// "Serialization" category; the auth middleware spans (middleware.*) fold into
-// "Middleware"; every plugin span folds into "Plugins"; the remaining named phase
-// spans (queue-wait, convertor, key.selection) and the backend "core" remainder each
-// get their own category; anything else lands in "Other". The stacked bar and legend
-// show these categories, and "View details" drills into the member spans (individual
-// (un)marshal phases, individual middlewares, individual plugins) inside grouped ones.
+// Top-level overhead categories shown in the stacked bar + legend. Raw backend span
+// names are grouped into a handful of user-facing categories: Serialization (JSON
+// parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
+// Key selection, Processing (internal request pipeline), Networking
+// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Scheduling (the
+// residual goroutine-hop latency between phases). "View details" drills into the member
+// spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
+// OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
 type OverheadCategory = {
 	key: string;
 	label: string;
@@ -504,29 +516,95 @@ type OverheadCategory = {
 // per-phase labels below are used for the drill-down rows.
 const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
 
+// Top-level categories shown in the stacked bar + legend. Each has a distinct colour.
 const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
 	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
-	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
-	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
-	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
-	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
-	"request-unmarshal": { label: "Request unmarshal", colorClass: "bg-sky-500/70" },
-	convertor: { label: "Convertor", colorClass: "bg-fuchsia-500/70" },
-	"attribute-population": { label: "Attribute population", colorClass: "bg-pink-500/70" },
-	"request-marshal": { label: "Request marshal", colorClass: "bg-indigo-500/70" },
-	"response-parse": { label: "Response unmarshal", colorClass: "bg-purple-500/70" },
-	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
-	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
-	core: { label: "Core", colorClass: "bg-slate-500/70" },
-	"convertor.stream-in": { label: "Stream inbound convert", colorClass: "bg-fuchsia-500/70" },
-	"convertor.stream-out": { label: "Stream outbound convert", colorClass: "bg-fuchsia-500/70" },
-	"stream-client-write": { label: "Stream client write", colorClass: "bg-red-500/70" },
-	"stream-backpressure": { label: "Stream backpressure", colorClass: "bg-red-500/70" },
-	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
+	conversion: { label: "Conversion", colorClass: "bg-fuchsia-500/70" },
 	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
-	other: { label: "Other", colorClass: "bg-emerald-500/70" },
+	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
+	routing: { label: "Key selection", colorClass: "bg-amber-500/70" },
+	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
+	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
+	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
+	scheduling: { label: "Scheduling", colorClass: "bg-slate-500/70" },
+	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
 };
+
+// Friendly drill-down labels for each raw bucket name (the technical span names the
+// backend emits). Members without an entry fall back to the name with any "plugin."
+// prefix stripped.
+const OVERHEAD_LABELS: Record<string, string> = {
+	// Serialization (JSON parse / encode)
+	"request-unmarshal": "Request parse",
+	"request-marshal": "Request encode",
+	"response-parse": "Response parse",
+	"response-marshal": "Response encode",
+	// Conversion (API schema translation)
+	convertor: "Schema conversion",
+	"convertor.stream-in": "Stream convert (inbound)",
+	"convertor.stream-out": "Stream convert (outbound)",
+	// Middleware (auth / access control)
+	"middleware.apikeys": "API",
+	"middleware.scim": "SCIM",
+	"middleware.auth": "Auth",
+	// Routing
+	"key-pool": "Key pool",
+	"key.selection": "Key selection",
+	// Processing (internal request pipeline)
+	"handle-setup": "Request setup",
+	"pipeline-pre": "Pre-hooks",
+	"pipeline-post": "Post-hooks",
+	"worker-setup": "Worker setup",
+	"worker-handoff": "Worker handoff",
+	"queue-wait": "Queue wait",
+	"attribute-population": "Attribute population",
+	// Networking (client<->gateway<->provider handling)
+	"provider-internal": "Provider I/O",
+	"transport-context": "Request context building",
+	"transport-response-headers": "Response headers",
+	"response-finalize": "Response read",
+	"request-sign": "Request signing",
+	"credentials-fetch": "Credential fetch",
+	// Streaming relay
+	"stream-backpressure": "Client backpressure",
+	"stream-client-write": "Client write",
+	scheduling: "Scheduling",
+};
+
+// Category assignment for buckets that aren't matched by a prefix rule below. Every
+// backend bucket name should be either matched by a prefix rule (serialization phases,
+// middleware.*, convertor*, plugin.*) or listed here — otherwise it lands in "Other",
+// which is the signal that a new bucket needs a home.
+const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
+	"key-pool": "routing",
+	"key.selection": "routing",
+	"handle-setup": "processing",
+	"pipeline-pre": "processing",
+	"pipeline-post": "processing",
+	"worker-setup": "processing",
+	"worker-handoff": "processing",
+	"queue-wait": "processing",
+	"attribute-population": "processing",
+	"provider-internal": "networking",
+	"transport-context": "networking",
+	"transport-response-headers": "networking",
+	"response-finalize": "networking",
+	"request-sign": "networking",
+	"credentials-fetch": "networking",
+	"stream-backpressure": "streaming",
+	"stream-client-write": "streaming",
+	scheduling: "scheduling",
+};
+
+// Raw backend spans that split one user-facing step into internals a reader doesn't care
+// about are folded into a single member. key-pool (the pool lookup) + key.selection (the
+// actual pick) are both "choosing the API key", so they collapse into "Key selection".
+const OVERHEAD_MEMBER_MERGE: Record<string, string> = {
+	"key-pool": "key.selection",
+};
+function mergedBucketName(name: string): string {
+	return OVERHEAD_MEMBER_MERGE[name] ?? name;
+}
 
 function overheadCategoryKey(b: OverheadBucket): string {
 	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
@@ -535,24 +613,48 @@ function overheadCategoryKey(b: OverheadBucket): string {
 	if (b.name.startsWith("middleware.")) {
 		return "middleware";
 	}
-	// Streaming emits per-chunk convert phases (convertor.stream-in / .stream-out) that
-	// belong under the single Convertor category, shown as members in the drill-down.
-	if (b.name.startsWith("convertor.")) {
-		return "convertor";
+	// The bare "convertor" phase and the per-chunk streaming variants (convertor.stream-in
+	// / .stream-out) all fold into the single Conversion category.
+	if (b.name === "convertor" || b.name.startsWith("convertor.")) {
+		return "conversion";
 	}
-	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
-		return b.name;
+	const mapped = OVERHEAD_BUCKET_CATEGORY[b.name];
+	if (mapped) {
+		return mapped;
 	}
 	return b.kind === "plugin" ? "plugins" : "other";
 }
 
-// overheadMemberLabel renders a drill-down member with its friendly phase label when
-// there is one (serialization phases), else the span name with the redundant
-// "plugin." prefix stripped (every plugin row already sits under the Plugins group).
+// overheadMemberLabel renders a drill-down member with its friendly label when there is
+// one, else the span name with the redundant "plugin." prefix stripped (every plugin row
+// already sits under the Plugins group).
+// Plugin display names where a plain title-case of the kebab id would read wrong
+// (acronyms, multi-word tokens). Everything else is title-cased from its id.
+const PLUGIN_LABEL_OVERRIDES: Record<string, string> = {
+	otel: "OpenTelemetry",
+	datadog: "Datadog",
+	compat: "Compatibility",
+	"adaptive-loadbalancer": "Adaptive Load Balancer",
+	"model-catalog-resolver": "Model Catalog Resolver",
+};
+
+// pluginDisplayName turns a plugin's kebab-case id ("enterprise-governance") into a
+// friendly label ("Enterprise Governance"), honouring PLUGIN_LABEL_OVERRIDES first.
+function pluginDisplayName(id: string): string {
+	if (PLUGIN_LABEL_OVERRIDES[id]) return PLUGIN_LABEL_OVERRIDES[id];
+	return id
+		.split("-")
+		.filter(Boolean)
+		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+		.join(" ");
+}
+
 function overheadMemberLabel(name: string): string {
-	const friendly = OVERHEAD_CATEGORY_META[name]?.label;
+	const friendly = OVERHEAD_LABELS[name];
 	if (friendly) return friendly;
-	return name.startsWith("plugin.") ? name.slice("plugin.".length) : name;
+	if (name.startsWith("plugin.")) return pluginDisplayName(name.slice("plugin.".length));
+	if (name.startsWith("middleware.")) return name.slice("middleware.".length);
+	return name;
 }
 
 // buildOverheadCategories groups the raw buckets into the top-level categories,
@@ -566,7 +668,17 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 		else grouped.set(key, [b]);
 	}
 	const cats: OverheadCategory[] = [];
-	for (const [key, members] of grouped) {
+	for (const [key, rawMembers] of grouped) {
+		// Fold raw span splits into their merged member (e.g. key-pool -> key.selection),
+		// summing durations, before sorting/rendering.
+		const byName = new Map<string, OverheadBucket>();
+		for (const m of rawMembers) {
+			const name = mergedBucketName(m.name);
+			const existing = byName.get(name);
+			if (existing) existing.duration_us += m.duration_us;
+			else byName.set(name, { ...m, name });
+		}
+		const members = Array.from(byName.values());
 		members.sort((a, b) => b.duration_us - a.duration_us);
 		cats.push({
 			key,
@@ -581,10 +693,10 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 
 // OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
 // split into the top-level categories, with a legend beneath. Plugin and internal
-// spans are measured directly; the "core" bucket (from the backend) accounts for the
-// rest of the overhead, so the segments sum to the full overhead number. "View
-// details" expands the categories that hold more than one span (Plugins, Other) into
-// their individual members so a specific plugin can be inspected.
+// spans are measured directly; the "scheduling" bucket (from the backend) accounts for
+// the residual goroutine-hop latency between phases, so the segments sum to the full
+// overhead number. "View details" expands the categories that hold more than one span
+// into their individual members so a specific phase or plugin can be inspected.
 function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
 	const [showDetails, setShowDetails] = useState(false);
 	if (!buckets || buckets.length === 0) return null;
@@ -594,7 +706,7 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
 
 	// When measured spans already exceed the computed overhead, the backend omits a
-	// core bucket (it would be negative): a sign the upstream accumulator is
+	// scheduling bucket (it would be negative): a sign the upstream accumulator is
 	// over-counting. Surface it rather than let the numbers look inconsistent.
 	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
 
@@ -649,7 +761,7 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
 								{c.label}
 								{/* normal-case: keep the unit as "µs" — uppercasing mangles the micro sign into "ΜS" (reads as ms) */}
-								<span className="tabular-nums normal-case">{formatMicros(c.totalUs)}</span>
+								<span className="normal-case tabular-nums">{formatMicros(c.totalUs)}</span>
 							</div>
 							<div className="space-y-1 pl-3">
 								{c.members.map((m) => (
@@ -898,16 +1010,17 @@ export function LogDetailView({
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
 	const batchRawRequest = useMemo(() => {
-		if (!batchDebug || !log.raw_request) return null;
+		if (!isBatch || !log.raw_request) return null;
 		try {
 			const parsed = JSON.parse(log.raw_request);
 			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 		} catch {
 			return null;
 		}
-	}, [batchDebug, log.raw_request]);
+	}, [isBatch, log.raw_request]);
 	const batchInlineRequests = useMemo(() => {
 		const requests = batchRawRequest?.requests;
 		if (Array.isArray(requests)) {
@@ -953,14 +1066,20 @@ export function LogDetailView({
 				? ((batchRawRequest?.batch as any).inputConfig.fileName as string)
 				: null;
 	const batchRawResponse = useMemo(() => {
-		if (!batchDebug || !log.raw_response) return null;
+		if (!isBatch || !log.raw_response) return null;
 		try {
 			const parsed = JSON.parse(log.raw_response);
 			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 		} catch {
 			return null;
 		}
-	}, [batchDebug, log.raw_response]);
+	}, [isBatch, log.raw_response]);
+	// batch_debug is only recorded for create/retrieve, so fall back to the raw
+	// provider payload to describe the batch a cancel addressed.
+	const batchId = batchDebug?.batch_id ?? (typeof batchRawResponse?.id === "string" ? (batchRawResponse.id as string) : null);
+	const batchStatus = batchDebug?.status ?? (typeof batchRawResponse?.status === "string" ? (batchRawResponse.status as string) : null);
+	const showBatchDetailsTab = showTabs && isBatch && log.object !== "batch_list";
+
 	const batchResultItems = useMemo(() => {
 		const raw = batchRawResponse;
 		const results: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? (raw!.results as any[]) : [];
@@ -1225,6 +1344,17 @@ export function LogDetailView({
 									className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
 								>
 									{log.metadata.realtime_voice}
+								</Badge>
+							)}
+							{batchDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{batchDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
 						</div>
@@ -1806,11 +1936,52 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
-									<LogEntryDetailsView
-										className="w-full"
-										label="Cost"
-										value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"}
-									/>
+									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
+										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+									)}
+									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Output Cost"
+											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Total Cost"
+											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
+										/>
+									)}
+									{/* Additional cost (guardrail / semantic cache / MCP) on its own row below. */}
+									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full md:col-start-1"
+											label="Additional Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Guardrail Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Semantic Cache Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.mcp_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="MCP Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+										/>
+									)}
 									{isRealtimeTurn && (
 										<>
 											<LogEntryDetailsView
@@ -1974,10 +2145,14 @@ export function LogDetailView({
 											/>
 										)}
 										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
-											<div className="grid w-full grid-cols-1 md:grid-cols-3 items-start justify-between gap-4">
+											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 												{batchDebug.request_counts && (
 													<>
-														<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+														<LogEntryDetailsView
+															className="w-full"
+															label="Total Requests"
+															value={String(batchDebug.request_counts.total)}
+														/>
 														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
 															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
 														))}
@@ -1987,23 +2162,6 @@ export function LogDetailView({
 													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
 												)}
 											</div>
-										)}
-										{batchDebug.status && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Status"
-												value={
-													<Badge
-														variant="outline"
-														className={cn(
-															"rounded-sm px-2 py-0.5 font-medium uppercase",
-															batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
-														)}
-													>
-														{batchDebug.status.replace(/_/g, " ")}
-													</Badge>
-												}
-											/>
 										)}
 									</div>
 								</>
@@ -2201,9 +2359,13 @@ export function LogDetailView({
 						)}
 				</div>
 			</details>
-			<Tabs key={log.id} defaultValue={batchDebug ? "details" : showTabs ? "messages" : "plugins"} className="gap-2">
+			<Tabs
+				key={log.id}
+				defaultValue={showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins"}
+				className="gap-2"
+			>
 				<TabsList className="bg-muted/60 h-10 w-fit">
-					{showTabs && batchDebug && (
+					{showBatchDetailsTab && (
 						<TabsTrigger value="details" className="px-3">
 							Details
 							{batchInlineRequests.length + batchResultItems.length ? (
@@ -2213,7 +2375,7 @@ export function LogDetailView({
 							) : null}
 						</TabsTrigger>
 					)}
-					{showTabs && !batchDebug && (
+					{showTabs && !isBatch && (
 						<TabsTrigger value="messages" className="px-3">
 							Messages
 							{log.input_history?.length ? (
@@ -2224,7 +2386,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !batchDebug && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -2259,17 +2421,17 @@ export function LogDetailView({
 					)}
 				</TabsList>
 
-				{batchDebug && (
+				{showBatchDetailsTab && (
 					<TabsContent value="details" className="space-y-4">
-						{(batchDebug.batch_id || (batchInlineRequests.length === 0 && batchInputFileId)) && (
-							<div className="bg-card rounded-sm border p-5 space-y-4">
-								{batchDebug.batch_id && (
+						{(batchId || batchStatus || (batchInlineRequests.length === 0 && batchInputFileId)) && (
+							<div className="bg-card space-y-4 rounded-sm border p-5">
+								{batchId && (
 									<LogEntryDetailsView
 										label="Batch ID"
 										value={
 											<span className="flex items-center gap-1">
-												<code className="font-mono text-xs">{batchDebug.batch_id}</code>
-												<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-details-copy-batch-id-button" />
+												<code className="font-mono text-xs">{batchId}</code>
+												<CopyInlineButton text={batchId} testId="logdetails-details-copy-batch-id-button" />
 											</span>
 										}
 									/>
@@ -2282,6 +2444,22 @@ export function LogDetailView({
 												<code className="font-mono text-xs">{batchInputFileId}</code>
 												<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
 											</span>
+										}
+									/>
+								)}
+								{batchStatus && (
+									<LogEntryDetailsView
+										label="Status"
+										value={
+											<Badge
+												variant="outline"
+												className={cn(
+													"rounded-sm px-2 py-0.5 font-medium uppercase",
+													batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault,
+												)}
+											>
+												{batchStatus.replace(/_/g, " ")}
+											</Badge>
 										}
 									/>
 								)}
@@ -2344,9 +2522,7 @@ export function LogDetailView({
 																{result.model}
 															</Badge>
 														)}
-														{result.errorMessage && (
-															<span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>
-														)}
+														{result.errorMessage && <span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>}
 													</span>
 												</AccordionTrigger>
 												<AccordionContent className="space-y-3 pb-2">
@@ -2787,6 +2963,9 @@ export function LogDetailView({
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
 									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
+									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
+									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
+									const itemPayload = extractResponsesItemPayload(msg);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
 									let meta: string | undefined;
@@ -2823,7 +3002,7 @@ export function LogDetailView({
 																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
 																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
 															})()
-														: msg.type || undefined;
+														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -2875,6 +3054,8 @@ export function LogDetailView({
 												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
 											) : Array.isArray(msg.tools) ? (
 												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
+											) : itemPayload ? (
+												<CollapsibleCode text={JSON.stringify(applyRedactionMappingToValue(itemPayload, mapping), null, 2)} preview={3} />
 											) : (
 												<div className="text-muted-foreground text-[12px] italic">No content</div>
 											)}
