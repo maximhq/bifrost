@@ -102,6 +102,63 @@ disable
 {{- end -}}
 {{- end -}}
 
+{{- /*
+  Logs-store PostgreSQL helpers. When storage.logsStore.postgres.enabled is true,
+  the logs store points at a separate external PostgreSQL; otherwise every helper
+  falls back to the shared bifrost.postgresql.* helpers so behavior is unchanged.
+*/ -}}
+{{- define "bifrost.logsPostgresql.host" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- .Values.storage.logsStore.postgres.host -}}
+{{- else -}}
+{{- include "bifrost.postgresql.host" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.logsPostgresql.port" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- .Values.storage.logsStore.postgres.port -}}
+{{- else -}}
+{{- include "bifrost.postgresql.port" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.logsPostgresql.database" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- .Values.storage.logsStore.postgres.database -}}
+{{- else -}}
+{{- include "bifrost.postgresql.database" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.logsPostgresql.username" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- .Values.storage.logsStore.postgres.user -}}
+{{- else -}}
+{{- include "bifrost.postgresql.username" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.logsPostgresql.password" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- if .Values.storage.logsStore.postgres.existingSecret -}}
+env.BIFROST_LOGS_POSTGRES_PASSWORD
+{{- else -}}
+{{- .Values.storage.logsStore.postgres.password -}}
+{{- end -}}
+{{- else -}}
+{{- include "bifrost.postgresql.password" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.logsPostgresql.sslMode" -}}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore -}}
+{{- .Values.storage.logsStore.postgres.sslMode -}}
+{{- else -}}
+{{- include "bifrost.postgresql.sslMode" . -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "bifrost.weaviate.host" -}}
 {{- if .Values.vectorStore.weaviate.external.enabled }}
 {{- .Values.vectorStore.weaviate.external.host }}
@@ -903,13 +960,23 @@ false
 {{- if .Values.storage.logsStore.enabled }}
 {{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
 {{- if eq $logsStoreType "postgres" }}
-{{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- $pgConfig := dict "host" (include "bifrost.logsPostgresql.host" .) "port" (include "bifrost.logsPostgresql.port" .) "db_name" (include "bifrost.logsPostgresql.database" .) "user" (include "bifrost.logsPostgresql.username" .) "password" (include "bifrost.logsPostgresql.password" .) "ssl_mode" (include "bifrost.logsPostgresql.sslMode" .) }}
+{{- if dig "postgres" "enabled" false .Values.storage.logsStore }}
+{{- if .Values.storage.logsStore.postgres.passwordCommand }}
+{{- $_ := set $pgConfig "password_command" .Values.storage.logsStore.postgres.passwordCommand }}
+{{- $_ := unset $pgConfig "password" }}
+{{- end }}
+{{- if .Values.storage.logsStore.postgres.connMaxLifetime }}
+{{- $_ := set $pgConfig "conn_max_lifetime" .Values.storage.logsStore.postgres.connMaxLifetime }}
+{{- end }}
+{{- else }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.passwordCommand }}
 {{- $_ := set $pgConfig "password_command" .Values.postgresql.external.passwordCommand }}
 {{- $_ := unset $pgConfig "password" }}
 {{- end }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.connMaxLifetime }}
 {{- $_ := set $pgConfig "conn_max_lifetime" .Values.postgresql.external.connMaxLifetime }}
+{{- end }}
 {{- end }}
 {{- if .Values.storage.logsStore.maxIdleConns }}
 {{- $_ := set $pgConfig "max_idle_conns" (.Values.storage.logsStore.maxIdleConns | int) }}

@@ -1530,6 +1530,40 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
+    # Point the logs store at a SEPARATE external PostgreSQL (different host and/or
+    # database) than the config store. Only applies when the logs store resolves to
+    # postgres (logsStore.type: postgres, or storage.mode: postgres). When absent or
+    # enabled:false (the default), a postgres logs store shares the top-level
+    # `postgresql` connection with the config store (existing behavior). To enable,
+    # uncomment and set enabled: true. Fields mirror `postgresql.external`.
+    # postgres:
+    #   enabled: true
+    #   host: "logs-db.example.com"
+    #   port: 5432          # Integer or env.VAR_NAME string
+    #   user: bifrost
+    #   password: ""        # Or use passwordCommand / existingSecret below
+    #   database: bifrost_logs
+    #   sslMode: require    # disable, allow, prefer, require, verify-ca, verify-full
+    #   connMaxLifetime: 10m
+    #   # Command executed by Bifrost to produce the password on stdout (e.g. RDS IAM auth).
+    #   passwordCommand:
+    #     command: aws
+    #     args:
+    #       - rds
+    #       - generate-db-auth-token
+    #       - --hostname
+    #       - logs-db.example.com
+    #       - --port
+    #       - "5432"
+    #       - --region
+    #       - us-east-1
+    #       - --username
+    #       - bifrost
+    #     timeout: 10s
+    #     cache_ttl: 60s
+    #   # Use an existing Kubernetes secret for the password (takes precedence over `password`).
+    #   existingSecret: ""
+    #   passwordKey: "password"
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m). Unset derives 5x the interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.
     # ClickHouse connection settings (only applies when type is clickhouse)
