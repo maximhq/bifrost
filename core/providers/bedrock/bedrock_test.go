@@ -2994,7 +2994,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -5395,7 +5395,7 @@ func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
 			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
 
 			// Outbound: Bifrost responses messages -> Bedrock
-			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, anthropicModel, bifrostMessages, false)
 			require.NoError(t, err)
 			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
 
@@ -5593,7 +5593,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5637,7 +5637,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5670,7 +5670,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -6724,7 +6724,7 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt should be hoisted into the system block.
@@ -6761,7 +6761,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
@@ -6789,7 +6789,7 @@ func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
 		systemReminderTextMsg("Injected reminder."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	require.Len(t, systemMessages, 2, "both leading system messages belong in the system block")
@@ -6825,7 +6825,7 @@ func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
 		systemReminderTextMsg("The task tools haven't been used recently."), // reminder right after tool result
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6893,7 +6893,7 @@ func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt is hoisted; the developer reminder is NOT.
@@ -6931,7 +6931,7 @@ func TestMidConversationReminderContentStrInlined(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1, "only the leading prompt is hoisted")
 
@@ -6960,7 +6960,7 @@ func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6998,7 +6998,7 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Locate the assistant message carrying the tool_use.
@@ -7054,7 +7054,7 @@ func TestSystemReminderCarriesCachePoint(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// The marker must follow the wrapped reminder text: per Converse semantics a cachePoint
@@ -7085,7 +7085,7 @@ func TestSystemReminderWithoutCacheControlAddsNoCachePoint(t *testing.T) {
 		systemReminderTextMsg("Reminder with no breakpoint."),
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	for _, m := range messages {
@@ -7126,7 +7126,7 @@ func TestToolCacheControlBecomesCachePointWithTTL(t *testing.T) {
 	}
 
 	assertTTLPreserved := func(t *testing.T, input []schemas.ResponsesMessage) {
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 		require.NoError(t, err)
 
 		var afterToolUse, afterToolResult bool
@@ -7177,7 +7177,7 @@ func TestLoneSystemMessageReturnsUserMessage(t *testing.T) {
 	for role, msg := range roles {
 		for _, inline := range []bool{true, false} {
 			input := []schemas.ResponsesMessage{msg}
-			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, inline)
+			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, inline)
 			require.NoError(t, err)
 			assert.Empty(t, systemMessages, "lone %s message must not populate the system block (inline=%v)", role, inline)
 			require.Len(t, messages, 1, "lone %s message must yield exactly one message (inline=%v)", role, inline)
@@ -7196,7 +7196,7 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		userReminderTextMsg("continue"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	assert.Empty(t, systemMessages, "no leading system block means nothing should be hoisted")
@@ -7330,6 +7330,10 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 // DocumentSource is documented as bytes | content | s3Location | text, so the object
 // reference is a first-class source - inlining it would burn a round trip and put the
 // payload under the 25 MiB inline cap for nothing.
+//
+// Nova, because forwarding the reference is only correct for a model whose Converse
+// backend resolves it: see schemas.BedrockModelSupportsS3Location, and
+// TestS3LocationRefusedForModelsThatCannotReadIt for the other side of that gate.
 func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7339,7 +7343,7 @@ func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	fileType := "application/pdf"
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7405,7 +7409,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 			fileURL := tc.uri
 
 			got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5-v1:0",
+				Model: novaModel,
 				Input: []schemas.ChatMessage{
 					{
 						Role: schemas.ChatMessageRoleUser,
@@ -7449,7 +7453,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4.pdf"
 
 		got, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ResponsesMessage{
 				{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -7491,7 +7495,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4"
 
 		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ChatMessage{
 				{
 					Role: schemas.ChatMessageRoleUser,
@@ -7513,7 +7517,8 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 
 // TestBedrockImageS3URIUsesS3Location is the ImageSource twin. Note the format has to be
 // derived from the object's extension: nothing is fetched, so there is no Content-Type,
-// and Converse requires a format on every image block.
+// and Converse requires a format on every image block. Nova for the same reason as its
+// document twin above.
 func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7521,7 +7526,7 @@ func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7558,7 +7563,7 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,

@@ -2279,7 +2279,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 		// Inline mid-conversation system reminders for Anthropic models (keeps Bedrock's
 		// prefix-based prompt cache stable); hoist-everything for other families.
-		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, input, schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model))
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, capModel, input, schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model))
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
@@ -2852,7 +2852,7 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		// Response-side conversion does not perform outbound fetches in practice (model output
 		// blocks already carry inline data), so context.Background() is acceptable here.
 		// Response output never contains mid-conversation system reminders, so disable inlining.
-		bedrockMessages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), bifrostResp.Output, false)
+		bedrockMessages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), bifrostResp.Model, bifrostResp.Output, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert bifrost output messages: %w", err)
 		}
@@ -3300,12 +3300,12 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 // messages is hoisted into the top-level `system` block and later (mid-conversation) ones are
 // inlined in place; when false, every system/developer message is hoisted (historical behavior).
 // Callers compute it from the provider+model — see the call site in ToBedrockResponsesRequest.
-func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessages []schemas.ResponsesMessage, inlineSystemReminders bool) ([]BedrockMessage, []BedrockSystemMessage, error) {
+func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, bifrostMessages []schemas.ResponsesMessage, inlineSystemReminders bool) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
-		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, &msg)
+		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3517,14 +3517,24 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 								block.ResponsesInputMessageContentBlockImage != nil &&
 								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-								imageSource, err := convertImageToBedrockSource(ctx, *block.ResponsesInputMessageContentBlockImage.ImageURL)
-								if err != nil {
-									// Bedrock only supports base64 data URIs for images. If conversion
-									// fails (e.g. remote URL), the image is dropped from the tool result
-									// which silently degrades the model's ability to see tool output.
-									_ = fmt.Errorf("bedrock: converting tool result image: %w", err)
-								} else {
+								imageSource, err := convertImageToBedrockSource(ctx, model, *block.ResponsesInputMessageContentBlockImage.ImageURL)
+								switch {
+								case err == nil:
 									resultContent = append(resultContent, BedrockContentBlock{Image: imageSource})
+								case providerUtils.IsInvalidRequestError(err):
+									// An s3:// reference this model cannot read is caller input that can
+									// never succeed as written, so it is refused rather than dropped.
+									// ImageSource is a union of bytes and s3Location
+									// (docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageSource.html),
+									// so dropping the block sends a tool result carrying no image member
+									// at all and reports 200 for a request Bifrost already knows is wrong.
+									// The three other convertImageToBedrockSource call sites return here;
+									// this one is the outlier only because it predates the model gate.
+									return nil, nil, fmt.Errorf("failed to convert image in responses tool result: %w", err)
+								default:
+									// A remote http(s) image that could not be fetched is transient and
+									// outside the caller's control, so the tool result still goes out
+									// without it. This is the only case the original drop was written for.
 								}
 							}
 						}
@@ -3694,7 +3704,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				}
 			} else {
 				// Convert user/assistant text message
-				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, &msg)
+				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -4037,7 +4047,7 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 // The ctx is propagated to URL fetches inside content blocks. A conversion failure
 // (e.g. an image or document URL that can't be fetched) is returned rather than
 // swallowed - dropping the message would send Bedrock a request missing the turn.
-func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.ResponsesMessage) (*BedrockMessage, error) {
+func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, msg *schemas.ResponsesMessage) (*BedrockMessage, error) {
 	// Ensure Content is present
 	if msg.Content == nil {
 		return nil, nil
@@ -4048,7 +4058,7 @@ func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.Res
 	}
 
 	// Convert content
-	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, *msg.Content)
+	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, model, *msg.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -4723,7 +4733,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 
 // convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside image blocks.
-func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
+func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
@@ -4742,7 +4752,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				bedrockBlock.Text = block.Text
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-					imageSource, err := convertImageToBedrockSource(ctx, *block.ResponsesInputMessageContentBlockImage.ImageURL)
+					imageSource, err := convertImageToBedrockSource(ctx, model, *block.ResponsesInputMessageContentBlockImage.ImageURL)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert image in responses content block: %w", err)
 					}
@@ -4812,6 +4822,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					// resolved above, since nothing is fetched here.
 					if file.FileURL != nil {
 						if s3Loc, ok := bedrockS3LocationFromURL(*file.FileURL); ok {
+							// Same gate as the chat path, ahead of format resolution for the
+							// same reason: see schemas.BedrockModelSupportsS3Location.
+							if !schemas.BedrockModelSupportsS3Location(model) {
+								return nil, bedrockS3LocationUnsupportedError(model, "document", *file.FileURL, "as base64 file_data")
+							}
 							// Last resort: the object key's own extension, which the
 							// refusal below already instructs the caller to supply. See
 							// bedrockDocumentFormatFromPath; the chat path does the same.
@@ -4822,7 +4837,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 								}
 							}
 							if format == "" {
-								return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *file.FileURL)
+								return nil, providerUtils.InvalidRequestErrorf("cannot determine document format for %q: set file_type or give the object a file extension", *file.FileURL)
 							}
 							doc.Source.S3Location = s3Loc
 							bedrockBlock.Document = doc
@@ -4832,7 +4847,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 							// particular reference is malformed (a bucket with no object
 							// key), and the http(s) fetch path's "unsupported URL scheme"
 							// error would say the opposite.
-							return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *file.FileURL)
+							return nil, providerUtils.InvalidRequestErrorf("invalid s3:// document reference %q: expected s3://bucket/key", *file.FileURL)
 						}
 					}
 					if format != "" {
