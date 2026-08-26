@@ -15,12 +15,7 @@ import { getErrorMessage, useCreatePricingOverrideMutation, useGetProvidersQuery
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import { ModelProvider, RequestType } from "@/lib/types/config";
-import {
-	CreatePricingOverrideRequest,
-	PricingOverride,
-	PricingOverrideMatchType,
-	PricingOverrideScopeKind,
-} from "@/lib/types/governance";
+import { CreatePricingOverrideRequest, PricingOverride, PricingOverrideMatchType, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Save, X } from "lucide-react";
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -46,10 +41,13 @@ import {
 	buildPatchFromForm,
 	defaultFormState,
 	fieldLabelByKey,
+	isUnsafePatchKey,
 	patchKeys,
+	PRESERVED_PATCH_KEYS,
 	PRICING_FIELDS,
 	REQUEST_TYPE_GROUPS,
 	REQUEST_TYPE_OPTIONS,
+	pricingFieldError,
 } from "./pricingFields";
 import type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./pricingFields";
 
@@ -75,9 +73,18 @@ function toFormState(override: PricingOverride): FormState {
 	} catch {
 		// malformed patch — leave values empty
 	}
-	for (const key of patchKeys) {
-		const val = parsedPatch[key];
-		if (typeof val === "number") values[key] = String(val);
+	// Existing overrides are read leniently: an unrecognized key the API stored
+	// is carried through rather than dropped on save. Unsafe keys are the one
+	// exception, since assigning them here would mutate the prototype instead
+	// of storing anything.
+	const preservedPatch: Record<string, unknown> = {};
+	for (const [key, val] of Object.entries(parsedPatch)) {
+		if (isUnsafePatchKey(key)) continue;
+		if (patchKeys.includes(key as PricingFieldKey) && typeof val === "number") {
+			values[key as PricingFieldKey] = String(val);
+		} else {
+			preservedPatch[key] = val;
+		}
 	}
 	const scopeKind = resolveScopeKind(override);
 
@@ -99,6 +106,7 @@ function toFormState(override: PricingOverride): FormState {
 		pattern: override.pattern,
 		requestTypes: override.request_types ?? [],
 		pricingValues: values,
+		preservedPatch,
 	};
 }
 
@@ -261,6 +269,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const matchType = watch("matchType");
 	const requestTypes = watch("requestTypes");
 	const pricingValues = watch("pricingValues");
+	const preservedPatch = watch("preservedPatch");
 
 	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
@@ -364,11 +373,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const pricingFieldErrors = useMemo<FieldErrors>(() => {
 		const errs: FieldErrors = {};
 		for (const key of patchKeys) {
-			const raw = pricingValues[key];
-			if (!raw || raw.trim() === "") continue;
-			const parsed = Number(raw);
-			if (!Number.isFinite(parsed)) errs[key] = "Must be a number";
-			else if (parsed < 0) errs[key] = "Must be >= 0";
+			const err = pricingFieldError(key, pricingValues[key]);
+			if (err) errs[key] = err;
 		}
 		return errs;
 	}, [pricingValues]);
@@ -380,7 +386,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 			setJSONPatch(json);
 			setJSONError(undefined);
 		}
-	}, [pricingValues, getValues]);
+	}, [pricingValues, preservedPatch, getValues]);
 
 	const handleJSONChange = useCallback(
 		(value: string) => {
@@ -389,6 +395,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 			const trimmed = value.trim();
 			if (!trimmed) {
 				setJSONError(undefined);
+				setValue("preservedPatch", {});
 				setValue("pricingValues", {});
 				return;
 			}
@@ -399,18 +406,39 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 					return;
 				}
 				const newPricingValues: Partial<Record<PricingFieldKey, string>> = {};
+				const newPreserved: Record<string, unknown> = {};
 				for (const [key, val] of Object.entries(parsed)) {
-					if (!patchKeys.includes(key as PricingFieldKey)) {
-						setJSONError(`Unknown field: ${key}`);
+					if (isUnsafePatchKey(key)) {
+						setJSONError(`Unsupported field: ${key}`);
 						return;
 					}
-					if (typeof val !== "number" || Number.isNaN(val) || val < 0) {
-						setJSONError(`${key} must be a non-negative number`);
+					// Keys the form cannot render as a number (today only the
+					// peak_hours schedule object) ride through untouched so an
+					// override authored via the API stays editable here. Anything
+					// else unrecognized is a typo and is rejected: the pricing
+					// engine ignores unknown keys, so accepting one would save a
+					// setting that silently never takes effect.
+					if (!patchKeys.includes(key as PricingFieldKey)) {
+						if (!PRESERVED_PATCH_KEYS.includes(key)) {
+							setJSONError(`Unknown field: ${key}`);
+							return;
+						}
+						newPreserved[key] = val;
+						continue;
+					}
+					if (typeof val !== "number" || Number.isNaN(val)) {
+						setJSONError(`${key} must be a number`);
+						return;
+					}
+					const err = pricingFieldError(key as PricingFieldKey, String(val));
+					if (err) {
+						setJSONError(`${key}: ${err}`);
 						return;
 					}
 					newPricingValues[key as PricingFieldKey] = String(val);
 				}
 				setJSONError(undefined);
+				setValue("preservedPatch", newPreserved);
 				setValue("pricingValues", newPricingValues);
 			} catch {
 				setJSONError("Invalid JSON");
