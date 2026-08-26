@@ -1693,9 +1693,9 @@ func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.S
 // StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
 // response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
 // request-side conversion so total conversion time is attributed together, instead of
-// the response half folding into core. Symmetric to the request path: response-parse
-// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
-// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+// the response half folding into provider-internal. Symmetric to the request path:
+// response-parse times the JSON decode, this times the struct->unified mapping. Wrapped
+// at the primary response call sites; secondary paths fold into provider-internal. EndSpan is nil-safe.
 func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, "convertor")
 }
@@ -1708,8 +1708,8 @@ func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHa
 }
 
 // StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
-// so provider/auth code outside this package can carve its own work out of the residual
-// "core" bucket. name becomes the breakdown bucket; keep it stable and descriptive
+// so provider/auth code outside this package can carve its own work out of the overhead
+// residual. name becomes the breakdown bucket; keep it stable and descriptive
 // (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
 func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, name)
@@ -1995,7 +1995,7 @@ func EnrichError(
 // Used at the primary completion call sites (chat / responses / text) where parse
 // time is on the latency hot path; the ctx-less HandleProviderResponse remains for
 // the many secondary sites (files, batches, containers) whose parse time is not
-// worth a span and simply folds into the "core" bucket.
+// worth a span and simply folds into provider-internal.
 func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
 		// Inspect the named bifrostErr so a failed parse ends the span as an error

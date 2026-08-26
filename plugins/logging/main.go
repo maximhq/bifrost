@@ -2233,11 +2233,13 @@ func overheadBucketName(s *schemas.Span) string {
 // bucket; provider/upstream spans still subtract from their parent's self-time.
 //
 // The remaining overhead (the stamped total, minus the measured plugin/internal
-// self-time) is attributed to a final "core" bucket: transport parsing, routing, and
-// request/response marshalling that Bifrost does outside any plugin span. It is
-// derived from overheadMs (which already excludes upstream), not from the root
-// span's self-time, so it never picks up streaming socket reads. Buckets are
-// returned with microsecond values, measured spans first (chronological) then core.
+// self-time) is attributed to a residual "scheduling" bucket: the goroutine-scheduling
+// latency between phases plus any glue no phase span has captured yet. Now that
+// request/response conversion, marshal, and parse each have their own phase span, this
+// residual is small. It is derived from overheadMs (which already excludes upstream),
+// not from the root span's self-time, so it never picks up streaming socket reads.
+// Buckets are returned with microsecond values, measured spans first (chronological)
+// then the scheduling residual.
 // computeOverheadBreakdown returns the per-phase buckets, the measured Bifrost-CPU
 // total in ms (the sum of those buckets), and whether this was a streaming request.
 // For streams the caller uses measuredMs as the overhead (see Inject): total-upstream
@@ -2339,13 +2341,11 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 			if total := cpuMs + writeMs; total > 0 {
 				addStreamBucketMs("stream-client-write", bp*writeMs/total)
 				addStreamBucketMs("convertor.stream-out", bp*cpuMs/total)
-			} else {
-				addStreamBucketMs("stream-backpressure", bp)
 			}
 		}
 		// Worker->caller goroutine-hop latency (unary path): scheduling wall-time
 		// inside the overhead window that sits on no span. Carve it into its own
-		// bucket so it stops inflating "core". The reverse hop is the queue-wait span.
+		// "worker-handoff" bucket. The reverse hop is the queue-wait span.
 		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostWorkerHandoffMs); ok {
 			addStreamBucketMs("worker-handoff", ms)
 		}
@@ -2353,13 +2353,13 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 
 	// Provider-agnostic catch-all. Every provider call runs inside an llm.call span
 	// (SpanKindLLMCall), which is not itself a bucket but envelops the upstream network
-	// call plus ALL provider-side glue: request conversion/marshal/signing, response
-	// read/decompress/parse, header and endpoint work. Its self-time (wall minus the
-	// child phase spans) is therefore exactly upstream + whatever provider work no phase
-	// span captured. Subtracting the measured upstream leaves that uncaptured remainder,
-	// surfaced as "provider-internal" so a brand-new provider — or an unspanned step in
-	// an existing one — can never silently inflate "core"; it lands here instead, and its
-	// size tells us a provider needs finer spans. Summed across attempts: retries create
+	// call plus ALL provider-side glue. The hot pieces (request conversion/marshal/signing,
+	// response read/decompress/parse) now have their own phase spans; its self-time (wall
+	// minus the child phase spans) is therefore upstream plus whatever provider work no
+	// phase span captured. Subtracting the measured upstream leaves that uncaptured
+	// remainder, surfaced as "provider-internal" so a brand-new provider (or an unspanned
+	// step in an existing one) lands here, and its size tells us a provider needs finer
+	// spans. Summed across attempts: retries create
 	// one llm.call span each, and upstream latency likewise accumulates across them.
 	//
 	// STREAMING IS EXCLUDED. For a streamed response the llm.call span is DEFERRED — it
@@ -2426,19 +2426,13 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 	// Unary requests: whatever overhead is left over after every instrumented phase is
 	// the residual between phases — goroutine-scheduling latency (the request hops across
 	// the HTTP, core-pipeline and provider-worker goroutines) plus any not-yet-spanned
-	// transport edge. Now that the code phases are instrumented, this is small and
-	// dominated by scheduling, so it is surfaced as "scheduling" rather than an opaque
-	// "core". Skip when measured spans already exceed the total (upstream over-counting):
-	// a negative value is a diagnostic signal, not a bucket, surfaced in the UI footer.
+	// transport edge.
 	//
 	// STREAMING IS EXCLUDED. For a stream, total-upstream is NOT Bifrost overhead: it
 	// includes the off-CPU relay/scheduler wait the request goroutine spends parked
 	// between provider chunks (confirmed ~2% CPU under load). All actual Bifrost CPU is
 	// already measured in the buckets above (parse/convert accumulators, aggregated
-	// per-chunk plugin timing, transport marshal/write). Emitting a residual bucket there
-	// would resurrect the misleading "scheduling = 95% of overhead" figure. Instead the
-	// caller takes measuredMs as the stream's overhead and folds the off-CPU remainder
-	// into upstream, so latency = upstream + overhead still holds.
+	// per-chunk plugin timing, transport marshal/write).
 	if overheadOK && !isStreaming {
 		schedulingUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
 		if schedulingUs > 0.5 {

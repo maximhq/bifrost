@@ -725,14 +725,20 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				var response schemas.BifrostTranscriptionStreamResponse
 				var bifrostErr *schemas.BifrostError
 
+				// Decode timed as the "response-parse" stream phase (per-event JSON decode).
+				parseStart := time.Now()
 				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 
+				// Convert timed as the "convertor" stream phase (per-event mapping).
+				convStart := time.Now()
 				customChunk, ok := parseVLLMTranscriptionStreamChunk(dataBytes)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if !ok || customChunk == nil {
 					logger.Warn("customChunkParser returned no chunk")
 					continue

@@ -339,7 +339,16 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 	// Parse Mistral's transcription response
 	var mistralResponse MistralTranscriptionResponse
-	if err := sonic.Unmarshal(copiedResponseBody, &mistralResponse); err != nil {
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(copiedResponseBody, &mistralResponse)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, umErr.Error())
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
 		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -349,11 +358,19 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 				},
 			}
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, umErr)
 	}
 
 	// Convert to Bifrost format
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	response := mistralResponse.ToBifrostTranscriptionResponse()
+	if ct != nil {
+		if response == nil {
+			ct.EndSpan(ch, schemas.SpanStatusError, "failed to convert transcription response")
+		} else {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
+		}
+	}
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert transcription response", nil)
 	}
@@ -576,10 +593,13 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 		}
 	}
 
-	// Parse the event data
+	// Parse the event data. Timed as the "response-parse" stream phase (per-event JSON decode).
 	var eventData MistralTranscriptionStreamData
-	if err := sonic.UnmarshalString(jsonData, &eventData); err != nil {
-		provider.logger.Warn("Failed to parse stream event data: %v", err)
+	parseStart := time.Now()
+	umErr := sonic.UnmarshalString(jsonData, &eventData)
+	schemas.AddStreamParse(ctx, time.Since(parseStart))
+	if umErr != nil {
+		provider.logger.Warn("Failed to parse stream event data: %v", umErr)
 		return
 	}
 
@@ -589,8 +609,10 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 		Data:  &eventData,
 	}
 
-	// Convert to Bifrost format
+	// Convert to Bifrost format. Timed as the "convertor" stream phase (per-event mapping).
+	convStart := time.Now()
 	response := streamEvent.ToBifrostTranscriptionStreamResponse()
+	schemas.AddStreamConvert(ctx, time.Since(convStart))
 	if response == nil {
 		return
 	}
