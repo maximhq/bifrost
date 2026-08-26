@@ -1515,16 +1515,28 @@ func TestRedisStore_VectorSearch(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		time.Sleep(500 * time.Millisecond)
-
+		// Poll rather than sleep a fixed interval: RediSearch makes a new document
+		// searchable slightly after the write returns, and under `go test ./...`
+		// (many packages sharing one Redis) a fixed 500ms was occasionally too short,
+		// so the search returned nothing. A query error still fails immediately,
+		// since an unescaped value produces a syntax error, not a delay.
 		for _, doc := range specialDocs {
 			queries := []Query{
 				{Field: "model", Operator: QueryOperatorEqual, Value: doc.model},
 			}
-			results, err := setup.Store.GetNearest(setup.ctx, TestNamespace, doc.embedding, queries, []string{"type", "model"}, 0.1, 10)
-			require.NoError(t, err, "search must not fail for model %q", doc.model)
-			require.Len(t, results, 1, "expected exactly the doc tagged %q", doc.model)
-			assert.Equal(t, doc.model, results[0].Properties["model"])
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				results, err := setup.Store.GetNearest(setup.ctx, TestNamespace, doc.embedding, queries, []string{"type", "model"}, 0.1, 10)
+				require.NoError(t, err, "search must not fail for model %q", doc.model)
+				if len(results) == 1 {
+					assert.Equal(t, doc.model, results[0].Properties["model"])
+					break
+				}
+				if time.Now().After(deadline) {
+					require.Failf(t, "tagged doc not searchable", "expected exactly the doc tagged %q, got %d results after 5s", doc.model, len(results))
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
 	})
 }

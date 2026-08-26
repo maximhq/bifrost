@@ -1,2 +1,2 @@
-- feat: account for prompt guardrail cost in cache search (#4931)
-- chore: upgraded core to v1.7.11 and framework to v1.5.9
+- feat: add a no-op `HTTPTransportPreAuthHook` for the new pre-authentication transport phase (#6375)
+- chore: upgraded core to v1.8.0 and framework to v1.6.0
