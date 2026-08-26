@@ -329,6 +329,9 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if candidate.AvgLogprobs != 0 {
 			extraFields["avgLogprobs"] = candidate.AvgLogprobs
 		}
+		if candidate.LogprobsResult != nil {
+			extraFields["logprobsResult"] = candidate.LogprobsResult
+		}
 		// Server-side tool parts have no lossless home in Bifrost's OpenAI-shaped schema
 		// (the web_search_call item keeps the queries, but not the raw tool response or the
 		// thoughtSignature Gemini requires back on replay). Carry them verbatim so the
@@ -688,6 +691,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if target.AvgLogprobs == 0 {
 				target.AvgLogprobs = terminal.AvgLogprobs
 			}
+			if target.LogprobsResult == nil {
+				target.LogprobsResult = terminal.LogprobsResult
+			}
 		} else {
 			candidates = append(candidates, terminal)
 		}
@@ -825,14 +831,18 @@ func buildGeminiTerminalCandidate(
 		candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
 	}
 
-	// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
-	// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+	// Restore safetyRatings/avgLogprobs/logprobsResult preserved by
+	// ToResponsesBifrostResponsesResponse (they have no field in Bifrost's
+	// OpenAI-shaped Responses schema).
 	if bifrostResp.ProviderExtraFields != nil {
 		if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
 			candidate.SafetyRatings = ratings
 		}
 		if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
 			candidate.AvgLogprobs = avgLogprobs
+		}
+		if logprobs := extractGeminiLogprobsResult(bifrostResp.ProviderExtraFields["logprobsResult"]); logprobs != nil {
+			candidate.LogprobsResult = logprobs
 		}
 	}
 
@@ -858,6 +868,27 @@ func extractGeminiSafetyRatings(v interface{}) []*SafetyRating {
 		return nil
 	}
 	return ratings
+}
+
+// extractGeminiLogprobsResult recovers a *LogprobsResult from
+// ProviderExtraFields["logprobsResult"]. Handles both the in-memory pointer
+// (normal non-streaming path) and a JSON-decoded map form.
+func extractGeminiLogprobsResult(v interface{}) *LogprobsResult {
+	if v == nil {
+		return nil
+	}
+	if result, ok := v.(*LogprobsResult); ok {
+		return result
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var result LogprobsResult
+	if err := sonic.Unmarshal(b, &result); err != nil {
+		return nil
+	}
+	return &result
 }
 
 // extractGeminiAvgLogprobs recovers a float64 from ProviderExtraFields["avgLogprobs"].
@@ -1170,6 +1201,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
 					candidate.AvgLogprobs = avgLogprobs
 				}
+				if logprobs := extractGeminiLogprobsResult(bifrostResp.Response.ProviderExtraFields["logprobsResult"]); logprobs != nil {
+					candidate.LogprobsResult = logprobs
+				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
 				}
@@ -1240,8 +1274,9 @@ type GeminiResponsesStreamState struct {
 	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
 	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
-	SafetyRatings []*SafetyRating
-	AvgLogprobs   float64
+	SafetyRatings  []*SafetyRating
+	AvgLogprobs    float64
+	LogprobsResult *LogprobsResult
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
@@ -1333,6 +1368,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.LogprobsResult = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1432,12 +1468,16 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 			}
 		}
 
-		// safetyRatings/avgLogprobs only arrive on the terminal chunk, alongside finishReason.
+		// safetyRatings/avgLogprobs/logprobsResult only arrive on the terminal chunk,
+		// alongside finishReason.
 		if len(candidate.SafetyRatings) > 0 {
 			state.SafetyRatings = candidate.SafetyRatings
 		}
 		if candidate.AvgLogprobs != 0 {
 			state.AvgLogprobs = candidate.AvgLogprobs
+		}
+		if candidate.LogprobsResult != nil {
+			state.LogprobsResult = candidate.LogprobsResult
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -2389,6 +2429,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 	if state.AvgLogprobs != 0 {
 		extraFields["avgLogprobs"] = state.AvgLogprobs
+	}
+	if state.LogprobsResult != nil {
+		extraFields["logprobsResult"] = state.LogprobsResult
 	}
 	if len(extraFields) > 0 {
 		completedResp.ProviderExtraFields = extraFields
@@ -3829,6 +3872,19 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 
+	// Mapping top_logprobs to generation config, mirroring the chat route
+	// (convertParamsToGenerationConfig): Gemini caps logprobs at 20.
+	if params.TopLogProbs != nil {
+		topLogProbs := *params.TopLogProbs
+		if topLogProbs > 20 {
+			topLogProbs = 20
+		}
+		if topLogProbs > 0 {
+			config.ResponseLogprobs = true
+			config.Logprobs = schemas.Ptr(int32(topLogProbs))
+		}
+	}
+
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
 			delete(params.ExtraParams, "top_k")
@@ -3858,6 +3914,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			delete(params.ExtraParams, "media_resolution")
 			if val, success := schemas.SafeExtractString(mediaResolution); success {
 				config.MediaResolution = val
+			}
+		}
+		// The Gemini-native ingress carries responseLogprobs as an extra param
+		// (convertGenerationConfigToResponsesParameters); without this mapping a
+		// passthrough request never asks Gemini for logprobs.
+		if responseLogprobs, ok := params.ExtraParams["response_logprobs"]; ok {
+			delete(params.ExtraParams, "response_logprobs")
+			if val, success := schemas.SafeExtractBool(responseLogprobs); success && val {
+				config.ResponseLogprobs = true
 			}
 		}
 
