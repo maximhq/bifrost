@@ -536,12 +536,32 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		addParam("web_search_options")
 	}
 
+	// declaredParamSurface reports whether the row said anything at all about the
+	// request-parameter surface, including explicit "supports X: false". That is a
+	// different set from "produced a parameter name above": a row carrying only
+	// explicit-false flags produces no names but IS making an authoritative
+	// statement, and must keep a (possibly empty-of-tools) allowlist rather than
+	// degrade to "unknown, do not drop".
+	declaredParamSurface := len(parsed.ModelParameters) > 0 ||
+		parsed.SupportsAssistantPrefill != nil ||
+		parsed.SupportsFunctionCalling != nil ||
+		parsed.SupportsParallelFunctionCalling != nil ||
+		parsed.SupportsToolChoice != nil ||
+		parsed.SupportsReasoning != nil ||
+		parsed.SupportsResponseSchema != nil ||
+		parsed.SupportsNoneReasoningEffort != nil ||
+		parsed.SupportsServiceTier != nil ||
+		parsed.SupportsPromptCaching != nil ||
+		parsed.SupportsWebSearch != nil
+
 	// reasoning_with_tool_calls defaults on for rows that lack the flag, so models
 	// missing it don't get reasoning stripped when tools are present. Restrict the
-	// default to rows that declared at least one capability: for a capability-empty
-	// (e.g. cost-only) row the marker alone would otherwise become a one-element
-	// allowlist, and compat with should_drop_params would strip every other
-	// parameter (tools, tool_choice, ...) from requests.
+	// default to rows that declared a parameter surface: for a row that said
+	// nothing about parameters (cost-only, deprecation-only, mode-only) the marker
+	// alone would otherwise become a one-element allowlist, and compat with
+	// should_drop_params would strip every other parameter (tools, tool_choice,
+	// ...) from requests. This block must stay last in the function: the explicit
+	// false below removes the marker regardless of how it was added above.
 	if parsed.SupportsReasoningWithToolCalls != nil {
 		if *parsed.SupportsReasoningWithToolCalls {
 			addParam("reasoning_with_tool_calls")
@@ -552,7 +572,7 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 				return p == "reasoning_with_tool_calls"
 			})
 		}
-	} else if len(supported) > 0 {
+	} else if declaredParamSurface {
 		addParam("reasoning_with_tool_calls")
 	}
 
