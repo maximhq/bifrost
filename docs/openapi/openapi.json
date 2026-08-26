@@ -106239,6 +106239,62 @@
           "annotation_cost_per_page": {
             "type": "number",
             "minimum": 0
+          },
+          "off_peak_cost_multiplier": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "description": "Multiplier applied to every usage-based charge when the request falls outside the windows declared in peak_hours. Every other rate on this object is the peak (higher) price, so this can only scale downward — e.g. 0.5 for a 50% off-peak discount. Flat per-request and per-query fees are not discounted. Requires peak_hours to also be set; either field alone bills at peak.\n"
+          },
+          "peak_hours": {
+            "type": "object",
+            "description": "Recurring weekly windows during which the model is billed at its peak (base) rates. Any instant outside every window is off-peak and is discounted by off_peak_cost_multiplier. Peak vs off-peak is decided by the request's start time, so a stream crossing a boundary bills entirely at its start-time rate.\n",
+            "properties": {
+              "timezone": {
+                "type": "string",
+                "description": "IANA location name (e.g. \"UTC\", \"Asia/Shanghai\"). Empty means UTC.",
+                "example": "UTC"
+              },
+              "windows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "days": {
+                      "type": "array",
+                      "description": "Weekdays the window applies to, 0 = Sunday through 6 = Saturday. For a window that wraps past midnight, this is the weekday the window starts on.\n",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 6
+                      },
+                      "example": [
+                        1,
+                        2,
+                        3,
+                        4,
+                        5
+                      ]
+                    },
+                    "start": {
+                      "type": "string",
+                      "description": "Window start as \"HH:MM\" in the schedule's timezone (inclusive).",
+                      "example": "01:00"
+                    },
+                    "end": {
+                      "type": "string",
+                      "description": "Window end as \"HH:MM\" in the schedule's timezone (exclusive). A value less than or equal to start wraps past midnight.\n",
+                      "example": "04:00"
+                    }
+                  },
+                  "required": [
+                    "days",
+                    "start",
+                    "end"
+                  ]
+                }
+              }
+            }
           }
         }
       },
