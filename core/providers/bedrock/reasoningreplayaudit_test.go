@@ -14,7 +14,7 @@ import (
 // and returns the reasoning blocks it produced.
 func bedrockReasoningBlocksForChatMessage(t *testing.T, msg schemas.ChatMessage) []BedrockContentBlock {
 	t.Helper()
-	converted, err := convertMessage(context.Background(), msg)
+	converted, err := convertMessage(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msg)
 	require.NoError(t, err)
 	var blocks []BedrockContentBlock
 	for _, block := range converted.Content {

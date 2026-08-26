@@ -206,11 +206,11 @@ class CityInfo(BaseModel):
 def validate_city_info_response(result: CityInfo, provider: str) -> None:
     """
     Validate a CityInfo structured output response.
-    
+
     Args:
         result: The CityInfo instance to validate
         provider: The provider name for error messages
-    
+
     Raises:
         AssertionError: If any validation fails
     """
@@ -218,7 +218,7 @@ def validate_city_info_response(result: CityInfo, provider: str) -> None:
     assert isinstance(
         result, CityInfo
     ), f"{provider}: Response should be a CityInfo instance"
-    
+
     # Validate city_name field
     assert hasattr(result, "city_name"), f"{provider}: Result should have 'city_name' field"
     assert isinstance(
@@ -228,7 +228,7 @@ def validate_city_info_response(result: CityInfo, provider: str) -> None:
     assert any(
         word in result.city_name.lower() for word in ["paris"]
     ), f"{provider}: city_name should contain 'Paris'"
-    
+
     # Validate country field
     assert hasattr(result, "country"), f"{provider}: Result should have 'country' field"
     assert isinstance(result.country, str), f"{provider}: country should be a string"
@@ -236,7 +236,7 @@ def validate_city_info_response(result: CityInfo, provider: str) -> None:
     assert any(
         word in result.country.lower() for word in ["france"]
     ), f"{provider}: country should contain 'France'"
-    
+
     # Validate population_millions field
     assert hasattr(
         result, "population_millions"
@@ -247,7 +247,7 @@ def validate_city_info_response(result: CityInfo, provider: str) -> None:
     assert (
         result.population_millions > 0
     ), f"{provider}: population_millions should be positive"
-    
+
     # Validate is_capital field
     assert hasattr(
         result, "is_capital"
@@ -392,7 +392,7 @@ class TestLangChainIntegration:
             assert all(isinstance(x, float) for x in result)
 
             # Test batch embeddings
-            batch_result = embeddings.embed_documents(EMBEDDINGS_MULTIPLE_TEXTS)        
+            batch_result = embeddings.embed_documents(EMBEDDINGS_MULTIPLE_TEXTS)
 
             assert isinstance(batch_result, list)
             assert len(batch_result) == len(EMBEDDINGS_MULTIPLE_TEXTS)
@@ -697,9 +697,9 @@ class TestLangChainIntegration:
                 model="gemini-2.5-flash",
                 google_api_key="dummy-google-api-key-bifrost-handles-auth",
                 temperature=0.7,
-                max_output_tokens=200,             
+                max_output_tokens=200,
                 base_url=get_integration_url("langchain")
-            )            
+            )
             logger = logging.getLogger(__name__)
             messages = [HumanMessage(content="Write a haiku about technology.")]
             logger.info(f"Messages: {messages}")
@@ -935,8 +935,8 @@ class TestLangChainIntegration:
                 with patch.object(gemini_chat, "_client") as mock_client:
                     mock_client.base_url = f"{base_url}/v1beta"
                     responses["gemini"] = gemini_chat.invoke(message)
-                    providers_tested.append("Gemini")        
-        
+                    providers_tested.append("Gemini")
+
         except Exception:
             pass
 
@@ -1013,26 +1013,26 @@ class TestLangChainIntegration:
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("langchain_structured_output"))
     def test_20_structured_outputs_anthropic(self, test_config, provider, model):
         """Test Case 20: Structured outputs with Anthropic ChatAnthropic for Bedrock"""
-        
+
         try:
             llm = ChatAnthropic(
                 model=format_provider_model(provider, model),
                 base_url=get_integration_url("langchain"),
                 api_key="dummy-key",
             )
-            
+
             llm_structured = llm.with_structured_output(CityInfo)
             result = llm_structured.invoke(
                 "Provide information about Paris: the city name, country, approximate population in millions, and whether it's a capital city."
             )
-            
+
             # Validate the response using the common validation function
             validate_city_info_response(result, provider)
-            
+
             logging.info(
                 f"✓ Bedrock structured output test passed: {result.city_name}, {result.country}, {result.population_millions}M, capital={result.is_capital}"
             )
-            
+
         except Exception as e:
             pytest.skip(f"Bedrock structured output via ChatAnthropic not available: {e}")
 
@@ -1076,7 +1076,7 @@ class TestLangChainIntegration:
             # Collect streaming chunks and extract tool calls
             all_chunks = []
             tool_calls_found = []
-            
+
             for chunk in agent_graph.stream(inputs, stream_mode="values"):
                 all_chunks.append(chunk)
                 # Extract tool calls from the messages in the chunk
@@ -1092,7 +1092,7 @@ class TestLangChainIntegration:
 
             # Get the first tool call
             tool_call = tool_calls_found[0]
-            
+
             # Handle both dict and object formats
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get("name")
@@ -1104,11 +1104,11 @@ class TestLangChainIntegration:
             # Validate tool call structure
             assert tool_name == "get_current_date", f"Expected 'get_current_date', got {tool_name}"
             assert args is not None and args != {}, f"Tool args must not be empty, got {args}"
-            
+
             if isinstance(args, str):
                 import json
                 args = json.loads(args)
-            
+
             assert "timezone" in args, f"Expected 'timezone' in args, got {args}"
             timezone_value = args["timezone"]
             assert timezone_value != "", f"Timezone value should not be empty, got '{timezone_value}'"
@@ -1126,7 +1126,7 @@ class TestLangChainIntegration:
     def _validate_thinking_response(self, response, provider: str, keywords: List[str], min_keyword_matches: int = 3):
         """
         Helper function to validate thinking/reasoning responses.
-        
+
         Args:
             response: The LangChain response object
             provider: Provider name for logging
@@ -1135,11 +1135,11 @@ class TestLangChainIntegration:
         """
         # Validate response content exists
         assert response.content is not None, "Response should have content"
-        
+
         # Extract content with summary handling
         content, has_reasoning_content = get_content_string_with_summary(response)
         content_lower = content.lower()
-        
+
         # Validate keyword matches
         keyword_matches = sum(1 for keyword in keywords if keyword in content_lower)
         assert keyword_matches >= min_keyword_matches, (
@@ -1147,20 +1147,20 @@ class TestLangChainIntegration:
             f"Found {keyword_matches} keywords out of {len(keywords)}. "
             f"Content: {get_content_string(response.content)[:200]}..."
         )
-        
+
         # Check for step-by-step reasoning indicators
         step_indicators = ["step", "first", "then", "next", "calculate", "therefore", "because", "since"]
         has_steps = any(indicator in content_lower for indicator in step_indicators)
         assert has_steps, (
             f"Response should show step-by-step reasoning. Content: {get_content_string(response.content)[:200]}..."
         )
-        
+
         logging.info(f"✓ {provider} thinking test passed")
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
     def test_22_thinking_openai(self, test_config, provider, model):
         """Test Case 22: Thinking/reasoning with OpenAI models via LangChain (non-streaming)"""
-        
+
         try:
             # Use ChatOpenAI with reasoning parameters
             llm = ChatOpenAI(
@@ -1173,19 +1173,19 @@ class TestLangChainIntegration:
                     "summary": "detailed",
                 }
             )
-            
+
             # Use reasoning-heavy prompt from common utils
             from .utils.common import RESPONSES_REASONING_INPUT
-            
+
             # Convert to LangChain message format
             messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
-            
+
             response = llm.invoke(messages)
-            
+
             # Validate response
             reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
             self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=3)
-            
+
         except Exception as e:
             error_str = str(e).lower()
             if "reasoning" in error_str or "not supported" in error_str:
@@ -1206,10 +1206,10 @@ class TestLangChainIntegration:
                 max_tokens=4000,
                 thinking={"type": "enabled", "budget_tokens": 2500},
             )
-            
+
             # Use thinking prompt from common utils
             from .utils.common import ANTHROPIC_THINKING_PROMPT
-            
+
             # Convert to LangChain message format
             messages = []
             for msg in ANTHROPIC_THINKING_PROMPT:
@@ -1217,17 +1217,17 @@ class TestLangChainIntegration:
                     messages.append(HumanMessage(content=msg["content"]))
                 elif msg["role"] == "assistant":
                     messages.append(AIMessage(content=msg["content"]))
-            
+
             response = llm.invoke(messages)
-            
+
             # Additional validation for Anthropic response type
             assert isinstance(response, AIMessage), "Response should be AIMessage"
             assert len(response.content) > 0, "Response content should not be empty"
-            
+
             # Validate response
             reasoning_keywords = ["batch", "oven", "cookie", "minute", "calculate", "total", "time", "step"]
             self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=2)
-            
+
         except Exception as e:
             error_str = str(e).lower()
             if "thinking" in error_str or "not supported" in error_str:
@@ -1237,7 +1237,7 @@ class TestLangChainIntegration:
 
     def test_24_thinking_azure(self, test_config):
         """Test Case 24: Thinking/reasoning with Azure models via LangChain (non-streaming)"""
-        
+
         try:
             default_headers = {}
             # Azure routing requires specific headers for Bifrost
@@ -1247,7 +1247,7 @@ class TestLangChainIntegration:
                 "authorization": f"Bearer {azure_api_key}",
                 "x-bf-azure-endpoint": azure_endpoint,
             }
-            
+
             # Use ChatOpenAI with reasoning parameters
             llm = ChatOpenAI(
                 model="azure/claude-opus-4-5",
@@ -1260,19 +1260,19 @@ class TestLangChainIntegration:
                 },
                 default_headers=default_headers if default_headers else None,
             )
-            
+
             # Use reasoning-heavy prompt from common utils
             from .utils.common import RESPONSES_REASONING_INPUT
-            
+
             # Convert to LangChain message format
             messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
-            
+
             response = llm.invoke(messages)
-            
+
             # Validate response
             reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
             self._validate_thinking_response(response, "Azure", reasoning_keywords, min_keyword_matches=3)
-            
+
         except Exception as e:
             error_str = str(e).lower()
             if "reasoning" in error_str or "not supported" in error_str:
@@ -1284,7 +1284,7 @@ class TestLangChainIntegration:
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
     def test_25_thinking_gemini(self, test_config, provider, model):
         """Test Case 25: Thinking/reasoning with Gemini models via LangChain (non-streaming)"""
-        
+
         try:
             # Use ChatGoogleGenerativeAI with thinking_budget parameter
             llm = ChatGoogleGenerativeAI(
@@ -1296,26 +1296,26 @@ class TestLangChainIntegration:
                 thinking_budget=1024,
                 include_thoughts=True,
             )
-            
+
             # Use reasoning-heavy prompt from common utils
             from .utils.common import RESPONSES_REASONING_INPUT
-            
+
             # Convert to LangChain message format
             messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
-            
+
             response = llm.invoke(messages)
-            
+
             # Check if usage metadata is available (Gemini-specific)
             if hasattr(response, 'usage_metadata') and response.usage_metadata:
                 if "output_token_details" in response.usage_metadata:
                     reasoning_tokens = response.usage_metadata["output_token_details"].get("reasoning", 0)
                     if reasoning_tokens > 0:
                         logging.info(f"✓ Model used {reasoning_tokens} reasoning tokens")
-            
+
             # Validate response
             reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
             self._validate_thinking_response(response, f"{provider} Gemini", reasoning_keywords, min_keyword_matches=3)
-            
+
         except Exception as e:
             error_str = str(e).lower()
             if "thinking" in error_str or "not supported" in error_str or "thinking_budget" in error_str:
@@ -1361,23 +1361,23 @@ class TestLangChainIntegration:
             #         "maxReasoningEffort": "high",
             #     }
             # },
-            
+
             # Use reasoning-heavy prompt from common utils
             from .utils.common import RESPONSES_REASONING_INPUT
-            
+
             # Convert to LangChain message format
             messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
-            
+
             response = llm.invoke(messages)
-            
+
             # Additional validation for Anthropic response type
             assert isinstance(response, AIMessage), "Response should be AIMessage"
             assert len(response.content) > 0, "Response content should not be empty"
-            
+
             # Validate response
             reasoning_keywords = ["batch", "oven", "cookie", "minute", "calculate", "total", "time", "step"]
             self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=2)
-            
+
         except Exception as e:
             error_str = str(e).lower()
             if "thinking" in error_str or "not supported" in error_str:
@@ -1394,20 +1394,20 @@ class TestLangChainIntegration:
         """Test Case 27: Get number of tokens from messages with simple text"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
-                    
+
         try:
             llm = ChatAnthropic(
                 model=format_provider_model(provider, model),
                 base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
                 api_key="dummy-key",
             )
-            
+
             # Create simple message
             messages = [HumanMessage(content=INPUT_TOKENS_SIMPLE_TEXT)]
-            
+
             # Get token count
             token_count = llm.get_num_tokens_from_messages(messages)
-            
+
             # Validate token count
             assert isinstance(token_count, int), "Token count should be an integer"
             assert token_count > 0, "Token count should be positive"
@@ -1415,7 +1415,7 @@ class TestLangChainIntegration:
             assert 3 <= token_count <= 20, (
                 f"Simple text should have 3-20 tokens, got {token_count}"
             )
-            
+
         except Exception as e:
             pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
 
@@ -1432,16 +1432,16 @@ class TestLangChainIntegration:
                 base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
                 api_key="dummy-key",
             )
-            
+
             # Create messages with system message
             messages = [
                 SystemMessage(content=INPUT_TOKENS_WITH_SYSTEM[0]["content"]),
                 HumanMessage(content=INPUT_TOKENS_WITH_SYSTEM[1]["content"])
             ]
-            
+
             # Get token count
             token_count = llm.get_num_tokens_from_messages(messages)
-            
+
             # Validate token count
             assert isinstance(token_count, int), "Token count should be an integer"
             assert token_count > 0, "Token count should be positive"
@@ -1449,7 +1449,7 @@ class TestLangChainIntegration:
             assert token_count > 2, (
                 f"With system message should have >2 tokens, got {token_count}"
             )
-            
+
 
         except Exception as e:
             pytest.skip(f"Token counting not available for {provider}/{model}: {e}")

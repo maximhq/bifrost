@@ -93,7 +93,7 @@ export const RequestTypes = [
 	"video_remix",
 	"count_tokens",
 	"compaction",
-    // Batch operations
+	// Batch operations
 	"batch_create",
 	"batch_list",
 	"batch_retrieve",
