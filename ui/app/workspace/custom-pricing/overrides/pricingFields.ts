@@ -346,6 +346,12 @@ export const PRICING_FIELDS = [
 		group: "chat",
 		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video", "ocr"],
 	},
+	{
+		key: "off_peak_cost_multiplier",
+		label: "Off-peak multiplier",
+		group: "chat",
+		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video", "ocr"],
+	},
 	// Audio fields
 	{
 		key: "input_cost_per_character",
@@ -718,6 +724,39 @@ export const fieldLabelByKey = Object.fromEntries(PRICING_FIELDS.map((field) => 
 >;
 export const patchKeys = PRICING_FIELDS.map((field) => field.key) as PricingFieldKey[];
 
+/**
+ * Per-field numeric bounds for fields that are not plain "any non-negative
+ * cost". Fields absent from this map keep the default `>= 0` rule.
+ */
+export const FIELD_BOUNDS: Partial<Record<PricingFieldKey, { min?: number; max?: number; message: string }>> = {
+	// Every base rate is the peak price, so the off-peak multiplier can only
+	// ever scale downward. A value of 0 would make off-peak requests free and a
+	// value above 1 would make them cost more than peak; the pricing engine
+	// rejects both and bills at peak, so reject them here too rather than
+	// silently accepting a setting that will never take effect.
+	off_peak_cost_multiplier: { min: 0, max: 1, message: "Must be greater than 0 and at most 1" },
+};
+
+/**
+ * Validates one raw form value for a pricing field. Returns an error message,
+ * or undefined when the value is acceptable. An empty value is not an error —
+ * it means "do not override this field".
+ */
+export function pricingFieldError(key: PricingFieldKey, raw: string | undefined): string | undefined {
+	if (raw == null || raw.trim() === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed)) return "Must be a number";
+
+	const bounds = FIELD_BOUNDS[key];
+	if (bounds) {
+		if (bounds.min != null && parsed <= bounds.min) return bounds.message;
+		if (bounds.max != null && parsed > bounds.max) return bounds.message;
+		return undefined;
+	}
+	if (parsed < 0) return "Must be >= 0";
+	return undefined;
+}
+
 export type FieldErrors = Partial<Record<PricingFieldKey | "name" | "scope" | "pattern" | "patch", string>>;
 
 // ---------------------------------------------------------------------------
@@ -740,6 +779,13 @@ export interface FormState {
 	pattern: string;
 	requestTypes: RequestType[];
 	pricingValues: Partial<Record<PricingFieldKey, string>>;
+	/**
+	 * Patch fields this form does not render — currently `peak_hours`, which is
+	 * a schedule object rather than a number and is set via the API or the
+	 * datasheet. Carried through verbatim so opening and saving an override in
+	 * the UI never silently drops what the form cannot display.
+	 */
+	preservedPatch: Record<string, unknown>;
 }
 
 export const defaultFormState: FormState = {
@@ -753,25 +799,26 @@ export const defaultFormState: FormState = {
 	pattern: "",
 	requestTypes: [],
 	pricingValues: {},
+	preservedPatch: {},
 };
 
 export function buildPatchFromForm(form: FormState): { patch: PricingOverridePatch; errors: FieldErrors } {
 	const errors: FieldErrors = {};
 	const patch: PricingOverridePatch = {};
 
+	for (const [key, value] of Object.entries(form.preservedPatch ?? {})) {
+		(patch as Record<string, unknown>)[key] = value;
+	}
+
 	for (const key of patchKeys) {
 		const raw = form.pricingValues[key];
 		if (raw == null || raw.trim() === "") continue;
-		const parsed = Number(raw);
-		if (!Number.isFinite(parsed)) {
-			errors[key] = "Must be a number";
+		const err = pricingFieldError(key, raw);
+		if (err) {
+			errors[key] = err;
 			continue;
 		}
-		if (parsed < 0) {
-			errors[key] = "Must be >= 0";
-			continue;
-		}
-		(patch as Record<string, number>)[key] = parsed;
+		(patch as Record<string, number>)[key] = Number(raw);
 	}
 
 	return { patch, errors };

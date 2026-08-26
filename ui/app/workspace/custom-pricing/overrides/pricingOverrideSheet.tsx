@@ -50,6 +50,7 @@ import {
 	PRICING_FIELDS,
 	REQUEST_TYPE_GROUPS,
 	REQUEST_TYPE_OPTIONS,
+	pricingFieldError,
 } from "./pricingFields";
 import type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./pricingFields";
 
@@ -75,9 +76,13 @@ function toFormState(override: PricingOverride): FormState {
 	} catch {
 		// malformed patch — leave values empty
 	}
-	for (const key of patchKeys) {
-		const val = parsedPatch[key];
-		if (typeof val === "number") values[key] = String(val);
+	const preservedPatch: Record<string, unknown> = {};
+	for (const [key, val] of Object.entries(parsedPatch)) {
+		if (patchKeys.includes(key as PricingFieldKey) && typeof val === "number") {
+			values[key as PricingFieldKey] = String(val);
+		} else {
+			preservedPatch[key] = val;
+		}
 	}
 	const scopeKind = resolveScopeKind(override);
 
@@ -99,6 +104,7 @@ function toFormState(override: PricingOverride): FormState {
 		pattern: override.pattern,
 		requestTypes: override.request_types ?? [],
 		pricingValues: values,
+		preservedPatch,
 	};
 }
 
@@ -261,6 +267,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const matchType = watch("matchType");
 	const requestTypes = watch("requestTypes");
 	const pricingValues = watch("pricingValues");
+	const preservedPatch = watch("preservedPatch");
 
 	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
@@ -364,11 +371,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const pricingFieldErrors = useMemo<FieldErrors>(() => {
 		const errs: FieldErrors = {};
 		for (const key of patchKeys) {
-			const raw = pricingValues[key];
-			if (!raw || raw.trim() === "") continue;
-			const parsed = Number(raw);
-			if (!Number.isFinite(parsed)) errs[key] = "Must be a number";
-			else if (parsed < 0) errs[key] = "Must be >= 0";
+			const err = pricingFieldError(key, pricingValues[key]);
+			if (err) errs[key] = err;
 		}
 		return errs;
 	}, [pricingValues]);
@@ -380,7 +384,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 			setJSONPatch(json);
 			setJSONError(undefined);
 		}
-	}, [pricingValues, getValues]);
+	}, [pricingValues, preservedPatch, getValues]);
 
 	const handleJSONChange = useCallback(
 		(value: string) => {
@@ -389,6 +393,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 			const trimmed = value.trim();
 			if (!trimmed) {
 				setJSONError(undefined);
+				setValue("preservedPatch", {});
 				setValue("pricingValues", {});
 				return;
 			}
@@ -399,18 +404,28 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 					return;
 				}
 				const newPricingValues: Partial<Record<PricingFieldKey, string>> = {};
+				const newPreserved: Record<string, unknown> = {};
 				for (const [key, val] of Object.entries(parsed)) {
+					// Keys the form does not render (e.g. the peak_hours schedule
+					// object) are carried through rather than rejected, so an
+					// override authored via the API stays editable here.
 					if (!patchKeys.includes(key as PricingFieldKey)) {
-						setJSONError(`Unknown field: ${key}`);
+						newPreserved[key] = val;
+						continue;
+					}
+					if (typeof val !== "number" || Number.isNaN(val)) {
+						setJSONError(`${key} must be a number`);
 						return;
 					}
-					if (typeof val !== "number" || Number.isNaN(val) || val < 0) {
-						setJSONError(`${key} must be a non-negative number`);
+					const err = pricingFieldError(key as PricingFieldKey, String(val));
+					if (err) {
+						setJSONError(`${key}: ${err}`);
 						return;
 					}
 					newPricingValues[key as PricingFieldKey] = String(val);
 				}
 				setJSONError(undefined);
+				setValue("preservedPatch", newPreserved);
 				setValue("pricingValues", newPricingValues);
 			} catch {
 				setJSONError("Invalid JSON");
