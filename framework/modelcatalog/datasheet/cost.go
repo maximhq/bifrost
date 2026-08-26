@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -158,6 +160,10 @@ func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall
 	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
 	if scopes != nil {
 		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+		// The judge call is part of the same request, so it prices against the
+		// same instant. Dropping this would silently fall back to wall-clock
+		// time-of-day pricing for judge calls only.
+		judgeScopes.BilledAt = scopes.BilledAt
 	}
 
 	usage := &schemas.BifrostLLMUsage{
@@ -547,9 +553,20 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return nil
 	}
 
+	// Time-of-day pricing: providers that discount outside declared peak windows
+	// (e.g. DeepSeek's 50% off-peak rate) scale every usage-based charge by a
+	// flat multiplier. Applied here rather than inside each compute*Cost so one
+	// branch covers every modality. It lands after computeTextCost's
+	// inference_geo multiplier, so the two compose multiplicatively.
+	if m, ok := offPeakMultiplier(pricing, scopes.BilledAt); ok {
+		scaleUsageCost(cost, m)
+	}
+
 	// Flat per-request surcharge, billed once on top of usage-based cost whenever
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
+	// Deliberately added after the off-peak scaling: a flat per-request fee is
+	// not a usage charge and is not discounted.
 	if pricing.CostPerRequest != nil {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
@@ -2343,4 +2360,189 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		}
 	}
 	return input
+}
+
+// ---------------------------------------------------------------------------
+// Time-of-day (peak / off-peak) pricing
+// ---------------------------------------------------------------------------
+
+// peakHoursLocations caches resolved IANA locations. time.LoadLocation hits the
+// filesystem (or the embedded tzdata) on every call, which is far too expensive
+// to repeat per priced request. A nil value memoizes a failed lookup so a bad
+// timezone string is not retried forever.
+var peakHoursLocations sync.Map // string -> *time.Location
+
+// peakHoursLocation resolves a schedule's timezone. An empty name means UTC.
+// An unknown name returns nil, which callers must treat as "cannot evaluate".
+func peakHoursLocation(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	if cached, ok := peakHoursLocations.Load(name); ok {
+		loc, _ := cached.(*time.Location)
+		return loc
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		peakHoursLocations.Store(name, (*time.Location)(nil))
+		return nil
+	}
+	peakHoursLocations.Store(name, loc)
+	return loc
+}
+
+// parseClockMinutes parses an "HH:MM" wall-clock string into minutes since
+// midnight. Returns false for anything malformed or out of range. "24:00" is
+// accepted as an end-of-day marker so a window can span a full day.
+func parseClockMinutes(v string) (int, bool) {
+	hh, mm, ok := strings.Cut(v, ":")
+	if !ok {
+		return 0, false
+	}
+	h, err := strconv.Atoi(hh)
+	if err != nil || h < 0 || h > 24 {
+		return 0, false
+	}
+	m, err := strconv.Atoi(mm)
+	if err != nil || m < 0 || m > 59 {
+		return 0, false
+	}
+	if h == 24 && m != 0 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// isWithinPeakWindows reports whether at falls inside any window of sched, and
+// whether the schedule could be evaluated at all. A schedule that cannot be
+// evaluated — no windows, unknown timezone, every window malformed — returns
+// ok=false, and callers bill at peak. That direction matters: base rates are
+// the peak (higher) prices, so failing closed over-bills rather than handing
+// out a discount that was never configured.
+func isWithinPeakWindows(sched *PeakHoursSchedule, at time.Time) (peak bool, ok bool) {
+	if sched == nil || len(sched.Windows) == 0 {
+		return false, false
+	}
+	loc := peakHoursLocation(sched.Timezone)
+	if loc == nil {
+		return false, false
+	}
+
+	local := at.In(loc)
+	weekday := int(local.Weekday())
+	minutes := local.Hour()*60 + local.Minute()
+
+	// A window that wraps past midnight is also matched against the previous
+	// day: 22:00-02:00 on Monday still covers Tuesday 01:00.
+	prevWeekday := (weekday + 6) % 7
+	prevMinutes := minutes + 24*60
+
+	valid := false
+	for _, w := range sched.Windows {
+		start, startOK := parseClockMinutes(w.Start)
+		end, endOK := parseClockMinutes(w.End)
+		if !startOK || !endOK || len(w.Days) == 0 {
+			continue
+		}
+		wrapped := end <= start
+		if wrapped {
+			end += 24 * 60
+		}
+		valid = true
+
+		for _, d := range w.Days {
+			if d < 0 || d > 6 {
+				continue
+			}
+			// Half-open [start, end): a window ending at 04:00 does not cover
+			// 04:00:00 itself, so adjacent windows never double-count.
+			if d == weekday && minutes >= start && minutes < end {
+				return true, true
+			}
+			if wrapped && d == prevWeekday && prevMinutes >= start && prevMinutes < end {
+				return true, true
+			}
+		}
+	}
+	if !valid {
+		return false, false
+	}
+	return false, true
+}
+
+// offPeakMultiplier returns the multiplier to scale usage-based costs by when
+// at falls outside pricing's declared peak windows, and whether a discount
+// applies at all.
+//
+// Both off_peak_cost_multiplier and peak_hours must be present: a multiplier
+// with no schedule has no way to know when to apply, and a schedule with no
+// multiplier has nothing to apply. Either alone bills at peak. A multiplier
+// outside (0, 1] is rejected for the same reason — every base rate on the row
+// is the peak price, so a discount can only ever scale downward, and a bogus
+// value must not silently zero out or inflate a bill.
+//
+// A zero at means the caller never learned the request's start time; fall back
+// to the wall clock rather than mispricing everything as peak.
+func offPeakMultiplier(pricing *configstoreTables.TableModelPricing, at time.Time) (float64, bool) {
+	if pricing == nil || pricing.OffPeakCostMultiplier == nil || pricing.PeakHours == nil {
+		return 0, false
+	}
+	m := *pricing.OffPeakCostMultiplier
+	if !(m > 0 && m <= 1) {
+		return 0, false
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	peak, ok := isWithinPeakWindows(pricing.PeakHours, at)
+	if !ok || peak {
+		return 0, false
+	}
+	return m, true
+}
+
+// scaleUsageCost multiplies every usage-based charge on cost by m, in place.
+//
+// RequestCost and SearchQueriesCost are deliberately excluded: they are flat
+// per-request and per-query fees rather than usage categories, matching how the
+// inference_geo multiplier in computeTextCost already treats the search fee.
+// AdditionalCost is excluded too — guardrail and MCP sidecar costs are priced
+// through their own computeCostFromInput call and are discounted there on
+// their own pricing rows.
+func scaleUsageCost(cost *schemas.BifrostCost, m float64) {
+	if cost == nil {
+		return
+	}
+
+	if cost.InputCostDetails != nil {
+		d := cost.InputCostDetails
+		cost.InputCost -= d.RequestCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.CachedReadCost *= m
+		d.CachedWriteCost *= m
+		cost.InputCost *= m
+		cost.InputCost += d.RequestCost
+	} else {
+		cost.InputCost *= m
+	}
+
+	if cost.OutputCostDetails != nil {
+		d := cost.OutputCostDetails
+		cost.OutputCost -= d.SearchQueriesCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.ReasoningCost *= m
+		d.CitationCost *= m
+		cost.OutputCost *= m
+		cost.OutputCost += d.SearchQueriesCost
+	} else {
+		cost.OutputCost *= m
+	}
+
+	// Recompute rather than scaling: TotalCost also carries AdditionalCost,
+	// which is not discounted here.
+	cost.TotalCost = cost.InputCost + cost.OutputCost + cost.AdditionalCost
 }

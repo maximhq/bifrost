@@ -266,6 +266,14 @@ type LookupScopes struct {
 	VirtualKeyID  string
 	SelectedKeyID string
 	Provider      string
+	// BilledAt is the instant used to decide peak vs off-peak for models that
+	// carry a PeakHours schedule. It is the request's START time, not the
+	// completion time: that keeps pricing deterministic and reproducible, makes
+	// streaming and non-streaming agree, and matches the timestamp users see in
+	// logs. A long stream that crosses a window boundary bills entirely at its
+	// start-time rate. The zero value means "unknown" and falls back to the
+	// wall clock at evaluation time.
+	BilledAt time.Time
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
@@ -285,11 +293,13 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
 	return &LookupScopes{
 		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		SelectedKeyID: selectedKeyID,
 		Provider:      provider,
+		BilledAt:      billedAt,
 	}
 }
 
