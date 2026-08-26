@@ -259,19 +259,22 @@ func TestPoolExpiredConnection(t *testing.T) {
 func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	var connectionCount atomic.Int32
 	serverClosed := make(chan struct{})
+	secondConnAccepted := make(chan struct{})
 	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		connectionCount.Add(1)
-		current := connectionCount.Load()
+		current := connectionCount.Add(1)
 		if current == 1 {
 			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(time.Second))
 			_ = conn.Close()
 			close(serverClosed)
 			return
+		}
+		if current == 2 {
+			close(secondConnAccepted)
 		}
 		defer conn.Close()
 		for {
@@ -312,6 +315,15 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, freshConn)
 	assert.NotSame(t, conn, freshConn)
+
+	// The pool's Get returns as soon as the handshake completes, which can be
+	// before the server handler goroutine has recorded the new connection.
+	// Wait for that bookkeeping instead of racing it.
+	select {
+	case <-secondConnAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not accept the second connection in time")
+	}
 	assert.EqualValues(t, 2, connectionCount.Load())
 	pool.Discard(freshConn)
 }
