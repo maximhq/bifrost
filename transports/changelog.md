@@ -4,13 +4,6 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 
 <Warning>
 **Breaking changes.** Read the [v2.0.0 migration guide](https://docs.getbifrost.ai/migration-guides/v2.0.0) before upgrading.
-
-- **Custom plugin downloads are SSRF-protected** - a plugin `path` pointing at an http(s) URL is rejected if it resolves to a loopback, private, CGNAT, link-local or otherwise non-public address, and every custom plugin path is re-verified on each restart, including ones defined in `config.json`.
-- **Custom plugin create and update require admin authentication** - `POST /api/plugins` and `PUT /api/plugins/{name}` reject a custom `path` when the caller only got through because dashboard auth is disabled or unconfigured.
-- **Governance APIs moved under `/api/governance/*`** - `/api/teams`, `/api/users`, `/api/roles`, `/api/audit-logs` and other top-level governance paths moved under one namespace; Team and User lists use `limit`/`offset` pagination. Routing rules and the complexity analyzer moved from `/api/governance/*` to `/api/routing/rules` and `/api/routing/complexity-analyzer-config`; the old paths remain as deprecated aliases.
-- **`HTTPTransportPreHook` now runs after authentication** - the pipeline is `HTTPTransportPreAuthHook -> auth -> HTTPTransportPreHook -> handler`. Plugins that inject a credential (`x-bf-vk`, `Authorization`, `x-api-key`) must move that work to the new `HTTPTransportPreAuthHook`, and Go plugins implementing `HTTPTransportPlugin` must add the method (`.so` plugins that predate it are skipped for that phase).
-- **Legacy telemetry attributes removed** - the `gen_ai.*`-namespaced Bifrost-internal span attributes, `gen_ai.usage.prompt_tokens`/`completion_tokens`, the nanosecond `time_to_first_token` attribute and `x-bf-prom-*` request-header Prometheus dimensions are gone from the OTel and Prometheus connectors. Dashboards should read the `bifrost.*` keys and `time_to_first_chunk`.
-- **Gemini tool preference** - a Gemini API request carrying both function declarations and Google Search without `include_server_side_tool_invocations` now keeps the function declarations and drops Google Search (previously the opposite). Set `include_server_side_tool_invocations: true` to send both on Gemini 3 models. Vertex is unaffected.
 </Warning>
 
 ## ✨ Features

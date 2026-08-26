@@ -2970,6 +2970,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			}
 
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
 
 			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
 
@@ -2981,6 +2982,16 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 				}
 			}
 
+			// The caller's captured path goes with the raw body: a converted request must land on
+			// the provider's own endpoint, not Anthropic's /v1/messages.
+			callerPath, hasCallerPath := ctx.Value(schemas.BifrostContextKeyURLPath).(string)
+			if tt.wantCleared && hasCallerPath {
+				t.Errorf("URLPath = %q, want it cleared for a non-native provider", callerPath)
+			}
+			if !tt.wantCleared && callerPath != "/v1/messages" {
+				t.Errorf("URLPath = %q, want %q preserved", callerPath, "/v1/messages")
+			}
+
 			// SkipKeySelection must survive: it also drives IsClaudeCodeMaxMode, which suppresses
 			// x-api-key on the Anthropic provider. Clearing it here would make an Anthropic
 			// fallback after a non-native attempt send the account key alongside the caller's
@@ -2990,6 +3001,44 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 				t.Error("SkipKeySelection was cleared; it must be gated at the read site, not mutated per attempt")
 			}
 		})
+	}
+}
+
+// TestClearCtxForFallback_DropsCallerSuppliedKey verifies that a raw key supplied via
+// x-bf-direct-key does not ride a fallback onto a different provider. Key selection resolves the
+// direct key before it ever reaches the provider's own pool, so an uncleared value would send the
+// caller's credential for provider A to provider B.
+func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
+	account := NewMockAccount()
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "anthropic-configured", Name: "anthropic-configured", Value: schemas.SecretVar{Val: "sk-ant-real"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+		ID: "header-provided", Name: "header-provided",
+		Value: schemas.SecretVar{Val: "sk-caller-supplied"}, Weight: 1.0,
+	})
+
+	// A routing rule's key pin is scoped to the provider whose pool it was resolved against.
+	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "primary-provider-key")
+
+	clearCtxForFallback(ctx)
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Fatal("DirectKey survived clearCtxForFallback")
+	}
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
+		t.Fatalf("RoutingPinnedAPIKeyID survived clearCtxForFallback: %q", pin)
+	}
+
+	keys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.Anthropic, "claude-opus-4-5", schemas.Anthropic)
+	if err != nil {
+		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != "anthropic-configured" {
+		t.Fatalf("got %v, want the fallback provider's own key", keys)
 	}
 }
 

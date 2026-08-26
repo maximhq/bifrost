@@ -299,7 +299,7 @@ bifrost:
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
-    
+
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
     # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
@@ -689,7 +689,7 @@ bifrost:
       enabled: false
       version: 1
       config:
-        service_name: "bifrost"  # Service name reported to Datadog (supports env.VAR_NAME)
+        service_name: "bifrost" # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
         # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
@@ -703,8 +703,8 @@ bifrost:
         # agent_port: "8126"
         # dogstatsd_host: "env.DD_AGENT_HOST"
         # dogstatsd_port: "8125"
-        env: ""                     # Environment tag, e.g. production (supports env.VAR_NAME)
-        version: ""                 # Service version tag (supports env.VAR_NAME)
+        env: "" # Environment tag, e.g. production (supports env.VAR_NAME)
+        version: "" # Service version tag (supports env.VAR_NAME)
         custom_tags: {}
         enable_traces: true
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
@@ -928,8 +928,7 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
-    complexityAnalyzerConfig:
-      null
+    complexityAnalyzerConfig: null
       # tier_boundaries:
       #   simple_medium: 0.15
       #   medium_complex: 0.35

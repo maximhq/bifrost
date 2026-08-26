@@ -140,9 +140,9 @@ jobs:
           VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
-          REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
-          RUNWARE_API_KEY : ${{ secrets.RUNWARE_API_KEY }}
+          REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh
