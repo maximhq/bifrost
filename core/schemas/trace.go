@@ -710,15 +710,11 @@ const (
 	AttrEcho             = "gen_ai.request.echo"
 	AttrLogitBias        = "gen_ai.request.logit_bias"
 	AttrLogProbs         = "gen_ai.request.logprobs"
-	AttrN                = "gen_ai.request.n" // legacy: replaced by AttrChoiceCount
 	AttrChoiceCount      = "gen_ai.request.choice.count"
-	// AttrEmbeddingsDimensionCount is the OTel spec key for embedding dimensions
-	// (Bifrost historically emitted AttrDimensions = gen_ai.request.dimensions).
+	// AttrEmbeddingsDimensionCount is the OTel spec key for embedding dimensions.
 	AttrEmbeddingsDimensionCount = "gen_ai.embeddings.dimension.count"
 	AttrSeed                     = "gen_ai.request.seed"
 	AttrSuffix                   = "gen_ai.request.suffix"
-	AttrDimensions               = "gen_ai.request.dimensions"      // legacy: replaced by AttrEmbeddingsDimensionCount
-	AttrEncodingFormat           = "gen_ai.request.encoding_format" // legacy: singular form; replaced by AttrEncodingFormats (string[])
 	AttrEncodingFormats          = "gen_ai.request.encoding_formats"
 	AttrLanguage                 = "gen_ai.request.language"
 	AttrPrompt                   = "gen_ai.request.prompt"
@@ -739,7 +735,6 @@ const (
 	AttrServiceTier      = "gen_ai.response.service_tier"
 	AttrCreated          = "gen_ai.response.created"
 	AttrObject           = "gen_ai.response.object"
-	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token" // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk (seconds)
 	AttrTimeToFirstChunk = "gen_ai.response.time_to_first_chunk"
 	AttrTotalChunks      = "gen_ai.response.total_chunks"
 
@@ -750,28 +745,21 @@ const (
 	AttrPluginErrorCount      = "plugin.error_count"
 
 	// Usage Attributes
-	// legacy: AttrPromptTokens / AttrCompletionTokens are the deprecated OTel names;
-	// new code should use AttrInputTokens / AttrOutputTokens. Kept for dashboards.
-	AttrPromptTokens     = "gen_ai.usage.prompt_tokens"
-	AttrCompletionTokens = "gen_ai.usage.completion_tokens"
-	AttrTotalTokens      = "gen_ai.usage.total_tokens"
-	AttrInputTokens      = "gen_ai.usage.input_tokens"
-	AttrOutputTokens     = "gen_ai.usage.output_tokens"
-	AttrUsageCost        = "gen_ai.usage.cost"
+	AttrTotalTokens  = "gen_ai.usage.total_tokens"
+	AttrInputTokens  = "gen_ai.usage.input_tokens"
+	AttrOutputTokens = "gen_ai.usage.output_tokens"
+	AttrUsageCost    = "gen_ai.usage.cost"
 	// OTel GenAI spec keys for cache tokens (flat namespace).
 	AttrUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
 	AttrUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
 	// OTel GenAI spec key for reasoning tokens (flat namespace).
 	AttrUsageReasoningOutputTokens = "gen_ai.usage.reasoning.output_tokens"
-	// Chat completion usage detail attributes
-	// legacy: nested namespace; OTel spec uses flat gen_ai.usage.cache_read.input_tokens
-	// and gen_ai.usage.cache_creation.input_tokens for the cached_* entries. The
-	// non-cached fields below have no spec equivalent and stay as-is.
+	// Chat completion usage detail attributes. These non-cached fields have no OTel
+	// spec equivalent and stay as-is; cache tokens use the flat gen_ai.usage.cache_*
+	// keys (AttrUsageCacheReadInputTokens / AttrUsageCacheCreationInputTokens).
 	AttrPromptTokenDetailsText          = "gen_ai.usage.prompt_token_details.text_tokens"
 	AttrPromptTokenDetailsAudio         = "gen_ai.usage.prompt_token_details.audio_tokens"
 	AttrPromptTokenDetailsImage         = "gen_ai.usage.prompt_token_details.image_tokens"
-	AttrPromptTokenDetailsCachedRead    = "gen_ai.usage.prompt_token_details.cached_read_tokens"  // legacy: see AttrUsageCacheReadInputTokens
-	AttrPromptTokenDetailsCachedWrite   = "gen_ai.usage.prompt_token_details.cached_write_tokens" // legacy: see AttrUsageCacheCreationInputTokens
 	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
 	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
 	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
@@ -784,10 +772,7 @@ const (
 	AttrCompletionTokenDetailsSearch    = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
-	AttrError = "gen_ai.error"
-	// legacy: AttrErrorType is the gen_ai.* placement; OTel general semconv uses the
-	// unprefixed "error.type". Emitted in parallel from PopulateErrorAttributes.
-	AttrErrorType = "gen_ai.error.type"
+	AttrError     = "gen_ai.error"
 	AttrErrorCode = "gen_ai.error.code"
 	// AttrHTTPResponseStatusCode is the OTel semconv HTTP response status code (e.g. 400).
 	// Sourced from BifrostError.StatusCode; used as the status_code dimension on error metrics.
@@ -799,24 +784,6 @@ const (
 	AttrInputSpeech    = "gen_ai.input.speech"
 	AttrInputEmbedding = "gen_ai.input.embedding"
 	AttrOutputMessages = "gen_ai.output.messages"
-
-	// Bifrost Context Attributes
-	// legacy: every key below sits under gen_ai.* but represents a Bifrost-internal
-	// concept (governance / routing). The bifrost.* mirrors are the canonical home
-	// going forward; these will be dropped once dashboards migrate.
-	AttrRequestID       = "gen_ai.request_id"
-	AttrVirtualKeyID    = "gen_ai.virtual_key_id"
-	AttrVirtualKeyName  = "gen_ai.virtual_key_name"
-	AttrSelectedKeyID   = "gen_ai.selected_key_id"
-	AttrSelectedKeyName = "gen_ai.selected_key_name"
-	AttrRoutingRuleID   = "gen_ai.routing_rule_id"
-	AttrRoutingRuleName = "gen_ai.routing_rule_name"
-	AttrTeamID          = "gen_ai.team_id"
-	AttrTeamName        = "gen_ai.team_name"
-	AttrCustomerID      = "gen_ai.customer_id"
-	AttrCustomerName    = "gen_ai.customer_name"
-	AttrNumberOfRetries = "gen_ai.number_of_retries"
-	AttrFallbackIndex   = "gen_ai.fallback_index"
 
 	// Extra Header Attributes
 	AttrExtraHeaderPrefix = "gen_ai.request.extra_header."
@@ -936,9 +903,6 @@ const (
 	//   - Bifrost-internal concepts (routing/governance, request id, retry counters)
 	//   - Raw Bifrost short names that mirror canonicalized gen_ai.* values
 	//   - Back-compat fallbacks for shape changes (e.g. comma-joined stop_sequences)
-	//
-	// The corresponding legacy gen_ai.* emissions are tagged "// legacy:" at their
-	// call sites and will be removed once dashboards migrate over.
 	// =====================================================================
 	// Cumulative time (float64 ms) the request spent blocked on sockets outside
 	// Bifrost — every provider attempt, plus MCP tool calls and media fetches.
@@ -953,6 +917,33 @@ const (
 	// this rather than re-deriving it, so the span and the overhead metric can
 	// never disagree.
 	AttrBifrostOverheadDurationMs = "bifrost.overhead.duration_ms"
+
+	// Per-chunk streaming overhead split out of the "core" bucket so a stream's
+	// breakdown reads like a unary request's. All float64 ms, stamped on the ROOT
+	// span at stream completion. parse/convert fold into the same buckets as their
+	// unary equivalents (response-parse, convertor); backpressure has no unary twin
+	// and is not Bifrost CPU (the transport/client draining slowly).
+	//   - parse:        per-event SSE JSON decode CPU
+	//   - convert:      per-event provider->Bifrost struct mapping CPU
+	//   - backpressure: time the provider goroutine blocked handing chunks to the transport
+	AttrBifrostStreamParseMs        = "bifrost.stream.parse_ms"
+	AttrBifrostStreamConvertMs      = "bifrost.stream.convert_ms"
+	AttrBifrostStreamBackpressureMs = "bifrost.stream.backpressure_ms"
+	// Transport-goroutine per-chunk split, stamped after the send loop drains.
+	// Concurrent with the provider, so NOT part of the overhead total: used only
+	// as weights to split backpressure into (A) client-write vs (B) transport CPU.
+	//   - transport_cpu: outbound Bifrost->client convert + marshal CPU
+	//   - client_write:  time blocked writing frames to the client socket
+	AttrBifrostStreamTransportCPUMs = "bifrost.stream.transport_cpu_ms"
+	AttrBifrostStreamClientWriteMs  = "bifrost.stream.client_write_ms"
+
+	// AttrBifrostWorkerHandoffMs is the scheduling latency between the provider
+	// worker sending the result and tryRequest receiving it (the worker->caller
+	// goroutine hop). It is real wall-time inside the overhead window that sits on
+	// no span, so it otherwise folds into "core"; the breakdown carves it into its
+	// own "worker-handoff" bucket. The reverse hop (enqueue->dequeue) is already the
+	// "queue-wait" span.
+	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
@@ -983,15 +974,14 @@ const (
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used" // comma-joined routing engines that handled the request
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
-	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy
-	// gen_ai.error.type from PopulateErrorAttributes.
+	// OTel general semconv (no gen_ai prefix). The canonical error-type key,
+	// emitted from PopulateErrorAttributes.
 	AttrErrorTypeSpec = "error.type"
 
-	// legacy: bare unprefixed keys retained for back-compat with existing dashboards.
-	// "request.type" is superseded by AttrOperationName; "retry.count" has no spec
-	// equivalent but stays under bifrost.retries going forward.
+	// legacy: bare unprefixed key retained for back-compat with existing dashboards.
+	// "request.type" is superseded by AttrOperationName, but still drives the live
+	// "method" metric label and request_type column via EnrichmentDims.
 	AttrLegacyRequestType = "request.type"
-	AttrLegacyRetryCount  = "retry.count"
 
 	// File Operation Attributes
 	AttrFileID             = "gen_ai.file.id"

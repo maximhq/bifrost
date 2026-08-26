@@ -559,8 +559,10 @@ func HandleGeminiChatCompletionStream(
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 				return
 			}
-			// Process chunk using shared function
+			// Process chunk using shared function. Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(eventData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
@@ -581,8 +583,10 @@ func HandleGeminiChatCompletionStream(
 				modelName = geminiResponse.ModelVersion
 			}
 
-			// Convert to Bifrost stream response
+			// Convert to Bifrost stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1072,8 +1076,10 @@ func HandleGeminiResponsesStream(
 				return
 			}
 
-			// Process chunk using shared function
+			// Process chunk using shared function. Per-event decode -> "response-parse" (Serialization) stream phase.
+			parseStart := time.Now()
 			geminiResponse, err := processGeminiStreamChunk(eventData)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
@@ -1095,8 +1101,10 @@ func HandleGeminiResponsesStream(
 				}
 			}
 
-			// Convert to Bifrost responses stream response
+			// Convert to Bifrost responses stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
 			responses, bifrostErr := geminiResponse.ToBifrostResponsesStream(sequenceNumber, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
@@ -2493,10 +2501,15 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	}
 
 	if len(jsonData) == 0 {
-		// Build the batch request with proper nested structure
+		// Build the batch request with proper nested structure. Honor a caller-supplied
+		// display name (e.g. genai config.display_name), falling back to a generated one.
+		displayName := fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano())
+		if request.DisplayName != nil && *request.DisplayName != "" {
+			displayName = *request.DisplayName
+		}
 		batchReq := &GeminiBatchCreateRequest{
 			Batch: GeminiBatchConfig{
-				DisplayName: fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano()),
+				DisplayName: displayName,
 			},
 		}
 
@@ -2592,9 +2605,10 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	// Parse the batch job response
 	var geminiResp GeminiBatchJobResponse
-	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
-		provider.logger.Error("gemini batch create unmarshal error: " + err.Error())
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	rawRequest, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &geminiResp, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr2 != nil {
+		provider.logger.Error("gemini batch create unmarshal error: " + bifrostErr2.Error.Message)
+		return nil, providerUtils.SetErrorLatency(bifrostErr2, latency)
 	}
 	// Check for metadata
 	if geminiResp.Metadata == nil {
@@ -2646,7 +2660,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			Failed:    failedCount,
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawRequest:  rawRequest,
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -2871,8 +2887,9 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	}
 
 	var geminiResp GeminiBatchJobResponse
-	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &geminiResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr2 != nil {
+		return nil, bifrostErr2
 	}
 
 	var completedCount, failedCount int
@@ -2901,7 +2918,8 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Failed:    failedCount,
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -3337,6 +3355,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = results
+	}
 	if len(parseErrors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = parseErrors
 	}

@@ -629,7 +629,26 @@ func signAWSRequest(
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
-) *schemas.BifrostError {
+) (signErr *schemas.BifrostError) {
+	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work that
+	// otherwise hides in "core". The nested "credentials-fetch" span (below) isolates
+	// the network portion (STS AssumeRole / credential-provider Retrieve) from the CPU
+	// crypto, so a cold credential cache on an idle box reads as its own bucket instead
+	// of inflating core.
+	// Scoped so the nested "credentials-fetch" span below is a true child and its
+	// time is subtracted from request-sign's self-time exactly once (not double-counted
+	// in both buckets). restore() reinstates the prior parent before the span ends.
+	if st, sh, restore := providerUtils.StartScopedPhaseSpan(ctx, "request-sign"); st != nil {
+		defer func() {
+			restore()
+			if signErr != nil {
+				st.EndSpan(sh, schemas.SpanStatusError, "request signing failed")
+			} else {
+				st.EndSpan(sh, schemas.SpanStatusOk, "")
+			}
+		}()
+	}
+
 	var accessKey, secretKey schemas.SecretVar
 	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
 
@@ -756,8 +775,19 @@ func signAWSRequest(
 	// Create the AWS signer
 	signer := v4.NewSigner()
 
-	// Get credentials
+	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
+	// network round trip (STS AssumeRole when RoleARN is set, or the default provider
+	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
+	// credential cache has expired between sparse requests.
+	credT, credH := providerUtils.StartPhaseSpan(ctx, "credentials-fetch")
 	creds, err := cfg.Credentials.Retrieve(ctx)
+	if credT != nil {
+		if err != nil {
+			credT.EndSpan(credH, schemas.SpanStatusError, "credential retrieval failed")
+		} else {
+			credT.EndSpan(credH, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
@@ -1174,13 +1204,16 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Parse the chunk payload
+				// Parse the chunk payload. Per-event decode -> "response-parse" (Serialization) stream phase.
 				var chunkPayload struct {
 					Bytes []byte `json:"bytes"`
 				}
-				if err := sonic.Unmarshal(message.Payload, &chunkPayload); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &chunkPayload)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -1545,11 +1578,15 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
-				// Converse API path: parse Bedrock Converse-specific stream events
+				// Converse API path: parse Bedrock Converse-specific stream events.
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				var streamEvent BedrockStreamEvent
-				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &streamEvent)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -1666,7 +1703,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					}
 				}
 
+				// Per-event mapping -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
 				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream(streamState)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
@@ -1964,11 +2004,15 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
-				// Converse API path: parse Bedrock Converse-specific stream events
+				// Converse API path: parse Bedrock Converse-specific stream events.
+				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				var streamEvent BedrockStreamEvent
-				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				parseStart := time.Now()
+				umErr := sonic.Unmarshal(message.Payload, &streamEvent)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
+				if umErr != nil {
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -2032,7 +2076,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
+				// Per-event mapping -> "convertor" (Convertor) stream phase.
+				convStart := time.Now()
 				responses, bifrostErr, _ := streamEvent.ToBifrostResponsesStream(chunkIndex, streamState)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
@@ -3205,8 +3252,8 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
-	sendBackRawRequest := provider.sendBackRawRequest
-	sendBackRawResponse := provider.sendBackRawResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3254,8 +3301,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	var bedrockResp BedrockBatchJobResponse
-	if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr2 != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr2, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// AWS CreateModelInvocationJob only returns jobArn, not status or other details.
@@ -3272,7 +3320,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			InputFileID: inputFileID,
 			Status:      schemas.BatchStatusValidating,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawRequest:  rawRequest,
+				RawResponse: rawResponse,
 			},
 		}, nil
 	}
@@ -3285,7 +3335,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		Status:      retrieveResp.Status,
 		CreatedAt:   retrieveResp.CreatedAt,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
+			Latency:     latency.Milliseconds(),
+			RawRequest:  rawRequest,
+			RawResponse: rawResponse,
 		},
 	}
 
@@ -3562,8 +3614,9 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		var bedrockResp BedrockBatchJobResponse
-		if err := sonic.Unmarshal(body, &bedrockResp); err != nil {
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &bedrockResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr2 != nil {
+			lastErr = bifrostErr2
 			continue
 		}
 
@@ -3582,7 +3635,8 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			Status:   ToBifrostBatchStatus(bedrockResp.Status),
 			Metadata: metadata,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency:     latency.Milliseconds(),
+				RawResponse: rawResponse,
 			},
 		}
 
@@ -3815,6 +3869,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 				Latency: fileContentResp.ExtraFields.Latency,
 			},
 		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			batchResultsResp.ExtraFields.RawResponse = results
+		}
 		if len(parseErrors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseErrors
 		}
@@ -3850,6 +3907,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		},
 	}
 
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = allResults
+	}
 	if len(allParseErrors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = allParseErrors
 	}

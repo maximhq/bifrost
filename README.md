@@ -2,7 +2,7 @@
 
 <a href="https://trendshift.io/repositories/14529?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-14529" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/14529" alt="maximhq%2Fbifrost | Trendshift" width="250" height="55"/></a>
 
-[![Discord badge](https://dcbadge.limes.pink/api/server/https://discord.gg/exN5KAydbU?style=flat)](https://discord.gg/exN5KAydbU)
+[![Discord badge](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/exN5KAydbU)
 [![codecov](https://codecov.io/gh/maximhq/bifrost/branch/main/graph/badge.svg)](https://codecov.io/gh/maximhq/bifrost)
 ![Docker Pulls](https://img.shields.io/docker/pulls/maximhq/bifrost)
 [<img src="https://run.pstmn.io/button.svg" alt="Run In Postman" style="width: 95px; height: 21px;">](https://app.getpostman.com/run-collection/31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916%26entityType%3Dcollection%26workspaceId%3D63e853c8-9aec-477f-909c-7f02f543150e)

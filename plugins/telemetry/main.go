@@ -753,20 +753,12 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 // applyCustomLabels resolves each configured custom label into labelValues.
 // Resolution order (first match wins):
 //  1. x-bf-dim-* headers (canonical; BifrostContextKeyDimensions)
-//  2. x-bf-prom-* headers (deprecated; kept for backward compatibility)
-//  3. Direct BifrostContextKey lookup (Go SDK usage — documented API)
+//  2. Direct BifrostContextKey lookup (Go SDK usage — documented API)
 func (p *PrometheusPlugin) applyCustomLabels(ctx *schemas.BifrostContext, labelValues map[string]string) {
 	dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
-	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	for _, key := range p.customLabels {
 		if dims != nil {
 			if v, ok := dims[key]; ok {
-				labelValues[key] = v
-				continue
-			}
-		}
-		if requestHeaders != nil {
-			if v, ok := requestHeaders["x-bf-prom-"+key]; ok {
 				labelValues[key] = v
 				continue
 			}

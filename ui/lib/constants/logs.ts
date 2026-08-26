@@ -93,13 +93,19 @@ export const RequestTypes = [
 	"video_remix",
 	"count_tokens",
 	"compaction",
-    // Batch operations
+	// Batch operations
 	"batch_create",
 	"batch_list",
 	"batch_retrieve",
 	"batch_cancel",
 	"batch_delete",
 	"batch_results",
+	// File operations
+	"file_upload",
+	"file_list",
+	"file_retrieve",
+	"file_delete",
+	"file_content",
 	// Container operations
 	"container_create",
 	"container_list",

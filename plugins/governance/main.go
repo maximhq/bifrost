@@ -1052,6 +1052,21 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:      model,
 		UserID:     userID,
 	}
+	// A batch create fans out to many completions, each naming its own model, so
+	// every model it will run is evaluated before the request itself. Every check
+	// reached from here is read-only, so the extra passes cannot double-count usage.
+	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		for _, batchModel := range BatchCreateModels(req, model) {
+			batchEvaluationRequest := *evaluationRequest
+			batchEvaluationRequest.Model = batchModel
+			_, bifrostError := p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
+			if bifrostError != nil {
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: bifrostError,
+				}, nil
+			}
+		}
+	}
 	// Evaluate governance using common function
 	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
 	// Convert BifrostError to LLMPluginShortCircuit if needed
@@ -1062,6 +1077,42 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	return req, nil, nil
+}
+
+// BatchCreateModels returns every distinct model an inline batch create will run,
+// starting with the request's own model.
+func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) == 0 {
+		return []string{model}
+	}
+	seen := make(map[string]struct{})
+	models := make([]string, 0, 1)
+	add := func(m string) {
+		if m == "" {
+			return
+		}
+		if _, exists := seen[m]; exists {
+			return
+		}
+		seen[m] = struct{}{}
+		models = append(models, m)
+	}
+	add(model)
+	for _, item := range req.BatchCreateRequest.Requests {
+		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
+		for _, body := range []map[string]any{item.Body, item.Params} {
+			if m, ok := body["model"].(string); ok {
+				add(m)
+				break
+			}
+		}
+	}
+	if len(models) == 0 {
+		// No item named a model: fall back to the model-less evaluation so the
+		// provider-level and virtual-key checks still run.
+		return []string{model}
+	}
+	return models
 }
 
 // PostLLMHook processes the response and updates usage tracking (business logic execution)
@@ -1521,7 +1572,91 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 		}
 	}
 
+	if usage.UserID != "" {
+		billingKey := fmt.Sprintf("%s:user-rate-limit:%s", usage.RequestID, usage.UserID)
+		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
+			if err := p.store.UpdateUserRateLimitUsageInMemory(ctx, usage.UserID, usage.TokensUsed, true, true); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	if usage.UserID != "" && usage.Cost > 0 {
+		billingKey := fmt.Sprintf("%s:user-budget:%s", usage.RequestID, usage.UserID)
+		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
+			if err := p.store.UpdateUserBudgetUsageInMemory(ctx, usage.UserID, usage.Cost); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	errs = append(errs, p.reportBatchModelUsage(ctx, usage)...)
+
 	return errors.Join(errs...)
+}
+
+// reportBatchModelUsage charges the budgets and rate limits that are scoped to one
+// specific model.
+//
+// They are missing from usage.BudgetIDs by construction: those ids were collected
+// while the request was in flight, and a batch create carries no top-level model
+// (each input-file row names its own), so only the all-models wildcards matched.
+// An access profile's per-model limits materialise as user-scoped configs naming
+// exactly one model and provider, which is why a model-level budget never moved for
+// a batch. Settlement does know the models, so each one is resolved and charged with
+// its own share here.
+//
+// Ids already charged above are subtracted rather than skipped by construction: the
+// wildcard tiers legitimately match both collections, and charging them twice would
+// bill the batch's whole cost a second time.
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
+	if len(usage.ModelUsage) == 0 {
+		return nil
+	}
+	alreadyCharged := make(map[string]bool, len(usage.BudgetIDs)+len(usage.RateLimitIDs))
+	for _, id := range usage.BudgetIDs {
+		alreadyCharged["budget:"+id] = true
+	}
+	for _, id := range usage.RateLimitIDs {
+		alreadyCharged["rate-limit:"+id] = true
+	}
+
+	var errs []error
+	for _, modelUsage := range usage.ModelUsage {
+		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+		if modelUsage.Cost > 0 {
+			for _, budgetID := range budgetIDs {
+				if alreadyCharged["budget:"+budgetID] {
+					continue
+				}
+				// Keyed per model: one budget reached by two models must take both shares.
+				billingKey := fmt.Sprintf("%s:model-budget:%s:%s", usage.RequestID, modelUsage.Model, budgetID)
+				if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+					continue
+				}
+				if err := p.store.BumpBudgetUsage(ctx, budgetID, modelUsage.Cost); err != nil {
+					p.tracker.releaseBatchBilling(billingKey)
+					errs = append(errs, err)
+				}
+			}
+		}
+		for _, rateLimitID := range rateLimitIDs {
+			if alreadyCharged["rate-limit:"+rateLimitID] {
+				continue
+			}
+			billingKey := fmt.Sprintf("%s:model-rate-limit:%s:%s", usage.RequestID, modelUsage.Model, rateLimitID)
+			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+				continue
+			}
+			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, true); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
 }
 
 // GenerateVirtualKey is a helper function

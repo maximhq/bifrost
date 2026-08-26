@@ -294,6 +294,7 @@ const (
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
+	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (per-request trace store handle - set by tracing middleware or stream pre-hooks; use BifrostContextKeyExportTraceID for the W3C trace ID)
 	BifrostContextKeyExportTraceID                       BifrostContextKey = "bifrost-export-trace-id"                          // string (W3C trace ID advertised to the caller via the x-bifrost-trace-id response header; equals the store handle when no traceparent was inherited - set by tracing middleware)
@@ -364,6 +365,7 @@ const (
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyUserRoleID                          BifrostContextKey = "bifrost-user-role-id"
+	BifrostContextKeyRuntimeVersion                      BifrostContextKey = "bifrost-runtime-version" // string (this build's version; set at server bootstrap - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
@@ -410,6 +412,7 @@ const (
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
+	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
 )
 
 const (
