@@ -237,6 +237,51 @@ Lists available models from DeepSeek through `/models`.
 
 ---
 
+## Time-based Pricing
+
+DeepSeek's current V4 models use a peak/off-peak schedule in **Asia/Shanghai**:
+
+- Monday–Friday, 09:00–12:00 and 14:00–18:00: peak pricing (`2×`)
+- All other times: off-peak/base pricing (`1×`)
+- Saturday and Sunday are off-peak all day; only weekdays have peak windows
+
+Bifrost stores this as a provider-generic `pricing_schedule`, so another provider can use the same timezone/calendar/rule format without a provider-specific billing path.
+
+Pricing is classified using the **provider attempt start time**. A request that starts during a peak window remains peak-priced even if it completes after the window ends. The schedule multiplier is applied after service-tier and context-tier prices, so it composes with existing tiered pricing rather than replacing it.
+
+The UI exposes this schedule under **Models** → **Model Catalog** → a DeepSeek V4 model → **Edit**. The API also returns it as `pricing_schedule` from `GET /api/models/details` and accepts it through `PUT /api/models/catalog`:
+
+```json
+[
+  {
+    "model": "deepseek-v4-flash",
+    "provider": "deepseek",
+    "pricing_schedule": {
+      "timezone": "Asia/Shanghai",
+      "calendar": "iso_weekday",
+      "rules": [
+        {
+          "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+          "start_time": "09:00",
+          "end_time": "12:00",
+          "multiplier": 2
+        },
+        {
+          "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+          "start_time": "14:00",
+          "end_time": "18:00",
+          "multiplier": 2
+        }
+      ]
+    }
+  }
+]
+```
+
+Use `"clear_pricing_schedule": true` to remove a schedule. Workday/holiday and makeup-workday calendars are not supported yet; `iso_weekday` uses the ISO weekday only.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |

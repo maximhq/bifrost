@@ -14,9 +14,12 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
@@ -1155,4 +1158,74 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	if result.Nested.Name != "nested-config" {
 		t.Errorf("Expected nested name=nested-config, got %s", result.Nested.Name)
 	}
+}
+
+type modelCatalogConfigStore struct {
+	configstore.ConfigStore
+	attrsCalls     []map[string]string
+	scheduleCalls  []string
+	attrsRows      int64
+	scheduleRows   int64
+	attrsErr       error
+	scheduleErr    error
+	executeErr     error
+	reloadPricing  func(context.Context) error
+	reloadErr      error
+	transactionRan bool
+}
+
+func (s *modelCatalogConfigStore) UpsertModelPricingAttributes(_ context.Context, _, _ string, attrs map[string]string, _ ...*gorm.DB) (int64, error) {
+	s.attrsCalls = append(s.attrsCalls, attrs)
+	return s.attrsRows, s.attrsErr
+}
+
+func (s *modelCatalogConfigStore) UpsertModelPricingSchedule(_ context.Context, _, _, scheduleJSON string, _ ...*gorm.DB) (int64, error) {
+	s.scheduleCalls = append(s.scheduleCalls, scheduleJSON)
+	return s.scheduleRows, s.scheduleErr
+}
+
+func (s *modelCatalogConfigStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
+	s.transactionRan = true
+	if s.executeErr != nil {
+		return s.executeErr
+	}
+	return fn(nil)
+}
+
+func (s *modelCatalogConfigStore) GetModelPrices(context.Context) ([]configstoreTables.TableModelPricing, error) {
+	return nil, nil
+}
+
+func TestUpsertModelPricingAttributes_ScheduleOnlyPreservesAttributes(t *testing.T) {
+	ctx := context.Background()
+	store := &modelCatalogConfigStore{attrsRows: 1, scheduleRows: 1}
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(datasheet.New(store, nil, datasheet.Config{}))
+	server := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store, ModelCatalog: catalog}}
+
+	entry := handlers.ModelPricingAttributesEntry{
+		Model:           "deepseek-v4-flash",
+		Provider:        "deepseek",
+		PricingSchedule: &modelcatalog.PricingTimeSchedule{Timezone: "Asia/Shanghai", Calendar: "iso_weekday"},
+	}
+	require.NoError(t, server.UpsertModelPricingAttributes(ctx, []handlers.ModelPricingAttributesEntry{entry}))
+
+	require.Empty(t, store.attrsCalls)
+	require.Len(t, store.scheduleCalls, 1)
+	require.Contains(t, store.scheduleCalls[0], `"Asia/Shanghai"`)
+}
+
+func TestUpsertModelPricingAttributes_ClearOnlyPreservesAttributes(t *testing.T) {
+	ctx := context.Background()
+	store := &modelCatalogConfigStore{attrsRows: 1, scheduleRows: 1}
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(datasheet.New(store, nil, datasheet.Config{}))
+	server := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store, ModelCatalog: catalog}}
+
+	require.NoError(t, server.UpsertModelPricingAttributes(ctx, []handlers.ModelPricingAttributesEntry{{
+		Model:                "deepseek-v4-flash",
+		Provider:             "deepseek",
+		ClearPricingSchedule: true,
+	}}))
+
+	require.Empty(t, store.attrsCalls)
+	require.Equal(t, []string{""}, store.scheduleCalls)
 }

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -1805,12 +1806,31 @@ func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, en
 	var missing []string
 	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		for _, e := range entries {
-			rows, err := s.Config.ConfigStore.UpsertModelPricingAttributes(ctx, e.Model, e.Provider, e.AdditionalAttributes, tx)
-			if err != nil {
-				return err
+			if e.AdditionalAttributes != nil || !hasPricingScheduleChange(e) {
+				rows, err := s.Config.ConfigStore.UpsertModelPricingAttributes(ctx, e.Model, e.Provider, e.AdditionalAttributes, tx)
+				if err != nil {
+					return err
+				}
+				if rows == 0 {
+					missing = append(missing, fmt.Sprintf("%s/%s", e.Provider, e.Model))
+				}
 			}
-			if rows == 0 {
-				missing = append(missing, fmt.Sprintf("%s/%s", e.Provider, e.Model))
+			if hasPricingScheduleChange(e) {
+				scheduleJSON := ""
+				if e.PricingSchedule != nil {
+					encoded, err := sonic.Marshal(e.PricingSchedule)
+					if err != nil {
+						return fmt.Errorf("marshal pricing schedule for %s/%s: %w", e.Provider, e.Model, err)
+					}
+					scheduleJSON = string(encoded)
+				}
+				rows, err := s.Config.ConfigStore.UpsertModelPricingSchedule(ctx, e.Model, e.Provider, scheduleJSON, tx)
+				if err != nil {
+					return err
+				}
+				if rows == 0 {
+					missing = append(missing, fmt.Sprintf("%s/%s", e.Provider, e.Model))
+				}
 			}
 		}
 		if len(missing) > 0 {
@@ -1825,6 +1845,10 @@ func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, en
 		return fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
 	}
 	return nil
+}
+
+func hasPricingScheduleChange(entry handlers.ModelPricingAttributesEntry) bool {
+	return entry.PricingSchedule != nil || entry.ClearPricingSchedule
 }
 
 // ReloadProxyConfig reloads the proxy configuration

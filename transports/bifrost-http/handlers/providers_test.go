@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1783,4 +1784,50 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
 		}
 	}
+}
+
+type recordingModelsManager struct {
+	mockModelsManager
+	entries []ModelPricingAttributesEntry
+}
+
+func (m *recordingModelsManager) UpsertModelPricingAttributes(_ context.Context, entries []ModelPricingAttributesEntry) error {
+	m.entries = append(m.entries, entries...)
+	return nil
+}
+
+func TestUpsertModelCatalogEntries_PreservesOmittedAttributes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	manager := &recordingModelsManager{}
+	h := &ProviderHandler{modelsManager: manager}
+
+	ctx := newTestRequestCtx(`[{"model":"deepseek-v4-flash","provider":"deepseek","pricing_schedule":{"timezone":"Asia/Shanghai","calendar":"iso_weekday","rules":[{"days":["monday"],"start_time":"09:00","end_time":"12:00","multiplier":2}]}}]`)
+	h.upsertModelCatalogEntries(ctx)
+
+	require.Equal(t, 204, ctx.Response.StatusCode())
+	require.Len(t, manager.entries, 1)
+	require.Nil(t, manager.entries[0].AdditionalAttributes)
+	require.NotNil(t, manager.entries[0].PricingSchedule)
+}
+
+func TestUpsertModelCatalogEntries_RejectsScheduleAndClear(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &ProviderHandler{modelsManager: &recordingModelsManager{}}
+
+	ctx := newTestRequestCtx(`[{"model":"deepseek-v4-flash","provider":"deepseek","pricing_schedule":{"timezone":"UTC","rules":[{"multiplier":2}]},"clear_pricing_schedule":true}]`)
+	h.upsertModelCatalogEntries(ctx)
+
+	require.Equal(t, 400, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "mutually exclusive")
+}
+
+func TestUpsertModelCatalogEntries_RejectsInvalidSchedule(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &ProviderHandler{modelsManager: &recordingModelsManager{}}
+
+	ctx := newTestRequestCtx(`[{"model":"deepseek-v4-flash","provider":"deepseek","pricing_schedule":{"timezone":"not-a-zone","rules":[{"multiplier":2}]}}]`)
+	h.upsertModelCatalogEntries(ctx)
+
+	require.Equal(t, 400, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "invalid pricing schedule")
 }

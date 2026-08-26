@@ -83,6 +83,26 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostForUsageWithOptions prices bare usage at an explicit attempt
+// start time. The timestamp must come from the provider attempt that produced
+// usage and must never be inferred from completion/log time.
+func (mc *ModelCatalog) CalculateCostForUsageWithOptions(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes, options *CostCalculationOptions) float64 {
+	return mc.datasheet.CalculateCostForUsageWithOptions(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes), options)
+}
+
+// ValidatePricingSchedule validates a provider-generic time schedule without
+// evaluating it.
+func ValidatePricingSchedule(schedule *PricingTimeSchedule) error {
+	return datasheet.ValidatePricingTimeSchedule(schedule)
+}
+
+// UpsertModelPricingSchedule validates and writes the pricing_schedule column
+// for the pricing row keyed by (model, provider), then reloads the in-memory
+// pricing cache. A nil schedule clears it.
+func (mc *ModelCatalog) UpsertModelPricingSchedule(ctx context.Context, model string, provider schemas.ModelProvider, schedule *PricingTimeSchedule) (int64, error) {
+	return mc.datasheet.UpsertModelPricingSchedule(ctx, model, provider, schedule)
+}
+
 // CalculateCostBreakdownForUsage computes the per-category cost breakdown from a
 // bare usage object when no full BifrostResponse is available. TotalCost equals
 // what CalculateCostForUsage returns for the same usage.

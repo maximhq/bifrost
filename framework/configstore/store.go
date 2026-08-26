@@ -458,6 +458,12 @@ type ConfigStore interface {
 	// rows updated; 0 means no such pricing row exists.
 	UpsertModelPricingAttributes(ctx context.Context, model, provider string, attrs map[string]string, tx ...*gorm.DB) (int64, error)
 
+	// UpsertModelPricingSchedule writes only the pricing_schedule column on the
+	// pricing rows keyed by (model, provider). An empty schedule clears the
+	// column. Returns the number of rows updated; 0 means no such pricing row
+	// exists.
+	UpsertModelPricingSchedule(ctx context.Context, model, provider, scheduleJSON string, tx ...*gorm.DB) (int64, error)
+
 	// Governance pricing overrides CRUD
 	GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error)
 	GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error)

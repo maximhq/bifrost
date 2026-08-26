@@ -47,6 +47,7 @@ It supports diverse pricing models across different AI operation types:
 - **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to `output_cost_per_video_per_second` / `output_cost_per_second`.
 - **Reranking**: Input/output token pricing with search query cost support.
 - **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
+- **Time-Based Pricing**: Recurring `pricing_schedule` windows can apply a multiplier in an IANA timezone. Schedules use the provider attempt start time and are applied after service-tier and context-tier rates resolve. The schedule format is provider-generic; DeepSeek's weekday peak windows are one consumer, not a provider-specific billing path.
 
 ### **3. Model Information Management**
 

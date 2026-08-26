@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -2277,6 +2278,41 @@ func (s *Store) UpsertModelPricingAttributes(ctx context.Context, model string, 
 	}
 	if err := s.LoadFromDB(ctx); err != nil {
 		return rows, fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
+	}
+	return rows, nil
+}
+
+// UpsertModelPricingSchedule validates and writes the pricing_schedule column
+// for every pricing row that matches (model, provider), then reloads the
+// pricing cache. Returns the number of rows updated (0 = no such pricing row,
+// which callers must surface as a validation error). A nil schedule clears the
+// column.
+func (s *Store) UpsertModelPricingSchedule(ctx context.Context, model string, provider schemas.ModelProvider, schedule *PricingTimeSchedule) (int64, error) {
+	if s.configStore == nil {
+		return 0, fmt.Errorf("model catalog requires a config store")
+	}
+	if err := ValidatePricingTimeSchedule(schedule); err != nil {
+		return 0, err
+	}
+
+	var encoded []byte
+	if schedule != nil {
+		var err error
+		encoded, err = json.Marshal(schedule)
+		if err != nil {
+			return 0, fmt.Errorf("marshal pricing schedule: %w", err)
+		}
+	}
+
+	rows, err := s.configStore.UpsertModelPricingSchedule(ctx, model, string(provider), string(encoded))
+	if err != nil {
+		return 0, err
+	}
+	if rows == 0 {
+		return 0, nil
+	}
+	if err := s.LoadFromDB(ctx); err != nil {
+		return rows, fmt.Errorf("failed to reload pricing cache after schedule write: %w", err)
 	}
 	return rows, nil
 }

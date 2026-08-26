@@ -472,10 +472,71 @@ ModelDetailsResponse:
       type: object
       additionalProperties:
         type: string
+    pricing_schedule:
+      $ref: '#/PricingTimeSchedule'
     accessible_by_keys:
       type: array
       items:
         type: string
+
+PricingTimeSchedule:
+  type: object
+  description: Recurring time-based pricing multipliers
+  properties:
+    timezone:
+      type: string
+      description: IANA timezone used to evaluate the schedule
+      example: Asia/Shanghai
+    calendar:
+      type: string
+      description: Date interpretation mode; currently `none` or `iso_weekday`
+      example: iso_weekday
+    rules:
+      type: array
+      items:
+        $ref: '#/PricingTimeRule'
+
+PricingTimeRule:
+  type: object
+  properties:
+    days:
+      type: array
+      description: ISO weekday names; omit for every day
+      items:
+        type: string
+      example: [monday, tuesday, wednesday, thursday, friday]
+    start_time:
+      type: string
+      description: Inclusive local start time in HH:MM
+      example: '09:00'
+    end_time:
+      type: string
+      description: Exclusive local end time in HH:MM
+      example: '12:00'
+    multiplier:
+      type: number
+      format: double
+      description: Multiplier applied to the final resolved tier rate
+      example: 2
+
+ModelPricingAttributesEntry:
+  type: object
+  description: Editorial pricing-row update keyed by model and provider
+  required: [model, provider]
+  properties:
+    model:
+      type: string
+    provider:
+      type: string
+    additional_attributes:
+      type: object
+      additionalProperties:
+        type: string
+    pricing_schedule:
+      $ref: '#/PricingTimeSchedule'
+    clear_pricing_schedule:
+      type: boolean
+      description: Remove an existing pricing schedule
 
 ListModelsResponse:
   type: object

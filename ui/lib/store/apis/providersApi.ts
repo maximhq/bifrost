@@ -33,6 +33,19 @@ export interface ListModelsResponse {
 	total: number;
 }
 
+export interface PricingTimeRule {
+	days?: string[];
+	start_time?: string;
+	end_time?: string;
+	multiplier: number;
+}
+
+export interface PricingTimeSchedule {
+	timezone?: string;
+	calendar?: string;
+	rules?: PricingTimeRule[];
+}
+
 // ModelDetails is the shape returned by /api/models/details — used by the
 // model-catalog Models tab to list (model, provider) entries with their
 // additional_attributes.
@@ -48,6 +61,7 @@ export interface ModelDetails {
 	cache_read_input_token_cost?: number;
 	architecture?: unknown;
 	additional_attributes?: Record<string, string>;
+	pricing_schedule?: PricingTimeSchedule;
 	accessible_by_keys?: string[];
 	// Post-override value of each displayed cost, present only for the fields
 	// the applied override actually changes — render those struck through.
@@ -91,13 +105,12 @@ export interface ListModelDetailsResponse {
 	pricing_overrides?: Record<string, ModelPricingOverrideSummary>;
 }
 
-// ModelPricingAttributesEntry is the body element for PUT /api/models/catalog.
-// (model, provider) is the natural key on governance_model_pricing. An empty
-// or omitted additional_attributes clears the column for that row.
 export interface ModelPricingAttributesEntry {
 	model: string;
 	provider: string;
 	additional_attributes?: Record<string, string>;
+	pricing_schedule?: PricingTimeSchedule;
+	clear_pricing_schedule?: boolean;
 }
 
 export interface GetModelsRequest {
@@ -504,10 +517,9 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: ["Models"],
 		}),
 
-		// Batch upsert additional_attributes on existing pricing rows. The
-		// pricing row must already exist for each (model, provider); a missing
-		// row surfaces as a 400. An entry with an empty additional_attributes
-		// map clears the column for that row.
+		// Batch-upsert editorial pricing-row fields. additional_attributes is
+		// written only when present; pricing_schedule is written when present
+		// and removed when clear_pricing_schedule is true.
 		upsertModelCatalogEntries: builder.mutation<void, ModelPricingAttributesEntry[]>({
 			query: (entries) => ({
 				url: "/models/catalog",

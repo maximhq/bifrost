@@ -69,6 +69,8 @@ type Config struct {
 // Internally these live in the datasheet / keyconfig subpackages.
 type (
 	PricingEntry        = datasheet.Entry
+	PricingTimeSchedule = datasheet.PricingTimeSchedule
+	PricingTimeRule     = datasheet.PricingTimeRule
 	PricingOptions      = datasheet.Options
 	PricingOverride     = datasheet.Override
 	PricingLookupScopes = datasheet.LookupScopes

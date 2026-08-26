@@ -56,6 +56,10 @@ type ModelPricingAttributesEntry struct {
 	Model                string            `json:"model"`
 	Provider             string            `json:"provider"`
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
+	// PricingSchedule is an explicit first-class field. Nil means "do not
+	// change"; set clear_pricing_schedule=true to remove an existing schedule.
+	PricingSchedule      *modelcatalog.PricingTimeSchedule `json:"pricing_schedule,omitempty"`
+	ClearPricingSchedule bool                              `json:"clear_pricing_schedule,omitempty"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -655,19 +659,20 @@ type ListModelsResponse struct {
 
 // ModelDetailsResponse represents a model with capability metadata.
 type ModelDetailsResponse struct {
-	Name                 string                `json:"name"`
-	Provider             string                `json:"provider"`
-	ContextLength        *int                  `json:"context_length,omitempty"`
-	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
-	InputCostPerToken    *float64              `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken   *float64              `json:"output_cost_per_token,omitempty"`
-	CacheWriteCost       *float64              `json:"cache_creation_input_token_cost,omitempty"`
-	CacheReadCost        *float64              `json:"cache_read_input_token_cost,omitempty"`
-	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
-	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
-	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
-	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+	Name                 string                            `json:"name"`
+	Provider             string                            `json:"provider"`
+	ContextLength        *int                              `json:"context_length,omitempty"`
+	MaxInputTokens       *int                              `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens      *int                              `json:"max_output_tokens,omitempty"`
+	InputCostPerToken    *float64                          `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken   *float64                          `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost       *float64                          `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost        *float64                          `json:"cache_read_input_token_cost,omitempty"`
+	Architecture         *schemas.Architecture             `json:"architecture,omitempty"`
+	IsDeprecated         bool                              `json:"is_deprecated,omitempty"`
+	AdditionalAttributes map[string]string                 `json:"additional_attributes,omitempty"`
+	PricingSchedule      *modelcatalog.PricingTimeSchedule `json:"pricing_schedule,omitempty"`
+	AccessibleByKeys     []string                          `json:"accessible_by_keys,omitempty"`
 
 	// OverriddenPricing carries the post-override value of each cost field the
 	// UI displays, and only for fields the applied override actually changes —
@@ -832,6 +837,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.Architecture = capabilities.Architecture
 			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
+			details.PricingSchedule = capabilities.PricingSchedule
 		}
 
 		// Resolve overrides against the mode the displayed base row came from
@@ -1436,11 +1442,11 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 }
 
 // upsertModelCatalogEntries handles PUT /api/models/catalog — batch-upserts
-// the additional_attributes JSON on the pricing rows keyed by
-// (model, provider). Every requested (model, provider) must already exist in
-// governance_model_pricing; the whole batch is rejected atomically if any
-// entry is missing. An entry with an empty AdditionalAttributes map clears
-// the column for that (model, provider).
+// editorial pricing-row fields keyed by (model, provider). Every requested
+// (model, provider) must already exist in governance_model_pricing; the whole
+// batch is rejected atomically if any entry is missing. AdditionalAttributes
+// is written only when present; PricingSchedule is written when present and
+// removed when clear_pricing_schedule is true.
 func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 	var payload []ModelPricingAttributesEntry
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -1453,6 +1459,16 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		if payload[i].Model == "" || payload[i].Provider == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "model and provider are required for every catalog entry")
 			return
+		}
+		if payload[i].PricingSchedule != nil {
+			if payload[i].ClearPricingSchedule {
+				SendError(ctx, fasthttp.StatusBadRequest, "pricing_schedule and clear_pricing_schedule are mutually exclusive")
+				return
+			}
+			if err := modelcatalog.ValidatePricingSchedule(payload[i].PricingSchedule); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing schedule for %s/%s: %v", payload[i].Provider, payload[i].Model, err))
+				return
+			}
 		}
 	}
 

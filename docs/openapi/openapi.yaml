@@ -777,6 +777,8 @@ paths:
     $ref: "./paths/management/providers.yaml#/models"
   /api/models/details:
     $ref: "./paths/management/providers.yaml#/models-details"
+  /api/models/catalog:
+    $ref: "./paths/management/providers.yaml#/models-catalog"
   /api/models/parameters:
     $ref: "./paths/management/providers.yaml#/models-parameters"
   /api/models/base:
