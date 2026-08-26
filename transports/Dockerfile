@@ -43,7 +43,7 @@
   RUN go build \
     -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
     -a -trimpath \
-    -tags "sqlite_static,time/tzdata" \
+    -tags "sqlite_static,timetzdata" \
     -o /app/main \
     ./bifrost-http
 
