@@ -537,6 +537,13 @@ ModelPricingAttributesEntry:
     clear_pricing_schedule:
       type: boolean
       description: Remove an existing pricing schedule
+  oneOf:
+    - required: [pricing_schedule]
+      not:
+        required: [clear_pricing_schedule]
+    - required: [clear_pricing_schedule]
+      not:
+        required: [pricing_schedule]
 
 ListModelsResponse:
   type: object

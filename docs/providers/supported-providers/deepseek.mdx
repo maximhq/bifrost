@@ -239,13 +239,12 @@ Lists available models from DeepSeek through `/models`.
 
 ## Time-based Pricing
 
-DeepSeek's current V4 models use a peak/off-peak schedule in **Asia/Shanghai**:
+DeepSeek has announced a forthcoming peak/off-peak pricing schedule for its V4 models in **Asia/Shanghai**. Its published pricing page currently describes:
 
-- Monday–Friday, 09:00–12:00 and 14:00–18:00: peak pricing (`2×`)
-- All other times: off-peak/base pricing (`1×`)
-- Saturday and Sunday are off-peak all day; only weekdays have peak windows
+- Daily 09:00–12:00 and 14:00–18:00 windows at peak pricing (`2×`)
+- All other times at off-peak/base pricing (`1×`)
 
-Bifrost stores this as a provider-generic `pricing_schedule`, so another provider can use the same timezone/calendar/rule format without a provider-specific billing path.
+Before enabling DeepSeek peak pricing, check DeepSeek's current pricing page and billing status. When it becomes effective, Bifrost stores it as a provider-generic `pricing_schedule`, so another provider can use the same timezone/calendar/rule format without a provider-specific billing path.
 
 Pricing is classified using the **provider attempt start time**. A request that starts during a peak window remains peak-priced even if it completes after the window ends. The schedule multiplier is applied after service-tier and context-tier prices, so it composes with existing tiered pricing rather than replacing it.
 

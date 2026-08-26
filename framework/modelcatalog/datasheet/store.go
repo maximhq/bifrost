@@ -56,11 +56,15 @@ type Store struct {
 
 	// Canonical pricing state, protected by mu. Read paths take RLock and
 	// return defensive copies of any slice/map they expose.
-	mu                     sync.RWMutex
-	pricingData            map[string]configstoreTables.TableModelPricing // model|provider|mode → row
-	baseModelIndex         map[string]string                              // model → canonical base name
-	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
-	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
+	mu             sync.RWMutex
+	pricingData    map[string]configstoreTables.TableModelPricing // model|provider|mode → row
+	baseModelIndex map[string]string                              // model → canonical base name
+	// pricingSchedules stores schedules by provider and model. The management
+	// API keys editorial updates by both fields, so identical model names from
+	// different providers must not overwrite each other.
+	pricingSchedules       map[string]*PricingTimeSchedule // provider|model → schedule
+	supportedResponseTypes map[string][]string             // model → [chat_completion, responses, …]
+	supportedParams        map[string][]string             // model → [temperature, top_p, …]
 
 	// onModelParametersApplied fires after a model-parameters reload lands, so
 	// caches built from the previous sheet can be dropped.
@@ -440,6 +444,7 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 	return &Store{
 		logger:                 bifrost.NewNoOpLogger(),
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		pricingSchedules:       make(map[string]*PricingTimeSchedule),
 		baseModelIndex:         baseModelIndex,
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
@@ -451,6 +456,32 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 // SetSupportedParamsForTest replaces the supported-parameter index. Test-only
 // seam for packages outside datasheet (e.g. the compat plugin) that need a
 // catalog answering GetSupportedParameters without running a sync.
+
+// SetPricingScheduleForTest installs one provider/model schedule in the
+// in-memory catalog.
+func (s *Store) SetPricingScheduleForTest(provider string, model string, schedule *PricingTimeSchedule) {
+	if err := ValidatePricingTimeSchedule(schedule); err != nil {
+		panic(err)
+	}
+	if s.pricingSchedules == nil {
+		s.pricingSchedules = make(map[string]*PricingTimeSchedule)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := pricingScheduleKey(provider, model)
+	if schedule == nil {
+		delete(s.pricingSchedules, key)
+		return
+	}
+	s.pricingSchedules[key] = schedule
+}
+
+// pricingScheduleKey namespaces a schedule by both management-API identity
+// fields. Empty providers remain representable for tests and legacy data.
+func pricingScheduleKey(provider, model string) string {
+	return strings.ToLower(strings.TrimSpace(provider)) + "|" + model
+}
+
 func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
 	if params == nil {
 		params = make(map[string][]string)

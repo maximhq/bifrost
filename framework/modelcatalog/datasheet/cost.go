@@ -627,11 +627,12 @@ func (s *Store) applyPricingSchedule(routingInfo schemas.RoutingInfo, cost *sche
 	s.mu.RLock()
 	var model string
 	var schedule *PricingTimeSchedule
+	scheduleProvider := normalizeProvider(string(routingInfo.Provider))
 	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
 		if candidate == "" {
 			continue
 		}
-		if candidateSchedule, exists := s.pricingSchedules[candidate]; exists {
+		if candidateSchedule, exists := s.pricingSchedules[pricingScheduleKey(scheduleProvider, candidate)]; exists {
 			model, schedule = candidate, candidateSchedule
 			break
 		}

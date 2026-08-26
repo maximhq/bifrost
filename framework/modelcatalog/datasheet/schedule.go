@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -89,6 +90,24 @@ func EvaluatePricingTimeSchedule(schedule *PricingTimeSchedule, at time.Time) (P
 		}
 	}
 	return PricingScheduleEvaluation{Multiplier: 1}, nil
+}
+
+// parseStoredPricingSchedule decodes a first-class pricing_schedule JSON column.
+// A nil result means no schedule. Invalid JSON returns an error so callers can
+// surface persistence corruption instead of silently charging base rates.
+func parseStoredPricingSchedule(value string) (*PricingTimeSchedule, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	var schedule PricingTimeSchedule
+	if err := json.Unmarshal([]byte(value), &schedule); err != nil {
+		return nil, fmt.Errorf("invalid pricing schedule JSON: %w", err)
+	}
+	if err := ValidatePricingTimeSchedule(&schedule); err != nil {
+		return nil, err
+	}
+	return &schedule, nil
 }
 
 // ValidatePricingTimeSchedule validates a schedule without evaluating it.
@@ -238,6 +257,11 @@ func parsePricingClockMinutes(value string) (int, error) {
 		value[3] < '0' || value[3] > '9' ||
 		value[4] < '0' || value[4] > '9' {
 		return 0, fmt.Errorf("must be HH:MM")
+	}
+	for _, index := range []int{0, 1, 3, 4} {
+		if value[index] < '0' || value[index] > '9' {
+			return 0, fmt.Errorf("must be HH:MM")
+		}
 	}
 	hour := int(value[0]-'0')*10 + int(value[1]-'0')
 	minute := int(value[3]-'0')*10 + int(value[4]-'0')

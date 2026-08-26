@@ -316,12 +316,16 @@ export default function AttributeSheet({
     setScheduleRows((prev) => prev.filter((row) => row.id !== id));
   const toggleScheduleDay = (id: string, day: string) =>
     setScheduleRows((prev) =>
-      prev.map((row) => ({
-        ...row,
-        days: row.days.includes(day)
-          ? row.days.filter((value) => value !== day)
-          : [...row.days, day],
-      })),
+      prev.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              days: row.days.includes(day)
+                ? row.days.filter((value) => value !== day)
+                : [...row.days, day],
+            }
+          : row,
+      ),
     );
 
   const handleSubmit = async () => {

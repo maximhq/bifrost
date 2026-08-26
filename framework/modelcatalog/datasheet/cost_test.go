@@ -5241,7 +5241,7 @@ func TestCalculateCostSchedule_UsesAttemptStartAndComposesWithServiceTier(t *tes
 			OutputCostPerTokenPriority: new(0.000030),
 		},
 	})
-	s.SetPricingScheduleForTest("gpt-4o", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
 
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
 	resp := &schemas.BifrostResponse{
@@ -5281,7 +5281,7 @@ func TestCalculateCostSchedule_ComposesWithContextTier(t *testing.T) {
 			OutputCostPerTokenAbove128kTokens: new(0.000030),
 		},
 	})
-	s.SetPricingScheduleForTest("long-context", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "long-context", pricingScheduleForTest())
 
 	resp := makeChatResponse(schemas.OpenAI, "long-context", &schemas.BifrostLLMUsage{
 		PromptTokens:     130000,
@@ -5299,7 +5299,7 @@ func TestCalculateCostSchedule_MissingTimestampUsesBaseRateAndReportsIt(t *testi
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	s.SetPricingScheduleForTest("gpt-4o", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
 	breakdown := s.CalculateCostBreakdown(resp, nil)
@@ -5316,7 +5316,7 @@ func TestCalculateCostSchedule_UnmatchedKeepsBaseRate(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	s.SetPricingScheduleForTest("gpt-4o", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
 	resp.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
@@ -5333,7 +5333,7 @@ func TestCalculateCostForUsageWithOptions_UsesExplicitBillingTime(t *testing.T) 
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	s.SetPricingScheduleForTest("gpt-4o", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500}
 
 	base := s.CalculateCostBreakdownForUsage(usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
@@ -5353,7 +5353,7 @@ func TestCalculateCostSchedule_ProviderCostIsNotRescaled(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	s.SetPricingScheduleForTest("gpt-4o", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, Cost: providerCost,
 	})
@@ -5368,7 +5368,7 @@ func TestCalculateGuardrailCost_UsesEachJudgeStartIndependently(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("judge", "openai", "chat"): chatPricing(0.000001, 0.000002),
 	})
-	s.SetPricingScheduleForTest("judge", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "judge", pricingScheduleForTest())
 	debug := &schemas.BifrostGuardrailDebug{JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
 		{JudgeProvider: schemas.OpenAI, JudgeModel: "judge", PromptTokens: 1000, CompletionTokens: 1000, StartedAt: &offPeak},
 		{JudgeProvider: schemas.OpenAI, JudgeModel: "judge", PromptTokens: 1000, CompletionTokens: 1000, StartedAt: &discounted},
@@ -5383,7 +5383,7 @@ func TestCalculateCostSchedule_FollowsPricingModelCandidates(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("canonical-model", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	s.SetPricingScheduleForTest("canonical-model", pricingScheduleForTest())
+	s.SetPricingScheduleForTest("openai", "canonical-model", pricingScheduleForTest())
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -5409,4 +5409,29 @@ func TestCalculateCostSchedule_FollowsPricingModelCandidates(t *testing.T) {
 	assert.True(t, breakdown.PricingSchedule.Matched)
 	assert.Equal(t, 0.5, breakdown.PricingSchedule.Multiplier)
 	assert.InDelta(t, 0.5*(1000*0.000005+500*0.000015), breakdown.TotalCost, 1e-12)
+}
+
+func TestCalculateCostSchedule_IsProviderQualified(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("shared-model", "openai", "chat"): chatPricing(0.000005, 0.000015),
+		makeKey("shared-model", "anthropic", "chat"): {
+			Model:              "shared-model",
+			Provider:           "anthropic",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+	})
+	// OpenAI has no schedule; Anthropic does. A model-only index would make the
+	// map iteration order decide whether OpenAI requests are discounted.
+	s.SetPricingScheduleForTest("anthropic", "shared-model", pricingScheduleForTest())
+
+	openAI := makeChatResponse(schemas.OpenAI, "shared-model", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	openAI.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+	assert.InDelta(t, 1000*0.000005+500*0.000015, s.CalculateCost(openAI, nil), 1e-12)
+
+	anthropic := makeChatResponse(schemas.Anthropic, "shared-model", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	anthropic.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+	assert.InDelta(t, 0.5*(1000*0.000005+500*0.000015), s.CalculateCost(anthropic, nil), 1e-12)
 }
