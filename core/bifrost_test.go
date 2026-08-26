@@ -3253,3 +3253,89 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
 	}
 }
+
+// TestCancelContextAfterStream_NormalCompletion ensures the owned nil-caller
+// context is released only after the producer's terminal close reaches the
+// consumer.
+func TestCancelContextAfterStream_NormalCompletion(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancelled := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(cancelled)
+	}()
+
+	input := make(chan *schemas.BifrostStreamChunk)
+	output := cancelContextAfterStream(input, ctx, ctx.Cancel)
+	input <- &schemas.BifrostStreamChunk{}
+	if _, ok := <-output; !ok {
+		t.Fatal("expected chunk to be forwarded")
+	}
+
+	select {
+	case <-cancelled:
+		t.Fatal("context was cancelled before stream completion")
+	default:
+	}
+	close(input)
+	if _, ok := <-output; ok {
+		t.Fatal("expected output channel to close")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("context was not cancelled after stream completion")
+	}
+}
+
+// TestCancelContextAfterStream_ContextDone covers an abandoned consumer: the
+// context can be cancelled, but the wrapper must still drain and release once
+// the producer closes.
+func TestCancelContextAfterStream_ContextDone(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	producerDone := make(chan struct{})
+	input := make(chan *schemas.BifrostStreamChunk)
+	output := cancelContextAfterStream(input, ctx, ctx.Cancel)
+
+	go func() {
+		defer close(producerDone)
+		input <- &schemas.BifrostStreamChunk{}
+		close(input)
+	}()
+
+	// Consume one chunk, then abandon the stream and cancel the context.
+	if _, ok := <-output; !ok {
+		t.Fatal("expected chunk to be forwarded")
+	}
+	ctx.Cancel()
+	select {
+	case <-producerDone:
+	case <-time.After(time.Second):
+		t.Fatal("producer was not drained after context cancellation")
+	}
+	select {
+	case _, ok := <-output:
+		if ok {
+			t.Fatal("expected output channel to close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("output channel did not close after cancellation")
+	}
+}
+
+// TestCancelContextAfterStream_NoCallback keeps caller-owned contexts
+// untouched and transparently forwards their stream.
+func TestCancelContextAfterStream_NoCallback(t *testing.T) {
+	input := make(chan *schemas.BifrostStreamChunk, 1)
+	input <- &schemas.BifrostStreamChunk{}
+	close(input)
+	output := cancelContextAfterStream(input, context.Background(), nil)
+
+	count := 0
+	for range output {
+		count++
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 forwarded chunk, got %d", count)
+	}
+}

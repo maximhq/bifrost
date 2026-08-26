@@ -5366,16 +5366,29 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
-func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
 	// Handle nil context early. Do not reuse bifrost.ctx: nil-ctx callers would
 	// share mutable request state (request ID, retry counters, billing attempt
-	// time) across concurrent requests.
+	// time) across concurrent requests. The child remains alive after this
+	// method returns while its stream is consumed, so cancellation is tied to
+	// the terminal stream event below.
+	ownedCtxCancel := func() {}
 	if ctx == nil {
 		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		ownedCtxCancel = ctx.Cancel
 	}
+	defer func() {
+		// Error paths have no stream to outlive the context. On success, the
+		// producer's close is the terminal event even when it emits no chunks.
+		if stream == nil {
+			ownedCtxCancel()
+			return
+		}
+		stream = cancelContextAfterStream(stream, ctx, ownedCtxCancel)
+	}()
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -5513,6 +5526,32 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error
 	return nil, primaryErr
+}
+
+// cancelContextAfterStream cancels ctxCancel once the producer closes stream.
+// If the context is already done, it drains the producer so the forwarding
+// goroutine cannot block on an abandoned consumer.
+func cancelContextAfterStream(stream chan *schemas.BifrostStreamChunk, ctx context.Context, ctxCancel func()) chan *schemas.BifrostStreamChunk {
+	if ctxCancel == nil {
+		return stream
+	}
+	output := make(chan *schemas.BifrostStreamChunk)
+	go func() {
+		defer close(output)
+		defer ctxCancel()
+		for chunk := range stream {
+			select {
+			case output <- chunk:
+			case <-ctx.Done():
+				// The consumer is gone. Drain the producer so this goroutine can
+				// reach its close event and release the context.
+				for range stream {
+				}
+				return
+			}
+		}
+	}()
+	return output
 }
 
 // tryRequest is a generic function that handles common request processing logic
