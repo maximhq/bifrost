@@ -5219,6 +5219,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// time) across concurrent requests.
 	if ctx == nil {
 		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+		defer ctx.Cancel()
 	}
 
 	// Reset first in case the caller reuses a BifrostContext.
