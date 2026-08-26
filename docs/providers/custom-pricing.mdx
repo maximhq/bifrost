@@ -447,6 +447,47 @@ The resolution-banded video rates are matched on the short edge of the generated
 | `ocr_cost_per_page` | Cost per page processed by OCR |
 | `annotation_cost_per_page` | Cost per annotated page |
 
+### Time-of-day costs
+
+Some providers bill the same model at different rates depending on when the request is made. DeepSeek, for example, charges half its normal rate outside a set of published peak windows.
+
+| Field | Description |
+|-------|-------------|
+| `off_peak_cost_multiplier` | Multiplier applied to every usage-based charge when the request falls outside `peak_hours`. Must be greater than `0` and at most `1` |
+| `peak_hours` | The recurring weekly windows during which the model is billed at its base rates |
+
+Three rules govern how this works:
+
+- **Base rates are the peak rates.** Every other cost field is the higher, peak-hour price, and `off_peak_cost_multiplier` discounts downward from it. A row that carries a schedule but no multiplier — or whose schedule cannot be evaluated — bills at the full base rate rather than silently under-billing.
+- **Both fields are required.** A multiplier with no schedule has no way to know when to apply, and a schedule with no multiplier has nothing to apply. Either one alone bills at the base rate.
+- **Flat fees are not discounted.** `cost_per_request` and `search_context_cost_per_query` are per-request and per-query charges rather than usage charges, so they are billed in full at any hour.
+
+`peak_hours` takes a timezone and a list of windows:
+
+```json
+{
+  "off_peak_cost_multiplier": 0.5,
+  "peak_hours": {
+    "timezone": "UTC",
+    "windows": [
+      { "days": [1, 2, 3, 4, 5], "start": "01:00", "end": "04:00" },
+      { "days": [1, 2, 3, 4, 5], "start": "06:00", "end": "10:00" }
+    ]
+  }
+}
+```
+
+- `timezone` is an IANA location name. Leave it empty for UTC.
+- `days` are weekday numbers, `0` = Sunday through `6` = Saturday.
+- `start` and `end` are `"HH:MM"` in the schedule's own timezone, covering the half-open interval `[start, end)` — a window ending at `04:00` does not include `04:00` itself, so adjacent windows never double-count.
+- An `end` less than or equal to `start` wraps past midnight. In that case `days` names the weekday the window *starts* on, so `Mon 22:00-02:00` also covers Tuesday's small hours.
+
+<Info>
+Peak vs off-peak is decided by the **request's start time**, not its completion time. This keeps pricing deterministic and reproducible, and makes streaming and non-streaming requests agree. A long stream that crosses a window boundary bills entirely at its start-time rate.
+</Info>
+
+The override UI exposes `off_peak_cost_multiplier` as a numeric field. `peak_hours` is a schedule object rather than a number, so it is edited through the API or the JSON patch editor; an existing schedule is preserved when you edit an override's other fields in the UI.
+
 ---
 
 ## Examples
@@ -498,6 +539,34 @@ Override costs for a specific image model at global scope:
   "pattern": "dall-e-3",
   "request_types": ["image_generation"],
   "pricing_patch": "{\"output_cost_per_image_high_quality\":0.04,\"output_cost_per_image_medium_quality\":0.02}"
+}
+```
+
+### Halving costs outside peak hours
+
+Mirrors DeepSeek's published schedule: base rates are the peak prices, and everything outside Monday-Friday `01:00-04:00` and `06:00-10:00` UTC bills at half.
+
+```json
+{
+  "name": "DeepSeek peak/off-peak",
+  "scope_kind": "provider",
+  "provider_id": "deepseek",
+  "match_type": "wildcard",
+  "pattern": "deepseek-v4*",
+  "request_types": ["chat_completion"],
+  "pricing_patch": {
+    "input_cost_per_token": 0.00000044,
+    "cache_read_input_token_cost": 0.000000014,
+    "output_cost_per_token": 0.00000132,
+    "off_peak_cost_multiplier": 0.5,
+    "peak_hours": {
+      "timezone": "UTC",
+      "windows": [
+        { "days": [1, 2, 3, 4, 5], "start": "01:00", "end": "04:00" },
+        { "days": [1, 2, 3, 4, 5], "start": "06:00", "end": "10:00" }
+      ]
+    }
+  }
 }
 ```
 
