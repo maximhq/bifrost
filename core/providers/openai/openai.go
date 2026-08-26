@@ -1452,10 +1452,19 @@ func HandleOpenAIChatCompletionStreaming(
 					created = response.Created
 				}
 
-				// Handle regular content chunks, including reasoning
+				// Handle regular content chunks, including reasoning. Role must be part
+				// of the forward set: OpenAI-shaped upstreams send the role ONLY on the
+				// opening delta ({"role":"assistant","content":""}), and clients like
+				// @langchain/openai key their stream-assembly mode on whether the first
+				// delta carries a role — dropping it silently loses tool calls and usage
+				// on the client side (#6523). Refusal-only and annotations-only deltas
+				// carry payload too.
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
 					((choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
+						choice.ChatStreamResponseChoice.Delta.Role != nil ||
+						choice.ChatStreamResponseChoice.Delta.Refusal != nil ||
+						len(choice.ChatStreamResponseChoice.Delta.Annotations) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
