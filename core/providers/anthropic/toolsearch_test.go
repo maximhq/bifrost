@@ -311,9 +311,9 @@ func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
 	if resultBlock.ToolUseID == nil || *resultBlock.ToolUseID != tsServerToolUseID {
 		t.Fatalf("tool_search_tool_result tool_use_id = %v, want %q", resultBlock.ToolUseID, tsServerToolUseID)
 	}
-	if len(resultBlock.ToolReferences) != 1 || resultBlock.ToolReferences[0].ToolName == nil ||
-		*resultBlock.ToolReferences[0].ToolName != tsDiscoveredTool {
-		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", resultBlock.ToolReferences, tsDiscoveredTool)
+	refs := rebuiltToolRefs(resultBlock)
+	if len(refs) != 1 || refs[0].ToolName == nil || *refs[0].ToolName != tsDiscoveredTool {
+		t.Fatalf("rebuilt tool_references = %+v, want one nested ref to %q", refs, tsDiscoveredTool)
 	}
 }
 

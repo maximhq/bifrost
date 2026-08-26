@@ -1933,6 +1933,7 @@ type ResponsesAdvisorCall struct {
 // the names of the deferred tools the search discovered (from the result block's
 // tool_references); the model then emits a normal tool_use to call one of them.
 type ResponsesToolSearchCall struct {
+	Query          *string  `json:"tool_search_query,omitempty"`  // the server_tool_use input query, preserved for replay
 	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
 }
 
