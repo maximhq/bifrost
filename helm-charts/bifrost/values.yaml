@@ -558,6 +558,7 @@ bifrost:
       version: 1
       config:
         custom_labels: []
+        # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""
