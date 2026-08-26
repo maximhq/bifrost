@@ -264,8 +264,8 @@ github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuE
 github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/maximhq/bifrost/core v1.7.11 h1:9dhHNM9IN3DPM7q+Xhg06LW+WGITz9d9m0RyeVHOQ4Y=
 github.com/maximhq/bifrost/core v1.7.11/go.mod h1:ftRe80M+N8GTP7OvEG2G4yNK0jr/s/T4XFSA/YuuOTA=
-github.com/maximhq/bifrost/framework v1.5.9 h1:4Tl707fTKNTQckA8T7vyFjGCR+naursgkkzOSxxkOdU=
-github.com/maximhq/bifrost/framework v1.5.9/go.mod h1:yrKDQCI65jGmwGMICbyRSurWLG8z6qIpc6IJuBRUHCI=
+github.com/maximhq/bifrost/framework v1.5.10 h1:cMzK4Q1OArzrzr1mM6Hu0LXJZkEXcWibRcZsYwAbUls=
+github.com/maximhq/bifrost/framework v1.5.10/go.mod h1:wWgDEYvugvv7U9TW3Kt0zPtojz4wESZjbOkl2vy37aQ=
 github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
 github.com/oapi-codegen/runtime v1.1.1/go.mod h1:SK9X900oXmPWilYR5/WKPzt3Kqxn/uS/+lbpREv+eCg=
