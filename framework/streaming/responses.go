@@ -1074,6 +1074,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if bifrostErr.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
+		}
 		if bifrostErr.ExtraFields.RawResponse != nil {
 			if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil {
 				chunk.RawResponse = bifrost.Ptr(string(rawBytes))

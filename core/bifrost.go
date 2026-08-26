@@ -5214,13 +5214,18 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
+	// Handle nil context early. Do not reuse bifrost.ctx: nil-ctx callers would
+	// share mutable request state (request ID, retry counters, billing attempt
+	// time) across concurrent requests.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
 	}
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
+	// Reset first in case the caller reuses a BifrostContext.
 	ctx.ResetUpstreamLatency()
+	// Clear any previous attempt stamp before pre-hooks. Without this, a cache
+	// hit or plugin short-circuit could inherit a timestamp from an earlier call.
+	ctx.ClearBillingAttemptStartTime()
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
 	// tryRequest can stamp the response before post-hooks, where logging reads it.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -5364,13 +5369,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
+	// Handle nil context early. Do not reuse bifrost.ctx: nil-ctx callers would
+	// share mutable request state (request ID, retry counters, billing attempt
+	// time) across concurrent requests.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
 	}
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
+	// Clear any previous attempt stamp before pre-hooks. Without this, a cache
+	// hit or plugin short-circuit could inherit a timestamp from an earlier call.
+	ctx.ClearBillingAttemptStartTime()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -6330,7 +6340,7 @@ func executeRequestWithRetries[T any](
 		// attempts overwrite this value, so time-based pricing always uses the
 		// attempt that actually produced the billed usage, never completion time.
 		attemptStartedAt := time.Now()
-		ctx.SetValue(schemas.BifrostContextKeyBillingAttemptStartTime, attemptStartedAt)
+		ctx.SetBillingAttemptStartTime(attemptStartedAt)
 
 		// Start span for LLM call (or retry attempt)
 		tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)

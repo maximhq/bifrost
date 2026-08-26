@@ -547,6 +547,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if bifrostErr.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
+		}
 	} else if result != nil && result.TextCompletionResponse != nil {
 		// Handle text completion response directly
 		if len(result.TextCompletionResponse.Choices) > 0 {
@@ -564,6 +567,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Extract token usage
 		if result.TextCompletionResponse.Usage != nil && result.TextCompletionResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.TextCompletionResponse.Usage
+		}
+		if result.TextCompletionResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.TextCompletionResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {

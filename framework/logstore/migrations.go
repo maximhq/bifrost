@@ -2614,6 +2614,11 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_billing_attempt_started_at",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_billing_attempt_started_at ON logs(billing_attempt_started_at) WHERE billing_attempt_started_at IS NOT NULL",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_total_tokens",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_total_tokens ON logs(total_tokens)",
 	},

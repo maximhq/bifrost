@@ -528,11 +528,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.ImageGenerationResponse = imageResp
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:            schemas.ImageGenerationRequest,
-			Provider:               p.Provider,
-			OriginalModelRequested: p.RequestedModel,
-			ResolvedModelUsed:      p.ResolvedModel,
-			Latency:                p.Data.Latency,
+			RequestType:             schemas.ImageGenerationRequest,
+			Provider:                p.Provider,
+			OriginalModelRequested:  p.RequestedModel,
+			ResolvedModelUsed:       p.ResolvedModel,
+			Latency:                 p.Data.Latency,
+			BillingAttemptStartedAt: p.Data.BillingAttemptStartedAt,
 		}
 		if p.RawRequest != nil {
 			resp.ImageGenerationResponse.ExtraFields.RawRequest = p.RawRequest
