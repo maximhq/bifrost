@@ -78,6 +78,7 @@ jobs:
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
       BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+      REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -133,6 +134,7 @@ jobs:
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
             router.huggingface.co:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
