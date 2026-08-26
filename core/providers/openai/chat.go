@@ -222,7 +222,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {

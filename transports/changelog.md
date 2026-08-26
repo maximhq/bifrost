@@ -83,6 +83,7 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 
 ## 🐞 Fixed
 
+- **OpenAI-compatible xhigh Reasoning Effort** - `reasoning_effort: "xhigh"` is forwarded to vLLM, Ollama, SGL, and custom OpenAI-compatible providers instead of being rewritten to `high` by OpenAI model-name rules (thanks [@pranavthakur0-0](https://github.com/pranavthakur0-0)!) (#6193)
 - **Structured Output Schema Order** - `response_format` JSON schemas are forwarded byte-for-byte to OpenAI, Anthropic, Bedrock, Gemini and Cohere so the model generates fields in the caller's declared order instead of a re-sorted one (#6235)
 - **Thinking Block Typing on Streams** - Reasoning items carrying both an encrypted payload and a visible summary open as `thinking` blocks instead of `redacted_thinking` (#6292)
 - **Replayed Thinking Blocks via `bedrock/` Prefix** - Content-less `tool_result` blocks are kept, interleaved block order is preserved, `incomplete` maps to `error` on Converse, and pending reasoning is consumed by its owning item, so multi-turn tool use no longer wedges (#6346)

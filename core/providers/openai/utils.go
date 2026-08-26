@@ -55,18 +55,47 @@ func IsOpenAIReasoningModel(model string) bool {
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.
-func defaultEffortControl(model string) *schemas.EffortControl {
+func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
 	if acceptsMinimalEffort(model) {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
-	if acceptsXHighEffort(model) {
+	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
 	if acceptsMaxEffort(model) {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
+}
+
+// includeXHighInDefaultLadder reports whether the OpenAI-dialect fallback
+// ladder should list "xhigh". OpenAI, Azure, and xAI still use the hosted
+// catalog (gpt-5.2+ / Grok prefixes). Every other destination — built-in
+// vLLM/Ollama/SGL and custom providers with base_provider_type openai —
+// keeps the client value, because OpenAI model prefixes are the wrong
+// oracle for those upstreams.
+func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.XAI:
+		return acceptsXHighEffort(model)
+	default:
+		return true
+	}
+}
+
+// normalizeReasoningEffort applies hosted-provider compatibility rules while
+// preserving xhigh for OpenAI-compatible destinations. Their model names and
+// capability records do not describe OpenAI's hosted effort enum.
+func normalizeReasoningEffort(provider schemas.ModelProvider, caps schemas.ModelCaps, effort string) string {
+	if provider == "" {
+		provider = caps.Provider()
+	}
+	if effort == schemas.ReasoningEffortXHigh && provider != schemas.OpenAI &&
+		provider != schemas.Azure && provider != schemas.XAI {
+		return effort
+	}
+	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(provider, caps.Model()))
 }
 
 // acceptsXHighEffort reports models that natively accept "xhigh" effort. The
@@ -125,7 +154,6 @@ func bareModelLower(model string) string {
 	}
 	return strings.ToLower(model)
 }
-
 
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))

@@ -159,39 +159,65 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name     string
+		provider schemas.ModelProvider
 		model    string
 		effort   string
 		expected string
 	}{
-		{"preserves minimal for gpt-5", "gpt-5", "minimal", "minimal"},
-		{"preserves minimal for gpt-5-mini", "gpt-5-mini", "minimal", "minimal"},
-		{"preserves minimal for gpt-5-nano", "gpt-5-nano", "minimal", "minimal"},
-		{"maps minimal to low for gpt-5.4", "gpt-5.4", "minimal", "low"},
-		{"maps minimal to low for gpt-5.2", "gpt-5.2", "minimal", "low"},
-		{"maps minimal to low for gpt-5.6", "gpt-5.6", "minimal", "low"},
-		{"maps minimal to low for o3", "o3", "minimal", "low"},
-		{"maps minimal to low for o1", "o1", "minimal", "low"},
-		{"maps minimal to low for o4", "o4", "minimal", "low"},
-		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
-		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
-		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
-		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
-		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
-		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
-		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
-		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
-		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
-		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
-		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
-		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
-		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
+		{"preserves minimal for gpt-5", schemas.OpenAI, "gpt-5", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-mini", schemas.OpenAI, "gpt-5-mini", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-nano", schemas.OpenAI, "gpt-5-nano", "minimal", "minimal"},
+		{"maps minimal to low for gpt-5.4", schemas.OpenAI, "gpt-5.4", "minimal", "low"},
+		{"maps minimal to low for gpt-5.2", schemas.OpenAI, "gpt-5.2", "minimal", "low"},
+		{"maps minimal to low for gpt-5.6", schemas.OpenAI, "gpt-5.6", "minimal", "low"},
+		{"maps minimal to low for o3", schemas.OpenAI, "o3", "minimal", "low"},
+		{"maps minimal to low for o1", schemas.OpenAI, "o1", "minimal", "low"},
+		{"maps minimal to low for o4", schemas.OpenAI, "o4", "minimal", "low"},
+		{"maps minimal to low for gpt-oss", schemas.OpenAI, "gpt-oss", "minimal", "low"},
+		{"gpt-5.6 keeps max", schemas.OpenAI, "gpt-5.6", "max", "max"},
+		{"gpt-5.6 variant keeps max", schemas.OpenAI, "gpt-5.6-terra", "max", "max"},
+		{"gpt-5.6 keeps xhigh", schemas.OpenAI, "gpt-5.6", "xhigh", "xhigh"},
+		{"provider-prefixed gpt-5.6 keeps max", schemas.OpenAI, "openai/gpt-5.6", "max", "max"},
+		{"deepseek-v4 keeps max", schemas.OpenAI, "deepseek-v4", "max", "max"},
+		{"glm-5.2 keeps max", schemas.OpenAI, "glm-5.2", "max", "max"},
+		{"gpt-5.5 downgrades max to xhigh", schemas.OpenAI, "gpt-5.5", "max", "xhigh"},
+		{"gpt-5.2 downgrades max to xhigh", schemas.OpenAI, "gpt-5.2", "max", "xhigh"},
+		{"gpt-5.5 keeps xhigh", schemas.OpenAI, "gpt-5.5", "xhigh", "xhigh"},
+		{"gpt-5.1 downgrades max to high", schemas.OpenAI, "gpt-5.1", "max", "high"},
+		{"gpt-5.1 downgrades xhigh to high", schemas.OpenAI, "gpt-5.1", "xhigh", "high"},
+		{"standard effort passes through", schemas.OpenAI, "gpt-5.1", "medium", "medium"},
+		{"vllm preserves xhigh for qwen", schemas.VLLM, "qwen/qwen3.8-27b", "xhigh", "xhigh"},
+		{"vllm maps max to xhigh for qwen", schemas.VLLM, "qwen/qwen3.8-27b", "max", "xhigh"},
+		{"vllm still maps minimal to low", schemas.VLLM, "qwen/qwen3.8-27b", "minimal", "low"},
+		{"ollama preserves xhigh", schemas.Ollama, "qwen3.8:27b", "xhigh", "xhigh"},
+		{"sgl preserves xhigh", schemas.SGL, "qwen/qwen3.8-27b", "xhigh", "xhigh"},
+		{"custom openai-compatible provider preserves xhigh", schemas.ModelProvider("gpustack-rtxpro-6000"), "qwen/qwen3.8-27b", "xhigh", "xhigh"},
+		{"openai still downgrades xhigh on qwen-named models", schemas.OpenAI, "qwen/qwen3.8-27b", "xhigh", "high"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caps := schemas.ResolveModelCaps(schemas.OpenAI, tt.model)
-			if got := caps.NormalizeReasoningEffort(tt.effort, defaultEffortControl(tt.model)); got != tt.expected {
-				t.Errorf("model %q: NormalizeReasoningEffort(%q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
+			caps := schemas.ResolveModelCaps(tt.provider, tt.model)
+			if got := caps.NormalizeReasoningEffort(tt.effort, defaultEffortControl(tt.provider, tt.model)); got != tt.expected {
+				t.Errorf("provider %q model %q: NormalizeReasoningEffort(%q) = %q, want %q", tt.provider, tt.model, tt.effort, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNormalizeReasoningEffortPreservesXHighForOpenAICompatibleProviders(t *testing.T) {
+	tests := []schemas.ModelProvider{
+		schemas.VLLM,
+		schemas.Ollama,
+		schemas.SGL,
+		schemas.ModelProvider("gpustack-rtxpro-6000"),
+	}
+
+	for _, provider := range tests {
+		t.Run(string(provider), func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(provider, "qwen/qwen3.8-27b")
+			if got := normalizeReasoningEffort(provider, caps, schemas.ReasoningEffortXHigh); got != schemas.ReasoningEffortXHigh {
+				t.Fatalf("normalizeReasoningEffort(%q, xhigh) = %q, want xhigh", provider, got)
 			}
 		})
 	}

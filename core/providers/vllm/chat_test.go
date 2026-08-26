@@ -108,3 +108,188 @@ func keys(m map[string]interface{}) []string {
 	}
 	return out
 }
+
+func TestChatCompletion_XHighReasoningEffortPreserved(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(body, &capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprint(w, `{
+			"id": "chatcmpl-test",
+			"object": "chat.completion",
+			"created": 1234567890,
+			"model": "qwen/qwen3.8-27b",
+			"choices": [{
+				"index": 0,
+				"message": {"role": "assistant", "content": "Hello!"},
+				"finish_reason": "stop"
+			}],
+			"usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+		}`); err != nil {
+			t.Errorf("write mock response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestVLLMProvider()
+	key := schemas.Key{
+		ID:    "test-key",
+		Value: schemas.SecretVar{Val: "test-api-key"},
+		VLLMKeyConfig: &schemas.VLLMKeyConfig{
+			URL: schemas.SecretVar{Val: server.URL},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	hello := "Hello"
+	xhigh := "xhigh"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.VLLM,
+		Model:    "qwen/qwen3.8-27b",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &hello},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{
+				Effort: &xhigh,
+			},
+		},
+	}
+
+	_, bifrostErr := provider.ChatCompletion(ctx, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr.Error.Message)
+	}
+
+	if capturedBody == nil {
+		t.Fatal("mock server did not receive a request body")
+	}
+
+	rawEffort, ok := capturedBody["reasoning_effort"]
+	if !ok {
+		t.Fatalf("reasoning_effort missing from outgoing request body; got keys: %v", keys(capturedBody))
+	}
+
+	effortStr, ok := rawEffort.(string)
+	if !ok {
+		t.Fatalf("expected reasoning_effort to be a string, got %T", rawEffort)
+	}
+
+	if effortStr != "xhigh" {
+		t.Fatalf("expected reasoning_effort=xhigh, got %q", effortStr)
+	}
+}
+
+func TestResponses_XHighReasoningEffortPreserved(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(body, &capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprint(w, `{
+			"id": "resp-test",
+			"object": "response",
+			"created_at": 1234567890,
+			"model": "qwen/qwen3.8-27b",
+			"status": "completed",
+			"output": [{
+				"type": "message",
+				"id": "msg_01",
+				"role": "assistant",
+				"content": [{"type": "text", "text": "Hello!"}]
+			}],
+			"usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+		}`); err != nil {
+			t.Errorf("write mock response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestVLLMProvider()
+	key := schemas.Key{
+		ID:    "test-key",
+		Value: schemas.SecretVar{Val: "test-api-key"},
+		VLLMKeyConfig: &schemas.VLLMKeyConfig{
+			URL: schemas.SecretVar{Val: server.URL},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	hello := "Hello"
+	xhigh := "xhigh"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.VLLM,
+		Model:    "qwen/qwen3.8-27b",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &xhigh,
+			},
+		},
+	}
+
+	_, bifrostErr := provider.Responses(ctx, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
+	}
+
+	if capturedBody == nil {
+		t.Fatal("mock server did not receive a request body")
+	}
+
+	// Responses API format uses reasoning: { effort: "xhigh" }
+	rawReasoning, ok := capturedBody["reasoning"]
+	if !ok {
+		t.Fatalf("reasoning missing from outgoing request body; got keys: %v", keys(capturedBody))
+	}
+
+	reasoningMap, ok := rawReasoning.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning to be an object, got %T", rawReasoning)
+	}
+
+	rawEffort, ok := reasoningMap["effort"]
+	if !ok {
+		t.Fatalf("effort missing from reasoning object; got keys: %v", keys(reasoningMap))
+	}
+
+	effortStr, ok := rawEffort.(string)
+	if !ok {
+		t.Fatalf("expected effort to be a string, got %T", rawEffort)
+	}
+
+	if effortStr != "xhigh" {
+		t.Fatalf("expected reasoning.effort=xhigh, got %q", effortStr)
+	}
+}
