@@ -285,6 +285,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
+	if err := inlineRemoteImageURLsForGeminiChat(ctx, request); err != nil {
+		return nil, geminiImageInliningError("failed to inline remote image URLs for gemini", err)
+	}
+
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -343,6 +347,10 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
+	}
+
+	if err := inlineRemoteImageURLsForGeminiChat(ctx, request); err != nil {
+		return nil, geminiImageInliningError("failed to inline remote image URLs for gemini", err)
 	}
 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
@@ -649,6 +657,10 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	if err := inlineRemoteImageURLsForGeminiResponses(ctx, request); err != nil {
+		return nil, geminiImageInliningError("failed to inline remote image URLs for gemini", err)
+	}
+
 	// Check for large payload streaming mode (enterprise-only feature)
 	// In large payload mode, the request body streams directly from the client — skip body conversion
 	var bodyReader io.Reader
@@ -853,6 +865,10 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Check if responses stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+
+	if err := inlineRemoteImageURLsForGeminiResponses(ctx, request); err != nil {
+		return nil, geminiImageInliningError("failed to inline remote image URLs for gemini", err)
 	}
 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
@@ -3940,6 +3956,10 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		bifrostErr *schemas.BifrostError
 	)
 	if !isLargePayload {
+		if err := inlineRemoteImageURLsForGeminiResponses(ctx, request); err != nil {
+			return nil, geminiImageInliningError("failed to inline remote image URLs for gemini", err)
+		}
+
 		// Build JSON body from Bifrost request for normal path.
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,

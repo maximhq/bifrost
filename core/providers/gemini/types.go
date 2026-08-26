@@ -1288,30 +1288,31 @@ type Schema struct {
 
 type flexibleSchemaInt64 int64
 
-var schemaIntegerJSON = sonic.Config{UseInt64: true}.Froze()
-
 func (i *flexibleSchemaInt64) UnmarshalJSON(data []byte) error {
-	var value any
-	if err := schemaIntegerJSON.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("invalid schema integer constraint: %w", err)
+	token := strings.TrimSpace(string(data))
+	if token == "null" {
+		return nil
 	}
 
-	switch typedValue := value.(type) {
-	case nil:
-		return nil
-	case int64:
-		*i = flexibleSchemaInt64(typedValue)
-		return nil
-	case string:
-		parsed, err := strconv.ParseInt(typedValue, 10, 64)
+	if strings.HasPrefix(token, `"`) {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("invalid schema integer constraint: %w", err)
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid schema integer constraint %q: %w", typedValue, err)
+			return fmt.Errorf("invalid schema integer constraint %q: %w", value, err)
 		}
 		*i = flexibleSchemaInt64(parsed)
 		return nil
-	default:
-		return fmt.Errorf("invalid schema integer constraint %v", typedValue)
 	}
+
+	parsed, err := strconv.ParseInt(token, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid schema integer constraint %s: %w", token, err)
+	}
+	*i = flexibleSchemaInt64(parsed)
+	return nil
 }
 
 func schemaInt64Ptr(value *flexibleSchemaInt64) *int64 {

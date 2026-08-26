@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/maximhq/bifrost/core/network"
 )
+
+const fetchMaxBytes int64 = 25 * 1024 * 1024
+
+type httpDoer func(client *http.Client, req *http.Request) (*http.Response, error)
 
 // RedactURLForError reduces a resource URL to the part that is safe to echo back in an
 // error: scheme, host, and path. Userinfo, query, and fragment are dropped.
@@ -65,18 +70,51 @@ func sanitizeFetchError(err error, redacted string) error {
 // so DNS rebinding does not bypass it. Redirect targets are subject to the same
 // scheme + dial-time IP validation.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
-	const maxBytes int64 = 25 * 1024 * 1024
+	return fetchAndEncodeURL(ctx, resourceURL, DoHTTPRequest)
+}
 
+func fetchAndEncodeURL(ctx context.Context, resourceURL string, do httpDoer) (mediaType string, encoded string, err error) {
+	mediaType, body, err := fetchURLBytes(ctx, resourceURL, do)
+	if err != nil {
+		return "", "", err
+	}
+
+	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+// FetchAndEncodeImageURL downloads a remote image and returns its base64 encoding plus
+// a byte-sniffed image MIME type. It has the same timeout, redirect, body-size, and
+// SSRF protections as FetchAndEncodeURL, but additionally rejects non-image responses
+// instead of letting callers label arbitrary bytes as image/jpeg by default.
+func FetchAndEncodeImageURL(ctx context.Context, imageURL string) (mediaType string, encoded string, err error) {
+	return fetchAndEncodeImageURL(ctx, imageURL, DoHTTPRequest)
+}
+
+func fetchAndEncodeImageURL(ctx context.Context, imageURL string, do httpDoer) (mediaType string, encoded string, err error) {
+	declaredType, body, err := fetchURLBytes(ctx, imageURL, do)
+	if err != nil {
+		return "", "", err
+	}
+
+	mediaType, err = sniffFetchedImageType(imageURL, declaredType, body)
+	if err != nil {
+		return "", "", err
+	}
+
+	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+func fetchURLBytes(ctx context.Context, resourceURL string, do httpDoer) (mediaType string, body []byte, err error) {
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
 	redacted := RedactURLForError(resourceURL)
 
 	parsed, err := url.Parse(resourceURL)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
+		return "", nil, fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
 	transport := &http.Transport{
@@ -98,32 +136,59 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
-	resp, err := DoHTTPRequest(client, req)
+	resp, err := do(client, req)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
+		return "", nil, fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, fetchMaxBytes+1))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
-	if int64(len(body)) > maxBytes {
-		return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+	if int64(len(body)) > fetchMaxBytes {
+		return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, fetchMaxBytes)
 	}
 
-	mediaType = resp.Header.Get("Content-Type")
+	return normalizeFetchedMediaType(resp.Header.Get("Content-Type")), body, nil
+}
+
+func normalizeFetchedMediaType(mediaType string) string {
+	if parsed, _, err := mime.ParseMediaType(mediaType); err == nil {
+		return strings.ToLower(strings.TrimSpace(parsed))
+	}
 	if i := strings.Index(mediaType, ";"); i != -1 {
-		mediaType = strings.TrimSpace(mediaType[:i])
+		mediaType = mediaType[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(mediaType))
+}
+
+func sniffFetchedImageType(imageURL, declaredType string, body []byte) (string, error) {
+	redacted := RedactURLForError(imageURL)
+	if len(body) == 0 {
+		return "", fmt.Errorf("fetched image %q is empty", redacted)
 	}
 
-	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+	declaredType = normalizeFetchedMediaType(declaredType)
+	if declaredType != "" && declaredType != "application/octet-stream" && !strings.HasPrefix(declaredType, "image/") {
+		return "", fmt.Errorf("fetched resource %q is not an image: content-type %q", redacted, declaredType)
+	}
+
+	detectedType := normalizeFetchedMediaType(http.DetectContentType(body))
+	if !strings.HasPrefix(detectedType, "image/") {
+		if declaredType == "application/octet-stream" {
+			return "", fmt.Errorf("fetched resource %q is not an image: detected content-type %q", redacted, detectedType)
+		}
+		return "", fmt.Errorf("fetched resource %q is not an image: content-type %q detected as %q", redacted, declaredType, detectedType)
+	}
+
+	return detectedType, nil
 }
