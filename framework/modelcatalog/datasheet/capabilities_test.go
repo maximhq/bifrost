@@ -315,3 +315,48 @@ func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
 		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
 	}
 }
+
+// TestExtractSupportedParams_SparseRowDefaultsCoreParams guards against a
+// datasheet row that sets a few supports_* flags (e.g. from a pricing-only
+// sync) but carries no model_parameters array at all — the only place
+// temperature/top_p/stop/max_tokens/etc. are normally sourced from. Without
+// this default, such a row would make compat's dropUnsupportedParams strip
+// those core params from every request to that model.
+func TestExtractSupportedParams_SparseRowDefaultsCoreParams(t *testing.T) {
+	sparse := &schemas.ModelCapabilities{
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+		SupportsToolChoice:      capabilityBoolPtr(true),
+	}
+	got := extractSupportedParams(sparse)
+	for _, want := range []string{"temperature", "top_p", "stop", "max_tokens", "frequency_penalty", "presence_penalty", "seed", "logprobs", "top_logprobs", "n", "logit_bias", "metadata"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("expected sparse row (no model_parameters) to default-include %q, got %v", want, got)
+		}
+	}
+
+	// A row with an explicit model_parameters array is well-formed — its
+	// omissions are a real restriction (e.g. reasoning-only models), so the
+	// default must not kick in.
+	explicit := &schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{{ID: "tools"}},
+	}
+	got = extractSupportedParams(explicit)
+	if slices.Contains(got, "temperature") {
+		t.Errorf("expected explicit model_parameters row to omit \"temperature\" when not listed, got %v", got)
+	}
+
+	// An explicit supports_sampling_params=false must suppress the default
+	// even on a sparse row (adaptive-only models that reject sampling params).
+	rejectsSampling := &schemas.ModelCapabilities{
+		SupportsSamplingParams: capabilityBoolPtr(false),
+	}
+	got = extractSupportedParams(rejectsSampling)
+	for _, unexpected := range []string{"temperature", "top_p"} {
+		if slices.Contains(got, unexpected) {
+			t.Errorf("expected supports_sampling_params=false to omit %q, got %v", unexpected, got)
+		}
+	}
+	if !slices.Contains(got, "stop") {
+		t.Errorf("expected supports_sampling_params=false to still default-include \"stop\", got %v", got)
+	}
+}

@@ -499,6 +499,16 @@ func normalizeModeToOutputType(mode string) string {
 	}
 }
 
+// sparseRowDefaultParams are the OpenAI-compatible request parameters that
+// extractSupportedParams can only ever learn about from model_parameters[].id
+// — none of them has a dedicated supports_* flag. When a row's model_parameters
+// array is empty, these default to supported instead of silently falling out of
+// the allowlist; see the completeness guard below.
+var sparseRowDefaultParams = []string{
+	"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens",
+	"frequency_penalty", "presence_penalty", "seed", "logprobs", "top_logprobs", "n", "logit_bias", "metadata",
+}
+
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
 // names from model_parameters[].id values and supports_* boolean flags.
 func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
@@ -526,6 +536,20 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 			// skip — not top-level request parameters
 		default:
 			addParam(mp.ID)
+		}
+	}
+
+	if len(parsed.ModelParameters) == 0 {
+		// An empty array means the row never described its request-parameter
+		// surface (a sync gap), not that only the flag-driven params below are
+		// supported. Trust the standard sampling and limit params by default —
+		// except temperature/top_p when the row explicitly rejects them.
+		samplingParamsSupported := parsed.SupportsSamplingParams == nil || *parsed.SupportsSamplingParams
+		for _, name := range sparseRowDefaultParams {
+			if !samplingParamsSupported && (name == "temperature" || name == "top_p") {
+				continue
+			}
+			addParam(name)
 		}
 	}
 
