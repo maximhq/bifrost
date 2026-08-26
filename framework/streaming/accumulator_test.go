@@ -1041,3 +1041,69 @@ func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
 		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
 	}
 }
+
+func TestAccumulatedStreamKeepsHighestIndexBillingAttemptStart(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	accumulator := NewAccumulator(nil, logger)
+	t.Cleanup(accumulator.Cleanup)
+
+	requestID := "billing-attempt-high-index"
+	earlier := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	terminal := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+
+	if err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex:              2,
+		Timestamp:               time.Now(),
+		BillingAttemptStartedAt: &terminal,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	// Multiple plugins may replay an earlier chunk after the terminal chunk.
+	if err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex:              0,
+		Timestamp:               time.Now().Add(time.Second),
+		BillingAttemptStartedAt: &earlier,
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := accumulator.processAccumulatedChatStreamingChunks(requestID, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.BillingAttemptStartedAt == nil || !data.BillingAttemptStartedAt.Equal(terminal) {
+		t.Fatalf("expected terminal attempt time %v, got %v", terminal, data.BillingAttemptStartedAt)
+	}
+}
+
+func TestImageAccumulatedStreamKeepsHighestIndexBillingAttemptStart(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+
+	requestID := "image-billing-attempt"
+	earlier := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	terminal := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+
+	if err := accumulator.addImageStreamChunk(requestID, &ImageStreamChunk{
+		ChunkIndex:              2,
+		Timestamp:               time.Now(),
+		BillingAttemptStartedAt: &terminal,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.addImageStreamChunk(requestID, &ImageStreamChunk{
+		ChunkIndex:              0,
+		Timestamp:               time.Now().Add(time.Second),
+		BillingAttemptStartedAt: &earlier,
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := accumulator.processAccumulatedImageStreamingChunks(requestID, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.BillingAttemptStartedAt == nil || !data.BillingAttemptStartedAt.Equal(terminal) {
+		t.Fatalf("expected terminal attempt time %v, got %v", terminal, data.BillingAttemptStartedAt)
+	}
+}
