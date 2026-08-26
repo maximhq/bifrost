@@ -36,11 +36,12 @@ func TestEvaluatePricingTimeSchedule(t *testing.T) {
 	}{
 		{name: "sunday full day", at: pricingScheduleAt("23", 12, 0), multiplier: 0.5, matched: true},
 		{name: "saturday full day", at: pricingScheduleAt("22", 0, 0), multiplier: 0.5, matched: true},
-		{name: "weekday before window", at: pricingScheduleAt("24", 16, 29), multiplier: 1},
+		{name: "monday before window", at: pricingScheduleAt("24", 16, 29), multiplier: 1},
+		{name: "tuesday before window", at: pricingScheduleAt("25", 16, 29), multiplier: 1},
 		{name: "weekday start is inclusive", at: pricingScheduleAt("24", 16, 30), multiplier: 0.5, matched: true},
-		{name: "weekday end is exclusive", at: pricingScheduleAt("25", 0, 30), multiplier: 1},
+		{name: "weekday end is exclusive", at: pricingScheduleAt("26", 0, 30), multiplier: 1},
 		{name: "cross midnight before end", at: pricingScheduleAt("25", 0, 29), multiplier: 0.5, matched: true},
-		{name: "weekday peak", at: pricingScheduleAt("24", 12, 0), multiplier: 1},
+		{name: "weekday peak", at: pricingScheduleAt("25", 12, 0), multiplier: 1},
 	}
 
 	for _, tt := range tests {
@@ -111,6 +112,18 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 		{name: "invalid multiplier", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{Multiplier: 0}}}},
 		{name: "invalid start", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "24:00", EndTime: "01:00", Multiplier: 1}}}},
 		{name: "invalid end", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "00:00", EndTime: "1:00", Multiplier: 1}}}},
+		{name: "non-digit clock", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "0::00", EndTime: "01:00", Multiplier: 1}}}},
+		{name: "unknown weekday", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarISOWeekday, Rules: []PricingTimeRule{{Days: []string{"funday"}, Multiplier: 1}}}},
+		{
+			name: "calendar none overlap",
+			schedule: PricingTimeSchedule{
+				Timezone: "UTC", Calendar: PricingScheduleCalendarNone,
+				Rules: []PricingTimeRule{
+					{Days: []string{"monday"}, StartTime: "09:00", EndTime: "10:00", Multiplier: 1},
+					{Days: []string{"tuesday"}, StartTime: "09:30", EndTime: "10:30", Multiplier: 2},
+				},
+			},
+		},
 		{
 			name: "overlap same day",
 			schedule: PricingTimeSchedule{
@@ -177,5 +190,38 @@ func TestValidatePricingTimeScheduleAllowsAdjacentWeekdayWindows(t *testing.T) {
 	}
 	if err := ValidatePricingTimeSchedule(schedule); err != nil {
 		t.Fatalf("expected valid weekday schedule: %v", err)
+	}
+}
+
+func TestEvaluatePricingTimeScheduleMondayOnlyCrossMidnight(t *testing.T) {
+	schedule := &PricingTimeSchedule{
+		Timezone: "UTC",
+		Calendar: PricingScheduleCalendarISOWeekday,
+		Rules: []PricingTimeRule{
+			{Days: []string{"monday"}, StartTime: "22:00", EndTime: "02:00", Multiplier: 2},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		at      time.Time
+		matched bool
+	}{
+		{name: "monday evening", at: pricingScheduleAt("24", 23, 0), matched: true},
+		{name: "tuesday wrapped tail", at: pricingScheduleAt("25", 1, 0), matched: true},
+		{name: "tuesday after tail", at: pricingScheduleAt("25", 2, 0), matched: false},
+		{name: "tuesday before wrapped start", at: pricingScheduleAt("25", 21, 0), matched: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := EvaluatePricingTimeSchedule(schedule, tt.at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Matched != tt.matched {
+				t.Fatalf("got %+v, want matched=%v", got, tt.matched)
+			}
+		})
 	}
 }
