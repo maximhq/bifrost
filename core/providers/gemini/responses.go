@@ -145,12 +145,23 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
+		// Work on a shallow copy of ExtraParams: convertParamsToGenerationConfigResponses
+		// consumes entries (top_k, response_logprobs, ...) with delete, and handing it the
+		// caller's map would make a retry/fallback that reconverts the same request lose
+		// them. The pruned copy is what geminiReq carries onto the wire.
+		params := *bifrostReq.Params
+		if bifrostReq.Params.ExtraParams != nil {
+			params.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+			for key, value := range bifrostReq.Params.ExtraParams {
+				params.ExtraParams[key] = value
+			}
+		}
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, bifrostReq.Provider, capModel)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(&params, bifrostReq.Provider, capModel)
 		if err != nil {
 			return nil, err
 		}
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = params.ExtraParams
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {

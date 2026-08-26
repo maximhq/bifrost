@@ -48,6 +48,18 @@ func TestResponsesLogprobsRequestSide(t *testing.T) {
 	require.NotNil(t, geminiReq.GenerationConfig.Logprobs,
 		"top_logprobs must map to generationConfig.logprobs")
 	assert.Equal(t, int32(5), *geminiReq.GenerationConfig.Logprobs)
+
+	// The conversion consumes extra params from a copy, not the caller's map: a
+	// retry/fallback reconverting the same request must still see them.
+	assert.Contains(t, req.Params.ExtraParams, "response_logprobs",
+		"conversion must not mutate the caller's ExtraParams")
+	assert.NotContains(t, geminiReq.ExtraParams, "response_logprobs",
+		"consumed extra param must not ride the wire map")
+
+	retryReq, err := ToGeminiResponsesRequest(nil, req)
+	require.NoError(t, err)
+	assert.True(t, retryReq.GenerationConfig.ResponseLogprobs,
+		"a reconversion of the same request must still enable responseLogprobs")
 }
 
 // Gemini caps logprobs at 20; the Responses mapping must apply the same cap as
