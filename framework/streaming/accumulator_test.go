@@ -1107,3 +1107,27 @@ func TestImageAccumulatedStreamKeepsHighestIndexBillingAttemptStart(t *testing.T
 		t.Fatalf("expected terminal attempt time %v, got %v", terminal, data.BillingAttemptStartedAt)
 	}
 }
+
+func TestImageStreamErrorCarriesBillingAttemptStart(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+
+	requestID := "image-billing-error"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	bifrostErr := &schemas.BifrostError{}
+	bifrostErr.ExtraFields.BillingAttemptStartedAt = &startedAt
+
+	processed, err := accumulator.processImageStreamingResponse(ctx, nil, bifrostErr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected processed error data")
+	}
+	if processed.Data.BillingAttemptStartedAt == nil || !processed.Data.BillingAttemptStartedAt.Equal(startedAt) {
+		t.Fatalf("expected billing attempt time %v, got %v", startedAt, processed.Data.BillingAttemptStartedAt)
+	}
+}

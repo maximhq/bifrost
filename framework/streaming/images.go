@@ -235,6 +235,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
 	} else if result != nil && result.ImageGenerationStreamResponse != nil {
 		// Create a deep copy of the delta to avoid pointing to stack memory
 		var partialImageIndex *int
