@@ -256,8 +256,7 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 		return
 	}
 	if entry.TokenUsageParsed == nil {
-		usageCopy := *billed
-		entry.TokenUsageParsed = &usageCopy
+		entry.TokenUsageParsed = billed.DeepCopy()
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
@@ -1876,9 +1875,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.OutputCost = breakdown.OutputCost
 				entry.AdditionalCost = breakdown.AdditionalCost
 			}
-			// Speech / transcription / OCR usage is not aliased into
-			// TokenUsageParsed, so write the split onto the native response too.
-			attachCostToNativeUsage(result, breakdown)
 		}
 		if bifrostErr == nil &&
 			requestType == schemas.BatchResultsRequest &&
