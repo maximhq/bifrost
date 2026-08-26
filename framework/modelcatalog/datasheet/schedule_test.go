@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -110,6 +111,8 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 		{name: "invalid timezone", schedule: PricingTimeSchedule{Timezone: "not-a-zone", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{Multiplier: 1}}}},
 		{name: "empty rules", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone}},
 		{name: "invalid multiplier", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{Multiplier: 0}}}},
+		{name: "NaN multiplier", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{Multiplier: math.NaN()}}}},
+		{name: "positive infinity multiplier", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{Multiplier: math.Inf(1)}}}},
 		{name: "invalid start", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "24:00", EndTime: "01:00", Multiplier: 1}}}},
 		{name: "invalid end", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "00:00", EndTime: "1:00", Multiplier: 1}}}},
 		{name: "non-digit clock", schedule: PricingTimeSchedule{Timezone: "UTC", Calendar: PricingScheduleCalendarNone, Rules: []PricingTimeRule{{StartTime: "0::00", EndTime: "01:00", Multiplier: 1}}}},
