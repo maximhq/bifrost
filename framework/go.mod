@@ -12,7 +12,7 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/maximhq/bifrost/core v1.7.11
+	github.com/maximhq/bifrost/core v1.8.3
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
 	github.com/qdrant/go-client v1.16.2
 	github.com/redis/go-redis/v9 v9.17.2
