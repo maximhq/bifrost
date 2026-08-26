@@ -468,13 +468,15 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	// chunk, so retain the newest non-nil value rather than reading only the
 	// highest-index chunk.
 	tierChunkIndex := -1
+	billingChunkIndex := -1
 	for _, streamChunk := range accumulator.ChatStreamChunks {
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
-		if streamChunk.BillingAttemptStartedAt != nil {
+		if streamChunk.BillingAttemptStartedAt != nil && streamChunk.ChunkIndex > billingChunkIndex {
 			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+			billingChunkIndex = streamChunk.ChunkIndex
 		}
 	}
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,

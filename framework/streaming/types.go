@@ -110,16 +110,17 @@ type ResponsesStreamChunk struct {
 
 // ImageStreamChunk represents a single image streaming chunk
 type ImageStreamChunk struct {
-	Timestamp          time.Time                                     // When chunk was received
-	Delta              *schemas.BifrostImageGenerationStreamResponse // The actual stream response
-	FinishReason       *string                                       // If this is the final chunk
-	ChunkIndex         int                                           // Index of the chunk in the stream
-	ImageIndex         int                                           // Index of the image in the stream
-	ErrorDetails       *schemas.BifrostError                         // Error if any
-	Cost               *float64                                      // Cost in dollars from pricing plugin
-	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
-	TokenUsage         *schemas.ImageUsage                           // Token usage if available
-	RawResponse        *string                                       // Raw response if available
+	Timestamp               time.Time                                     // When chunk was received
+	Delta                   *schemas.BifrostImageGenerationStreamResponse // The actual stream response
+	FinishReason            *string                                       // If this is the final chunk
+	ChunkIndex              int                                           // Index of the chunk in the stream
+	ImageIndex              int                                           // Index of the image in the stream
+	ErrorDetails            *schemas.BifrostError                         // Error if any
+	Cost                    *float64                                      // Cost in dollars from pricing plugin
+	SemanticCacheDebug      *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	TokenUsage              *schemas.ImageUsage                           // Token usage if available
+	BillingAttemptStartedAt *time.Time                                    // Attempt start for time-based pricing
+	RawResponse             *string                                       // Raw response if available
 }
 
 // StreamAccumulator manages accumulation of streaming chunks

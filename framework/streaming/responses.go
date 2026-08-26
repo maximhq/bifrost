@@ -1021,13 +1021,15 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
 	tierChunkIndex := -1
+	billingChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
-		if streamChunk.BillingAttemptStartedAt != nil {
+		if streamChunk.BillingAttemptStartedAt != nil && streamChunk.ChunkIndex > billingChunkIndex {
 			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+			billingChunkIndex = streamChunk.ChunkIndex
 		}
 	}
 
