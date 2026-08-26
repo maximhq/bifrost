@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -147,8 +148,8 @@ func normalizePricingScheduleCalendar(calendar string) (string, error) {
 }
 
 func (rule PricingTimeRule) validate(calendar string) error {
-	if rule.Multiplier <= 0 {
-		return fmt.Errorf("multiplier must be greater than zero")
+	if rule.Multiplier <= 0 || math.IsNaN(rule.Multiplier) || math.IsInf(rule.Multiplier, 0) {
+		return fmt.Errorf("multiplier must be a finite value greater than zero")
 	}
 	if _, err := parsePricingClock(rule.StartTime); err != nil {
 		return fmt.Errorf("invalid start_time %q: %w", rule.StartTime, err)
