@@ -847,6 +847,8 @@ paths:
     $ref: "./paths/management/governance.yaml#/virtual-keys-quota"
   /api/governance/virtual-keys/{vk_id}:
     $ref: "./paths/management/governance.yaml#/virtual-keys-by-id"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate-by-id"
   /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
     $ref: "./paths/management/governance.yaml#/virtual-keys-budget-override"
   /api/governance/virtual-keys/{vk_id}/users:
@@ -1148,6 +1150,8 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost"
   /api/logs/recalculate-cost/status:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-status"
+  /api/logs/recalculate-cost/cancel:
+    $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-cancel"
 
   # MCP Logs
   /api/mcp-logs:
