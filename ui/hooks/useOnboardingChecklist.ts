@@ -1,5 +1,5 @@
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useGetCoreConfigQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { useGetModelConfigsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -52,10 +52,17 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
 		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
 	});
+	// Authoritative answer to "is the dashboard actually protected?". Whitelisted
+	// (never 401s) and answered by whichever middleware is installed: the OSS
+	// handler reports auth_config.is_enabled, while the enterprise SCIM
+	// middleware intercepts this exact path and reports auth_type "sso" for OIDC
+	// cookie sessions and identity-aware-proxy tokens alike.
+	const { data: dashboardAuthState } = useIsAuthEnabledQuery(undefined, { skip: shouldSkipChecklistQueries });
 
 	const checklistReady =
 		bifrostConfig !== undefined &&
 		allKeys !== undefined &&
+		dashboardAuthState !== undefined &&
 		(!IS_ENTERPRISE || (vksResponse !== undefined && modelConfigsResponse !== undefined && scimProviders !== undefined));
 
 	const skippedIds = useMemo<string[]>(() => {
@@ -71,6 +78,12 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 	// are never set on these deployments and would strand this step forever.
 	// Mirrors the server's own gate: SCIMConfig != nil && SCIMConfig.Enabled.
 	const ssoGatesDashboard = IS_ENTERPRISE && (scimProviders?.some((provider) => provider.enabled) ?? false);
+	// Primary signal: the server says dashboard auth is on, whatever the scheme
+	// (password, OIDC/SSO, IAP). Enabling password auth server-side is rejected
+	// unless both credentials resolve to a non-empty value, so is_auth_enabled
+	// already implies the local-credential check below — that check stays only
+	// as a fallback for when this probe hasn't resolved yet.
+	const dashboardAuthEnabled = dashboardAuthState?.is_auth_enabled === true;
 
 	const steps: OnboardingStep[] = useMemo(() => {
 		// Order: 1) Security, 2) Provider Setup, 3) Everything Else.
@@ -90,6 +103,7 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 				route: "/workspace/config/security",
 				section: "Security",
 				complete:
+					dashboardAuthEnabled ||
 					ssoGatesDashboard ||
 					(!!authConfig?.is_enabled && authValueSet(authConfig?.admin_username) && authValueSet(authConfig?.admin_password)),
 			},
@@ -134,7 +148,7 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 				]
 			: [];
 		return [...common, ...enterprise];
-	}, [allKeys, clientConfig, authConfig, ssoGatesDashboard, scimProviders, modelConfigsResponse, vksResponse]);
+	}, [allKeys, clientConfig, authConfig, dashboardAuthEnabled, ssoGatesDashboard, scimProviders, modelConfigsResponse, vksResponse]);
 
 	return { bifrostConfig, steps, skippedIds, checklistReady, isDismissedForAll };
 }
