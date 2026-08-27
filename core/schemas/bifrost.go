@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 const (
@@ -302,6 +303,7 @@ const (
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
+	BifrostContextKeyBillingAttemptStartTime             BifrostContextKey = "bifrost-billing-attempt-start-time"               // time.Time (start of the current provider attempt for time-based pricing - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
@@ -1743,7 +1745,12 @@ type BifrostResponseExtraFields struct {
 	// serializing this response is itself overhead. The authoritative value is
 	// stamped on the trace and logged at completion; this is only the untraced
 	// fallback. Nil means unknown.
-	OverheadLatency           *int64                 `json:"-"`
+	OverheadLatency *int64 `json:"-"`
+	// BillingAttemptStartedAt is when the current provider attempt started. It is
+	// the authoritative instant for time-based pricing schedules and is deliberately
+	// distinct from response creation/completion time. Nil means unknown; consumers
+	// must not substitute CreatedAt or time.Now().
+	BillingAttemptStartedAt   *time.Time             `json:"billing_attempt_started_at,omitempty"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
@@ -2061,4 +2068,8 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+	// BillingAttemptStartedAt is when the failed/cancelled provider attempt started.
+	// It prices BilledUsage under time-based schedules and must not be inferred from
+	// response creation/completion timestamps.
+	BillingAttemptStartedAt *time.Time `json:"billing_attempt_started_at,omitempty"`
 }

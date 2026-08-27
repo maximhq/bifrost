@@ -473,6 +473,9 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
+		if streamChunk.BillingAttemptStartedAt != nil {
+			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+		}
 	}
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
 	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
@@ -544,6 +547,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if bifrostErr.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
+		}
 	} else if result != nil && result.TextCompletionResponse != nil {
 		// Handle text completion response directly
 		if len(result.TextCompletionResponse.Choices) > 0 {
@@ -561,6 +567,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Extract token usage
 		if result.TextCompletionResponse.Usage != nil && result.TextCompletionResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.TextCompletionResponse.Usage
+		}
+		if result.TextCompletionResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.TextCompletionResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
@@ -591,6 +600,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		}
 		if result.ChatResponse.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
+		}
+		if result.ChatResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.ChatResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {

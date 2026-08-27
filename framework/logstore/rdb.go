@@ -1264,7 +1264,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
 		"has_object", "content_hidden",
-		"service_tier", "speed", "inference_geo",
+		"service_tier", "speed", "inference_geo", "billing_attempt_started_at",
 		"created_at",
 	}, ", ")
 
@@ -1363,8 +1363,8 @@ var billingScalarColumns = []string{
 	"batch_debug",
 	// Whether the payload was offloaded, and whether it can ever be fetched back.
 	"has_object", "content_hidden",
-	// Served tier: scales every token rate.
-	"service_tier", "speed", "inference_geo",
+	// Served tier and schedule time: scale every token rate deterministically.
+	"service_tier", "speed", "inference_geo", "billing_attempt_started_at",
 }
 
 // billingSelectColumns returns the SELECT clause for cost recomputation.

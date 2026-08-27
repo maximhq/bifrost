@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,4 +80,28 @@ func TestAppendGuardrailJudgeCallRejectsEmptyUsage(t *testing.T) {
 	assert.False(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{}))
 	_, ok := GuardrailDebugFromContext(ctx)
 	assert.False(t, ok)
+}
+
+// TestGuardrailDebugContextClonesStartedAt verifies an internal judge call owns its
+// timestamp. Output guardrails may execute after the parent attempt crosses a pricing
+// schedule boundary, so the judge must retain its own invocation time.
+func TestGuardrailDebugContextClonesStartedAt(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	startedAt := time.Date(2026, 8, 21, 16, 0, 0, 0, time.UTC)
+	require.True(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{
+		JudgeProvider: OpenAI,
+		JudgeModel:    "gpt-4o-mini",
+		TotalTokens:   10,
+		StartedAt:     &startedAt,
+	}))
+
+	first, ok := GuardrailDebugFromContext(ctx)
+	require.True(t, ok)
+	require.NotNil(t, first.JudgeCalls[0].StartedAt)
+	*first.JudgeCalls[0].StartedAt = startedAt.Add(time.Hour)
+
+	second, ok := GuardrailDebugFromContext(ctx)
+	require.True(t, ok)
+	require.NotNil(t, second.JudgeCalls[0].StartedAt)
+	assert.True(t, second.JudgeCalls[0].StartedAt.Equal(startedAt))
 }
