@@ -424,7 +424,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if filters.MissingCostOnly {
 		// cost is null and status is not error
-		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
+		baseQuery = baseQuery.Where(
+			"(cost IS NULL OR cost <= 0) AND status NOT IN ('error') AND COALESCE(batch_debug, '') NOT LIKE ?",
+			"%\"echo\":true%")
 	}
 	if len(filters.CacheHitTypes) > 0 {
 		// Only keep allowed values to avoid passing arbitrary input into the JSON path expression.
