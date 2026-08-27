@@ -202,6 +202,21 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 			},
 		},
 		{
+			// A non-Anthropic Bedrock model reached mid-conversation: it never mints a
+			// reasoningContent signature, so it rejects the one the previous model left
+			// behind instead of failing to verify it.
+			name:     "bedrock non-anthropic model",
+			provider: schemas.Bedrock,
+			model:    "moonshotai.kimi-k2.5",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("ValidationException"),
+					Message: "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again.",
+				},
+			},
+		},
+		{
 			name:     "gemini",
 			provider: schemas.Gemini,
 			model:    "gemini-2.5-flash",
@@ -378,7 +393,12 @@ func TestExecuteRequestWithRetries_OrdinaryRetryPaysBackoff(t *testing.T) {
 	if callCount != 2 {
 		t.Fatalf("expected 2 attempts, got %d", callCount)
 	}
-	if elapsed < 250*time.Millisecond {
+	// calculateBackoff jitters by [0.8, 1.2), so the shortest legal sleep for the
+	// configured 300ms is 240ms. The floor must sit below that: this is a negative
+	// control proving backoff was paid at all (vs the fail-soft test's ~0ms), so it
+	// only needs to separate "slept" from "did not sleep", and a floor at or above
+	// 240ms fails a correctly-paid backoff on roughly one run in eight.
+	if elapsed < 200*time.Millisecond {
 		t.Fatalf("an ordinary retryable failure must still back off (configured %s), took %s",
 			config.NetworkConfig.RetryBackoffInitial, elapsed)
 	}
@@ -747,6 +767,21 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr("invalid_request_error"),
 					Message: "encrypted content missing recognized prefix (expected `rsn_` or `smry_`)",
+				},
+			},
+			want: true,
+		},
+		{
+			// The same Bedrock egress field, refused for a different reason: the model
+			// takes no signature at all rather than failing to verify one. This is what
+			// a mid-conversation switch off a reasoning model produces -- a Claude-minted
+			// signature replayed onto Kimi -- and the strip fixes it identically.
+			name: "bedrock converse model does not accept a reasoning signature",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("ValidationException"),
+					Message: "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again.",
 				},
 			},
 			want: true,
