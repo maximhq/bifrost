@@ -5204,9 +5204,15 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
+	// Handle nil context early to prevent blocking. Derive a request-scoped
+	// context rather than aliasing bifrost.ctx directly: bifrost.ctx is the
+	// single long-lived root every nil-ctx caller falls back to, and
+	// armRequestTimeout below calls ctx.Cancel() when its timer fires --
+	// doing that on the shared root would cancel every other nil-ctx request
+	// in flight (and any future one), not just this one. Deriving still lets
+	// cancellation of bifrost.ctx itself (e.g. on Shutdown) propagate down.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
 	}
 
 	// Arms once for the whole call, including every fallback attempt below --
@@ -5216,7 +5222,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	stopRequestTimeout := armRequestTimeout(ctx)
 	defer stopRequestTimeout()
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
 	// tryRequest can stamp the response before post-hooks, where logging reads it.
@@ -5361,9 +5366,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
+	// Handle nil context early to prevent blocking. See the identical
+	// derivation (and why) in handleRequest.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
 	}
 
 	// Arms once for the whole call, including every fallback attempt below.
