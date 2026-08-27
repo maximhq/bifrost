@@ -43018,6 +43018,60 @@
                               "type": "string"
                             }
                           },
+                          "pricing_schedule": {
+                            "type": "object",
+                            "description": "Recurring time-based pricing multipliers",
+                            "properties": {
+                              "timezone": {
+                                "type": "string",
+                                "description": "IANA timezone used to evaluate the schedule",
+                                "example": "Asia/Shanghai"
+                              },
+                              "calendar": {
+                                "type": "string",
+                                "description": "Date interpretation mode; currently `none` or `iso_weekday`",
+                                "example": "iso_weekday"
+                              },
+                              "rules": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "days": {
+                                      "type": "array",
+                                      "description": "ISO weekday names; omit for every day",
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "example": [
+                                        "monday",
+                                        "tuesday",
+                                        "wednesday",
+                                        "thursday",
+                                        "friday"
+                                      ]
+                                    },
+                                    "start_time": {
+                                      "type": "string",
+                                      "description": "Inclusive local start time in HH:MM",
+                                      "example": "09:00"
+                                    },
+                                    "end_time": {
+                                      "type": "string",
+                                      "description": "Exclusive local end time in HH:MM",
+                                      "example": "12:00"
+                                    },
+                                    "multiplier": {
+                                      "type": "number",
+                                      "format": "double",
+                                      "description": "Multiplier applied to the final resolved tier rate",
+                                      "example": 2
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
                           "accessible_by_keys": {
                             "type": "array",
                             "items": {
@@ -43031,6 +43085,158 @@
                       "type": "integer"
                     }
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/catalog": {
+      "put": {
+        "operationId": "upsertModelCatalogEntries",
+        "summary": "Update model catalog entries",
+        "description": "Batch-updates editorial pricing-row metadata. Omitted fields are not changed. A pricing schedule can be set with pricing_schedule or removed with clear_pricing_schedule; the two fields are mutually exclusive.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "Editorial pricing-row update keyed by model and provider",
+                  "required": [
+                    "model",
+                    "provider"
+                  ],
+                  "properties": {
+                    "model": {
+                      "type": "string"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "additional_attributes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "pricing_schedule": {
+                      "type": "object",
+                      "description": "Recurring time-based pricing multipliers",
+                      "properties": {
+                        "timezone": {
+                          "type": "string",
+                          "description": "IANA timezone used to evaluate the schedule",
+                          "example": "Asia/Shanghai"
+                        },
+                        "calendar": {
+                          "type": "string",
+                          "description": "Date interpretation mode; currently `none` or `iso_weekday`",
+                          "example": "iso_weekday"
+                        },
+                        "rules": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "days": {
+                                "type": "array",
+                                "description": "ISO weekday names; omit for every day",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "example": [
+                                  "monday",
+                                  "tuesday",
+                                  "wednesday",
+                                  "thursday",
+                                  "friday"
+                                ]
+                              },
+                              "start_time": {
+                                "type": "string",
+                                "description": "Inclusive local start time in HH:MM",
+                                "example": "09:00"
+                              },
+                              "end_time": {
+                                "type": "string",
+                                "description": "Exclusive local end time in HH:MM",
+                                "example": "12:00"
+                              },
+                              "multiplier": {
+                                "type": "number",
+                                "format": "double",
+                                "description": "Multiplier applied to the final resolved tier rate",
+                                "example": 2
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "clear_pricing_schedule": {
+                      "type": "boolean",
+                      "description": "Remove an existing pricing schedule"
+                    }
+                  },
+                  "oneOf": [
+                    {
+                      "required": [
+                        "pricing_schedule"
+                      ],
+                      "not": {
+                        "required": [
+                          "clear_pricing_schedule"
+                        ]
+                      }
+                    },
+                    {
+                      "required": [
+                        "clear_pricing_schedule"
+                      ],
+                      "not": {
+                        "required": [
+                          "pricing_schedule"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Catalog entries updated"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }

@@ -2964,6 +2964,35 @@ func (s *RDBConfigStore) UpsertModelPricingAttributes(ctx context.Context, model
 	return res.RowsAffected, nil
 }
 
+// UpsertModelPricingSchedule writes only the pricing_schedule column for the
+// pricing row keyed by (model, provider). Empty scheduleJSON clears the
+// column. The row must already exist; callers surface RowsAffected == 0 as a
+// missing-row validation error.
+func (s *RDBConfigStore) UpsertModelPricingSchedule(ctx context.Context, model, provider, scheduleJSON string, tx ...*gorm.DB) (int64, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+
+	value := strings.TrimSpace(scheduleJSON)
+	if value == "" {
+		value = "{}"
+	} else if !json.Valid([]byte(value)) {
+		return 0, fmt.Errorf("invalid pricing schedule JSON")
+	}
+
+	res := txDB.WithContext(ctx).
+		Model(&tables.TableModelPricing{}).
+		Where("model = ? AND provider = ?", model, provider).
+		Update("pricing_schedule", value)
+	if res.Error != nil {
+		return 0, s.parseGormError(res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // DeleteModelPrices deletes all model pricing records from the database.
 func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error {
 	var txDB *gorm.DB

@@ -55,6 +55,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
+	chunk.BillingAttemptStartedAt = nil
 	chunk.RawResponse = nil
 	a.chatStreamChunkPool.Put(chunk)
 }
@@ -110,6 +111,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
+	chunk.BillingAttemptStartedAt = nil
 	chunk.RawResponse = nil
 	a.responsesStreamChunkPool.Put(chunk)
 }
@@ -130,6 +132,7 @@ func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
 	chunk.Cost = nil
 	chunk.SemanticCacheDebug = nil
 	chunk.TokenUsage = nil
+	chunk.BillingAttemptStartedAt = nil
 	chunk.RawResponse = nil
 	a.imageStreamChunkPool.Put(chunk)
 }

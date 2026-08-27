@@ -245,6 +245,29 @@ func TestDeserializeFieldsClearsDegradedFlagAfterHydration(t *testing.T) {
 	}
 }
 
+// TestApplyErrorBillingFromBilledUsagePersistsAttemptStart ensures failed or cancelled
+// requests that already consumed tokens keep the attempt's start time. It cannot be
+// inferred later: Timestamp records completion and BilledUsage has no temporal field.
+func TestApplyErrorBillingFromBilledUsagePersistsAttemptStart(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	startedAt := time.Date(2026, 8, 22, 22, 30, 0, 0, time.UTC)
+	entry := &logstore.Log{}
+
+	plugin.applyErrorBillingFromBilledUsage(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		entry,
+		&schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{
+			BilledUsage:             &schemas.BifrostLLMUsage{TotalTokens: 1},
+			BillingAttemptStartedAt: &startedAt,
+		}},
+		schemas.ChatCompletionRequest,
+	)
+
+	if entry.BillingAttemptStartedAt == nil || !entry.BillingAttemptStartedAt.Equal(startedAt) {
+		t.Fatalf("expected billing attempt start on error log, got %v", entry.BillingAttemptStartedAt)
+	}
+}
+
 // TestCalculateCostForLogPreservesServedTier pins the store-independent tier leak: the
 // Log table had no service_tier column and BifrostLLMUsage tags Speed/InferenceGeo
 // `json:"-"`, so recomputation priced every row at standard rates. On OpenAI that
@@ -377,6 +400,36 @@ func TestStreamingServiceTierSurvivesAccumulatorHandoff(t *testing.T) {
 	(&LoggerPlugin{}).applyStreamingOutputToEntry(entry, processed, false, false)
 	if entry.ServiceTier == nil || *entry.ServiceTier != "priority" {
 		t.Fatalf("expected service_tier priority on the log entry, got %v", entry.ServiceTier)
+	}
+}
+
+// TestStreamingBillingAttemptStartSurvivesAccumulatorHandoff pins the stream-side
+// billing timestamp: it rides on response ExtraFields into the accumulator, crosses
+// tracer/result conversion, and must land on the log row rather than being reconstructed
+// from completion time.
+func TestStreamingBillingAttemptStartSurvivesAccumulatorHandoff(t *testing.T) {
+	startedAt := time.Date(2026, 8, 22, 22, 30, 0, 0, time.UTC)
+
+	processed := convertToProcessedStreamResponse(&schemas.StreamAccumulatorResult{
+		RequestID:               "req-stream-billing-time",
+		RequestedModel:          "deepseek-chat",
+		ResolvedModel:           "deepseek-chat",
+		Provider:                schemas.OpenAI,
+		Status:                  "success",
+		TokenUsage:              &schemas.BifrostLLMUsage{TotalTokens: 1},
+		BillingAttemptStartedAt: &startedAt,
+	}, schemas.ChatCompletionStreamRequest)
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected a processed stream response with data")
+	}
+	if processed.Data.BillingAttemptStartedAt == nil || !processed.Data.BillingAttemptStartedAt.Equal(startedAt) {
+		t.Fatalf("expected billing attempt time to survive conversion, got %v", processed.Data.BillingAttemptStartedAt)
+	}
+
+	entry := &logstore.Log{}
+	(&LoggerPlugin{}).applyStreamingOutputToEntry(entry, processed, false, false)
+	if entry.BillingAttemptStartedAt == nil || !entry.BillingAttemptStartedAt.Equal(startedAt) {
+		t.Fatalf("expected billing_attempt_started_at on log entry, got %v", entry.BillingAttemptStartedAt)
 	}
 }
 

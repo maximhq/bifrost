@@ -1021,10 +1021,15 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
 	tierChunkIndex := -1
+	billingChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
+		}
+		if streamChunk.BillingAttemptStartedAt != nil && streamChunk.ChunkIndex > billingChunkIndex {
+			data.BillingAttemptStartedAt = streamChunk.BillingAttemptStartedAt
+			billingChunkIndex = streamChunk.ChunkIndex
 		}
 	}
 
@@ -1071,6 +1076,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if bifrostErr.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
+		}
 		if bifrostErr.ExtraFields.RawResponse != nil {
 			if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil {
 				chunk.RawResponse = bifrost.Ptr(string(rawBytes))
@@ -1095,6 +1103,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
+		}
+		if result.ResponsesStreamResponse.ExtraFields.BillingAttemptStartedAt != nil {
+			chunk.BillingAttemptStartedAt = result.ResponsesStreamResponse.ExtraFields.BillingAttemptStartedAt
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {

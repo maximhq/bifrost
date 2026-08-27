@@ -81,6 +81,23 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 	return nil
 }
 
+// applyPricingScheduleUnsafe installs a schedule on the model's schedule index.
+// Callers hold mu. An invalid schedule is logged and ignored rather than
+// poisoning the in-memory pricing path; persistence/validation rejects it
+// before it normally reaches this point.
+func (s *Store) applyPricingScheduleUnsafe(provider string, model string, schedule *PricingTimeSchedule) {
+	if model == "" || schedule == nil {
+		return
+	}
+	if err := ValidatePricingTimeSchedule(schedule); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("ignoring invalid pricing schedule for %s: %v", model, err)
+		}
+		return
+	}
+	s.pricingSchedules[pricingScheduleKey(provider, model)] = schedule
+}
+
 // LoadFromDB reloads the in-memory pricing cache + datasheet view from the
 // config store. Used by the composer at bootstrap and as the gossip
 // ReloadFromDB handler on non-leader pods.
@@ -95,9 +112,15 @@ func (s *Store) LoadFromDB(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
+	s.pricingSchedules = make(map[string]*PricingTimeSchedule)
 	for _, pricing := range records {
 		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
 		s.pricingData[key] = pricing
+		schedule, scheduleErr := parseStoredPricingSchedule(pricing.PricingScheduleJSON)
+		if scheduleErr != nil && s.logger != nil {
+			s.logger.Warn("ignoring invalid pricing schedule for %s: %v", pricing.Model, scheduleErr)
+		}
+		s.applyPricingScheduleUnsafe(pricing.Provider, pricing.Model, schedule)
 	}
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()
@@ -127,10 +150,12 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	s.mu.Lock()
 	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(pricingData))
+	s.pricingSchedules = make(map[string]*PricingTimeSchedule)
 	for modelKey, entry := range pricingData {
 		pricing := convertEntryToTablePricing(modelKey, entry)
 		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
 		s.pricingData[key] = pricing
+		s.applyPricingScheduleUnsafe(pricing.Provider, pricing.Model, entry.PricingSchedule)
 	}
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()

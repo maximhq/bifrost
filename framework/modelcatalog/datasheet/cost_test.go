@@ -3,6 +3,7 @@ package datasheet
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -5212,4 +5213,225 @@ func TestParseImageDimensions(t *testing.T) {
 		assert.Equal(t, 0, w, bad)
 		assert.Equal(t, 0, h, bad)
 	}
+}
+
+// pricingScheduleForTest returns a simple deterministic schedule: 0.5x between
+// 16:30 and 00:30 UTC, matching the cross-midnight shape needed by DeepSeek.
+func pricingScheduleForTest() *PricingTimeSchedule {
+	return &PricingTimeSchedule{
+		Timezone: "UTC",
+		Calendar: PricingScheduleCalendarISOWeekday,
+		Rules: []PricingTimeRule{
+			{StartTime: "16:30", EndTime: "00:30", Multiplier: 0.5},
+		},
+	}
+}
+
+func TestCalculateCostSchedule_UsesAttemptStartAndComposesWithServiceTier(t *testing.T) {
+	tier := schemas.BifrostServiceTierPriority
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model:                      "gpt-4o",
+			Provider:                   "openai",
+			Mode:                       "chat",
+			InputCostPerToken:          new(0.000005),
+			OutputCostPerToken:         new(0.000015),
+			InputCostPerTokenPriority:  new(0.000010),
+			OutputCostPerTokenPriority: new(0.000030),
+		},
+	})
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ServiceTier: &tier,
+			Usage:       usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:             schemas.ChatCompletionRequest,
+				RoutingInfo:             routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				BillingAttemptStartedAt: &startedAt,
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.PricingSchedule)
+	assert.True(t, breakdown.PricingSchedule.TimestampAvailable)
+	assert.True(t, breakdown.PricingSchedule.Matched)
+	assert.Equal(t, 0.5, breakdown.PricingSchedule.Multiplier)
+	// Priority tier first, schedule multiplier second: 0.5 * (1000*10 + 500*30) / 1e6.
+	assert.InDelta(t, 0.0125, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.005, breakdown.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, breakdown.OutputCost, 1e-12)
+}
+
+func TestCalculateCostSchedule_ComposesWithContextTier(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("long-context", "openai", "chat"): {
+			Model:                             "long-context",
+			Provider:                          "openai",
+			Mode:                              "chat",
+			InputCostPerToken:                 new(0.000005),
+			OutputCostPerToken:                new(0.000015),
+			InputCostPerTokenAbove128kTokens:  new(0.000010),
+			OutputCostPerTokenAbove128kTokens: new(0.000030),
+		},
+	})
+	s.SetPricingScheduleForTest("openai", "long-context", pricingScheduleForTest())
+
+	resp := makeChatResponse(schemas.OpenAI, "long-context", &schemas.BifrostLLMUsage{
+		PromptTokens:     130000,
+		CompletionTokens: 500,
+		TotalTokens:      130500,
+	})
+	resp.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+
+	cost := s.CalculateCost(resp, nil)
+	// Long-context rate first, schedule multiplier second: 0.5*(130000*10 + 500*30)/1e6.
+	assert.InDelta(t, 0.6575, cost, 1e-12)
+}
+
+func TestCalculateCostSchedule_MissingTimestampUsesBaseRateAndReportsIt(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.PricingSchedule)
+	assert.False(t, breakdown.PricingSchedule.TimestampAvailable)
+	assert.False(t, breakdown.PricingSchedule.Matched)
+	assert.Equal(t, 1.0, breakdown.PricingSchedule.Multiplier)
+	assert.InDelta(t, 1000*0.000005+500*0.000015, breakdown.TotalCost, 1e-12)
+}
+
+func TestCalculateCostSchedule_UnmatchedKeepsBaseRate(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	resp.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.PricingSchedule)
+	assert.True(t, breakdown.PricingSchedule.TimestampAvailable)
+	assert.False(t, breakdown.PricingSchedule.Matched)
+	assert.InDelta(t, 1000*0.000005+500*0.000015, breakdown.TotalCost, 1e-12)
+}
+
+func TestCalculateCostForUsageWithOptions_UsesExplicitBillingTime(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500}
+
+	base := s.CalculateCostBreakdownForUsage(usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	discounted := s.CalculateCostBreakdownForUsageWithOptions(
+		usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil,
+		&CostCalculationOptions{BillingAttemptStartedAt: &startedAt},
+	)
+	require.NotNil(t, discounted)
+	require.NotNil(t, discounted.PricingSchedule)
+	assert.InDelta(t, base.TotalCost*0.5, discounted.TotalCost, 1e-12)
+	assert.True(t, discounted.PricingSchedule.Matched)
+}
+
+func TestCalculateCostSchedule_ProviderCostIsNotRescaled(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	providerCost := &schemas.BifrostCost{TotalCost: 1.25}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	s.SetPricingScheduleForTest("openai", "gpt-4o", pricingScheduleForTest())
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, Cost: providerCost,
+	})
+	resp.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+
+	assert.Equal(t, providerCost, s.CalculateCostBreakdown(resp, nil))
+}
+
+func TestCalculateGuardrailCost_UsesEachJudgeStartIndependently(t *testing.T) {
+	offPeak := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	discounted := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("judge", "openai", "chat"): chatPricing(0.000001, 0.000002),
+	})
+	s.SetPricingScheduleForTest("openai", "judge", pricingScheduleForTest())
+	debug := &schemas.BifrostGuardrailDebug{JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
+		{JudgeProvider: schemas.OpenAI, JudgeModel: "judge", PromptTokens: 1000, CompletionTokens: 1000, StartedAt: &offPeak},
+		{JudgeProvider: schemas.OpenAI, JudgeModel: "judge", PromptTokens: 1000, CompletionTokens: 1000, StartedAt: &discounted},
+	}}
+
+	// Base cost is 0.003 per call; only the second call is discounted.
+	assert.InDelta(t, 0.003+0.0015, s.CalculateGuardrailCost(debug, nil), 1e-12)
+}
+
+func TestCalculateCostSchedule_FollowsPricingModelCandidates(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("canonical-model", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	s.SetPricingScheduleForTest("openai", "canonical-model", pricingScheduleForTest())
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{
+					Provider: schemas.OpenAI,
+					Model:    "alias-model",
+					ResolvedKeyAlias: &schemas.ResolvedKeyAlias{
+						ModelID:   "wire-model",
+						ModelName: bifrost.Ptr("canonical-model"),
+					},
+				},
+				BillingAttemptStartedAt: &startedAt,
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.PricingSchedule)
+	assert.True(t, breakdown.PricingSchedule.Matched)
+	assert.Equal(t, 0.5, breakdown.PricingSchedule.Multiplier)
+	assert.InDelta(t, 0.5*(1000*0.000005+500*0.000015), breakdown.TotalCost, 1e-12)
+}
+
+func TestCalculateCostSchedule_IsProviderQualified(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 24, 16, 30, 0, 0, time.UTC)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("shared-model", "openai", "chat"): chatPricing(0.000005, 0.000015),
+		makeKey("shared-model", "anthropic", "chat"): {
+			Model:              "shared-model",
+			Provider:           "anthropic",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+	})
+	// OpenAI has no schedule; Anthropic does. A model-only index would make the
+	// map iteration order decide whether OpenAI requests are discounted.
+	s.SetPricingScheduleForTest("anthropic", "shared-model", pricingScheduleForTest())
+
+	openAI := makeChatResponse(schemas.OpenAI, "shared-model", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	openAI.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+	assert.InDelta(t, 1000*0.000005+500*0.000015, s.CalculateCost(openAI, nil), 1e-12)
+
+	anthropic := makeChatResponse(schemas.Anthropic, "shared-model", &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500})
+	anthropic.ChatResponse.ExtraFields.BillingAttemptStartedAt = &startedAt
+	assert.InDelta(t, 0.5*(1000*0.000005+500*0.000015), s.CalculateCost(anthropic, nil), 1e-12)
 }

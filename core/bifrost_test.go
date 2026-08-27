@@ -3,6 +3,8 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -3251,5 +3253,118 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// TestHandleStreamRequest_RequiresContext pins the streaming lifecycle contract:
+// the caller must own the context so it can cancel an abandoned stream.
+func TestHandleStreamRequest_RequiresContext(t *testing.T) {
+	bifrost := &Bifrost{
+		bifrostRequestPool: sync.Pool{New: func() interface{} { return &schemas.BifrostRequest{} }},
+		logger:             NewNoOpLogger(),
+	}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "test-model",
+			Input:    []schemas.ChatMessage{{}},
+		},
+	}
+
+	stream, bifrostErr := bifrost.handleStreamRequest(nil, req)
+	if stream != nil {
+		t.Fatal("expected no stream for a nil streaming context")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("expected a detailed error, got %#v", bifrostErr)
+	}
+	if bifrostErr.Error.Message != "context is required for streaming requests" {
+		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
+	}
+	if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionStreamRequest {
+		t.Fatalf("unexpected request type: %v", bifrostErr.ExtraFields.RequestType)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+		t.Fatalf("unexpected provider: %v", bifrostErr.ExtraFields.Provider)
+	}
+	if bifrostErr.ExtraFields.OriginalModelRequested != "test-model" || bifrostErr.ExtraFields.ResolvedModelUsed != "test-model" {
+		t.Fatalf("unexpected model metadata: %#v", bifrostErr.ExtraFields)
+	}
+}
+
+// replacementResponsePlugin replaces a successful provider response in its
+// post-hook. This mirrors the documented plugin behavior that allows a post-hook
+// to recover from an error or replace a response, and exercises the core glue
+// rather than the hook implementation itself.
+type replacementResponsePlugin struct{}
+
+func (p *replacementResponsePlugin) GetName() string { return "replacement" }
+func (p *replacementResponsePlugin) Cleanup() error  { return nil }
+func (p *replacementResponsePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *replacementResponsePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *replacementResponsePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 1},
+		},
+	}, nil, nil
+}
+
+// TestPostLLMHookReplacementResponseRetainsBillingAttemptStart drives a real
+// non-streaming request through tryRequest. The provider response is replaced
+// after RunPostLLMHooks, so the regression assertion must observe the final
+// response returned by core rather than calling the hook pipeline directly.
+func TestPostLLMHookReplacementResponseRetainsBillingAttemptStart(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp","object":"chat.completion","created":1,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "openai-key-1",
+		Value:  *schemas.NewSecretVar("sk-test"),
+		Models: schemas.WhiteList{"*"},
+	}})
+
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&replacementResponsePlugin{}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+	beforeRequest := time.Now().UTC().Truncate(time.Second)
+
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+	}
+
+	startedAt := resp.ExtraFields.BillingAttemptStartedAt
+	if startedAt == nil {
+		t.Fatal("replacement response BillingAttemptStartedAt is nil")
+	}
+	if startedAt.Before(beforeRequest) || startedAt.After(time.Now().Add(time.Second)) {
+		t.Fatalf("replacement response BillingAttemptStartedAt = %v, want between %v and now", startedAt, beforeRequest)
 	}
 }
