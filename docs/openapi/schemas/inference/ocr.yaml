@@ -23,6 +23,9 @@ OCRRequest:
     include_image_base64:
       type: boolean
       description: Whether to include base64-encoded images in the response
+    include_blocks:
+      type: boolean
+      description: Whether to include provider-native layout blocks (Mistral). Populates pages[].blocks.
     pages:
       type: array
       items:
@@ -196,6 +199,10 @@ OCRPage:
         $ref: "#/OCRPageImage"
     dimensions:
       $ref: "#/OCRPageDimensions"
+    blocks:
+      type: array
+      description: Provider-native layout blocks (present when the request sets include_blocks=true, possibly empty). Currently populated by Mistral; opaque structure preserved verbatim, so item schemas are unconstrained.
+      items: {}
     tables:
       type: array
       description: Tables extracted from this page (present when table_format is set)

@@ -150,20 +150,22 @@ type MistralOCRDocument struct {
 
 // MistralOCRRequest represents a Mistral OCR API request.
 type MistralOCRRequest struct {
-	Model                    string                 `json:"model"`
-	ID                       string                 `json:"id,omitempty"`
-	Document                 MistralOCRDocument     `json:"document"`
-	IncludeImageBase64       *bool                  `json:"include_image_base64,omitempty"`
-	Pages                    []int                  `json:"pages,omitempty"`
-	ImageLimit               *int                   `json:"image_limit,omitempty"`
-	ImageMinSize             *int                   `json:"image_min_size,omitempty"`
-	TableFormat              *string                `json:"table_format,omitempty"`
-	ExtractHeader            *bool                  `json:"extract_header,omitempty"`
-	ExtractFooter            *bool                  `json:"extract_footer,omitempty"`
-	BBoxAnnotationFormat     *string                `json:"bbox_annotation_format,omitempty"`
-	DocumentAnnotationFormat *string                `json:"document_annotation_format,omitempty"`
-	DocumentAnnotationPrompt *string                `json:"document_annotation_prompt,omitempty"`
-	ExtraParams              map[string]interface{} `json:"-"`
+	Model                       string                 `json:"model"`
+	ID                          string                 `json:"id,omitempty"`
+	Document                    MistralOCRDocument     `json:"document"`
+	IncludeImageBase64          *bool                  `json:"include_image_base64,omitempty"`
+	IncludeBlocks               *bool                  `json:"include_blocks,omitempty"`
+	Pages                       []int                  `json:"pages,omitempty"`
+	ImageLimit                  *int                   `json:"image_limit,omitempty"`
+	ImageMinSize                *int                   `json:"image_min_size,omitempty"`
+	TableFormat                 *string                `json:"table_format,omitempty"`
+	ExtractHeader               *bool                  `json:"extract_header,omitempty"`
+	ExtractFooter               *bool                  `json:"extract_footer,omitempty"`
+	ConfidenceScoresGranularity *string                `json:"confidence_scores_granularity,omitempty"`
+	BBoxAnnotationFormat        *string                `json:"bbox_annotation_format,omitempty"`
+	DocumentAnnotationFormat    *string                `json:"document_annotation_format,omitempty"`
+	DocumentAnnotationPrompt    *string                `json:"document_annotation_prompt,omitempty"`
+	ExtraParams                 map[string]interface{} `json:"-"`
 }
 
 // MistralOCRPageImage represents an extracted image in Mistral's OCR response.
@@ -189,6 +191,9 @@ type MistralOCRPage struct {
 	Markdown   string                    `json:"markdown"`
 	Images     []MistralOCRPageImage     `json:"images,omitempty"`
 	Dimensions *MistralOCRPageDimensions `json:"dimensions,omitempty"`
+	// Present only when the request sets include_blocks=true; pointer so an
+	// explicitly empty `blocks: []` isn't dropped by omitempty.
+	Blocks *[]any `json:"blocks,omitempty"`
 }
 
 // MistralOCRUsageInfo represents usage information in Mistral's OCR response.
@@ -199,8 +204,8 @@ type MistralOCRUsageInfo struct {
 
 // MistralOCRResponse represents Mistral's OCR API response.
 type MistralOCRResponse struct {
-	Model              string              `json:"model"`
-	Pages              []MistralOCRPage    `json:"pages"`
+	Model              string               `json:"model"`
+	Pages              []MistralOCRPage     `json:"pages"`
 	UsageInfo          *MistralOCRUsageInfo `json:"usage_info,omitempty"`
-	DocumentAnnotation *string             `json:"document_annotation,omitempty"`
+	DocumentAnnotation *string              `json:"document_annotation,omitempty"`
 }
