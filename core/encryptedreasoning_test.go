@@ -202,6 +202,21 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 			},
 		},
 		{
+			// A non-Anthropic Bedrock model reached mid-conversation: it never mints a
+			// reasoningContent signature, so it rejects the one the previous model left
+			// behind instead of failing to verify it.
+			name:     "bedrock non-anthropic model",
+			provider: schemas.Bedrock,
+			model:    "moonshotai.kimi-k2.5",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("ValidationException"),
+					Message: "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again.",
+				},
+			},
+		},
+		{
 			name:     "gemini",
 			provider: schemas.Gemini,
 			model:    "gemini-2.5-flash",
@@ -752,6 +767,21 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr("invalid_request_error"),
 					Message: "encrypted content missing recognized prefix (expected `rsn_` or `smry_`)",
+				},
+			},
+			want: true,
+		},
+		{
+			// The same Bedrock egress field, refused for a different reason: the model
+			// takes no signature at all rather than failing to verify one. This is what
+			// a mid-conversation switch off a reasoning model produces -- a Claude-minted
+			// signature replayed onto Kimi -- and the strip fixes it identically.
+			name: "bedrock converse model does not accept a reasoning signature",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("ValidationException"),
+					Message: "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again.",
 				},
 			},
 			want: true,
