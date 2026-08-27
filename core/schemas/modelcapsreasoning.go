@@ -116,6 +116,17 @@ func (c ModelCaps) SupportsReasoningEffort(fallback bool) bool {
 	return fallback
 }
 
+// LowestReasoningEffort returns the least reasoning the model can be asked for.
+// A model with no "off" rung lands a "none" effort here; dropping the field
+// instead would fall back to the model's default and invert the caller's intent.
+func (c ModelCaps) LowestReasoningEffort(fallback *EffortControl) string {
+	levels := c.ReasoningEffortLevels(fallback)
+	if len(levels) == 0 {
+		return ReasoningEffortLow
+	}
+	return levels[0]
+}
+
 // NormalizeReasoningEffort maps a requested effort onto one the model accepts,
 // downgrading to the nearest supported level when the exact label is rejected.
 func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortControl) string {

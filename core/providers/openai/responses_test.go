@@ -652,6 +652,27 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestToOpenAIResponsesRequest_CopilotClampsNoneReasoningEffort(t *testing.T) {
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Copilot,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("search the web")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortNone)},
+		},
+	})
+
+	if req == nil || req.Reasoning == nil || req.Reasoning.Effort == nil {
+		t.Fatalf("expected responses request with a reasoning effort, got %#v", req)
+	}
+	if got := *req.Reasoning.Effort; got != schemas.ReasoningEffortLow {
+		t.Fatalf("expected unsupported \"none\" to clamp to %q, got %q", schemas.ReasoningEffortLow, got)
+	}
+}
+
 func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 	tests := []struct {
 		name              string
