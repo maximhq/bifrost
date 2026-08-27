@@ -1064,22 +1064,6 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:      model,
 		UserID:     userID,
 	}
-	// A batch create fans out to many completions, each naming its own model, so
-	// every model it will run is evaluated before the request itself. Every check
-	// reached from here is read-only, so the extra passes cannot double-count usage.
-	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
-		for _, batchModel := range BatchCreateModels(req, model) {
-			batchEvaluationRequest := *evaluationRequest
-			batchEvaluationRequest.Model = batchModel
-			_, bifrostError := p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
-			if bifrostError != nil {
-				return req, &schemas.LLMPluginShortCircuit{
-					Error: bifrostError,
-				}, nil
-			}
-		}
-	}
-
 	// Snapshot the applicable governance entities immediately after admission. Logging
 	// consumes these IDs only when it builds a terminal log row, but collecting
 	// them here has three important properties:
@@ -1100,7 +1084,21 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// concurrent config update forces the complete admission sequence to retry.
 	for attempt := 0; attempt < governanceAdmissionMaxAttempts; attempt++ {
 		generation := p.store.BeginGovernanceConfigView()
-		_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
+
+		// A batch create fans out to many completions, each naming its own model.
+		// Recheck every item model inside the guarded view so a reload cannot make
+		// the top-level retry skip the newly rejected policy. These checks are
+		// read-only and cannot double-count usage.
+		bifrostError := (*schemas.BifrostError)(nil)
+		for _, batchModel := range BatchCreateModels(req, model) {
+			batchEvaluationRequest := *evaluationRequest
+			batchEvaluationRequest.Model = batchModel
+			_, bifrostError = p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
+			if bifrostError != nil {
+				break
+			}
+		}
+
 		if bifrostError != nil {
 			if !p.store.EndGovernanceConfigView(generation) {
 				continue
