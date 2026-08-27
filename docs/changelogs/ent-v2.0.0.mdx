@@ -20,6 +20,10 @@ v2.0.0 is the first stable release of the v2 line and aggregates everything ship
 - **OTEL attribute rename** - Bifrost-internal `gen_ai.*` attribute constants are removed in favor of canonical `bifrost.*` keys, and connectors emit the new names. Dashboards and alerts keyed on the old attribute names need updating.
 - **Non-reversible database migrations** - `merge_oauth_token_tables`, `drop_oauth_config_pkce_columns`, `drop_oauth_config_token_id_column`, and `add_budget_reset_config_column` in the OSS base, plus two enterprise migrations, cannot be rolled back. See the Database Migrations section.
 
+## ⚠️ Known Limitations
+
+- **Runware Video API costing (inherited from OSS)** - Runware video jobs complete asynchronously, and the provider-reported inference cost becomes available only on a later retrieve response. v2.0.0 does not attribute that cost back to the original generation log, while retrieve polls are intentionally non-billable to avoid charging the same job more than once. As a result, Runware Video API operations are logged without their inference cost even though a completed retrieve response can contain `usage.cost.total_cost`.
+
 ## ✨ Features
 
 ### ✨ Bifrost Edge
