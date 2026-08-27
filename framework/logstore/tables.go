@@ -332,6 +332,10 @@ type Log struct {
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
+	// BillingAttemptStartedAt is when the provider attempt started. It is separate
+	// from Timestamp (log creation/completion) because time-based pricing must be
+	// stable across live billing and historical recomputation.
+	BillingAttemptStartedAt *time.Time `gorm:"index" json:"billing_attempt_started_at,omitempty"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 

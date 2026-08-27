@@ -352,6 +352,9 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
+	// A new provider attempt has not started yet. Clear any primary-attempt
+	// billing stamp before fallback pre-hooks or setup can short-circuit.
+	ctx.ClearBillingAttemptStartTime()
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
