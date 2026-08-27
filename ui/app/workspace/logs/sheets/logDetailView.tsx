@@ -23,6 +23,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -30,6 +31,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
+	getProviderLabel,
 	logAppDisplayName,
 	mapAppToClientApp,
 	mapUserAgentToApp,
@@ -39,18 +41,19 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
+import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
-import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
-import { useMemo, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -62,6 +65,7 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -860,7 +864,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 										className={cn(
 											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
 											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 										)}
 									>
 										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
@@ -956,6 +960,72 @@ interface LogDetailViewProps {
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 }
 
+// Explains an empty Raw JSON tab. Raw payloads are only persisted when the
+// provider's `store_raw_request_response` is on, and teams that turn it off for
+// storage reasons otherwise just see an unexplained blank tab. This reads the
+// provider's *current* setting, so it is phrased in the present tense — it says
+// why raw JSON is missing for this provider today, not what was configured when
+// the request ran. When the setting is on (or unreadable, e.g. the viewer has no
+// provider access) we fall back to the neutral copy, since the row may simply
+// have failed before reaching the provider. While the setting is still being
+// fetched we show neither message - see `resolveRawJsonNoticeState`.
+function RawJsonUnavailableNotice({ provider }: { provider: string }) {
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const {
+		data: providers,
+		isLoading: isProvidersLoading,
+		isError: isProvidersError,
+	} = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+
+	const noticeState = useMemo(
+		() => resolveRawJsonNoticeState({ hasProvidersAccess, isProvidersLoading, isProvidersError, providers, provider }),
+		[hasProvidersAccess, isProvidersLoading, isProvidersError, providers, provider],
+	);
+
+	if (noticeState === "loading") {
+		return (
+			<div className="rounded-sm border border-dashed p-5">
+				<Skeleton className="mx-auto h-4 w-48" />
+			</div>
+		);
+	}
+
+	if (noticeState === "unknown") {
+		return <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>;
+	}
+
+	return (
+		<div className="text-muted-foreground space-y-3 rounded-sm border border-dashed p-5 text-sm">
+			<div className="text-foreground font-medium">Raw JSON storage is disabled by settings</div>
+			<p>
+				<span className="text-foreground font-medium">{getProviderLabel(provider)}</span> is configured not to persist raw request and
+				response payloads in log records, so there is nothing to show here. To start capturing them:
+			</p>
+			<ol className="ml-4 list-decimal space-y-1">
+				<li>
+					Open{" "}
+					<Link to="/workspace/providers" search={{ provider }} className="text-foreground font-medium underline underline-offset-2">
+						Providers → {getProviderLabel(provider)}
+					</Link>
+				</li>
+				<li>
+					Click the <span className="text-foreground font-medium">settings</span> icon to open the provider configuration
+				</li>
+				<li>
+					Go to the <span className="text-foreground font-medium">Debugging</span> tab
+				</li>
+				<li>
+					Turn on <span className="text-foreground font-medium">Store Raw Request/Response</span>
+				</li>
+			</ol>
+			<p className="text-xs">
+				This applies to new requests only, existing logs will not gain raw JSON. To capture raw payloads for a single request instead, send
+				the <code className="text-[11px]">x-bf-store-raw-request-response: true</code> header.
+			</p>
+		</div>
+	);
+}
+
 export function LogDetailView({
 	log,
 	resolvedSelectedPromptName,
@@ -1040,14 +1110,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-								role: c?.role === "model" ? "assistant" : c?.role || "user",
-								content: Array.isArray(c?.parts)
-									? c.parts
-											.filter((p: any) => p && typeof p.text === "string")
-											.map((p: any) => p.text)
-											.join("")
-									: "",
-							}))
+							role: c?.role === "model" ? "assistant" : c?.role || "user",
+							content: Array.isArray(c?.parts)
+								? c.parts
+									.filter((p: any) => p && typeof p.text === "string")
+									.map((p: any) => p.text)
+									.join("")
+								: "",
+						}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1106,9 +1176,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-								.filter((p: any) => p && typeof p.text === "string")
-								.map((p: any) => p.text)
-								.join("")
+							.filter((p: any) => p && typeof p.text === "string")
+							.map((p: any) => p.text)
+							.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1131,11 +1201,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-			})
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1155,7 +1225,7 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch {}
+		} catch { }
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -1172,7 +1242,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch {}
+		} catch { }
 		return 0;
 	})();
 
@@ -1437,11 +1507,10 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
-										log.token_usage.completion_tokens_details?.reasoning_tokens
-											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-											: ""
-									}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+									: ""
+								}`
 								: "—"
 						}
 						hasRightBorder
@@ -2743,11 +2812,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-											if (!m) return false;
-											const mainRole = ((m.role as string) || "user") as MessageRole;
-											const hasReasoning = !!extractChatReasoning(m);
-											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-										})
+										if (!m) return false;
+										const mainRole = ((m.role as string) || "user") as MessageRole;
+										const hasReasoning = !!extractChatReasoning(m);
+										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+									})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
@@ -2997,11 +3066,11 @@ export function LogDetailView({
 													? msg.call_id
 													: Array.isArray(msg.tools)
 														? (() => {
-																const callable = flattenDeclaredTools(msg.tools).length;
-																return callable !== msg.tools.length
-																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-															})()
+															const callable = flattenDeclaredTools(msg.tools).length;
+															return callable !== msg.tools.length
+																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+														})()
 														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
@@ -3373,7 +3442,7 @@ export function LogDetailView({
 						</>
 					)}
 					{!rawRequest && !rawResponse && !passthroughRequestBody && !passthroughResponseBody && (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>
+						<RawJsonUnavailableNotice provider={log.provider} />
 					)}
 				</TabsContent>
 			</Tabs>
