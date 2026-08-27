@@ -478,6 +478,44 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
+	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
+}
+
+// videoResolutionPricingColumns are the resolution-banded video output rate columns.
+// Providers publish a different per-second rate per output resolution (sora-2-pro is
+// $0.30/s at 720p but $0.70/s at 1080p; Veo 3.1 is $0.40/s at 720p/1080p and $0.60/s
+// at 4K), which the single output_cost_per_video_per_second column cannot express.
+var videoResolutionPricingColumns = []string{
+	"output_cost_per_video_per_second_480p",
+	"output_cost_per_video_per_second_720p",
+	"output_cost_per_video_per_second_1024p",
+	"output_cost_per_video_per_second_1080p",
+	"output_cost_per_video_per_second_4k",
+}
+
+func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_resolution_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoResolutionPricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_video_resolution_pricing_columns is non-rollbackable: dropping the resolution-banded video rate columns would permanently delete every custom per-resolution price an operator has set, and the affected models would silently bill at their unbanded rate instead; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }
 
 // migrationAddBatchJobsAttributionColumns adds the requester-identity columns to

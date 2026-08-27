@@ -3100,3 +3100,30 @@ func TestMigrationAddBatchJobsAttributionColumns(t *testing.T) {
 	// Migrations are re-run on every boot; the second pass must be a no-op.
 	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
 }
+
+// TestMigrationAddVideoResolutionPricingColumns exercises the upgrade path the
+// fresh-DB migration tests cannot: on a fresh database the pricing table is
+// created complete, so addColumnIfNotExists no-ops and never proves it can add
+// the columns to a table that predates them.
+func TestMigrationAddVideoResolutionPricingColumns(t *testing.T) {
+	s := setupRDBTestStore(t)
+	db := s.DB()
+	ctx := context.Background()
+
+	// A pre-upgrade pricing table: no resolution-banded columns.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS governance_model_pricing (
+		id TEXT PRIMARY KEY, model TEXT, provider TEXT, mode TEXT,
+		output_cost_per_video_per_second REAL
+	)`).Error)
+	for _, column := range videoResolutionPricingColumns {
+		require.False(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s should not exist yet", column)
+	}
+
+	require.NoError(t, migrationAddVideoResolutionPricingColumns(ctx, db, testMigrationLogger))
+	for _, column := range videoResolutionPricingColumns {
+		require.True(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s missing after migration", column)
+	}
+
+	// Rolling deploys re-run migrations; a second pass must be a no-op.
+	require.NoError(t, migrationAddVideoResolutionPricingColumns(ctx, db, testMigrationLogger))
+}

@@ -4208,3 +4208,46 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
 	})
 }
+
+// TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync pins the
+// ON CONFLICT DO UPDATE path: a column missing from pricingSyncUpdateColumns is
+// written on the initial Create but silently dropped on every later sync of an
+// existing row.
+func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := tables.TableModelPricing{Model: "sora-2-pro", Provider: "openai", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerVideoPerSecond480p = cost(0.10)
+	row.OutputCostPerVideoPerSecond720p = cost(0.30)
+	row.OutputCostPerVideoPerSecond1024p = cost(0.50)
+	row.OutputCostPerVideoPerSecond1080p = cost(0.70)
+	row.OutputCostPerVideoPerSecond4k = cost(0.60)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "sora-2-pro" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.OutputCostPerVideoPerSecond480p, "output_cost_per_video_per_second_480p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond720p, "output_cost_per_video_per_second_720p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond1024p, "output_cost_per_video_per_second_1024p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond1080p, "output_cost_per_video_per_second_1080p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond4k, "output_cost_per_video_per_second_4k missing from pricingSyncUpdateColumns")
+	assert.Equal(t, 0.10, *found.OutputCostPerVideoPerSecond480p)
+	assert.Equal(t, 0.30, *found.OutputCostPerVideoPerSecond720p)
+	assert.Equal(t, 0.50, *found.OutputCostPerVideoPerSecond1024p)
+	assert.Equal(t, 0.70, *found.OutputCostPerVideoPerSecond1080p)
+	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
+}
