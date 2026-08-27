@@ -4,15 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.36
+**Latest Version:** 2.1.37
 
 ## Changelog
 
-### Upcoming
+### 2.1.37
 
 - Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
 - Added `bifrost.plugins.otel.config.semaphore_size` and `inject_timeout` (plugin-level, both legacy and `profiles` wrapper shapes, default `10000` / `5`) — cap on concurrent in-flight trace injects and the timeout for a single inject call, so a hung collector can't hold its concurrency slot indefinitely. Renders into `semaphore_size` / `inject_timeout`. `bifrost.plugins.logging.config` accepts the same two keys (`inject_timeout` as a duration string, e.g. `"5s"`), passed through as-is.
 - Added `postgresql.primary.nodeSelector`, `postgresql.primary.tolerations`, and `postgresql.primary.affinity` to the hosted PostgreSQL deployment. Previously only the Bifrost pod itself could be steered (top-level `nodeSelector`/`tolerations`/`affinity`), so on clusters that mix long-lived services with ephemeral autoscaled workloads the hosted database could not be kept off nodes that scale in — and draining the single-replica Postgres takes the gateway down with it. All three default to empty, so rendering is unchanged unless set.
+- Added `storage.logsStore.postgres` to point the logs store at a **separate external PostgreSQL** (different host and/or database) than the config store, instead of forcing both onto the shared top-level `postgresql` connection. Only applies when the logs store resolves to postgres; `enabled: false` (default) preserves existing behavior. Fields mirror `postgresql.external` (`host`, `port`, `user`, `password`, `passwordCommand`, `database`, `sslMode`, `connMaxLifetime`, `existingSecret`, `passwordKey`); with `existingSecret` the password is injected as `BIFROST_LOGS_POSTGRES_PASSWORD`. Renders into `logs_store.config`.
 
 ### 2.1.36
 
@@ -672,6 +673,7 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.configStore.type`                     | Config store backend: `sqlite`, `postgres`, or `""`                     | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled`                    | Enable logs store                                                       | `true`                     |
 | `storage.logsStore.type`                       | Logs store backend: `sqlite`, `postgres`, or `""`                       | `""` (uses `storage.mode`) |
+| `storage.logsStore.postgres.enabled`           | Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store is postgres). When `false`, a postgres logs store shares the top-level `postgresql` connection. | `false` |
 | `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]`                       |
 
 #### Mixed Backend Example
@@ -692,6 +694,47 @@ postgresql:
   enabled: true
   # ... PostgreSQL configuration for logs store
 ```
+
+#### Separate PostgreSQL for Logs
+
+When both stores use PostgreSQL, they share the single top-level `postgresql`
+connection by default. To send high-volume logs to a **different** external
+PostgreSQL (a separate host and/or database) while the config store keeps using
+the shared `postgresql` block, set `storage.logsStore.postgres`. Its fields mirror
+`postgresql.external`; when `existingSecret` is set the password is injected as
+`BIFROST_LOGS_POSTGRES_PASSWORD`.
+
+```yaml
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    type: postgres # Config -> shared postgresql block below
+  logsStore:
+    enabled: true
+    type: postgres # Logs -> separate postgres below
+    postgres:
+      enabled: true
+      host: logs-db.example.com
+      port: 5432
+      user: bifrost
+      database: bifrost_logs
+      sslMode: require
+      existingSecret: bifrost-logs-postgres # key: password
+      # passwordKey: password
+
+postgresql:
+  external:
+    enabled: true # Config store's database
+    host: config-db.example.com
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: bifrost-config-postgres
+```
+
+See `values-examples/separate-logs-postgres.yaml` for a complete example.
 
 ### PostgreSQL Configuration
 
@@ -965,6 +1008,7 @@ The chart includes pre-configured examples in `values-examples/`:
 | `sqlite-only.yaml`       | Simple setup with SQLite (local development)            |
 | `postgres-only.yaml`     | PostgreSQL for config and logs                          |
 | `mixed-backend.yaml`     | SQLite for config + PostgreSQL for logs (mixed backend) |
+| `separate-logs-postgres.yaml` | Config and logs on separate PostgreSQL databases   |
 | `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching              |
 | `postgres-redis.yaml`    | PostgreSQL + Redis for semantic caching                 |
 | `postgres-qdrant.yaml`   | PostgreSQL + Qdrant for semantic caching                |
