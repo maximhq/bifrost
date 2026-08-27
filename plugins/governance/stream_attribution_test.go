@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -205,6 +206,65 @@ func TestPostLLMHookStreamErrorWithoutFinalKeepsAdmissionSnapshot(t *testing.T) 
 	require.NoError(t, hookErr)
 	require.Same(t, bifrostErr, returnedErr)
 	assert.Equal(t, []string{"admission-budget"}, governanceIDs(t, ctx, schemas.BifrostContextKeyGovernanceBudgetIDs))
+}
+
+func TestPreLLMHookRetriesWhenGovernanceReloadRacesAdmission(t *testing.T) {
+	admissionBudget := buildBudget("admission-budget", 1000, "1h")
+	plugin, store := newAttributionTestPlugin(t, &configstore.GovernanceConfig{
+		Providers: []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", admissionBudget, nil)},
+		Budgets:   []configstoreTables.TableBudget{*admissionBudget},
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// The first End call releases the view, performs a hot reload, and reports
+	// that the generation changed. PreLLMHook must discard the stale IDs from
+	// that sequence and evaluate plus attribute against the reloaded policy.
+	reloadedBudget := buildBudget("reloaded-budget", 1000, "1h")
+	wrappedStore := &governanceReloadBarrierStore{
+		GovernanceStore: store,
+		reload: func() {
+			store.UpdateProviderInMemory(ctx, buildProviderWithGovernance("openai", reloadedBudget, nil))
+		},
+	}
+	plugin.store = wrappedStore
+
+	type hookResult struct {
+		shortCircuit *schemas.LLMPluginShortCircuit
+		err          error
+	}
+	result := make(chan hookResult, 1)
+	go func() {
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, attributionRequest(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4"))
+		result <- hookResult{shortCircuit: shortCircuit, err: err}
+	}()
+
+	hook := <-result
+	require.NoError(t, hook.err)
+	require.Nil(t, hook.shortCircuit)
+	assert.Equal(t, []string{"reloaded-budget"}, governanceIDs(t, ctx, schemas.BifrostContextKeyGovernanceBudgetIDs))
+}
+
+type governanceReloadBarrierStore struct {
+	GovernanceStore
+	reloadDone   bool
+	reloadCalled sync.Once
+	reload       func()
+}
+
+func (s *governanceReloadBarrierStore) EndGovernanceConfigView(generation uint64) bool {
+	unchanged := s.GovernanceStore.EndGovernanceConfigView(generation)
+
+	// Simulate a hot reload completing immediately after the first view is
+	// released. The first end call reports a generation change so PreLLMHook
+	// discards that stale view; later views succeed so the retry can finish.
+	if unchanged && !s.reloadDone {
+		s.reloadCalled.Do(s.reload)
+		s.reloadDone = true
+		return false
+	}
+
+	return unchanged
 }
 
 func falseValue(value any) bool {

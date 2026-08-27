@@ -28,6 +28,12 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
+
+	// governanceAdmissionMaxAttempts bounds retries when a hot governance reload
+	// races the admission-plus-attribution critical section. In practice one retry
+	// succeeds once the reload releases its write lock; the bound protects against
+	// pathological update churn.
+	governanceAdmissionMaxAttempts = 4
 )
 
 // Config is the configuration for the governance plugin
@@ -1073,14 +1079,6 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			}
 		}
 	}
-	// Evaluate governance using common function
-	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
-	// Convert BifrostError to LLMPluginShortCircuit if needed
-	if bifrostError != nil {
-		return req, &schemas.LLMPluginShortCircuit{
-			Error: bifrostError,
-		}, nil
-	}
 
 	// Snapshot the applicable governance entities immediately after admission. Logging
 	// consumes these IDs only when it builds a terminal log row, but collecting
@@ -1095,14 +1093,43 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		effectiveVK = ""
 	}
-	// Batch-create requests commonly omit a top-level model because each
-	// input-file row carries its own model; the store still returns
-	// provider/VK hierarchy IDs when model is empty.
-	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, model)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+	// Admission and attribution must observe the same governance configuration.
+	// A hot reload that lands between evaluation and ID collection could otherwise
+	// admit under one policy and charge another. The store exposes this as a
+	// generation-guarded view: evaluation and collection run together, and a
+	// concurrent config update forces the complete admission sequence to retry.
+	for attempt := 0; attempt < governanceAdmissionMaxAttempts; attempt++ {
+		generation := p.store.BeginGovernanceConfigView()
+		_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
+		if bifrostError != nil {
+			if !p.store.EndGovernanceConfigView(generation) {
+				continue
+			}
+			return req, &schemas.LLMPluginShortCircuit{Error: bifrostError}, nil
+		}
 
-	return req, nil, nil
+		// Batch-create requests commonly omit a top-level model because each
+		// input-file row carries its own model; the store still returns
+		// provider/VK hierarchy IDs when model is empty.
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, model)
+		if !p.store.EndGovernanceConfigView(generation) {
+			continue
+		}
+
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+		return req, nil, nil
+	}
+
+	return req, &schemas.LLMPluginShortCircuit{
+		Error: &schemas.BifrostError{
+			Type:       new("governance_configuration_changed"),
+			StatusCode: new(503),
+			Error: &schemas.ErrorField{
+				Message: "governance configuration changed during admission; retry the request",
+			},
+		},
+	}, nil
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,

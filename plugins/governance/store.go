@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -71,6 +72,17 @@ type LocalGovernanceStore struct {
 
 	// Logger
 	logger schemas.Logger
+
+	// configGeneration increments once per complete in-memory governance update.
+	// It lets admission capture the generation before evaluation and verify that
+	// attribution collection is still operating on the same immutable configuration
+	// view. Any update racing that sequence forces a retry under the new generation.
+	configGeneration atomic.Uint64
+
+	// configMu serializes complete in-memory governance updates. Individual reads
+	// remain lock-free; only the narrow admission-plus-attribution critical section
+	// takes the read side, so normal request traffic does not serialize against itself.
+	configMu sync.RWMutex
 }
 
 type GovernanceData struct {
@@ -228,11 +240,31 @@ type GovernanceStore interface {
 	// long after the request — batch accounting, which has only a stored row — can
 	// still reach the same configs.
 	CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+	// Begin/EndGovernanceConfigView bracket admission and attribution so both see
+	// the same hot-reload generation. End returns false when a configuration update
+	// raced the sequence and the caller should retry.
+	BeginGovernanceConfigView() uint64
+	EndGovernanceConfigView(generation uint64) bool
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
 // The modelCatalog parameter is optional (can be nil) and enables cross-provider model matching
 // for governance lookups (e.g., "openai/gpt-4o" matching config for "gpt-4o").
+// beginGovernanceConfigView returns the current configuration generation. Callers
+// must call endGovernanceConfigView for every successful begin, and retry the
+// admission-plus-attribution sequence if end reports a concurrent update.
+func (gs *LocalGovernanceStore) BeginGovernanceConfigView() uint64 {
+	gs.configMu.RLock()
+	return gs.configGeneration.Load()
+}
+
+// endGovernanceConfigView releases the view and reports whether the generation is
+// unchanged. It must be paired with the generation returned by begin.
+func (gs *LocalGovernanceStore) EndGovernanceConfigView(generation uint64) bool {
+	defer gs.configMu.RUnlock()
+	return gs.configGeneration.Load() == generation
+}
+
 func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelCatalog *modelcatalog.ModelCatalog) (*LocalGovernanceStore, error) {
 	store := &LocalGovernanceStore{
 		configStore:                    configStore,
@@ -3511,10 +3543,28 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 	return budgetIDs, rateLimitIDs
 }
 
+// beginGovernanceConfigUpdate takes the write side of the configuration-view lock.
+// It must be paired with endGovernanceConfigUpdate (normally via defer).
+func (gs *LocalGovernanceStore) beginGovernanceConfigUpdate() {
+	gs.configMu.Lock()
+}
+
+// endGovernanceConfigUpdate bumps the generation and releases the write lock.
+func (gs *LocalGovernanceStore) endGovernanceConfigUpdate() {
+	gs.configGeneration.Add(1)
+	gs.configMu.Unlock()
+}
+
 // PUBLIC API METHODS
 
 // CreateVirtualKeyInMemory adds a new virtual key to the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
+	gs.createVirtualKeyInMemoryLocked(ctx, vk)
+}
+
+func (gs *LocalGovernanceStore) createVirtualKeyInMemoryLocked(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return // Nothing to create
 	}
@@ -3559,6 +3609,8 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if vk == nil {
 		return // Nothing to update
 	}
@@ -3734,12 +3786,14 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 		}
 		gs.storeVirtualKey(vk.Value.GetValue(), &clone)
 	} else {
-		gs.CreateVirtualKeyInMemory(ctx, vk)
+		gs.createVirtualKeyInMemoryLocked(ctx, vk)
 	}
 }
 
 // DeleteVirtualKeyInMemory removes a virtual key from the in-memory store
 func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vkID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if vkID == "" {
 		return // Nothing to delete
 	}
@@ -3784,7 +3838,7 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
 	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store
 	// consistent even when the VK entry was already removed.
-	gs.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vkID)
+	gs.deleteModelConfigsForScopeLocked(ctx, configstoreTables.ModelConfigScopeVirtualKey, vkID)
 }
 
 // DeleteModelConfigsForScopeInMemory evicts every cached model config targeting the
@@ -3795,6 +3849,12 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 // paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
 // from both the active Budgets slice and the legacy single BudgetID column.
 func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
+	gs.deleteModelConfigsForScopeLocked(ctx, scope, scopeID)
+}
+
+func (gs *LocalGovernanceStore) deleteModelConfigsForScopeLocked(ctx context.Context, scope, scopeID string) {
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
@@ -3818,6 +3878,12 @@ func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.C
 
 // CreateTeamInMemory adds a new team to the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *configstoreTables.TableTeam) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
+	gs.createTeamInMemoryLocked(ctx, team)
+}
+
+func (gs *LocalGovernanceStore) createTeamInMemoryLocked(ctx context.Context, team *configstoreTables.TableTeam) {
 	if team == nil {
 		return // Nothing to create
 	}
@@ -3842,6 +3908,8 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 
 // UpdateTeamInMemory updates an existing team in the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *configstoreTables.TableTeam, budgetBaselines map[string]float64) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if team == nil {
 		return // Nothing to update
 	}
@@ -3908,12 +3976,14 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 
 		gs.teams.Store(team.ID, &clone)
 	} else {
-		gs.CreateTeamInMemory(ctx, team)
+		gs.createTeamInMemoryLocked(ctx, team)
 	}
 }
 
 // DeleteTeamInMemory removes a team from the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if teamID == "" {
 		return // Nothing to delete
 	}
@@ -3953,6 +4023,12 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 
 // CreateCustomerInMemory adds a new customer to the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, customer *configstoreTables.TableCustomer) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
+	gs.createCustomerInMemoryLocked(ctx, customer)
+}
+
+func (gs *LocalGovernanceStore) createCustomerInMemoryLocked(ctx context.Context, customer *configstoreTables.TableCustomer) {
 	if customer == nil {
 		return // Nothing to create
 	}
@@ -3970,6 +4046,8 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 
 // UpdateCustomerInMemory updates an existing customer in the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, customer *configstoreTables.TableCustomer, budgetBaselines map[string]float64) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if customer == nil {
 		return // Nothing to update
 	}
@@ -4027,12 +4105,14 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 
 		gs.customers.Store(customer.ID, &clone)
 	} else {
-		gs.CreateCustomerInMemory(ctx, customer)
+		gs.createCustomerInMemoryLocked(ctx, customer)
 	}
 }
 
 // DeleteCustomerInMemory removes a customer from the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, customerID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if customerID == "" {
 		return // Nothing to delete
 	}
@@ -4089,23 +4169,31 @@ func (gs *LocalGovernanceStore) GetUserGovernance(ctx context.Context, userID st
 
 // CreateUserGovernanceInMemory adds user governance data to the in-memory store (enterprise-only)
 func (gs *LocalGovernanceStore) CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	// NoOp
 	// Available in enterprise
 }
 
 func (gs *LocalGovernanceStore) CreateUserNameInMemory(ctx context.Context, userID string, userName string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	// NoOp
 	// Available in enterprise
 }
 
 // UpdateUserGovernanceInMemory updates user governance data in the in-memory store (enterprise-only)
 func (gs *LocalGovernanceStore) UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	// NoOp
 	// Available in enterprise
 }
 
 // DeleteUserGovernanceInMemory removes user governance data from the in-memory store (enterprise-only)
 func (gs *LocalGovernanceStore) DeleteUserGovernanceInMemory(ctx context.Context, userID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	// NoOp
 	// Available in enterprise
 }
@@ -4114,6 +4202,8 @@ func (gs *LocalGovernanceStore) DeleteUserGovernanceInMemory(ctx context.Context
 // Preserves existing usage values when updating budgets and rate limits
 // Returns the updated model config with potentially modified usage values
 func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if mc == nil {
 		return nil // Nothing to update
 	}
@@ -4172,6 +4262,8 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 
 // DeleteModelConfigInMemory removes a model config from the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, mcID string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if mcID == "" {
 		return // Nothing to delete
 	}
@@ -4227,6 +4319,8 @@ func (gs *LocalGovernanceStore) ScopedModelConfigIDs(scope, scopeID string) []st
 // Preserves existing usage values when updating budgets and rate limits
 // Returns the updated provider with potentially modified usage values
 func (gs *LocalGovernanceStore) UpdateProviderInMemory(ctx context.Context, provider *configstoreTables.TableProvider) *configstoreTables.TableProvider {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if provider == nil {
 		return nil // Nothing to update
 	}
@@ -4263,6 +4357,8 @@ func (gs *LocalGovernanceStore) UpdateProviderInMemory(ctx context.Context, prov
 
 // DeleteProviderInMemory removes a provider from the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) DeleteProviderInMemory(ctx context.Context, providerName string) {
+	gs.beginGovernanceConfigUpdate()
+	defer gs.endGovernanceConfigUpdate()
 	if providerName == "" {
 		return // Nothing to delete
 	}
