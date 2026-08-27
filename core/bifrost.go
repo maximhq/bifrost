@@ -5855,7 +5855,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// a caller's declared total-duration budget must not restart per attempt,
 	// or a request with N configured fallbacks could take up to N times the
 	// declared deadline. See armRequestTimeout's doc comment.
-	stopRequestTimeout := armRequestTimeout(ctx)
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
 	defer stopRequestTimeout()
 
 	ctx.ResetUpstreamLatency()
@@ -6098,7 +6098,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// below either wraps the returned channel with wrapStreamForRequestTimeout
 	// (success: stop only once the caller has fully drained the stream) or
 	// calls stopRequestTimeout directly (error: nothing to wrap).
-	stopRequestTimeout := armRequestTimeout(ctx)
+	stopRequestTimeout, requestTimeoutArmed := armRequestTimeout(ctx)
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -6174,7 +6174,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			return primaryResult, primaryErr
 		}
 		served = &schemas.Route{Provider: provider, Model: model}
-		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout), nil
+		return wrapStreamForRequestTimeout(ctx, primaryResult, stopRequestTimeout, requestTimeoutArmed), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -6243,7 +6243,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
 			servedFallback = true
-			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout), nil
+			return wrapStreamForRequestTimeout(ctx, result, stopRequestTimeout, requestTimeoutArmed), nil
 		}
 
 		// End span with error status

@@ -10,13 +10,16 @@ import (
 )
 
 // TestArmRequestTimeout_NoDeadlineIsNoOp verifies armRequestTimeout returns a
-// no-op stop function, and never cancels ctx, when no x-bf-request-timeout
-// deadline was declared.
+// no-op stop function and armed=false, and never cancels ctx, when no
+// x-bf-request-timeout deadline was declared.
 func TestArmRequestTimeout_NoDeadlineIsNoOp(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
-	stop := armRequestTimeout(ctx)
+	stop, armed := armRequestTimeout(ctx)
+	if armed {
+		t.Fatal("armed must be false when no deadline was declared")
+	}
 	stop() // must not panic
 
 	select {
@@ -38,7 +41,10 @@ func TestArmRequestTimeout_FiresAndSetsSentinel(t *testing.T) {
 	defer cancel()
 	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 20*time.Millisecond)
 
-	stop := armRequestTimeout(ctx)
+	stop, armed := armRequestTimeout(ctx)
+	if !armed {
+		t.Fatal("armed must be true when a deadline was declared")
+	}
 	defer stop()
 
 	select {
@@ -63,7 +69,10 @@ func TestArmRequestTimeout_StopPreventsFiring(t *testing.T) {
 	defer cancel()
 	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 50*time.Millisecond)
 
-	stop := armRequestTimeout(ctx)
+	stop, armed := armRequestTimeout(ctx)
+	if !armed {
+		t.Fatal("armed must be true when a deadline was declared")
+	}
 	stop()
 
 	select {
@@ -96,8 +105,11 @@ func TestArmRequestTimeout_DerivedContextDoesNotCancelSharedRoot(t *testing.T) {
 	reqA := schemas.NewBifrostContext(root, schemas.NoDeadline)
 	reqB := schemas.NewBifrostContext(root, schemas.NoDeadline)
 
-	stopA := armRequestTimeout(reqA)
+	stopA, armedA := armRequestTimeout(reqA)
 	defer stopA()
+	if !armedA {
+		t.Fatal("expected the value inherited from root to still arm the derived context's timer")
+	}
 
 	select {
 	case <-reqA.Done():
@@ -130,7 +142,7 @@ func TestWrapStreamForRequestTimeout_NilChannelStopsImmediately(t *testing.T) {
 	defer cancel()
 
 	stopped := false
-	out := wrapStreamForRequestTimeout(ctx, nil, func() { stopped = true })
+	out := wrapStreamForRequestTimeout(ctx, nil, func() { stopped = true }, true)
 	if out != nil {
 		t.Fatal("expected nil passthrough for a nil input channel")
 	}
@@ -153,7 +165,7 @@ func TestWrapStreamForRequestTimeout_StopsOnlyAfterDrain(t *testing.T) {
 	close(in)
 
 	var stopped atomicBool
-	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) })
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) }, true)
 
 	if stopped.get() {
 		t.Fatal("stop must not be called before the caller has drained the channel")
@@ -188,7 +200,7 @@ func TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer(t *testing.
 
 	in := make(chan *schemas.BifrostStreamChunk)
 	var stopped atomicBool
-	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) })
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) }, true)
 
 	// Normal path: producer sends, consumer receives.
 	in <- &schemas.BifrostStreamChunk{}
@@ -231,6 +243,64 @@ func TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer(t *testing.
 	for !stopped.get() {
 		if time.Now().After(deadline) {
 			t.Fatal("stop was not called after ctx cancellation unblocked the abandoned consumer")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWrapStreamForRequestTimeout_UnarmedReturnsOriginalChannel verifies that
+// when no deadline was armed, wrapStreamForRequestTimeout returns the input
+// channel unchanged instead of proxying it through an extra channel and
+// goroutine -- a successful stream with no x-bf-request-timeout declared has
+// nothing for the wrapper to enforce.
+func TestWrapStreamForRequestTimeout_UnarmedReturnsOriginalChannel(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	stopCalled := false
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopCalled = true }, false)
+
+	if out != in {
+		t.Fatal("expected the original channel back unwrapped when armed is false")
+	}
+	if stopCalled {
+		t.Fatal("stop must not be called when armed is false -- the caller owns draining the unwrapped channel")
+	}
+}
+
+// TestWrapStreamForRequestTimeout_NoForwardAfterCancellation verifies the
+// forwarding send does not deliver a chunk once ctx is already cancelled --
+// a plain `select { case out <- chunk: case <-ctx.Done(): }` does not
+// prioritize either ready case, so without an explicit check first, a chunk
+// could still be forwarded after the deadline fired. Cancelling before any
+// chunk is produced, with an eager reader on out, makes both cases become
+// ready at the same time under the old implementation; the leading
+// non-blocking check on ctx.Done() must still win deterministically.
+func TestWrapStreamForRequestTimeout_NoForwardAfterCancellation(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk, 1)
+	in <- &schemas.BifrostStreamChunk{}
+	close(in)
+
+	var stopped atomicBool
+	out := wrapStreamForRequestTimeout(ctx, in, func() { stopped.set(true) }, true)
+
+	select {
+	case chunk, ok := <-out:
+		if ok {
+			t.Fatalf("expected no chunk forwarded once ctx was already cancelled, got %+v", chunk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("out was never closed")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !stopped.get() {
+		if time.Now().After(deadline) {
+			t.Fatal("stop was not called after the cancelled-before-drain path completed")
 		}
 		time.Sleep(time.Millisecond)
 	}
