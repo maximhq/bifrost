@@ -5749,6 +5749,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
 			populateBillingAttemptExtraFields(msg.Context, bifrostErrPtr)
 		} else if resp != nil {
+			populateBillingAttemptStartTime(msg.Context, resp)
 			resp.PopulateExtraFields(req.RequestType, provider, model, model)
 		}
 		drainAndAttachPluginLogs(msg.Context)
