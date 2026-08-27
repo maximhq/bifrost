@@ -505,6 +505,12 @@ func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyMistral
 }
 
+// IsAzureModelRouterFamily reports whether the current attempt resolves to
+// Azure's model-router deployment. See IsElevenlabsSoundModelFamily for usage notes.
+func IsAzureModelRouterFamily(ctx *BifrostContext, model string) bool {
+	return IsAzureModelRouter(ResolveCanonicalModel(ctx, model))
+}
+
 // IsLlamaModelFamily reports whether the current attempt resolves to the
 // Llama model family. Used by Bedrock to gate tool_choice handling — AWS
 // Bedrock Converse rejects toolConfig.toolChoice.tool on Meta Llama variants.
