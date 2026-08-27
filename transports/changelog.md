@@ -83,8 +83,6 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 
 ## 🐞 Fixed
 
-- **Admin Password Redaction-Mask Collisions** - Valid admin passwords matching the generic 32-character secret mask are validated and hashed as new credentials instead of preserving the stored password (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
-- **Disabled Auth Password Validation and Hashing** - New admin passwords, including resolved secret references, are validated and hashed when submitted while disabling auth (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
 - **Structured Output Schema Order** - `response_format` JSON schemas are forwarded byte-for-byte to OpenAI, Anthropic, Bedrock, Gemini and Cohere so the model generates fields in the caller's declared order instead of a re-sorted one (#6235)
 - **Thinking Block Typing on Streams** - Reasoning items carrying both an encrypted payload and a visible summary open as `thinking` blocks instead of `redacted_thinking` (#6292)
 - **Replayed Thinking Blocks via `bedrock/` Prefix** - Content-less `tool_result` blocks are kept, interleaved block order is preserved, `incomplete` maps to `error` on Converse, and pending reasoning is consumed by its owning item, so multi-turn tool use no longer wedges (#6346)
@@ -99,7 +97,7 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 - **URL-Sourced Files and Images** - `gs://` URIs go to Gemini/Gemma as `fileData.fileUri` and are read from Cloud Storage for Claude-on-Vertex, `s3://` references go to Bedrock Converse as `s3Location`, Bedrock rerank synthesizes the foundation-model ARN from a bare model ID, OpenAI file blocks keep `file_url`, non-http schemes pass through on the OpenAI and native-Anthropic paths, and Gemini always emits a candidate with its finish reason and drops payload-free parts (#6239)
 - **Together and Alias Pricing** - The management catalog resolves runtime provider `together` to the datasheet identity and prices configured aliases through their target model (thanks [@dani29](https://github.com/dani29)!) (#6257, #6320)
 - **Redis Vector Store TAG Escaping** - All RediSearch special characters are escaped in TAG query values (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5351)
-- **MCP Tool Sync Interval Corruption** - Partial `/api/config` updates preserve the stored global interval when omitted, while explicit `0` restores the built-in default; toggling an MCP client's enable/disable switch no longer corrupts `tool_sync_interval`, negative values are rejected instead of silently disabling sync, and re-enabling a per-call client restarts its discovery cycle (#6409, #6502)
+- **MCP Tool Sync Interval Corruption** - Toggling an MCP client's enable/disable switch no longer corrupts `tool_sync_interval`; the value is a whole number of minutes, negative values are rejected instead of silently disabling sync, and re-enabling a per-call client restarts its discovery cycle (#6409, #6502)
 - **MCP Tool Map Staleness** - `SetClientTools` replaces the in-memory tool map instead of merging, so tools removed upstream leave memory once the database has dropped them (#6484)
 - **SSE Reconnect Identity** - `OnConnectionLost` on SSE MCP clients is gated on connection identity so a stale connection cannot tear down its replacement
 - **Connector Header Redaction** - `Authorization`, `x-api-key`, Cloudflare Access and AWS ALB OIDC headers are redacted before export to every observability backend (#6371)
@@ -153,6 +151,9 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 - **Stream Delta Schema** - Added `ExtraContent` to `ChatStreamResponseChoiceDelta` (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
 - **API Auth Bypass** - Stopped `/api/devices` bypassing auth via the `/api/dev` prefix
 - **Bedrock Error Types** - Surface the AWS exception type (`X-Amzn-Errortype`) on non-streaming Bedrock error responses instead of dropping it
+- **Admin Password Redaction-Mask Collisions** - Valid admin passwords matching the generic 32-character secret mask are validated and hashed as new credentials instead of preserving the stored password (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
+- **Disabled Auth Password Validation and Hashing** - New admin passwords, including resolved secret references, are validated and hashed when submitted while disabling auth (thanks [@G-XD](https://github.com/G-XD)!) (#6414)
+- **Partial MCP Sync Interval Updates** - `/api/config` updates preserve the stored global interval when the field is omitted, while an explicit `0` restores the built-in default.
 
 ## 🔧 Maintenance
 
