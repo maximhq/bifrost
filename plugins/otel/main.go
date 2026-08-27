@@ -1048,6 +1048,8 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 		customerNames,
 		buIDs,
 		buNames,
+		getStringAttr(attrs, schemas.AttrBifrostProjectID),
+		getStringAttr(attrs, schemas.AttrBifrostProjectName),
 	)
 }
 
@@ -1078,6 +1080,8 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		customerNames,
 		buIDs,
 		buNames,
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	)
 }
 
@@ -1113,6 +1117,8 @@ var mcpGovernanceLabelMap = map[string]string{
 	schemas.AttrBifrostCustomerName:     "customer_name",
 	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
 	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+	schemas.AttrBifrostProjectID:        "project_id",
+	schemas.AttrBifrostProjectName:      "project_name",
 }
 
 // recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called

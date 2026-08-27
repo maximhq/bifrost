@@ -959,6 +959,8 @@ const (
 	AttrBifrostCustomerName        = "bifrost.customer.name"
 	AttrBifrostBusinessUnitID      = "bifrost.business_unit.id"
 	AttrBifrostBusinessUnitName    = "bifrost.business_unit.name"
+	AttrBifrostProjectID           = "bifrost.project.id"
+	AttrBifrostProjectName         = "bifrost.project.name"
 	AttrBifrostTeamIDs             = "bifrost.team.ids"
 	AttrBifrostTeamNames           = "bifrost.team.names"
 	AttrBifrostCustomerIDs         = "bifrost.customer.ids"
