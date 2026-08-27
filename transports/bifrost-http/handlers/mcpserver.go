@@ -543,18 +543,18 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 
 	executeOnlyTools := make([]string, 0)
 
-	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName.
-	// Explicit VK MCPConfigs always take precedence over AllowOnAllVirtualKeys.
-	allowAllVKsClients := h.config.GetAllowOnAllVirtualKeysClients()
-	if allowAllVKsClients == nil {
-		allowAllVKsClients = make(map[string]string)
+	// Build a lookup of AllowByDefault clients: clientID -> clientName.
+	// Explicit VK MCPConfigs always take precedence over AllowByDefault.
+	allowedByDefaultClients := h.config.GetMCPClientsAllowedByDefault()
+	if allowedByDefaultClients == nil {
+		allowedByDefaultClients = make(map[string]string)
 	}
 
 	// Process explicit VK MCPConfigs first.
 	handledClients := make(map[string]bool)
 	for _, vkMcpConfig := range vk.MCPConfigs {
 		clientID := vkMcpConfig.MCPClient.ClientID
-		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
+		if _, isAllowAll := allowedByDefaultClients[clientID]; isAllowAll {
 			// Explicit config exists — it takes precedence; mark handled regardless of tool list.
 			handledClients[clientID] = true
 		}
@@ -574,14 +574,14 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 		}
 	}
 
-	// For AllowOnAllVirtualKeys clients with no explicit VK config, allow all their tools.
-	for clientID, clientName := range allowAllVKsClients {
+	// For AllowByDefault clients with no explicit VK config, allow all their tools.
+	for clientID, clientName := range allowedByDefaultClients {
 		if !handledClients[clientID] {
 			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
 		}
 	}
 
-	// Always set the include-tools filter (empty = deny-all when no MCPConfigs and no AllowOnAllVirtualKeys clients)
+	// Always set the include-tools filter (empty = deny-all when no MCPConfigs and no AllowByDefault clients)
 	ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, executeOnlyTools)
 	toolFilter = executeOnlyTools
 

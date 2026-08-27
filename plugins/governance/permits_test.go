@@ -44,10 +44,10 @@ func vkMCPConfig(clientID, clientName string, tools ...string) configstoreTables
 	}
 }
 
-// vkPermit builds the permit a key confers, with the given clients open to every key. The builder
+// vkPermit builds the permit a key confers, with the given clients allowed by default. The builder
 // belongs to the store that owns the key data, so tests reach it through one.
 func vkPermit(vk *configstoreTables.TableVirtualKey, openClients map[string]string) *grant.Permit {
-	store := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{allowAllClients: openClients}}
+	store := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{allowedByDefaultClients: openClients}}
 	return store.permitForVirtualKey(emptyCtx(), vk)
 }
 
@@ -900,7 +900,7 @@ func benchStore(b *testing.B, vk *configstoreTables.TableVirtualKey) *LocalGover
 	b.Helper()
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{allowAllClients: map[string]string{"sentry-id": "sentry", "pager-id": "pager"}})
+	}, nil, &mockInMemoryStore{allowedByDefaultClients: map[string]string{"sentry-id": "sentry", "pager-id": "pager"}})
 	if err != nil {
 		b.Fatal(err)
 	}

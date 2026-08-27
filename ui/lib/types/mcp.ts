@@ -140,7 +140,7 @@ export interface MCPClientConfig {
 	tool_sync_interval?: number;
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
 }
 
@@ -236,7 +236,7 @@ export interface UpdateMCPClientRequest {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
@@ -258,7 +258,7 @@ export interface GetMCPClientsParams {
 	// Boolean facets — omit for "no filter".
 	code_mode?: boolean; // filters is_code_mode_client
 	disabled?: boolean; // filters disabled status
-	all_virtual_keys?: boolean; // when true, include clients open to all virtual keys
+	allowed_by_default?: boolean; // when true, include clients allowed by default
 }
 
 // Paginated response for MCP clients list

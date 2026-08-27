@@ -125,24 +125,24 @@ func TestPruneMCPIncludeTools_DedupAcrossWildcardAndSpecific(t *testing.T) {
 	assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeToolsFromCtx(t, ctx))
 }
 
-// AllowOnAllVirtualKeys client with no explicit VK config: both specific and wildcard
+// AllowByDefault client with no explicit VK config: both specific and wildcard
 // requests survive (the implicit grant is client-wide).
-func TestPruneMCPIncludeTools_AllowOnAllVirtualKeysClient(t *testing.T) {
+func TestPruneMCPIncludeTools_AllowByDefaultClient(t *testing.T) {
 	p := newPluginWithInMemoryStore(&mockInMemoryStore{
-		allowAllClients: map[string]string{"client-1": "youtube"},
+		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	})
 	vk := buildVKNoMCPConfigs()
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*", "github-list_repos"})
 
 	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, map[string]string{"client-1": "youtube"})))
 	assert.Equal(t, []string{"youtube-search", "youtube-*"}, includeToolsFromCtx(t, ctx),
-		"AllowOnAllVirtualKeys grants the whole client; other clients are still pruned")
+		"AllowByDefault grants the whole client; other clients are still pruned")
 }
 
-// An explicit empty VK config (deny-all) overrides the client's AllowOnAllVirtualKeys flag.
+// An explicit empty VK config (deny-all) overrides the client's AllowByDefault flag.
 func TestPruneMCPIncludeTools_ExplicitEmptyConfigOverridesAllowAll(t *testing.T) {
 	p := newPluginWithInMemoryStore(&mockInMemoryStore{
-		allowAllClients: map[string]string{"client-1": "youtube"},
+		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	})
 	vk := buildVKWithMCPConfigs("client-1", "youtube", []string{})
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*"})
