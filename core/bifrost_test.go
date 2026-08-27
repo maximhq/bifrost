@@ -2935,9 +2935,12 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
-// provider that doesn't speak the Anthropic Messages API natively (e.g. Bedrock). This
-// guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
-// Bedrock through a key alias (so the catalog-time guard never fires).
+// provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).
+// This guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
+// Bedrock through a key alias (so the catalog-time guard never fires), and the fix for a
+// routing rule retargeting a Claude Code request to a non-Claude model on a multi-family
+// provider (Vertex/Azure/Bedrock Mantle), which sent the raw Anthropic body to that provider's
+// OpenAI/Gemini surface.
 func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 	flagKeys := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyUseRawRequestBody,
@@ -2949,14 +2952,31 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		name            string
 		integrationType string
 		baseProvider    schemas.ModelProvider
+		model           string
+		alias           *schemas.ResolvedAlias
 		wantCleared     bool
 	}{
-		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, true},
-		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, false},
-		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, false},
-		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, false},
-		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, false},
-		{"no integration type to bedrock preserved", "", schemas.Bedrock, false},
+		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, "anthropic.claude-sonnet-4-20250514-v1:0", nil, true},
+		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, "claude-sonnet-4@20250514", nil, false},
+		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to bedrock mantle preserved", "anthropic", schemas.BedrockMantle, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to bedrock mantle openai model clears", "anthropic", schemas.BedrockMantle, "gpt-5-6-luna", nil, true},
+		{"anthropic integration to azure openai model clears", "anthropic", schemas.Azure, "gpt-5", nil, true},
+		{"anthropic integration to vertex gemini model clears", "anthropic", schemas.Vertex, "gemini-2.5-pro", nil, true},
+		{
+			name:            "anthropic integration to bedrock mantle claude alias preserved",
+			integrationType: "anthropic",
+			baseProvider:    schemas.BedrockMantle,
+			model:           "fast-model",
+			alias: &schemas.ResolvedAlias{
+				Key:    "fast-model",
+				Config: &schemas.AliasConfig{ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
+			},
+			wantCleared: false,
+		},
+		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, "claude-sonnet-4-20250514", nil, false},
+		{"no integration type to bedrock preserved", "", schemas.Bedrock, "claude-sonnet-4-20250514", nil, false},
 	}
 
 	for _, tt := range tests {
@@ -2965,11 +2985,17 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			if tt.integrationType != "" {
 				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
 			}
+			if tt.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tt.alias)
+			}
 			for _, k := range flagKeys {
 				ctx.SetValue(k, true)
 			}
 
-			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
+			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider, tt.model)
 
 			for _, k := range flagKeys {
 				got, _ := ctx.Value(k).(bool)
@@ -3137,5 +3163,44 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// TestApplyRawCaptureSignals_RunsAfterPassthroughClear pins the ordering between
+// clearAnthropicPassthroughForNonNativeProvider and applyRawCaptureSignals. The derivation reads
+// the very override keys the clear drops, so deriving first leaves a converted provider response
+// captured and unstripped on a request that no longer passes anything through.
+func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
+	// Provider config asks for nothing: any capture must come from the passthrough override.
+	config := &schemas.ProviderConfig{}
+
+	tests := []struct {
+		name            string
+		model           string
+		wantCaptureResp bool
+	}{
+		{"non-native model drops the override", "gpt-5-6-luna", false},
+		{"claude model keeps the override", "claude-sonnet-4-20250514", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+			ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, schemas.BedrockMantle, tt.model)
+			applyRawCaptureSignals(ctx, config)
+
+			captureResp, _ := ctx.Value(schemas.BifrostContextKeyCaptureRawResponse).(bool)
+			if captureResp != tt.wantCaptureResp {
+				t.Errorf("CaptureRawResponse = %v, want %v", captureResp, tt.wantCaptureResp)
+			}
+			// Nothing is stored, so the client-strip flag stays off either way.
+			if dropResp, _ := ctx.Value(schemas.BifrostContextKeyDropRawResponseFromClient).(bool); dropResp {
+				t.Error("DropRawResponseFromClient = true, want false (store is off)")
+			}
+		})
 	}
 }
