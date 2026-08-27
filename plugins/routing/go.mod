@@ -5,9 +5,9 @@ go 1.27.0
 require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
 	github.com/google/cel-go v0.30.0
-	github.com/maximhq/bifrost/core v1.7.7
-	github.com/maximhq/bifrost/framework v1.5.7
-	github.com/maximhq/bifrost/plugins/governance v1.6.11
+	github.com/maximhq/bifrost/core v1.8.3
+	github.com/maximhq/bifrost/framework v1.6.0
+	github.com/maximhq/bifrost/plugins/governance v1.7.0
 	github.com/stretchr/testify v1.11.1
 )
 
