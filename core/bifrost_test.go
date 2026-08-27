@@ -3254,88 +3254,39 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 }
 
-// TestCancelContextAfterStream_NormalCompletion ensures the owned nil-caller
-// context is released only after the producer's terminal close reaches the
-// consumer.
-func TestCancelContextAfterStream_NormalCompletion(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	cancelled := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(cancelled)
-	}()
-
-	input := make(chan *schemas.BifrostStreamChunk)
-	output := cancelContextAfterStream(input, ctx, ctx.Cancel)
-	input <- &schemas.BifrostStreamChunk{}
-	if _, ok := <-output; !ok {
-		t.Fatal("expected chunk to be forwarded")
+// TestHandleStreamRequest_RequiresContext pins the streaming lifecycle contract:
+// the caller must own the context so it can cancel an abandoned stream.
+func TestHandleStreamRequest_RequiresContext(t *testing.T) {
+	bifrost := &Bifrost{
+		bifrostRequestPool: sync.Pool{New: func() interface{} { return &schemas.BifrostRequest{} }},
+		logger:             NewNoOpLogger(),
+	}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "test-model",
+			Input:    []schemas.ChatMessage{{}},
+		},
 	}
 
-	select {
-	case <-cancelled:
-		t.Fatal("context was cancelled before stream completion")
-	default:
+	stream, bifrostErr := bifrost.handleStreamRequest(nil, req)
+	if stream != nil {
+		t.Fatal("expected no stream for a nil streaming context")
 	}
-	close(input)
-	if _, ok := <-output; ok {
-		t.Fatal("expected output channel to close")
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("expected a detailed error, got %#v", bifrostErr)
 	}
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("context was not cancelled after stream completion")
+	if bifrostErr.Error.Message != "context is required for streaming requests" {
+		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
 	}
-}
-
-// TestCancelContextAfterStream_ContextDone covers an abandoned consumer: the
-// context can be cancelled, but the wrapper must still drain and release once
-// the producer closes.
-func TestCancelContextAfterStream_ContextDone(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	producerDone := make(chan struct{})
-	input := make(chan *schemas.BifrostStreamChunk)
-	output := cancelContextAfterStream(input, ctx, ctx.Cancel)
-
-	go func() {
-		defer close(producerDone)
-		input <- &schemas.BifrostStreamChunk{}
-		close(input)
-	}()
-
-	// Consume one chunk, then abandon the stream and cancel the context.
-	if _, ok := <-output; !ok {
-		t.Fatal("expected chunk to be forwarded")
+	if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionStreamRequest {
+		t.Fatalf("unexpected request type: %v", bifrostErr.ExtraFields.RequestType)
 	}
-	ctx.Cancel()
-	select {
-	case <-producerDone:
-	case <-time.After(time.Second):
-		t.Fatal("producer was not drained after context cancellation")
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+		t.Fatalf("unexpected provider: %v", bifrostErr.ExtraFields.Provider)
 	}
-	select {
-	case _, ok := <-output:
-		if ok {
-			t.Fatal("expected output channel to close")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("output channel did not close after cancellation")
-	}
-}
-
-// TestCancelContextAfterStream_NoCallback keeps caller-owned contexts
-// untouched and transparently forwards their stream.
-func TestCancelContextAfterStream_NoCallback(t *testing.T) {
-	input := make(chan *schemas.BifrostStreamChunk, 1)
-	input <- &schemas.BifrostStreamChunk{}
-	close(input)
-	output := cancelContextAfterStream(input, context.Background(), nil)
-
-	count := 0
-	for range output {
-		count++
-	}
-	if count != 1 {
-		t.Fatalf("expected 1 forwarded chunk, got %d", count)
+	if bifrostErr.ExtraFields.OriginalModelRequested != "test-model" || bifrostErr.ExtraFields.ResolvedModelUsed != "test-model" {
+		t.Fatalf("unexpected model metadata: %#v", bifrostErr.ExtraFields)
 	}
 }
