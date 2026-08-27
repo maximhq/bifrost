@@ -6689,24 +6689,101 @@ func executeRequestWithRetries[T any](
 }
 
 // clearAnthropicPassthroughForNonNativeProvider disables Anthropic raw-body passthrough when a
-// request from the Anthropic-format integration resolves to a provider that doesn't speak the
-// Anthropic Messages API natively (e.g. Bedrock), forcing that provider to convert the request
-// itself. Gated on the final resolved provider so it fires regardless of how the provider was
-// picked (prefix, catalog, key alias, governance) and re-runs per attempt for fallbacks. No-op
-// for Anthropic/Vertex/Azure providers and for non-Anthropic integrations.
-func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+// request from the Anthropic-format integration resolves to a provider/model pair that doesn't
+// speak the Anthropic Messages API natively (e.g. Bedrock, or a routing rule that retargets a
+// Claude Code request to an OpenAI-family model on Bedrock Mantle), forcing that provider to
+// convert the request itself. Gated on the final resolved provider and model so it fires
+// regardless of how either was picked (prefix, catalog, key alias, governance, routing rule)
+// and re-runs per attempt for fallbacks. No-op for Anthropic and for non-Anthropic integrations.
+//
+// Vertex, Azure and Bedrock Mantle are multi-family: they serve Anthropic Messages for Claude and
+// OpenAI/Gemini surfaces for everything else, so their exemption reuses the IsAnthropicModelFamily
+// predicate their own dispatch uses. Call this only after key-level alias resolution — that
+// predicate reads the resolved alias from context.
+func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, model string) {
 	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
 		return
 	}
-	if baseProvider == schemas.Anthropic ||
-		baseProvider == schemas.Vertex ||
+	if baseProvider == schemas.Anthropic {
+		return
+	}
+	if (baseProvider == schemas.Vertex ||
 		baseProvider == schemas.Azure ||
-		baseProvider == schemas.BedrockMantle {
+		baseProvider == schemas.BedrockMantle) &&
+		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// applyRawCaptureSignals writes this attempt's raw-payload capture signals, merging provider
+// config with any per-request context overrides. Call it after
+// clearAnthropicPassthroughForNonNativeProvider: that helper can drop the passthrough overrides
+// this derivation reads, so deriving first would leave a converted response captured and
+// unstripped on a request that no longer passes anything through.
+func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
+	// Effective values are computed by merging provider config with any per-request
+	// context overrides (BifrostContextKeySendBackRawRequest/Response and
+	// BifrostContextKeyStoreRawRequestResponse). A context value set to either true
+	// or false fully overrides the provider config for that flag.
+	//
+	// Each flag is independent:
+	//   send_back_raw_request  — include raw request bytes in the client response.
+	//   send_back_raw_response — include raw response bytes in the client response.
+	//   store_raw_request_response — persist raw bytes in log records (logging plugin only).
+	//
+	// Capture is enabled per-side whenever send-back OR store is requested for that side.
+	// Strip flags tell the response path to remove that side's bytes before the payload
+	// reaches the caller (used when store=true but send-back=false for that side).
+	//
+	// All internal signals are always written explicitly on every attempt so stale values
+	// from a previous provider attempt (e.g. different fallback provider config) cannot
+	// leak into the new attempt on a reused context. The user override keys
+	// (BifrostContextKeySendBackRaw*, BifrostContextKeyStoreRawRequestResponse) are
+	// never overwritten — they are read-only from bifrost.go's perspective.
+
+	// Step 1: compute effective value for each flag (provider config ← per-request override).
+	effectiveSendBackReq := config.SendBackRawRequest
+	allowRawOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
+	passthroughOverridePresent, _ := ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+
+	if allowRawOverride || passthroughOverridePresent {
+		if override, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
+			effectiveSendBackReq = override
+		}
+	}
+	effectiveSendBackResp := config.SendBackRawResponse
+	if allowRawOverride || passthroughOverridePresent {
+		if override, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
+			effectiveSendBackResp = override
+		}
+	}
+	effectiveStore := config.StoreRawRequestResponse
+	allowStorageOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
+	if allowStorageOverride {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+			effectiveStore = override
+		}
+	}
+
+	// Step 2: derive per-side capture and strip flags.
+	// Capture if we need to send the data back OR store it — independent per side.
+	captureReq := effectiveSendBackReq || effectiveStore
+	captureResp := effectiveSendBackResp || effectiveStore
+	// Strip from client response if we captured for storage but not for send-back.
+	dropReq := effectiveStore && !effectiveSendBackReq
+	dropResp := effectiveStore && !effectiveSendBackResp
+
+	// Step 3: write all internal signals explicitly (never touch the user override keys).
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, captureReq)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, captureResp)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, dropReq)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
+	// Tells the logging plugin whether to persist raw bytes in log records.
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -6779,70 +6856,6 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 
-		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
-		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
-
-		// Determine whether this provider attempt should capture raw payloads.
-		//
-		// Effective values are computed by merging provider config with any per-request
-		// context overrides (BifrostContextKeySendBackRawRequest/Response and
-		// BifrostContextKeyStoreRawRequestResponse). A context value set to either true
-		// or false fully overrides the provider config for that flag.
-		//
-		// Each flag is independent:
-		//   send_back_raw_request  — include raw request bytes in the client response.
-		//   send_back_raw_response — include raw response bytes in the client response.
-		//   store_raw_request_response — persist raw bytes in log records (logging plugin only).
-		//
-		// Capture is enabled per-side whenever send-back OR store is requested for that side.
-		// Strip flags tell the response path to remove that side's bytes before the payload
-		// reaches the caller (used when store=true but send-back=false for that side).
-		//
-		// All internal signals are always written explicitly on every attempt so stale values
-		// from a previous provider attempt (e.g. different fallback provider config) cannot
-		// leak into the new attempt on a reused context. The user override keys
-		// (BifrostContextKeySendBackRaw*, BifrostContextKeyStoreRawRequestResponse) are
-		// never overwritten — they are read-only from bifrost.go's perspective.
-
-		// Step 1: compute effective value for each flag (provider config ← per-request override).
-		effectiveSendBackReq := config.SendBackRawRequest
-		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
-		passthroughOverridePresent, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
-
-		if allowRawOverride || passthroughOverridePresent {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
-				effectiveSendBackReq = override
-			}
-		}
-		effectiveSendBackResp := config.SendBackRawResponse
-		if allowRawOverride || passthroughOverridePresent {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
-				effectiveSendBackResp = override
-			}
-		}
-		effectiveStore := config.StoreRawRequestResponse
-		allowStorageOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
-		if allowStorageOverride {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
-				effectiveStore = override
-			}
-		}
-
-		// Step 2: derive per-side capture and strip flags.
-		// Capture if we need to send the data back OR store it — independent per side.
-		captureReq := effectiveSendBackReq || effectiveStore
-		captureResp := effectiveSendBackResp || effectiveStore
-		// Strip from client response if we captured for storage but not for send-back.
-		dropReq := effectiveStore && !effectiveSendBackReq
-		dropResp := effectiveStore && !effectiveSendBackResp
-
-		// Step 3: write all internal signals explicitly (never touch the user override keys).
-		req.Context.SetValue(schemas.BifrostContextKeyCaptureRawRequest, captureReq)
-		req.Context.SetValue(schemas.BifrostContextKeyCaptureRawResponse, captureResp)
-		req.Context.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, dropReq)
-		req.Context.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
-		// Tells the logging plugin whether to persist raw bytes in log records.
-		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 		bifrost.endCoreSpan(workerSetupSpan)
 
 		var keys []schemas.Key
@@ -7072,6 +7085,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				applyRawCaptureSignals(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
@@ -7171,6 +7187,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				applyRawCaptureSignals(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
@@ -8771,7 +8790,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - SkipKeySelection (provider allows keyless requests; empty slice returned)
+//   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
@@ -8786,8 +8805,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return []schemas.Key{}, false, nil
 	}
 

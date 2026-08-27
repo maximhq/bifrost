@@ -130278,7 +130278,7 @@
           ]
         },
         {
-          "name": "[EXPECT-4XX] 52.E1 s3:// document -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (forwarded as s3Location)",
+          "name": "[EXPECT-4XX] 52.E1 s3:// document -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (refused: model cannot read s3Location)",
           "request": {
             "method": "POST",
             "header": [
@@ -130310,10 +130310,18 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
-                  "pm.test('s3:// document is forwarded to Converse, not rejected by bifrost', function () {",
-                  "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it as s3Location: ' +",
-                  "    txt.slice(0, 300))",
-                  "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
+                  "// Converse validates the s3Location union, then translates to the model's native format,",
+                  "// where Anthropic has no S3 source type - the member is dropped and the model answers",
+                  "// 'document.source.type: Field required', naming a field Converse does not have. That is",
+                  "// never a working request, so Bifrost refuses it here with the way out.",
+                  "pm.test('s3:// document to an Anthropic model is refused by bifrost, with the fix named', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from bifrost, got ' + pm.response.code + ': ' + txt.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(txt, 'the refusal must name the model limitation: ' + txt.slice(0, 300))",
+                  "    .to.match(/does not support s3:\\/\\/ references/i);",
+                  "  pm.expect(txt, 'a refusal that does not say what to send instead leaves the caller as stuck as the raw 400 did: ' + txt.slice(0, 300))",
+                  "    .to.match(/file_data|presign/i);",
+                  "  pm.expect(txt, 'the block must never reach the model, so its source.type complaint must be gone: ' + txt.slice(0, 300))",
+                  "    .to.not.match(/source\\.type/i);",
                   "});"
                 ]
               }
@@ -130321,7 +130329,7 @@
           ]
         },
         {
-          "name": "[EXPECT-4XX] 52.E2 s3:// image -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (forwarded as s3Location)",
+          "name": "[EXPECT-4XX] 52.E2 s3:// image -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (refused: model cannot read s3Location)",
           "request": {
             "method": "POST",
             "header": [
@@ -130353,13 +130361,143 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
-                  "pm.test('s3:// image is forwarded to Converse, not rejected by bifrost', function () {",
-                  "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it as s3Location: ' +",
-                  "    txt.slice(0, 300))",
-                  "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
-                  "  pm.expect(txt, 'the .png extension should have resolved the Converse image format: ' +",
-                  "    txt.slice(0, 300))",
+                  "pm.test('s3:// image to an Anthropic model is refused by bifrost, with the fix named', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from bifrost, got ' + pm.response.code + ': ' + txt.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(txt, 'the refusal must name the model limitation: ' + txt.slice(0, 300))",
+                  "    .to.match(/does not support s3:\\/\\/ references/i);",
+                  "  pm.expect(txt, 'the image hint differs from the document one and must reach the caller: ' + txt.slice(0, 300))",
+                  "    .to.match(/data: URL|presign/i);",
+                  "  pm.expect(txt, 'the model gate runs ahead of format resolution, so this is not a format complaint: ' + txt.slice(0, 300))",
                   "    .to.not.match(/cannot determine image format/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 52.E3 s3:// document -> bedrock/us.amazon.nova-lite-v1:0 (forwarded as s3Location, bucket rejects)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "// The bucket does not exist, so the upstream call fails either way. What this row pins is",
+                  "// the OUTBOUND payload, which is deterministic: asserting on the error text would only",
+                  "// prove what AWS happens to say this week. 52.E1 is the same request to a model that",
+                  "// cannot read s3Location, and must be refused by Bifrost instead of reaching Converse.",
+                  "pm.test('s3:// document reaches Converse as s3Location for a model that reads it', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var doc = null;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b && b.document) { doc = b.document; } }); });",
+                  "  pm.expect(doc, 'no document block on the wire: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "  var src = doc.source || {};",
+                  "  var srcTxt = JSON.stringify(src).slice(0, 400);",
+                  "  // DocumentSource is a union and s3Location is an S3Location object whose uri member is",
+                  "  // required, so a bare string there is refused by Converse while still satisfying a",
+                  "  // substring search for the key and for the URI independently.",
+                  "  pm.expect(src.s3Location, 'the document source must be a nested s3Location object: ' + srcTxt).to.be.an('object');",
+                  "  pm.expect(src.s3Location.uri, 'the object URI must survive verbatim on the required uri member: ' + srcTxt)",
+                  "    .to.eql('s3://bifrost-harness-no-such-bucket/doc.pdf');",
+                  "  pm.expect(src.bytes === undefined || src.bytes === null, 'nothing is downloaded on the s3Location path, so no base64 bytes member: ' + srcTxt).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 52.E4 s3:// image -> bedrock/us.amazon.nova-lite-v1:0 (forwarded as s3Location, bucket rejects)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"s3://bifrost-harness-no-such-bucket/shot.png\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('s3:// image reaches Converse as s3Location for a model that reads it', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var img = null;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b && b.image) { img = b.image; } }); });",
+                  "  pm.expect(img, 'no image block on the wire: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "  var src = img.source || {};",
+                  "  var srcTxt = JSON.stringify(src).slice(0, 400);",
+                  "  // ImageSource is a union and s3Location is an S3Location object whose uri member is",
+                  "  // required, so a bare string there is refused by Converse while still satisfying a",
+                  "  // substring search for the key and for the URI independently.",
+                  "  pm.expect(src.s3Location, 'the image source must be a nested s3Location object: ' + srcTxt).to.be.an('object');",
+                  "  pm.expect(src.s3Location.uri, 'the object URI must survive verbatim on the required uri member: ' + srcTxt)",
+                  "    .to.eql('s3://bifrost-harness-no-such-bucket/shot.png');",
+                  "  pm.expect(src.bytes === undefined || src.bytes === null, 'nothing is downloaded on the s3Location path, so no base64 bytes member: ' + srcTxt).to.be.true;",
+                  "  pm.expect(img.format, 'the .png key is the only format signal on this path, and Converse requires one: ' + wire.slice(0, 400)).to.eql('png');",
                   "});"
                 ]
               }
@@ -136763,6 +136901,307 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "59. Anthropic compaction billing (compaction-billing)",
+      "description": "Regression for Anthropic context_management compaction billing: when usage.iterations contains a compaction pass, Bifrost must bill the sum of compaction + reply tokens (not reply-only top-level usage). Generates a large input in a pre-request script to cross the 50k compaction trigger, streams via native /v1/responses, and asserts terminal usage matches the iteration sum. Persistence is checked via x-bf-expect-cost + x-request-id.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 responses stream compaction-billing sums iterations - compaction-billing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var line = 'Discuss module REPNUM requirements, APIs, errors, retries, and edge cases in detail. ';",
+                  "var parts = [];",
+                  "for (var i = 0; i < 2500; i++) { parts.push(line.replace(\"REPNUM\", String(i))); }",
+                  "var content = parts.join(\"\");",
+                  "var body = {",
+                  "  model: \"anthropic/claude-sonnet-4-6\",",
+                  "  input: [{ type: \"message\", role: \"user\", content: content }],",
+                  "  max_output_tokens: 64,",
+                  "  stream: true,",
+                  "  context_management: {",
+                  "    edits: [{",
+                  "      type: \"compact_20260112\",",
+                  "      trigger: { type: \"input_tokens\", value: 50000 }",
+                  "    }]",
+                  "  }",
+                  "};",
+                  "pm.variables.set(\"compactionBillingRequestBody\", JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Anthropic compaction stream completes - compaction-billing', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.text() || \"\";",
+                  "pm.test('terminal response.completed present - compaction-billing', function () {",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected response.completed').to.include('response.completed');",
+                  "});",
+                  "function expectedBillableUsage(usage) {",
+                  "  var uncached = 0, cacheRead = 0, cacheWrite = 0, output = 0;",
+                  "  var iterations = usage.iterations || [];",
+                  "  var reply = null;",
+                  "  for (var i = 0; i < iterations.length; i++) {",
+                  "    var it = iterations[i];",
+                  "    if (it && it.type === \"fallback_message\") { reply = it; break; }",
+                  "  }",
+                  "  if (!reply) {",
+                  "    for (var j = 0; j < iterations.length; j++) {",
+                  "      var msg = iterations[j];",
+                  "      if (msg && msg.type === \"message\") { reply = msg; break; }",
+                  "    }",
+                  "  }",
+                  "  if (reply) {",
+                  "    var replyInDet = reply.input_tokens_details || {};",
+                  "    uncached += Number(reply.input_tokens || 0);",
+                  "    cacheRead += Number(replyInDet.cached_read_tokens || 0);",
+                  "    cacheWrite += Number(replyInDet.cached_write_tokens || 0);",
+                  "    output += Number(reply.output_tokens || 0);",
+                  "  } else {",
+                  "    var topInDet = usage.input_tokens_details || {};",
+                  "    cacheRead = Number(topInDet.cached_read_tokens || 0);",
+                  "    cacheWrite = Number(topInDet.cached_write_tokens || 0);",
+                  "    uncached = Number(usage.input_tokens || 0) - cacheRead - cacheWrite;",
+                  "    output = Number(usage.output_tokens || 0);",
+                  "  }",
+                  "  for (var k = 0; k < iterations.length; k++) {",
+                  "    var comp = iterations[k];",
+                  "    if (!comp || comp.type !== \"compaction\") { continue; }",
+                  "    var compInDet = comp.input_tokens_details || {};",
+                  "    uncached += Number(comp.input_tokens || 0);",
+                  "    cacheRead += Number(compInDet.cached_read_tokens || 0);",
+                  "    cacheWrite += Number(compInDet.cached_write_tokens || 0);",
+                  "    output += Number(comp.output_tokens || 0);",
+                  "  }",
+                  "  return { uncached: uncached, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output, inputTotal: uncached + cacheRead + cacheWrite };",
+                  "}",
+                  "var usage = null;",
+                  "body.split(\"\\n\").forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try {",
+                  "    var evt = JSON.parse(payload);",
+                  "    if (evt.type === 'response.completed' && evt.response && evt.response.usage) {",
+                  "      usage = evt.response.usage;",
+                  "    }",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('compaction usage present with iterations - compaction-billing', function () {",
+                  "  pm.expect(usage, 'missing terminal usage: ' + body.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(usage.iterations, 'expected usage.iterations when compaction beta is enabled').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (!usage || !usage.iterations || !usage.iterations.length) { return; }",
+                  "var hasCompaction = usage.iterations.some(function (it) { return it && it.type === \"compaction\"; });",
+                  "if (!hasCompaction) {",
+                  "  pm.test('compaction iteration fired on large input - compaction-billing', function () {",
+                  "    pm.expect.fail('compaction did not fire; increase filler or lower trigger for this live case');",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "var sums = expectedBillableUsage(usage);",
+                  "var topInDet = usage.input_tokens_details || {};",
+                  "var topCacheRead = Number(topInDet.cached_read_tokens || 0);",
+                  "var topCacheWrite = Number(topInDet.cached_write_tokens || 0);",
+                  "var topUncached = Number(usage.input_tokens || 0) - topCacheRead - topCacheWrite;",
+                  "pm.test('billed output matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(Number(usage.output_tokens || 0), \"top-level output_tokens\").to.equal(sums.output);",
+                  "});",
+                  "pm.test('billed uncached input matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topUncached, \"uncached input_tokens\").to.equal(sums.uncached);",
+                  "});",
+                  "pm.test('billed cache write matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topCacheWrite, \"cached_write_tokens\").to.equal(sums.cacheWrite);",
+                  "});",
+                  "pm.test('billed cache read matches iteration sum - compaction-billing', function () {",
+                  "  pm.expect(topCacheRead, \"cached_read_tokens\").to.equal(sums.cacheRead);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "compaction-billing-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{compactionBillingRequestBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "60. Bedrock Kimi reasoning signature replay fail-soft",
+      "description": "reasoningContent.reasoningText.signature is minted and verified by Anthropic models only. A conversation that\nswitches model mid-flight - a routing rule, a fallback, or a client picking a new model per turn - replays the\nearlier model's signature onto whatever answers next, and a non-Anthropic Bedrock model refuses it outright:\n\n  400 ValidationException: \"This model doesn't support the reasoningContent.reasoningText.signature field.\n       Remove reasoningContent.reasoningText.signature and try again.\"\n\nProduction path: POST /v1/chat/completions -> ChatAssistantMessage.ReasoningDetails[].Signature ->\nbedrock convertMessage (core/providers/bedrock/utils.go) -> reasoningContent.reasoningText.signature on Converse.\ncore/encryptedreasoning.go's fail-soft is what heals it: isEncryptedReasoningRejection recognises the refusal,\nstripChatUnverifiableReasoning clears every signature, and the request is retried once on the same key.\n\nThe detector originally required the upstream to say the payload was UNVERIFIABLE (invalid / could not be\nverified / malformed). Bedrock's wording here says the opposite - the field is not accepted at all - so it\nmatched no marker, no strip ran, and the 400 reached the client. unsupportedFieldMarkers closes that.\n\nCoverage note: folder 44 pins the same fail-soft, but only on /openai/v1/responses for Anthropic and OpenAI\nmodels - a different carrier (encrypted_content on a reasoning item) and a different strip function\n(stripResponsesEncryptedContent). This folder is the chat-shape, non-Anthropic-Bedrock half.\n\nFIXTURE CONSTRAINT - do not 'clean up' these bodies. The signature on the assistant turn IS the trigger; a case\nthat drops it silently stops testing anything (case 3 is the deliberate signature-free control). The signature\nvalue is a fixture and is not expected to verify anywhere - being unverifiable is the point.",
+      "item": [
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions foreign reasoning signature degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('foreign reasoning signature degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock rejection reached the client; the reasoning-replay fail-soft did not fire').to.not.include('reasoningContent.reasoningText.signature');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\",\"signature\":\"ErUBCkYIBxgCKkDQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvEgyBFHARNESSfixture0001GhjSnIj7hU8mGofiw3SE2HL8kuMRcnfV3pGV7iU\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions streaming foreign reasoning signature degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('streaming foreign reasoning signature degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock rejection reached the client on the streaming path; the reasoning-replay fail-soft did not fire').to.not.include('reasoningContent.reasoningText.signature');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE chunks returned after the stripped retry').to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\",\"signature\":\"ErUBCkYIBxgCKkDQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvEgyBFHARNESSfixture0001GhjSnIj7hU8mGofiw3SE2HL8kuMRcnfV3pGV7iU\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions signature-free reasoning replay accepted",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('signature-free reasoning replay is accepted as-is', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the model refused the reasoningContent block itself, so stripping only the signature could not heal a replay').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }

@@ -1293,10 +1293,7 @@
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": [
-                  "GET /api/notifications",
-                  "POST /api/notifications"
-                ]
+                "pages": ["GET /api/notifications", "POST /api/notifications"]
               }
             ]
           },
@@ -1681,8 +1678,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.11",
+              "changelogs/v2.0.0",
               "changelogs/v2.0.0-prerelease3",
+              "changelogs/v1.6.11",
               "changelogs/v1.6.10",
               "changelogs/v1.6.9",
               "changelogs/v1.6.8",
@@ -1889,6 +1887,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.0.0",
               "changelogs/ent-v1.5.12",
               "changelogs/ent-v1.5.11",
               "changelogs/ent-v2.0.0-prerelease3",
@@ -1972,6 +1971,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.5.6",
               "changelogs/edge-v0.4.0",
               "changelogs/edge-v0.3.0",
               "changelogs/edge-v0.2.0",
@@ -2002,6 +2002,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.37",
               "changelogs/helm-v2.1.36",
               "changelogs/helm-v2.1.35",
               "changelogs/helm-v2.1.34",

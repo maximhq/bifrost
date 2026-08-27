@@ -1,11 +1,11 @@
 module github.com/maximhq/bifrost/transports
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
-	github.com/bytedance/sonic v1.15.2
+	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-git/go-billy/v5 v5.9.0
@@ -15,18 +15,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.7
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.7.11
-	github.com/maximhq/bifrost/framework v1.5.9
-	github.com/maximhq/bifrost/plugins/compat v0.1.35
-	github.com/maximhq/bifrost/plugins/governance v1.6.13
-	github.com/maximhq/bifrost/plugins/logging v1.6.9
-	github.com/maximhq/bifrost/plugins/maxim v1.6.36
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.17
-	github.com/maximhq/bifrost/plugins/otel v1.4.8
-	github.com/maximhq/bifrost/plugins/prompts v1.0.36
-	github.com/maximhq/bifrost/plugins/routing v0.0.0-20260819122003-50dec5a1331f
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.36
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.36
+	github.com/maximhq/bifrost/core v1.8.3
+	github.com/maximhq/bifrost/framework v1.6.0
+	github.com/maximhq/bifrost/plugins/compat v0.2.0
+	github.com/maximhq/bifrost/plugins/governance v1.7.0
+	github.com/maximhq/bifrost/plugins/logging v1.7.0
+	github.com/maximhq/bifrost/plugins/maxim v1.7.0
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.0
+	github.com/maximhq/bifrost/plugins/otel v1.5.0
+	github.com/maximhq/bifrost/plugins/prompts v1.1.0
+	github.com/maximhq/bifrost/plugins/routing v1.0.0
+	github.com/maximhq/bifrost/plugins/semanticcache v1.6.0
+	github.com/maximhq/bifrost/plugins/telemetry v1.6.0
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
@@ -88,7 +88,7 @@ require (
 	github.com/blevesearch/go-porterstemmer v1.0.3 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic/loader v0.5.1 // indirect
+	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
@@ -153,7 +153,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.37 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.0 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
