@@ -1099,8 +1099,9 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 		}
 		// Never overwrite a header that is already on the request: SetExtraHeaders runs
 		// before this at every call site, so the provider's configured network extra_headers
-		// keep precedence over the caller's copy of the same header (#6587).
-		if len(req.Header.Peek(k)) > 0 {
+		// keep precedence over the caller's copy of the same header (#6587). PeekAll rather
+		// than Peek, so a configured header pinned to an empty value still counts as present.
+		if len(req.Header.PeekAll(k)) > 0 {
 			continue
 		}
 		if lower == "accept-encoding" {

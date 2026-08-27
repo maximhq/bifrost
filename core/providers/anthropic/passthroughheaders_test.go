@@ -331,12 +331,14 @@ func TestSetPassthroughHeaders_ConfiguredExtraHeadersWin(t *testing.T) {
 		"x-app":           {"cli"},
 		"accept-encoding": {"gzip, deflate, br"},
 		"authorization":   {"Bearer sk-ant-oat01-caller-token"},
+		"x-pinned-empty":  {"caller-value"},
 	}
 	// network_config.extra_headers configured on the provider by the gateway operator.
 	configured := map[string]string{
 		"User-Agent":      "gateway-agent/1.0",
 		"X-App":           "gateway",
 		"Accept-Encoding": "identity",
+		"X-Pinned-Empty":  "", // an empty value still pins the header against the caller's copy
 	}
 
 	for _, streaming := range []bool{false, true} {
