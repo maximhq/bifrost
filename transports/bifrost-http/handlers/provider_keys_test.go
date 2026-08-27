@@ -112,6 +112,44 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 	})
 }
 
+// TestMergeUpdatedKey_Name locks in the invariant that a PUT update omitting
+// name must not clear the stored one. config_keys.name carries a global unique
+// index, so silently clearing it lets the first such update claim "" and wedge
+// every later name-omitting update behind a 409 (observed in a downstream
+// production deployment: a single edit that omitted name broke every
+// subsequent key edit going through this path).
+func TestMergeUpdatedKey_Name(t *testing.T) {
+	h := &ProviderHandler{}
+	merge := func(oldRaw, update schemas.Key) schemas.Key {
+		t.Helper()
+		merged, err := h.mergeUpdatedKey(oldRaw, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		return merged
+	}
+
+	t.Run("name omitted from update preserves stored name", func(t *testing.T) {
+		oldRaw := schemas.Key{ID: "key-1", Name: "prod-openai-key", Value: *schemas.NewSecretVar("sk-realkey1234567890abcdefghij")}
+		update := schemas.Key{ID: "key-1", Value: oldRaw.Value} // client PUT body has no "name" field
+
+		merged := merge(oldRaw, update)
+		if merged.Name != "prod-openai-key" {
+			t.Fatalf("expected stored name preserved, got %q", merged.Name)
+		}
+	})
+
+	t.Run("explicit new name is applied", func(t *testing.T) {
+		oldRaw := schemas.Key{ID: "key-1", Name: "prod-openai-key", Value: *schemas.NewSecretVar("sk-realkey1234567890abcdefghij")}
+		update := schemas.Key{ID: "key-1", Name: "renamed-key", Value: oldRaw.Value}
+
+		merged := merge(oldRaw, update)
+		if merged.Name != "renamed-key" {
+			t.Fatalf("expected new name applied, got %q", merged.Name)
+		}
+	})
+}
+
 func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	h := &ProviderHandler{}
 	merge := func(oldRaw, update schemas.Key) schemas.Key {

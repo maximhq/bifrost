@@ -2767,16 +2767,213 @@
       "post": {
         "operationId": "imageEdit",
         "summary": "Edit an image",
-        "description": "Edits an image using a text prompt and optional mask. Request must be sent as multipart/form-data\nwith at least `model`, `prompt` (unless `type` is `background_removal`), and `image` (or `image[]`).\n",
+        "description": "Edits an image using a text prompt and optional mask. Accepts either `application/json` (sources\nas URLs or base64 under `images`) or `multipart/form-data` (to upload the image as `image` or\n`image[]`). Requires at least `model`, one image, and `prompt` - the latter except for the\noperation types driven purely by the input image, e.g. `background_removal`. Only the JSON body\npreserves the types of provider-native extra params; multipart carries every value as a string.\n",
         "tags": [
           "Images"
         ],
         "requestBody": {
           "required": true,
           "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form\n/v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the\nprovider as extra params with their JSON types intact, which is what a model's nested tuning\nobject needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,\npost `multipart/form-data` instead - see `ImageEditMultipartRequest`.\n",
+                "required": [
+                  "model",
+                  "images"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "description": "One source image, either as a bare string - the form `input_images` takes on\n/v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept\na given form reject it.\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "description": "Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object\nform's `url`.\n"
+                        },
+                        {
+                          "type": "object",
+                          "description": "Exactly one of the two properties is expected.",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "description": "Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as\nbase64.\n"
+                            },
+                            "image": {
+                              "type": "string",
+                              "format": "byte",
+                              "description": "Base64-encoded image bytes"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "description": "Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no\nusable image is rejected. Providers treat the first image as the primary one (Runware's seed\nimage, Bedrock's style-transfer base), so the order is part of the contract. Only the\nreference-image models accept more than one; elsewhere images after the first are dropped.\n"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                  },
+                  "mask": {
+                    "type": "string",
+                    "format": "byte",
+                    "description": "Optional base64-encoded mask image for inpainting (transparent areas indicate regions to\nedit). Dropped for models that declare no mask input.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "inpainting",
+                      "outpainting",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
+                    ],
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of images to generate"
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": [
+                      "256x256",
+                      "512x512",
+                      "1024x1024",
+                      "1536x1024",
+                      "1024x1536",
+                      "auto"
+                    ],
+                    "description": "Size of the output image"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json",
+                      "data_uri"
+                    ],
+                    "default": "url",
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, stream the response via Server-Sent Events"
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ],
+                    "description": "Background type for the image"
+                  },
+                  "input_fidelity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "high"
+                    ],
+                    "description": "How closely to follow the original image"
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of partial images to generate when streaming"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "high",
+                      "medium",
+                      "low",
+                      "standard"
+                    ],
+                    "description": "Quality of the output image"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "webp",
+                      "jpeg",
+                      "tiff",
+                      "svg"
+                    ],
+                    "description": "Output image format. `svg` applies to vectorize operations"
+                  },
+                  "num_inference_steps": {
+                    "type": "integer",
+                    "description": "Number of inference steps"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Compression level (0-100%)"
+                  },
+                  "negative_prompt": {
+                    "type": "string",
+                    "description": "What to avoid in the edit"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "User identifier for tracking"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
             "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "description": "Multipart encoding of an image edit, and the only encoding that can upload the image as a file.\nThis is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a\nstring, so provider-native extra params arrive as strings; post `application/json` instead when\na provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.\n",
                 "required": [
                   "model"
                 ],
@@ -10225,9 +10422,206 @@
         "requestBody": {
           "required": true,
           "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form\n/v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the\nprovider as extra params with their JSON types intact, which is what a model's nested tuning\nobject needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,\npost `multipart/form-data` instead - see `ImageEditMultipartRequest`.\n",
+                "required": [
+                  "model",
+                  "images"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "description": "One source image, either as a bare string - the form `input_images` takes on\n/v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept\na given form reject it.\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "description": "Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object\nform's `url`.\n"
+                        },
+                        {
+                          "type": "object",
+                          "description": "Exactly one of the two properties is expected.",
+                          "properties": {
+                            "url": {
+                              "type": "string",
+                              "description": "Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as\nbase64.\n"
+                            },
+                            "image": {
+                              "type": "string",
+                              "format": "byte",
+                              "description": "Base64-encoded image bytes"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "description": "Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no\nusable image is rejected. Providers treat the first image as the primary one (Runware's seed\nimage, Bedrock's style-transfer base), so the order is part of the contract. Only the\nreference-image models accept more than one; elsewhere images after the first are dropped.\n"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                  },
+                  "mask": {
+                    "type": "string",
+                    "format": "byte",
+                    "description": "Optional base64-encoded mask image for inpainting (transparent areas indicate regions to\nedit). Dropped for models that declare no mask input.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "inpainting",
+                      "outpainting",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
+                    ],
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of images to generate"
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": [
+                      "256x256",
+                      "512x512",
+                      "1024x1024",
+                      "1536x1024",
+                      "1024x1536",
+                      "auto"
+                    ],
+                    "description": "Size of the output image"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json",
+                      "data_uri"
+                    ],
+                    "default": "url",
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, stream the response via Server-Sent Events"
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ],
+                    "description": "Background type for the image"
+                  },
+                  "input_fidelity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "high"
+                    ],
+                    "description": "How closely to follow the original image"
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of partial images to generate when streaming"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "high",
+                      "medium",
+                      "low",
+                      "standard"
+                    ],
+                    "description": "Quality of the output image"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "webp",
+                      "jpeg",
+                      "tiff",
+                      "svg"
+                    ],
+                    "description": "Output image format. `svg` applies to vectorize operations"
+                  },
+                  "num_inference_steps": {
+                    "type": "integer",
+                    "description": "Number of inference steps"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Compression level (0-100%)"
+                  },
+                  "negative_prompt": {
+                    "type": "string",
+                    "description": "What to avoid in the edit"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "User identifier for tracking"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            },
             "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "description": "Multipart encoding of an image edit, and the only encoding that can upload the image as a file.\nThis is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a\nstring, so provider-native extra params arrive as strings; post `application/json` instead when\na provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.\n",
                 "required": [
                   "model"
                 ],
@@ -44043,7 +44437,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -44326,7 +44721,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -44609,7 +45005,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -44915,7 +45312,8 @@
                   },
                   "tool_sync_interval": {
                     "type": "integer",
-                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config; a negative value disables\nperiodic tool sync for this client.\n"
+                    "minimum": 0,
+                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config.\n"
                   },
                   "tool_execution_timeout": {
                     "type": "integer",
@@ -92630,7 +93028,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -92960,7 +93359,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",

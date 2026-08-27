@@ -3,7 +3,7 @@ title: "Migrating to Enterprise v2.0.0"
 description: "Breaking changes and migration instructions for the Enterprise v2.0.0 release"
 ---
 
-Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, the plugin transport-hook change, and how the changes interact with SCIM-based authentication.
+Enterprise v2.0.0 is built on the OSS v2.0.0 base and inherits its breaking changes. This page summarizes the inherited changes, the Enterprise license requirement, the plugin transport-hook change, and how the changes interact with SCIM-based authentication.
 
 <Warning>
 **A provisioned Bifrost Enterprise license is required for v2.0.0.** Before migrating, contact the Bifrost team to obtain your `license.bif` file. Set the entire contents of this file as the value of the `BIFROST_LICENSE` environment variable on every node running Bifrost. Complete this configuration before upgrading to avoid interrupting your deployment.
@@ -11,14 +11,17 @@ Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both b
 
 ---
 
-## Inherited OSS `2.0.0-prerelease3` Breaking Changes
+## Inherited OSS v2.0.0 Breaking Changes
 
-Enterprise v2.0.0 ships with the OSS `2.0.0-prerelease3` base, so both breaking changes from that release apply. See the [OSS v2.0.0 Migration Guide](/migration-guides/v2.0.0) for full before/after examples.
+Enterprise v2.0.0 ships on the OSS v2.0.0 base, so all five OSS breaking changes apply. See the [OSS v2.0.0 Migration Guide](/migration-guides/v2.0.0) for full before/after examples and the migration checklist.
 
 | OSS # | Change | What you must do |
 |-------|--------|------------------|
 | 1 | **Custom plugin downloads are now SSRF-protected** | If any custom plugin `.so` (whether defined in `config.json` or via the admin API) is hosted on an internal/private-network URL, add that host to `server.plugin_download_private_allowlist`, or switch to a local file path |
 | 2 | **Custom plugin creation/update now requires admin authentication** | If dashboard auth is disabled or unconfigured, enable it before creating or updating a plugin with a custom `path` through the admin API. **OIDC SSO or SCIM provisioning already counts as configured dashboard auth**, so most Enterprise deployments need no action here (see [User Provisioning](/enterprise/user-provisioning)). Plugins defined directly in `config.json` are unaffected by this specific check (see the SCIM note below for how this check behaves under SCIM specifically) |
+| 3 | **Governance APIs moved to the `/api/governance` namespace** | Move API clients, scripts, Postman collections, and UI callers to the canonical `/api/governance/*` paths, and switch Team/User list endpoints to `limit`/`offset` pagination. Legacy paths remain deprecated aliases for one GA release |
+| 4 | **`HTTPTransportPreHook` now runs after authentication** | If a custom plugin injects a credential from `HTTPTransportPreHook`, rename that function to `HTTPTransportPreAuthHook`. See [Plugin Transport Hooks](#plugin-transport-hooks-new-pre-auth-phase) below for the SCIM/identity-provider specifics |
+| 5 | **Request cost is now a per-category breakdown** | If any integration parses the `cost` / `token_usage.cost` object, remap the flat fields to the nested input/output/additional shape. Custom log store wrappers implementing `framework/logstore.LogStore` must update `BulkUpdateCost` to take `map[string]CostUpdate` |
 
 ---
 

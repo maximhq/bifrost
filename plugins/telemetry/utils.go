@@ -30,7 +30,6 @@ func getPrometheusLabelValues(expectedLabels []string, headerValues map[string]s
 // collectPrometheusKeyValues collects all metrics for a request including:
 // - Default metrics (path, method, status)
 // - Custom dimension headers (x-bf-dim-*) — the canonical header prefix
-// - Deprecated custom prometheus headers (x-bf-prom-*) — kept for backward compatibility
 // Returns a map of all label values
 func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 	path := string(ctx.Path())
@@ -47,20 +46,12 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 		"method": method,
 	}
 
-	// Collect custom dimension and prometheus headers
+	// Collect custom dimension headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
-		// x-bf-dim-* (canonical; replaces x-bf-prom-*)
+		// x-bf-dim-* (canonical custom-dimension prefix)
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
 			if labelName != "path" && labelName != "method" { // it was prepoulated in the context
-				labelValues[labelName] = string(value)
-				ctx.SetUserValue(keyStr, string(value))
-			}
-		}
-		// x-bf-prom-* (deprecated; kept for backward compatibility)
-		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
-			// Only set if not already provided via x-bf-dim-* (x-bf-dim takes precedence)
-			if _, alreadySet := labelValues[labelName]; !alreadySet && labelName != "path" && labelName != "method" {
 				labelValues[labelName] = string(value)
 				ctx.SetUserValue(keyStr, string(value))
 			}

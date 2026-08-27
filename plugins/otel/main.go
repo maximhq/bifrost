@@ -1030,18 +1030,18 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	if method == "" {
 		method = span.Name
 	}
-	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
-	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrCustomerID, schemas.AttrCustomerName)
+	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
+	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
 	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
 		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
 		method,
-		getStringAttr(attrs, schemas.AttrVirtualKeyID),
-		getStringAttr(attrs, schemas.AttrVirtualKeyName),
-		getStringAttr(attrs, schemas.AttrSelectedKeyID),
-		getStringAttr(attrs, schemas.AttrSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrFallbackIndex),
+		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyID),
+		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyName),
+		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyID),
+		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyName),
+		getIntAttr(attrs, schemas.AttrBifrostFallbackIndex),
 		teamIDs,
 		teamNames,
 		customerIDs,
@@ -1232,22 +1232,16 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 
 	// Record retries used for this request. Read off the final span (the last attempt's
 	// attempt index) so the value is "total retries used", matching the Prometheus side.
-	retries := getIntAttr(attrs, schemas.AttrNumberOfRetries)
+	retries := getIntAttr(attrs, schemas.AttrBifrostRetries)
 	exporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
-	// Record token usage - try both naming conventions
-	inputTokens := getIntAttr(attrs, schemas.AttrPromptTokens)
-	if inputTokens == 0 {
-		inputTokens = getIntAttr(attrs, schemas.AttrInputTokens)
-	}
+	// Record token usage
+	inputTokens := getIntAttr(attrs, schemas.AttrInputTokens)
 	if inputTokens > 0 {
 		exporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
 	}
 
-	outputTokens := getIntAttr(attrs, schemas.AttrCompletionTokens)
-	if outputTokens == 0 {
-		outputTokens = getIntAttr(attrs, schemas.AttrOutputTokens)
-	}
+	outputTokens := getIntAttr(attrs, schemas.AttrOutputTokens)
 	if outputTokens > 0 {
 		exporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
 	}
@@ -1259,10 +1253,9 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	}
 
 	// Record streaming latency metrics if available
-	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstToken)
+	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstChunk)
 	if ttft > 0 {
-		// Convert from nanoseconds to seconds if needed (check the unit)
-		exporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
+		exporter.RecordStreamFirstTokenLatency(ctx, ttft, otelAttrs...)
 	}
 
 	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the

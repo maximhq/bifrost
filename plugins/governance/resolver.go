@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -185,7 +186,6 @@ func (r *BudgetResolver) EvaluateTeamRequest(ctx *schemas.BifrostContext, teamID
 		Decision: DecisionAllow,
 		Reason:   "Team-level checks passed",
 	}
-
 }
 
 // EvaluateUserRequest evaluates user-level rate limits and budgets (enterprise-only)
@@ -297,9 +297,14 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	// Passthrough forwards raw provider routes where a model may or may not be resolvable for some request types.
 	// Video edit's model is itself optional (e.g. OpenAI infers it from the source video ID), so it's
 	// checked only when the caller actually supplied one, same as passthrough.
-	isPassthrough := requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest
-	checkModelIfPresent := isPassthrough || requestType == schemas.VideoEditRequest
-	if !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !r.isModelAllowed(vk, provider, model) {
+	// Requests that are evaluated but never routed set the skip-model-check flag on the
+	// context. Their model is whatever upstream model the caller was already talking to,
+	// not a model an operator granted this key, so the allowlist carries no meaning for
+	// them. This is separate from skipProviderCheck: a provider the key does configure
+	// still carries a model allowlist that would deny the request one step later.
+	skipModelCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipModelCheck)
+	checkModelIfPresent := IsModelCheckedWhenPresent(requestType)
+	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,4 +130,81 @@ func TestToHuggingFaceChatCompletionRequest_ResponseFormat(t *testing.T) {
 			tt.validate(t, result)
 		})
 	}
+}
+
+func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
+	makeReq := func(so *schemas.ChatStreamOptions) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Model: "moonshotai/Kimi-K3:together",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params: &schemas.ChatParameters{
+				StreamOptions: so,
+			},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		streamOptions *schemas.ChatStreamOptions
+		wantInclude   bool
+	}{
+		{
+			// Regression: the shared streaming handler defaults include_usage on its
+			// own request path only, so without this the HuggingFace router omits the
+			// terminal usage chunk and the stream reports zero tokens.
+			name:          "defaults_include_usage_when_caller_sends_none",
+			streamOptions: nil,
+			wantInclude:   true,
+		},
+		{
+			name:          "keeps_caller_include_usage_true",
+			streamOptions: &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)},
+			wantInclude:   true,
+		},
+		{
+			name:          "keeps_caller_include_usage_false",
+			streamOptions: &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(false)},
+			wantInclude:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ToHuggingFaceChatCompletionStreamRequest(makeReq(tt.streamOptions))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			require.NotNil(t, result.Stream)
+			assert.True(t, *result.Stream)
+
+			require.NotNil(t, result.StreamOptions)
+			require.NotNil(t, result.StreamOptions.IncludeUsage)
+			assert.Equal(t, tt.wantInclude, *result.StreamOptions.IncludeUsage)
+		})
+	}
+
+	t.Run("include_usage_reaches_the_wire", func(t *testing.T) {
+		result, err := ToHuggingFaceChatCompletionStreamRequest(makeReq(nil))
+		require.NoError(t, err)
+
+		body, err := json.Marshal(result)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), `"stream_options":{"include_usage":true}`)
+	})
+
+	t.Run("nil_request", func(t *testing.T) {
+		result, err := ToHuggingFaceChatCompletionStreamRequest(nil)
+		require.NoError(t, err)
+		assert.Nil(t, result)
+	})
+}
+
+// HuggingFace's router terminates chat-completion streams with an explicit
+// `data: [DONE]`, so the shared streaming loop must not break early on
+// finish_reason. Breaking early discards the trailing usage-only chunk
+// (`choices: []` plus top-level `usage`), which several inference providers
+// emit after the finish chunk — the stream then completes with zero tokens.
+func TestHuggingFaceSendsDoneMarker(t *testing.T) {
+	assert.True(t, providerUtils.ProviderSendsDoneMarker(schemas.HuggingFace),
+		"HuggingFace sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
 }

@@ -64,6 +64,7 @@ type ChannelMessage struct {
 	ResponseStream chan chan *schemas.BifrostStreamChunk
 	Err            chan schemas.BifrostError
 	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
+	sentAt         time.Time          // set by the worker immediately before sending the result/error, so tryRequest can measure the worker->caller goroutine-hop latency ("worker-handoff")
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -4439,6 +4440,17 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 	return nil
 }
 
+// UpdateMCPToolSyncInterval hot-reloads the global MCP tool sync interval and
+// re-times the periodic checkers of every client that follows the global
+// setting. Pass a non-positive interval to fall back to the built-in default.
+func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	bifrost.MCPManager.UpdateToolSyncInterval(interval)
+	return nil
+}
+
 // PROVIDER MANAGEMENT
 
 // createBaseProvider creates a provider based on the base provider type
@@ -5208,6 +5220,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// "handle-setup" overhead phase: model-catalog publish + the pre-request hook
+	// pipeline glue. Per-plugin work nests as its own spans; this bucket is the
+	// remaining core-side setup so it stops folding into "core".
+	setupSpan := bifrost.startCoreSpan(ctx, "handle-setup")
+
 	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
 	// before any hook runs.
 	bifrost.setModelCatalogOnContext(ctx)
@@ -5218,6 +5235,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	bifrost.endCoreSpan(setupSpan)
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider/model after PreRequestHook means no plugin
@@ -5335,6 +5353,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	ctx.ResetUpstreamLatency()
+	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -5497,6 +5516,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// must be set before requestHandler() is called.
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
 
+	// "pipeline-pre" overhead phase: the LLM pre-hook pipeline glue (loop + pool
+	// around the per-plugin spans that nest inside it), previously part of "core".
+	prePipeSpan := bifrost.startCoreSpan(ctx, "pipeline-pre")
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
 
@@ -5504,6 +5526,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
+	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
@@ -5626,6 +5649,18 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pluginCount := len(*bifrost.llmPlugins.Load())
 	select {
 	case result = <-msg.Response:
+		// Worker->caller goroutine-hop latency: measure the instant we receive so the
+		// breakdown carves this scheduling gap out of "core" into "worker-handoff".
+		if !msg.sentAt.IsZero() {
+			msg.Context.StampWorkerHandoff(time.Since(msg.sentAt))
+		}
+		// "pipeline-post" overhead phase: everything from here to return (latency stamp,
+		// post-hook pipeline glue, raw-field stripping, message release). The defer is
+		// function-scoped and this case ends by returning, so it times exactly the post
+		// block; per-plugin post-hook spans nest inside and subtract out.
+		if ph := bifrost.startCoreSpan(msg.Context, "pipeline-post"); ph.h != nil {
+			defer bifrost.endCoreSpan(ph)
+		}
 		// Accumulator is complete once the provider returns; stamp before post-hooks
 		// so logging reads it off ExtraFields.
 		populateLatencyExtraFields(msg.Context, result)
@@ -5658,6 +5693,14 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
+		// Worker->caller goroutine-hop latency on the error path too.
+		if !msg.sentAt.IsZero() {
+			msg.Context.StampWorkerHandoff(time.Since(msg.sentAt))
+		}
+		// "pipeline-post" overhead phase on the error path (see the success case above).
+		if ph := bifrost.startCoreSpan(msg.Context, "pipeline-post"); ph.h != nil {
+			defer bifrost.endCoreSpan(ph)
+		}
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -6121,7 +6164,7 @@ func executeRequestWithRetries[T any](
 				keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
 				if attempts > 0 {
-					keyTracer.SetAttribute(keyHandle, schemas.AttrLegacyRetryCount, attempts)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostRetries, attempts)
 				}
 			}
 
@@ -6293,46 +6336,31 @@ func executeRequestWithRetries[T any](
 		span.SetAttribute(schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		span.SetAttribute(schemas.AttrRequestModel, model)
 		span.SetAttribute(schemas.AttrOperationName, otelOp)
-		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
-		if attempts > 0 {
-			span.SetAttribute(schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
-		}
+		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
-		// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: the
-		// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
-		// are the canonical home going forward; once all dashboards migrate, drop the
-		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			span.SetAttribute(schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			span.SetAttribute(schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			span.SetAttribute(schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			span.SetAttribute(schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			span.SetAttribute(schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			span.SetAttribute(schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostCustomerName, customerName)
 		}
 		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
@@ -6369,10 +6397,8 @@ func executeRequestWithRetries[T any](
 			span.SetAttribute(schemas.AttrBifrostUserEmail, userEmail)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			span.SetAttribute(schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			span.SetAttribute(schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		span.SetAttribute(schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
 		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
@@ -6681,6 +6707,7 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -6732,6 +6759,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		_, model, _ := req.BifrostRequest.GetRequestFields()
+
+		// "worker-setup" overhead phase: per-attempt base-provider resolution and the
+		// raw-capture flag computation (~a dozen ctx writes) the worker does between
+		// dequeue and key acquisition. No early exits in this block, so a single span
+		// pair is safe; closed just before key acquisition below.
+		workerSetupSpan := bifrost.startCoreSpan(req.Context, "worker-setup")
 
 		var result *schemas.BifrostResponse
 		var stream chan *schemas.BifrostStreamChunk
@@ -6811,6 +6844,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
 		// Tells the logging plugin whether to persist raw bytes in log records.
 		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
+		bifrost.endCoreSpan(workerSetupSpan)
 
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
@@ -6898,7 +6932,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Build the key pool for this request. Selection and rotation are deferred to
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
 					// a different key (on rate-limit errors) without re-running the full filtering.
+					// "key-pool" overhead phase: building the candidate key pool (filtering,
+					// governance/alias resolution) is worker-side work that otherwise folds
+					// into "core"; the per-attempt pick is the separate "key.selection" span.
+					keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
 					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+					bifrost.endCoreSpan(keyPoolSpan)
 					if keyPoolErr != nil {
 						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
 						req.Err <- schemas.BifrostError{
@@ -7153,6 +7192,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				lastAttemptFinalizer(req.Context)
 			}
 		}
+
+		// Stamp the pre-send time so tryRequest can measure the worker->caller
+		// goroutine-hop latency ("worker-handoff") on receipt, regardless of which
+		// branch (error/stream/response) does the send below.
+		req.sentAt = time.Now()
 
 		if bifrostError != nil {
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
@@ -7704,7 +7748,13 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	for i, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
-		// Start span for this plugin's PreLLMHook
+		// Start span for this plugin's PreLLMHook. Capture the parent first so we can
+		// restore it after this plugin ends: without the restore each plugin would set
+		// itself active and never revert, so the next plugin would nest under this one
+		// (a chain) instead of being a sibling. The overhead breakdown subtracts only
+		// DIRECT children, so a chained plugin's time would be counted in both its own
+		// bucket and the enclosing phase span's self-time (e.g. pipeline-pre).
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prehook, schemas.SpanKindPlugin)
 		// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
 		if spanID != "" {
@@ -7727,6 +7777,8 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 		} else {
 			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 		}
+		// Restore the parent so the next plugin is a sibling, not chained under this one.
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 
 		p.executedPreHooks = i + 1
 		if shortCircuit != nil {
@@ -7756,6 +7808,9 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
+		// Capture the parent so it can be restored after this plugin ends, keeping the
+		// next plugin a sibling rather than chained under this one (see RunLLMPreHooks).
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prerequesthook, schemas.SpanKindPlugin)
 		if spanID != "" {
 			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
@@ -7770,9 +7825,11 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
 			p.preHookErrors = append(p.preHookErrors, err)
 			p.logger.Warn("error in PreRequestHook for plugin %s: %s", pluginName, err.Error())
-			continue
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 		}
-		p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		// Restore the parent so the next plugin is a sibling, not chained under this one.
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 	}
 	ctx.UnblockRestrictedWrites()
 
@@ -7839,7 +7896,11 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
 			}
 		} else {
-			// For non-streaming: create span per plugin (existing behavior)
+			// For non-streaming: create span per plugin (existing behavior). Capture the
+			// parent first and restore it below so the next plugin is a sibling rather than
+			// chained under this one (see RunLLMPreHooks) — otherwise later post-hooks would
+			// be double-counted in both their bucket and the enclosing pipeline-post span.
+			prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 			spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
 			// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
 			if spanID != "" {
@@ -7857,6 +7918,8 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 			} else {
 				p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			}
+			// Restore the parent so the next plugin is a sibling, not chained under this one.
+			ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 		}
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that
@@ -8304,6 +8367,49 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // POOL & RESOURCE MANAGEMENT
 
+// coreSpan is the token returned by startCoreSpan and consumed by endCoreSpan. It
+// carries the span handle plus the context and the span ID that was active when the
+// phase opened, so endCoreSpan can restore the prior parent. The zero value is a valid
+// no-op (no trace active), so callers need no nil guard beyond checking cs.h when they
+// want a defer only on the active path.
+type coreSpan struct {
+	h    schemas.SpanHandle
+	ctx  *schemas.BifrostContext
+	prev any
+}
+
+// startCoreSpan opens an internal overhead phase span for a core-pipeline segment
+// (setup, key-pool build, pre/post processing) that sits on no other span and would
+// otherwise fold into the residual "core" bucket. It installs the new span as the
+// ACTIVE parent on ctx so any spans opened during the phase (plugin hooks, provider
+// phases) nest as its children — computeOverheadBreakdown subtracts direct children, so
+// without this the nested work would be counted in both this phase's self-time and its
+// own bucket. endCoreSpan restores the prior parent. Returns a zero coreSpan (no-op)
+// when no trace is active. name becomes the breakdown bucket.
+func (bifrost *Bifrost) startCoreSpan(ctx *schemas.BifrostContext, name string) coreSpan {
+	t := bifrost.getTracer()
+	if t == nil {
+		return coreSpan{}
+	}
+	prev := ctx.Value(schemas.BifrostContextKeySpanID)
+	id, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	if h == nil {
+		return coreSpan{}
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+	return coreSpan{h: h, ctx: ctx, prev: prev}
+}
+
+// endCoreSpan restores the parent that was active before the phase and closes the span.
+// Nil/zero-safe.
+func (bifrost *Bifrost) endCoreSpan(cs coreSpan) {
+	if cs.h == nil {
+		return
+	}
+	cs.ctx.SetValue(schemas.BifrostContextKeySpanID, cs.prev)
+	bifrost.getTracer().EndSpan(cs.h, schemas.SpanStatusOk, "")
+}
+
 // startQueueWaitSpan opens a nil-safe "queue-wait" internal span measuring how long
 // the message sits in the provider queue before a worker dequeues it. The handle is
 // stored on the message; endQueueWaitSpan closes it on dequeue, and
@@ -8348,6 +8454,10 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMe
 	msg.BifrostRequest = req
 	msg.Response = responseChan
 	msg.Err = errorChan
+	// Clear the previous user's send timestamp so a reused message can't report a
+	// stale worker-handoff duration on a path that never re-stamps it (e.g. the
+	// shutdown-drain error sends). The worker sets sentAt fresh before each normal send.
+	msg.sentAt = time.Time{}
 
 	// Conditionally allocate ResponseStream for streaming requests only
 	if IsStreamRequestType(req.RequestType) {
@@ -8662,7 +8772,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - SkipKeySelection (provider allows keyless requests; empty slice returned)
+//   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
@@ -8677,8 +8787,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return []schemas.Key{}, false, nil
 	}
 

@@ -787,6 +787,11 @@
                       },
                       "description": "Custom labels to add to all metrics"
                     },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Serve the Prometheus /metrics scrape endpoint. Default true."
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -954,13 +959,6 @@
                         "sgl",
                         "huggingface"
                       ]
-                    },
-                    "keys": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "API keys for embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)"
                     },
                     "embedding_model": {
                       "type": "string"
@@ -2261,6 +2259,36 @@
               "type": "boolean",
               "description": "Whether cluster mode is enabled"
             },
+            "type": {
+              "type": "string",
+              "enum": ["mesh", "broker"],
+              "description": "Cluster transport mode"
+            },
+            "broker": {
+              "type": "object",
+              "description": "Broker transport configuration",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "description": "Broker address in host:port format"
+                },
+                "listenPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Broker listen port"
+                },
+                "tls": {
+                  "type": "boolean",
+                  "description": "Whether to use TLS for the broker connection"
+                },
+                "authToken": {
+                  "type": "string",
+                  "description": "Optional shared secret sent when connecting to the broker"
+                }
+              },
+              "additionalProperties": false
+            },
             "peers": {
               "type": "array",
               "description": "List of peer addresses",
@@ -2422,16 +2450,40 @@
               }
             }
           },
-          "if": {
-            "properties": {
-              "enabled": {
-                "const": true
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "type": { "const": "broker" }
+                },
+                "required": ["enabled", "type"]
+              },
+              "then": {
+                "required": ["broker"],
+                "properties": {
+                  "broker": {
+                    "required": ["address"],
+                    "properties": {
+                      "address": { "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "type": { "const": "mesh" }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["gossip"]
               }
             }
-          },
-          "then": {
-            "required": ["gossip"]
-          }
+          ]
         },
         "scim": {
           "type": "object",
@@ -4341,6 +4393,107 @@
               "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "postgres": {
+              "type": "object",
+              "description": "Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store resolves to postgres). When enabled:false the postgres logs store shares the top-level postgresql connection.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "description": "PostgreSQL port. Accepts an integer (e.g. 5432) or an env.VAR_NAME string for environment-variable substitution.",
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "user": {
+                  "type": "string"
+                },
+                "password": {
+                  "type": "string"
+                },
+                "passwordCommand": {
+                  "type": "object",
+                  "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout. The result is cached for cache_ttl and shared across new physical connections",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^\\S+$"
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "timeout": {
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    },
+                    "cache_ttl": {
+                      "type": "string",
+                      "description": "How long a resolved password is reused across new physical connections (default 60s). Keep below the credential's validity window.",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    }
+                  },
+                  "required": ["command"],
+                  "additionalProperties": false
+                },
+                "connMaxLifetime": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "database": {
+                  "type": "string"
+                },
+                "sslMode": {
+                  "type": "string",
+                  "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+                },
+                "existingSecret": {
+                  "type": "string"
+                },
+                "passwordKey": {
+                  "type": "string"
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": ["host", "port", "user", "database", "sslMode"]
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["password", "passwordCommand"]
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["existingSecret", "passwordCommand"]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            },
             "matviewRefreshInterval": {
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
@@ -4648,6 +4801,18 @@
         "primary": {
           "type": "object",
           "properties": {
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the PostgreSQL pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the PostgreSQL pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the PostgreSQL pod assignment"
+            },
             "persistence": {
               "type": "object",
               "properties": {
@@ -5521,13 +5686,6 @@
               },
               "description": "Azure scopes for authentication"
             },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
-            },
             "api_version": {
               "type": "string",
               "description": "Azure API version"
@@ -5564,13 +5722,6 @@
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
               "default": false
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             }
           },
           "required": ["project_id", "region"],
@@ -5618,13 +5769,6 @@
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             },
             "batch_s3_config": {
               "type": "object",
@@ -6585,13 +6729,6 @@
                     },
                     "description": "Azure scopes for authentication"
                   },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
@@ -6627,13 +6764,6 @@
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                     "default": false
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   }
                 },
                 "additionalProperties": false
@@ -6676,13 +6806,6 @@
                   "batch_role_arn": {
                     "type": "string",
                     "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   },
                   "batch_s3_config": {
                     "type": "object",

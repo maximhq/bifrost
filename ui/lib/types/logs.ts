@@ -433,6 +433,44 @@ export interface LLMUsage {
 	completion_tokens_details?: CompletionTokensDetails;
 }
 
+// Cost breakdown types mirror schemas.BifrostCost: input + output + additional
+// reconcile to total. The sub-detail objects are present only when the usage
+// payload was retained (absent for OCR, offloaded, content-hidden, and list rows,
+// which still carry the top-level input/output/additional/total split).
+export interface InputCostDetails {
+	text_cost?: number;
+	audio_cost?: number;
+	image_cost?: number;
+	cached_read_cost?: number;
+	cached_write_cost?: number;
+	request_cost?: number; // flat per-request / OCR per-page / container per-session
+}
+
+export interface OutputCostDetails {
+	text_cost?: number;
+	audio_cost?: number;
+	image_cost?: number;
+	reasoning_cost?: number;
+	citation_cost?: number;
+	search_queries_cost?: number;
+}
+
+export interface AdditionalCostDetails {
+	guardrail_cost?: number; // guardrail judge-call cost
+	mcp_cost?: number; // MCP tool-execution cost
+	semantic_cache_cost?: number; // semantic-cache embedding-lookup cost
+}
+
+export interface CostBreakdown {
+	input_cost?: number;
+	input_cost_details?: InputCostDetails;
+	output_cost?: number;
+	output_cost_details?: OutputCostDetails;
+	additional_cost?: number;
+	additional_cost_details?: AdditionalCostDetails;
+	total_cost?: number;
+}
+
 export interface CacheDebug {
 	cache_hit: boolean;
 	cache_id?: string;
@@ -652,6 +690,7 @@ export interface LogEntry {
 	batch_debug?: BatchDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
+	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
 	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "ultrafast" / "default".
 	service_tier?: string;
