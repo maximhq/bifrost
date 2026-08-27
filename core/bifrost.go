@@ -5191,6 +5191,16 @@ func populateLatencyExtraFields(ctx *schemas.BifrostContext, resp *schemas.Bifro
 	if start, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
 		resp.PopulateOverheadLatency(ctx, time.Since(start))
 	}
+	populateBillingAttemptResponseExtraFields(ctx, resp)
+}
+
+// populateBillingAttemptResponseExtraFields stamps the current attempt's start
+// time on a response. Post-hooks may replace responses without copying metadata,
+// so callers also use this between hooks to preserve the authoritative value.
+func populateBillingAttemptResponseExtraFields(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil {
+		return
+	}
 	if start, ok := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
 		startCopy := start
 		resp.GetExtraFields().BillingAttemptStartedAt = &startCopy
@@ -7993,6 +8003,12 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 			// Restore the parent so the next plugin is a sibling, not chained under this one.
 			ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 		}
+		// A post-hook may replace either object without copying ExtraFields. Restore
+		// the authoritative attempt timestamp before the next (outer) post-hook runs,
+		// so logging and pricing plugins never observe an unstamped replacement.
+		populateBillingAttemptResponseExtraFields(ctx, resp)
+		populateBillingAttemptExtraFields(ctx, bifrostErr)
+
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that
 	}

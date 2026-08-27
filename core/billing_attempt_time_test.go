@@ -68,3 +68,74 @@ func TestNilUnaryRequestsUseIsolatedContexts(t *testing.T) {
 		t.Fatalf("nil unary caller changed the shared Bifrost request ID: %q", v)
 	}
 }
+
+type billingAttemptPostHookPlugin struct {
+	name            string
+	replacement     *schemas.BifrostResponse
+	observedAttempt *time.Time
+}
+
+func (p *billingAttemptPostHookPlugin) GetName() string { return p.name }
+func (p *billingAttemptPostHookPlugin) Cleanup() error  { return nil }
+func (p *billingAttemptPostHookPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *billingAttemptPostHookPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *billingAttemptPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if p.replacement != nil {
+		return p.replacement, bifrostErr, nil
+	}
+	if resp != nil {
+		p.observedAttempt = resp.GetExtraFields().BillingAttemptStartedAt
+	}
+	return resp, bifrostErr, nil
+}
+
+// TestClearCtxForFallbackClearsBillingAttemptStartTime pins that fallback
+// pre-hooks cannot observe the primary provider attempt's timestamp.
+func TestClearCtxForFallbackClearsBillingAttemptStartTime(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetBillingAttemptStartTime(time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC))
+
+	clearCtxForFallback(ctx)
+
+	if got := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime); got != nil {
+		t.Fatalf("billing attempt timestamp survived fallback reset: %#v", got)
+	}
+}
+
+// TestRunPostLLMHooksRestampsReplacementResponse ensures a post-hook that
+// replaces a response cannot hide the provider attempt time from an outer
+// logging or pricing hook.
+func TestRunPostLLMHooksRestampsReplacementResponse(t *testing.T) {
+	startedAt := time.Date(2026, 8, 27, 10, 30, 0, 0, time.UTC)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetBillingAttemptStartTime(startedAt)
+
+	observer := &billingAttemptPostHookPlugin{name: "observer"}
+	replacement := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	replacer := &billingAttemptPostHookPlugin{name: "replacer", replacement: replacement}
+	pipeline := &PluginPipeline{
+		logger:     NewNoOpLogger(),
+		tracer:     &schemas.NoOpTracer{},
+		llmPlugins: []schemas.LLMPlugin{observer, replacer},
+	}
+
+	resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{},
+	}, nil, 2)
+	if bifrostErr != nil {
+		t.Fatalf("RunPostLLMHooks returned error: %#v", bifrostErr)
+	}
+	if resp != replacement {
+		t.Fatalf("RunPostLLMHooks response = %p, want replacement %p", resp, replacement)
+	}
+	if observer.observedAttempt == nil || !observer.observedAttempt.Equal(startedAt) {
+		t.Fatalf("outer post-hook observed billing attempt %v, want %v", observer.observedAttempt, startedAt)
+	}
+	if got := resp.GetExtraFields().BillingAttemptStartedAt; got == nil || !got.Equal(startedAt) {
+		t.Fatalf("final replacement response billing attempt = %v, want %v", got, startedAt)
+	}
+}
