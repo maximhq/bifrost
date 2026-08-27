@@ -1504,15 +1504,11 @@ type ChatInputImage struct {
 	Detail *string `json:"detail,omitempty"`
 }
 
-// ChatInputVideo represents video data in a message (vLLM/Qwen-style
-// `video_url` content parts). URL carries either a remote URL or a
-// data: URI with base64-encoded video content. Not part of OpenAI's
-// published schema, but accepted by OpenAI-compatible multimodal
-// backends (vLLM, SGLang, Dashscope); without this field the payload
-// was silently dropped at unmarshal and providers received
-// `{"type":"video_url"}` with no body.
+// ChatInputVideo represents video data in a message (vLLM/Qwen-style `video_url`
+// content parts). Not part of OpenAI's published schema, but accepted by
+// OpenAI-compatible multimodal backends (vLLM, SGLang, Dashscope).
 type ChatInputVideo struct {
-	URL string `json:"url,omitempty"`
+	URL string `json:"url,omitempty"` // Remote URL, or data: URI with base64-encoded video
 }
 
 // ChatInputAudio represents audio data in a message.
