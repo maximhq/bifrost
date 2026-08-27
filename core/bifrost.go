@@ -6619,8 +6619,6 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 
-		bifrost.endCoreSpan(workerSetupSpan)
-
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
