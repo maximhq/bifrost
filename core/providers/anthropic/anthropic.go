@@ -625,6 +625,47 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 // totals only after the full stream, so the streaming accumulator must apply the
 // same fold before billing - including on a mid-stream cancel/timeout. The += is
 // not idempotent; callers guard with a flag to apply it exactly once.
+// usageEventHasCacheCounters reports whether one SSE usage payload actually carries cache
+// counters, and is therefore authoritative for input_tokens.
+//
+// input_tokens is NOT the same quantity on every Anthropic-dialect upstream, so it cannot be
+// max-merged across events unconditionally. Anthropic documents input_tokens as EXCLUDING the
+// cache counters (see AnthropicUsage), which is what makes the later cache fold
+// (normalizeCachedUsage / buildAnthropicPassthroughUsage) correct. Some upstreams (observed:
+// QwenCloud's /apps/anthropic and Moonshot/Kimi) instead put the FULL prompt count in
+// message_start.usage.input_tokens while their cache counters are still zero or absent, and send
+// the real cache-aware split only in message_delta. Max-merging both kept the cache-less figure,
+// and the fold then added cache_read on top of a total that already included it -- roughly
+// doubling prompt_tokens on every cached streaming request.
+//
+// The test is on the VALUES, not on field presence: Kimi sends "cache_read_input_tokens": 0
+// explicitly on message_start, so a presence check would wrongly trust that frame.
+//
+// Upstream: maximhq/bifrost#5510 (still unfixed as of transports/v2.0.0).
+func usageEventHasCacheCounters(u *AnthropicUsage) bool {
+	if u == nil {
+		return false
+	}
+	return u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0
+}
+
+// shouldAcceptInputTokens reports whether this event's input_tokens should overwrite the value
+// already accumulated. An authoritative event (one carrying cache counters) always wins, even
+// downward; a non-authoritative one is a fallback that applies only while no authoritative event
+// has been seen. authSeen is derived from the accumulator's own cache details by the caller, so
+// the merge is order-independent and needs no extra state.
+//
+// Both Anthropic streaming accumulators -- the Responses one in
+// accumulateAnthropicResponsesUsage and the chat one in HandleAnthropicChatCompletionStreaming --
+// fold the cache counters into the prompt total afterwards, so both must apply this rule or the
+// cached prefix is counted twice. See usageEventHasCacheCounters.
+func shouldAcceptInputTokens(u *AnthropicUsage, accumulatedInput int, authSeen bool) bool {
+	if u == nil {
+		return false
+	}
+	return usageEventHasCacheCounters(u) || (!authSeen && u.InputTokens > accumulatedInput)
+}
+
 func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	if usage == nil || usage.PromptTokensDetails == nil {
 		return
@@ -679,7 +720,13 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			}
 		}
 	}
-	if usageToProcess.InputTokens > usage.InputTokens {
+	// An event carrying cache counters is authoritative for input_tokens; one without them is
+	// only a fallback, used until an authoritative event turns up. authSeen is derived from the
+	// accumulator itself, so the merge stays order-independent and no extra state is needed.
+	// See usageEventHasCacheCounters.
+	authSeen := usage.InputTokensDetails != nil &&
+		(usage.InputTokensDetails.CachedReadTokens > 0 || usage.InputTokensDetails.CachedWriteTokens > 0)
+	if shouldAcceptInputTokens(usageToProcess, usage.InputTokens, authSeen) {
 		usage.InputTokens = usageToProcess.InputTokens
 		if billedUsage != nil {
 			billedUsage.PromptTokens = usageToProcess.InputTokens
@@ -1064,7 +1111,13 @@ func HandleAnthropicChatCompletionStreaming(
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
 				// then add up all tokens
-				if usageToProcess.InputTokens > usage.PromptTokens {
+				// Same authoritative-event rule as the Responses accumulator above: this path
+				// folds the cache counters into PromptTokens via normalizeCachedUsage, so a
+				// cache-less message_start input_tokens must not win. See
+				// usageEventHasCacheCounters.
+				authSeen := usage.PromptTokensDetails != nil &&
+					(usage.PromptTokensDetails.CachedReadTokens > 0 || usage.PromptTokensDetails.CachedWriteTokens > 0)
+				if shouldAcceptInputTokens(usageToProcess, usage.PromptTokens, authSeen) {
 					usage.PromptTokens = usageToProcess.InputTokens
 				}
 				if usageToProcess.OutputTokens > usage.CompletionTokens {
