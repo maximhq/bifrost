@@ -10,8 +10,10 @@ import (
 // declared via the x-bf-request-timeout header (schemas.BifrostContextKeyRequestTimeout),
 // if any, and returns a stop function that must be called exactly once when
 // the request (handleRequest) or the whole stream across every attempt and
-// fallback (handleStreamRequest) truly completes. stop is a no-op if no
-// deadline was declared.
+// fallback (handleStreamRequest) truly completes, plus whether a deadline was
+// actually armed. stop is a no-op when armed is false. Callers that
+// conditionally wrap a stream (see wrapStreamForRequestTimeout) use armed to
+// skip wrapping when there is nothing to enforce.
 //
 // On expiry the timer sets BifrostContextKeyRequestTimeoutFired before
 // cancelling ctx, so PostLLMHook plugins can distinguish a declared deadline
@@ -24,10 +26,10 @@ import (
 // ConvertToBifrostContext), before any plugin hook has run -- WithPluginScope
 // wrapping only happens later, when core calls into an individual plugin's
 // hook method -- so ctx.Cancel() here needs no Root() indirection.
-func armRequestTimeout(ctx *schemas.BifrostContext) (stop func()) {
+func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	d, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
 	if d <= 0 {
-		return func() {}
+		return func() {}, false
 	}
 	timer := time.AfterFunc(d, func() {
 		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
@@ -35,7 +37,7 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func()) {
 	})
 	return func() {
 		timer.Stop()
-	}
+	}, true
 }
 
 // wrapStreamForRequestTimeout proxies ch so stop runs once ch is fully
@@ -45,16 +47,28 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func()) {
 // returned, and the deadline must keep the whole stream, not just its setup,
 // in scope.
 //
-// The forwarding send also selects on ctx.Done(): a consumer that abandons
-// the stream (e.g. an SDK caller returning on its own ctx cancellation
-// instead of finishing the range loop) would otherwise leave `out <- chunk`
-// blocked forever, so close(out)/stop() would never run. Once cancelled, the
-// goroutine stops trying to forward and instead just drains ch to
-// exhaustion -- discarding chunks instead of leaving the producer blocked
-// writing into ch -- before running its deferred cleanup.
-func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func()) chan *schemas.BifrostStreamChunk {
+// Returns ch unwrapped when armed is false (no deadline was declared): stop
+// is a no-op in that case too, so there is nothing to enforce, and every
+// successful stream would otherwise pay for an extra channel and forwarding
+// goroutine it never needed.
+//
+// The forwarding send checks ctx.Done() before each send, and again
+// alongside it in the select: a consumer that abandons the stream (e.g. an
+// SDK caller returning on its own ctx cancellation instead of finishing the
+// range loop) would otherwise leave `out <- chunk` blocked forever, so
+// close(out)/stop() would never run. The leading check also keeps a chunk
+// from being forwarded in the same instant cancellation fires -- select does
+// not otherwise prefer one ready case over another, so without it a chunk
+// could still win the race against an already-closed ctx.Done(). Once
+// cancelled, the goroutine stops trying to forward and instead just drains
+// ch to exhaustion -- discarding chunks instead of leaving the producer
+// blocked writing into ch -- before running its deferred cleanup.
+func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool) chan *schemas.BifrostStreamChunk {
 	if ch == nil {
 		stop()
+		return ch
+	}
+	if !armed {
 		return ch
 	}
 	out := make(chan *schemas.BifrostStreamChunk)
@@ -62,6 +76,13 @@ func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.B
 		defer close(out)
 		defer stop()
 		for chunk := range ch {
+			select {
+			case <-ctx.Done():
+				for range ch {
+				}
+				return
+			default:
+			}
 			select {
 			case out <- chunk:
 			case <-ctx.Done():
