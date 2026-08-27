@@ -456,7 +456,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if existingVK, found := store.GetVirtualKeyByID(ctx, virtualKey.ID); found && existingVK != nil && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
 		s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
 	}
-	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
 	// an access profile has its VK-scoped governance model configs deleted).
