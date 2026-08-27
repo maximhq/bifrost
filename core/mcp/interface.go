@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -23,6 +24,10 @@ type MCPManagerInterface interface {
 	// DisableAutoToolInject in the config controls auto injection — pass the
 	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
+
+	// UpdateToolSyncInterval replaces the global tool sync interval at runtime
+	// and re-times the periodic checkers of clients that follow it.
+	UpdateToolSyncInterval(interval time.Duration)
 
 	// Agent Mode Operations
 	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.

@@ -1,5 +1,10 @@
 package schemas
 
+import (
+	"bytes"
+	"fmt"
+)
+
 type ImageEventType string
 
 const (
@@ -214,7 +219,7 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
-	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
+	NumInputImages      int                `json:"-"`              // Number of input images from the request (populated by Bifrost)
 	Cost                *BifrostCost       `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
@@ -339,6 +344,32 @@ type ImageEditInput struct {
 type ImageInput struct {
 	Image []byte `json:"image"`
 	URL   string `json:"url,omitempty"` // alternative to Image; providers that require bytes reject it
+}
+
+// UnmarshalJSON accepts either the object form or a bare string, so images: ["https://..."] reads
+// the way input_images does on /v1/images/generations. A string lands in URL, the same field the
+// multipart image_url path fills. Marshalling always emits the object form.
+func (i *ImageInput) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		i.Image = nil
+		i.URL = ""
+		return nil
+	}
+
+	var s string
+	if err := Unmarshal(data, &s); err == nil {
+		i.Image = nil
+		i.URL = s
+		return nil
+	}
+	type imageInput ImageInput
+	var obj imageInput
+	if err := Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("image input is neither a string nor an object")
+	}
+	*i = ImageInput(obj)
+	return nil
 }
 
 type ImageEditParameters struct {

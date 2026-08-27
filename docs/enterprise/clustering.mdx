@@ -231,6 +231,29 @@ platform that can make an outbound gRPC connection.
 | Leader election | Deterministic over gossip members | Deterministic over the broker roster (same algorithm) |
 | Entity replication | Over the gRPC mesh | Over the broker relay - identical entity types |
 
+### Broker-mode synchronization performance
+
+Broker mode separates cluster traffic into dedicated lanes for general messages,
+heartbeats, governance usage, KV-store updates, circuit-breaker events,
+load-balancer logs, and diagnostics. This prevents heavy traffic in one lane from
+blocking a different kind of cluster traffic.
+
+However, all messages of the same type addressed to a node share that node's
+corresponding broker stream:
+
+```text
+Node B ─┐
+Node C ─┼──> Node A's governance stream
+Node D ─┘
+```
+
+Mesh mode instead has a separate stream between each pair of nodes. As a result,
+slow processing or heavy traffic from one peer can delay same-lane messages from
+other peers in broker mode. Broker mode may therefore synchronize more slowly
+than mesh mode under contention. Use mesh mode when the environment permits
+direct node-to-node connectivity and maximum synchronization performance is
+required.
+
 Leadership in broker mode uses the **same deterministic rule** as mesh mode:
 the lexicographically-smallest node ID in the roster is the leader. Every node
 computes this independently from the roster the broker pushes, so there is

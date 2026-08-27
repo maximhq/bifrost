@@ -445,7 +445,11 @@ export default function MCPClientSheet({
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
-					tool_sync_interval: data.tool_sync_interval ?? 0,
+					// Sent only when edited: PUT has PATCH semantics, and the
+					// nanoseconds-to-minutes normalization is lossy for a sub-minute
+					// interval set in config.json, so echoing the field back on an
+					// unrelated edit would silently rewrite it.
+					tool_sync_interval: form.formState.dirtyFields.tool_sync_interval ? (data.tool_sync_interval ?? 0) : undefined,
 					tool_execution_timeout: data.tool_execution_timeout ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
@@ -603,7 +607,7 @@ export default function MCPClientSheet({
 	return (
 		<>
 			<Sheet open onOpenChange={(open) => !open && onClose()}>
-				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
+				<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
 					<SheetHeader className="w-full p-0 px-4 py-4 md:px-8" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<div className="flex w-full items-center justify-between">
 							<div className="space-y-2">
@@ -885,8 +889,7 @@ export default function MCPClientSheet({
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
 																					<p>
-																						Override the global tool sync interval for this server. Leave empty to use global setting. Set
-																						to -1 to disable sync for this server.
+																						Override the global tool sync interval for this server. Leave empty to use the global setting.
 																					</p>
 																				</TooltipContent>
 																			</Tooltip>
@@ -904,7 +907,7 @@ export default function MCPClientSheet({
 																			const val = e.target.value === "" ? undefined : parseInt(e.target.value);
 																			field.onChange(val);
 																		}}
-																		min="-1"
+																		min="0"
 																	/>
 																</FormControl>
 															</FormItem>

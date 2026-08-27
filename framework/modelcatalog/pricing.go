@@ -11,10 +11,20 @@ import (
 type BatchCostDetails = datasheet.BatchCostDetails
 
 // GetModelCapabilityEntryForModel returns capability metadata for a
-// (model, provider) pair. Prefers chat, then responses, then text-completion
-// entries; falls back to the lexicographically first available mode for
-// deterministic behavior.
+// (model, provider) pair. Alias lookups try the canonical model name, wire
+// model ID, and original alias key in that order. Within each model, chat,
+// responses, then text-completion entries are preferred.
 func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	if alias, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+		if alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
+			if entry := mc.datasheet.GetCapabilityEntry(*alias.Config.ModelName, provider); entry != nil {
+				return entry
+			}
+		}
+		if entry := mc.datasheet.GetCapabilityEntry(alias.Config.ModelID, provider); entry != nil {
+			return entry
+		}
+	}
 	return mc.datasheet.GetCapabilityEntry(model, provider)
 }
 
