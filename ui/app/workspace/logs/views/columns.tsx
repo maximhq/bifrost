@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import {
 	getProviderLabel,
@@ -393,11 +394,13 @@ export const createColumns = (
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
 				const model = row.original.model || batchAccountingDisplay(row.original)?.model;
+				const canonicalModel = row.original.canonical_model_name;
+				const modelLabel = canonicalModel && canonicalModel !== model ? `${canonicalModel} (${model})` : model;
 				return (
 					<div className="flex min-w-0 items-center gap-2">
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
-							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
+							<TruncatedLabel className="font-mono text-[12px]">{modelLabel || "N/A"}</TruncatedLabel>
 							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
 						</div>
 					</div>
