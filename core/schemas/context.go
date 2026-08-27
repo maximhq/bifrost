@@ -445,9 +445,13 @@ func (bc *BifrostContext) ClearBillingAttemptStartTime() {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	if bc.userValues != nil {
-		delete(bc.userValues, BifrostContextKeyBillingAttemptStartTime)
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
 	}
+	// Store an explicit nil sentinel instead of deleting the key: Value falls
+	// back to the parent when a key is absent locally, so this must also mask
+	// any timestamp inherited from a parent context.
+	bc.userValues[BifrostContextKeyBillingAttemptStartTime] = nil
 }
 
 // SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,
