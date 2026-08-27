@@ -311,6 +311,13 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 			summary.UnpricedCount = computed.UnpricedCount
 			summary.FailedCount = computed.FailedCount
 		}
+		// Snapshot before either aggregate-log write path. Unpriceable rows still
+		// contain usage-bearing model breakdowns; later re-drives must consume their
+		// original governance targets rather than resolving against reloaded state.
+		if req.ModelUsageResolver != nil && len(summary.ModelBreakdowns) > 0 && job.AggregateLogWrittenAt == nil {
+			ensureBatchAttribution(&req, job, req.BaseLog, req.SourceLog)
+			resolveModelUsageGovernanceIDs(ctx, req, summary)
+		}
 		// The batch ran and consumed tokens we simply could not price (typically the
 		// catalog has no batch rates for the model yet). Log the row with an unknown
 		// cost rather than dropping it: this mirrors the synchronous path, which
@@ -359,7 +366,7 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 	summary.FailedCount = computed.FailedCount
 	summary.Complete = computed.Complete
 
-	if req.ModelUsageResolver != nil && persisted != nil && persisted.AggregateLogWrittenAt == nil {
+	if req.ModelUsageResolver != nil && len(summary.ModelBreakdowns) > 0 && job.AggregateLogWrittenAt == nil {
 		ensureBatchAttribution(&req, job, req.BaseLog, req.SourceLog)
 		resolveModelUsageGovernanceIDs(ctx, req, summary)
 	}
@@ -405,7 +412,20 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 		return summary, nil
 	}
 	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
-		if err := req.UsageReporter.ReportBatchUsage(ctx, batchUsageReportFromLog(req.Provider, entry)); err != nil {
+		// Reporting always consumes the durable aggregate row, not the entry just
+		// rebuilt in this process. That keeps a retry after a failed report on the
+		// original snapshot even if governance has since been reloaded.
+		persistedEntry, err := logStore.FindByID(ctx, summary.LogID)
+		if err != nil {
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+			return nil, err
+		}
+		if persistedEntry == nil {
+			err := fmt.Errorf("batch aggregate log %s not found before governance report", summary.LogID)
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+			return nil, err
+		}
+		if err := req.UsageReporter.ReportBatchUsage(ctx, batchUsageReportFromLog(req.Provider, persistedEntry)); err != nil {
 			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
@@ -509,6 +529,15 @@ func resolveModelUsageGovernanceIDs(ctx context.Context, req Request, summary *S
 			UserID:       req.UserID,
 			VirtualKeyID: req.VirtualKeyID,
 		})
+		// Non-nil empty slices are meaningful: they mean settlement confirmed
+		// that this model had no scoped targets. Persisting nil would make a
+		// retry treat the row as legacy and resolve against current state.
+		if budgetIDs == nil {
+			budgetIDs = []string{}
+		}
+		if rateLimitIDs == nil {
+			rateLimitIDs = []string{}
+		}
 		breakdown.BudgetIDs = budgetIDs
 		breakdown.RateLimitIDs = rateLimitIDs
 		summary.ModelBreakdowns[model] = breakdown

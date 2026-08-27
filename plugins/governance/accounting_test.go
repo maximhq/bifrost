@@ -343,12 +343,12 @@ func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
 	// What a settled batch looks like: the wildcard budget was collected at create
 	// time (and so is already charged the full total), the per-model budget was not.
 	report := batchaccounting.BatchUsageReport{
-		RequestID:    "batch-cost:openai:batch-models",
-		Provider:     schemas.OpenAI,
-		Cost:         30.0,
-		TokensUsed:   300,
-		BudgetIDs:    []string{"wildcard-budget"},
-		UserID:       "user-alice",
+		RequestID:  "batch-cost:openai:batch-models",
+		Provider:   schemas.OpenAI,
+		Cost:       30.0,
+		TokensUsed: 300,
+		BudgetIDs:  []string{"wildcard-budget"},
+		UserID:     "user-alice",
 		ModelUsage: []batchaccounting.BatchModelUsage{
 			{Model: "gpt-5", Cost: 20.0, TokensUsed: 200},
 			{Model: "gpt-4o", Cost: 10.0, TokensUsed: 100},
@@ -361,6 +361,33 @@ func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
 
 	assert.Equal(t, 20.0, f.budgetUsage("model-budget"), "the gpt-5 budget takes gpt-5's share, not the batch total")
 	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
+}
+
+// An explicitly empty snapshot is durable: it must not be mistaken for a legacy
+// nil snapshot and re-resolved against a store that gained a target after
+// settlement.
+func TestReportBatchUsage_RetainsEmptyModelGovernanceSnapshot(t *testing.T) {
+	f := newModelScopedFixture(t)
+	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
+
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), batchaccounting.BatchUsageReport{
+		RequestID:  "batch-cost:openai:batch-empty-snapshot",
+		Provider:   schemas.OpenAI,
+		Cost:       12.0,
+		TokensUsed: 100,
+		BudgetIDs:  []string{"wildcard-budget"},
+		UserID:     "user-alice",
+		ModelUsage: []batchaccounting.BatchModelUsage{{
+			Model:        "gpt-4o",
+			Cost:         12.0,
+			TokensUsed:   100,
+			BudgetIDs:    []string{},
+			RateLimitIDs: []string{},
+		}},
+	}))
+
+	assert.Equal(t, 0.0, f.budgetUsage("model-budget"), "an empty persisted snapshot must not gain newly configured model targets")
+	assert.Equal(t, 12.0, f.budgetUsage("wildcard-budget"))
 }
 
 // A batch whose models carry no per-model config must behave exactly as before.

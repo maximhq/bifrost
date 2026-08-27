@@ -261,7 +261,10 @@ func (w *fakeAggregateLogWriter) EmitBatchAggregateLog(ctx context.Context, entr
 }
 
 type fakeUsageReporter struct {
-	reports []BatchUsageReport
+	reports      []BatchUsageReport
+	resolutions  []BatchModelUsage
+	resolvedIDs  [][2][]string
+	reportErrors []error
 }
 
 type requestTypePricing struct {
@@ -275,11 +278,122 @@ func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bi
 
 func (r *fakeUsageReporter) ReportBatchUsage(ctx context.Context, report BatchUsageReport) error {
 	r.reports = append(r.reports, report)
+	if len(r.reportErrors) > 0 {
+		err := r.reportErrors[0]
+		r.reportErrors = r.reportErrors[1:]
+		return err
+	}
 	return nil
 }
 
 func (r *fakeUsageReporter) ResolveModelUsageGovernanceIDs(ctx context.Context, provider schemas.ModelProvider, model string, usage BatchModelUsage) ([]string, []string) {
+	r.resolutions = append(r.resolutions, usage)
+	if len(r.resolvedIDs) > len(r.resolutions)-1 {
+		return r.resolvedIDs[len(r.resolutions)-1][0], r.resolvedIDs[len(r.resolutions)-1][1]
+	}
 	return nil, nil
+}
+
+func TestAccountBatchResults_PersistsEmptyModelGovernanceSnapshot(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+		Provider:           schemas.OpenAI,
+		BatchID:            "batch_empty_snapshot",
+		FallbackModel:      "gpt-4o-mini",
+		UsageReporter:      reporter,
+		ModelUsageResolver: reporter,
+		Results:            []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+
+	entry := store.logs[summary.LogID]
+	require.NotNil(t, entry)
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, entry.DeserializeFields())
+	require.NotNil(t, entry.BatchDebugParsed)
+	require.NotNil(t, entry.BatchDebugParsed.Accounting)
+	breakdown := entry.BatchDebugParsed.Accounting.ModelBreakdowns["gpt-4o-mini"]
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.BudgetIDs)
+	require.NotNil(t, breakdown.RateLimitIDs)
+	require.Empty(t, breakdown.BudgetIDs)
+	require.Empty(t, breakdown.RateLimitIDs)
+
+	report := batchUsageReportFromLog(schemas.OpenAI, entry)
+	require.Len(t, report.ModelUsage, 1)
+	require.NotNil(t, report.ModelUsage[0].BudgetIDs)
+	require.NotNil(t, report.ModelUsage[0].RateLimitIDs)
+}
+
+func TestAccountBatchResults_UnpriceableAggregatePersistsModelSnapshot(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	// Usage is present, but no model row can be priced.
+	req := Request{
+		Provider:           schemas.OpenAI,
+		BatchID:            "batch_unpriceable_snapshot",
+		FallbackModel:      "unknown-model",
+		UsageReporter:      reporter,
+		ModelUsageResolver: reporter,
+		Results:            []schemas.BatchResultItem{openAIResult(200, "unknown-model", 10, 5)},
+	}
+
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	require.False(t, summary.Accounted)
+	require.NotEmpty(t, summary.UnpriceableReason)
+	require.Len(t, reporter.resolutions, 1)
+	assert.Equal(t, "unknown-model", reporter.resolutions[0].Model)
+
+	entry := store.logs[summary.LogID]
+	require.NotNil(t, entry)
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, entry.DeserializeFields())
+	breakdown := entry.BatchDebugParsed.Accounting.ModelBreakdowns["unknown-model"]
+	require.NotNil(t, breakdown)
+	require.NotNil(t, breakdown.BudgetIDs)
+	require.NotNil(t, breakdown.RateLimitIDs)
+}
+
+func TestAccountBatchResults_RetryUsesPersistedModelSnapshot(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{
+		reportErrors: []error{errors.New("governance report failed")},
+	}
+	req := Request{
+		Provider:           schemas.OpenAI,
+		BatchID:            "batch_retry_snapshot",
+		FallbackModel:      "gpt-4o-mini",
+		UsageReporter:      reporter,
+		ModelUsageResolver: reporter,
+		Results:            []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+	}
+
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	require.Error(t, err)
+	require.Len(t, reporter.resolutions, 1)
+	require.Len(t, reporter.reports, 1)
+	require.Empty(t, reporter.reports[0].ModelUsage[0].BudgetIDs)
+	require.Empty(t, reporter.reports[0].ModelUsage[0].RateLimitIDs)
+
+	// A hot reload makes current-state resolution look different; the retry must
+	// instead consume the durable empty snapshot written by the first attempt.
+	reporter.resolvedIDs = [][2][]string{{{"budget-new"}, {"rate-limit-new"}}}
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	require.True(t, summary.Accounted)
+	require.Len(t, reporter.resolutions, 1, "retry must not resolve model governance IDs again")
+	require.Len(t, reporter.reports, 2)
+	require.Len(t, reporter.reports[1].ModelUsage, 1)
+	require.NotNil(t, reporter.reports[1].ModelUsage[0].BudgetIDs)
+	require.NotNil(t, reporter.reports[1].ModelUsage[0].RateLimitIDs)
+	require.Empty(t, reporter.reports[1].ModelUsage[0].BudgetIDs)
+	require.Empty(t, reporter.reports[1].ModelUsage[0].RateLimitIDs)
 }
 
 func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {

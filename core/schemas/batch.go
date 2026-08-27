@@ -127,8 +127,8 @@ type BatchModelBreakdown struct {
 	// when this breakdown was first written. They are settlement metadata, not
 	// display data: ReportBatchUsage reuses them so retries charge the same
 	// policies even if governance is hot-reloaded between attempts.
-	BudgetIDs    []string `json:"budget_ids,omitempty"`
-	RateLimitIDs []string `json:"rate_limit_ids,omitempty"`
+	BudgetIDs    []string `json:"budget_ids"`
+	RateLimitIDs []string `json:"rate_limit_ids"`
 }
 
 // BatchErrors represents errors encountered during batch processing.
