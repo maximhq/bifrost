@@ -378,7 +378,12 @@ func TestExecuteRequestWithRetries_OrdinaryRetryPaysBackoff(t *testing.T) {
 	if callCount != 2 {
 		t.Fatalf("expected 2 attempts, got %d", callCount)
 	}
-	if elapsed < 250*time.Millisecond {
+	// calculateBackoff jitters by [0.8, 1.2), so the shortest legal sleep for the
+	// configured 300ms is 240ms. The floor must sit below that: this is a negative
+	// control proving backoff was paid at all (vs the fail-soft test's ~0ms), so it
+	// only needs to separate "slept" from "did not sleep", and a floor at or above
+	// 240ms fails a correctly-paid backoff on roughly one run in eight.
+	if elapsed < 200*time.Millisecond {
 		t.Fatalf("an ordinary retryable failure must still back off (configured %s), took %s",
 			config.NetworkConfig.RetryBackoffInitial, elapsed)
 	}
