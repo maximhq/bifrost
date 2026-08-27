@@ -474,8 +474,55 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	return resp.ListModelsResponse, nil
 }
 
+// listAllModelsProviderTimeout bounds each provider's live poll inside
+// ListAllModels. The fan-out previously ran with no deadline, so a single
+// unreachable provider held the aggregate response back until the shared
+// request timeout (DefaultRequestTimeoutInSeconds, 300s by default) expired.
+// Listing models is a metadata read and should not wait inference-scale
+// timeouts. A var rather than a const so package tests can shrink it.
+var listAllModelsProviderTimeout = 5 * time.Second
+
+// providerModelLister is the optional model-catalog capability ListAllModels
+// falls back on when a provider's live poll fails. The framework's
+// modelcatalog.ModelCatalog implements it already; the public
+// schemas.ModelInfoProvider interface is left untouched so third-party
+// catalogs keep compiling.
+type providerModelLister interface {
+	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+}
+
+// lastKnownModelsFromCatalog returns catalog-backed entries for a provider
+// whose live poll failed, or nil when no catalog with per-provider listings is
+// configured or it has nothing for this provider. IDs use the same
+// "<provider>/<model>" shape the live path produces, so downstream enrichment
+// and pagination treat them identically.
+func (bifrost *Bifrost) lastKnownModelsFromCatalog(providerKey schemas.ModelProvider, unfiltered bool) []schemas.Model {
+	lister, ok := bifrost.getModelCatalog().(providerModelLister)
+	if !ok {
+		return nil
+	}
+	var names []string
+	if unfiltered {
+		names = lister.GetUnfilteredModelsForProvider(providerKey)
+	} else {
+		names = lister.GetModelsForProvider(providerKey)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	models := make([]schemas.Model, 0, len(names))
+	for _, name := range names {
+		models = append(models, schemas.Model{ID: string(providerKey) + "/" + name})
+	}
+	return models
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
+// Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
+// cannot block the aggregate; a provider whose poll fails contributes its last-known models
+// from the model catalog (when one with per-provider listings is configured) instead.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}
@@ -522,7 +569,12 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
 
-			providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			// Bound this provider's poll so one unreachable provider cannot
+			// hold the aggregate until the shared request timeout: at the
+			// deadline tryRequest stops waiting on the worker (the in-flight
+			// HTTP call is abandoned, not cancelled) and wg.Wait() finishes.
+			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
+			defer providerCtx.Cancel()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 
 			providerModels := make([]schemas.Model, 0)
@@ -595,6 +647,20 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 
 				// Set the page token for the next request
 				providerRequest.PageToken = response.NextPageToken
+			}
+
+			// A provider whose live poll failed shouldn't vanish from the
+			// aggregate while the catalog still remembers its models: serve
+			// the last-known list (kept fresh by the transport's background
+			// refresher) instead of nothing. Expected failures (no keys, not
+			// supported, blocked) leave providerErr nil and stay silent as
+			// before, and the poll error still propagates so an
+			// all-providers-down setup without a catalog keeps erroring.
+			if providerErr != nil && len(providerModels) == 0 {
+				if cached := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered); len(cached) > 0 {
+					bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed", len(cached), providerKey)
+					providerModels = cached
+				}
 			}
 
 			results <- providerResult{
