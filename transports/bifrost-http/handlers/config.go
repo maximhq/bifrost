@@ -371,6 +371,29 @@ type authConfigWithSetupToken struct {
 	SetupToken string `json:"setup_token,omitempty"`
 }
 
+// clientConfigUpdate keeps request-only presence separate from the persisted
+// ClientConfig. A nil interval means it was omitted, while a non-nil zero
+// explicitly restores the built-in default.
+type clientConfigUpdate struct {
+	configstore.ClientConfig
+	MCPToolSyncInterval *int `json:"mcp_tool_sync_interval"`
+}
+
+func (c *clientConfigUpdate) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &c.ClientConfig); err != nil {
+		return err
+	}
+
+	var presence struct {
+		MCPToolSyncInterval *int `json:"mcp_tool_sync_interval"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return err
+	}
+	c.MCPToolSyncInterval = presence.MCPToolSyncInterval
+	return nil
+}
+
 // updateConfig updates the core configuration settings.
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
@@ -381,7 +404,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	payload := struct {
-		ClientConfig    configstore.ClientConfig               `json:"client_config"`
+		ClientConfig    clientConfigUpdate                     `json:"client_config"`
 		FrameworkConfig configstoreTables.TableFrameworkConfig `json:"framework_config"`
 		AuthConfig      *authConfigWithSetupToken              `json:"auth_config"`
 	}{}
@@ -602,14 +625,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
-	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-	// 0 means the built-in default, so compare against the current value
-	// instead of the > 0 guard used by other numeric fields.
-	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
-		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	if interval := payload.ClientConfig.MCPToolSyncInterval; interval != nil {
+		if err := validateGlobalToolSyncIntervalMinutes(*interval); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		if *interval != currentConfig.MCPToolSyncInterval {
+			updatedConfig.MCPToolSyncInterval = *interval
+		}
 	}
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 
@@ -727,10 +750,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
 		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
-	}
-	// 0 is a valid value (the built-in default), so persist it when changed.
-	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
-		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
 	// Only update MCPCodeModeBindingLevel if payload is non-empty to avoid clearing stored value
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
