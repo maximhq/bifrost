@@ -1058,6 +1058,21 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:      model,
 		UserID:     userID,
 	}
+	// A batch create fans out to many completions, each naming its own model, so
+	// every model it will run is evaluated before the request itself. Every check
+	// reached from here is read-only, so the extra passes cannot double-count usage.
+	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		for _, batchModel := range BatchCreateModels(req, model) {
+			batchEvaluationRequest := *evaluationRequest
+			batchEvaluationRequest.Model = batchModel
+			_, bifrostError := p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
+			if bifrostError != nil {
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: bifrostError,
+				}, nil
+			}
+		}
+	}
 	// Evaluate governance using common function
 	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
 	// Convert BifrostError to LLMPluginShortCircuit if needed
@@ -1088,6 +1103,42 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 
 	return req, nil, nil
+}
+
+// BatchCreateModels returns every distinct model an inline batch create will run,
+// starting with the request's own model.
+func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) == 0 {
+		return []string{model}
+	}
+	seen := make(map[string]struct{})
+	models := make([]string, 0, 1)
+	add := func(m string) {
+		if m == "" {
+			return
+		}
+		if _, exists := seen[m]; exists {
+			return
+		}
+		seen[m] = struct{}{}
+		models = append(models, m)
+	}
+	add(model)
+	for _, item := range req.BatchCreateRequest.Requests {
+		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
+		for _, body := range []map[string]any{item.Body, item.Params} {
+			if m, ok := body["model"].(string); ok {
+				add(m)
+				break
+			}
+		}
+	}
+	if len(models) == 0 {
+		// No item named a model: fall back to the model-less evaluation so the
+		// provider-level and virtual-key checks still run.
+		return []string{model}
+	}
+	return models
 }
 
 // PostLLMHook processes the response and updates usage tracking (business logic execution)

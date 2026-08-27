@@ -6707,6 +6707,7 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -8771,7 +8772,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - SkipKeySelection (provider allows keyless requests; empty slice returned)
+//   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
@@ -8786,8 +8787,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return []schemas.Key{}, false, nil
 	}
 
