@@ -75,14 +75,23 @@ type billingAttemptPostHookPlugin struct {
 	observedAttempt *time.Time
 }
 
+// GetName returns the test plugin name.
 func (p *billingAttemptPostHookPlugin) GetName() string { return p.name }
-func (p *billingAttemptPostHookPlugin) Cleanup() error  { return nil }
+
+// Cleanup satisfies the plugin lifecycle contract for the test double.
+func (p *billingAttemptPostHookPlugin) Cleanup() error { return nil }
+
+// PreRequestHook leaves the test request unchanged.
 func (p *billingAttemptPostHookPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
 }
+
+// PreLLMHook forwards the test request to the provider path.
 func (p *billingAttemptPostHookPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
+
+// PostLLMHook replaces or observes the response for timestamp propagation tests.
 func (p *billingAttemptPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if p.replacement != nil {
 		return p.replacement, bifrostErr, nil

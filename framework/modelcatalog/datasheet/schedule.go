@@ -138,6 +138,7 @@ func ValidatePricingTimeSchedule(schedule *PricingTimeSchedule) error {
 	return nil
 }
 
+// normalizePricingScheduleCalendar canonicalizes and validates a calendar name.
 func normalizePricingScheduleCalendar(calendar string) (string, error) {
 	switch value := strings.ToLower(strings.TrimSpace(calendar)); value {
 	case PricingScheduleCalendarNone, PricingScheduleCalendarISOWeekday:
@@ -147,6 +148,7 @@ func normalizePricingScheduleCalendar(calendar string) (string, error) {
 	}
 }
 
+// validate checks the rule fields that are meaningful for the selected calendar.
 func (rule PricingTimeRule) validate(calendar string) error {
 	if rule.Multiplier <= 0 || math.IsNaN(rule.Multiplier) || math.IsInf(rule.Multiplier, 0) {
 		return fmt.Errorf("multiplier must be a finite value greater than zero")
@@ -167,6 +169,7 @@ func (rule PricingTimeRule) validate(calendar string) error {
 	return nil
 }
 
+// matches reports whether the local instant falls within the recurring rule.
 func (rule PricingTimeRule) matches(at time.Time, calendar string) (bool, error) {
 	if err := rule.validate(calendar); err != nil {
 		return false, err
@@ -212,6 +215,7 @@ func (rule PricingTimeRule) matches(at time.Time, calendar string) (bool, error)
 	return true, nil
 }
 
+// daySet returns the normalized weekday names configured on the rule.
 func (rule PricingTimeRule) daySet() map[string]struct{} {
 	days := make(map[string]struct{}, len(rule.Days))
 	for _, day := range rule.Days {
@@ -220,6 +224,7 @@ func (rule PricingTimeRule) daySet() map[string]struct{} {
 	return days
 }
 
+// parsePricingClock converts an HH:MM wall-clock value into a day offset.
 func parsePricingClock(value string) (time.Duration, error) {
 	if len(value) != 5 || value[2] != ':' {
 		return 0, fmt.Errorf("must be HH:MM")
@@ -231,6 +236,7 @@ func parsePricingClock(value string) (time.Duration, error) {
 	return time.Duration(minutes) * time.Minute, nil
 }
 
+// parsePricingClockMinutes parses a strict ASCII HH:MM value into minutes.
 func parsePricingClockMinutes(value string) (int, error) {
 	if len(value) != 5 || value[2] != ':' ||
 		value[0] < '0' || value[0] > '9' ||
@@ -247,21 +253,25 @@ func parsePricingClockMinutes(value string) (int, error) {
 	return hour*60 + minute, nil
 }
 
+// isPricingDay reports whether day is a supported normalized weekday name.
 func isPricingDay(day string) bool {
 	_, ok := allPricingDays()[day]
 	return ok
 }
 
+// containsPricingDay reports whether days includes weekday.
 func containsPricingDay(days map[string]struct{}, weekday time.Weekday) bool {
 	_, ok := days[strings.ToLower(weekday.String())]
 	return ok
 }
 
+// clockMinutes returns the local wall-clock minute within the day.
 func clockMinutes(at time.Time) int {
 	hour, minute, _ := at.Clock()
 	return hour*60 + minute
 }
 
+// pricingRuleDaysIntersect reports whether two normalized weekday sets overlap.
 func pricingRuleDaysIntersect(aDays, bDays map[string]struct{}) bool {
 	if len(aDays) == 0 || len(bDays) == 0 {
 		return false
@@ -299,6 +309,7 @@ func pricingRulesOverlap(a, b PricingTimeRule, aDays, bDays map[string]struct{})
 	return false
 }
 
+// normalizedPricingRuleIntervals expands a rule into weekly half-open intervals.
 func normalizedPricingRuleIntervals(rule PricingTimeRule, days map[string]struct{}) []pricingRuleInterval {
 	if len(days) == 0 {
 		days = allPricingDays()
@@ -322,12 +333,14 @@ func normalizedPricingRuleIntervals(rule PricingTimeRule, days map[string]struct
 	}
 }
 
+// allPricingDays returns a set containing every supported weekday.
 func allPricingDays() map[string]struct{} {
 	return map[string]struct{}{
 		"sunday": {}, "monday": {}, "tuesday": {}, "wednesday": {}, "thursday": {}, "friday": {}, "saturday": {},
 	}
 }
 
+// nextPricingDays shifts each weekday in days forward by one day.
 func nextPricingDays(days map[string]struct{}) map[string]struct{} {
 	nextDays := make(map[string]struct{}, len(days))
 	for day := range days {
@@ -336,6 +349,7 @@ func nextPricingDays(days map[string]struct{}) map[string]struct{} {
 	return nextDays
 }
 
+// nextPricingDay returns the weekday immediately following day.
 func nextPricingDay(day string) string {
 	switch day {
 	case "sunday":

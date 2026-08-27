@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
+// pricingScheduleAt constructs a stable UTC fixture for the requested weekday and clock.
 func pricingScheduleAt(day string, hour, minute int) time.Time {
 	return time.Date(2026, time.August, mustAtoi(day), hour, minute, 0, 0, time.UTC)
 }
 
+// mustAtoi converts a trusted numeric test fixture to an integer.
 func mustAtoi(value string) int {
 	digits := map[byte]int{'0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9}
 	if len(value) != 2 {
@@ -18,6 +20,7 @@ func mustAtoi(value string) int {
 	return digits[value[0]]*10 + digits[value[1]]
 }
 
+// TestEvaluatePricingTimeSchedule covers rule matching and half-open boundaries.
 func TestEvaluatePricingTimeSchedule(t *testing.T) {
 	// 2026-08-23 is a Sunday in UTC.
 	schedule := &PricingTimeSchedule{
@@ -58,6 +61,7 @@ func TestEvaluatePricingTimeSchedule(t *testing.T) {
 	}
 }
 
+// TestEvaluatePricingTimeScheduleTimezone verifies evaluation in the configured location.
 func TestEvaluatePricingTimeScheduleTimezone(t *testing.T) {
 	schedule := &PricingTimeSchedule{
 		Timezone: "Asia/Shanghai",
@@ -80,6 +84,7 @@ func TestEvaluatePricingTimeScheduleTimezone(t *testing.T) {
 	}
 }
 
+// TestEvaluatePricingTimeScheduleNilUsesBaseMultiplier verifies the nil-schedule default.
 func TestEvaluatePricingTimeScheduleNilUsesBaseMultiplier(t *testing.T) {
 	got, err := EvaluatePricingTimeSchedule(nil, time.Now())
 	if err != nil {
@@ -90,6 +95,7 @@ func TestEvaluatePricingTimeScheduleNilUsesBaseMultiplier(t *testing.T) {
 	}
 }
 
+// TestValidatePricingTimeSchedule covers invalid schedule and rule configurations.
 func TestValidatePricingTimeSchedule(t *testing.T) {
 	valid := &PricingTimeSchedule{
 		Timezone: "UTC",
@@ -168,6 +174,7 @@ func TestValidatePricingTimeSchedule(t *testing.T) {
 	}
 }
 
+// TestValidatePricingTimeScheduleAllowsIdenticalMultiplierOverlaps permits deterministic overlaps.
 func TestValidatePricingTimeScheduleAllowsIdenticalMultiplierOverlaps(t *testing.T) {
 	schedule := &PricingTimeSchedule{
 		Timezone: "UTC",
@@ -182,6 +189,7 @@ func TestValidatePricingTimeScheduleAllowsIdenticalMultiplierOverlaps(t *testing
 	}
 }
 
+// TestValidatePricingTimeScheduleAllowsAdjacentWeekdayWindows permits half-open adjacent rules.
 func TestValidatePricingTimeScheduleAllowsAdjacentWeekdayWindows(t *testing.T) {
 	schedule := &PricingTimeSchedule{
 		Timezone: "UTC",
@@ -196,6 +204,7 @@ func TestValidatePricingTimeScheduleAllowsAdjacentWeekdayWindows(t *testing.T) {
 	}
 }
 
+// TestEvaluatePricingTimeScheduleMondayOnlyCrossMidnight verifies start-day ownership after midnight.
 func TestEvaluatePricingTimeScheduleMondayOnlyCrossMidnight(t *testing.T) {
 	schedule := &PricingTimeSchedule{
 		Timezone: "UTC",
