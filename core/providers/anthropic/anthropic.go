@@ -738,12 +738,15 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			billedUsage.CompletionTokens = usageToProcess.OutputTokens
 		}
 	}
+	// Recomputed unconditionally, not max-merged. The authoritative-event rule above can move
+	// InputTokens *down* (a cache-less message_start's loose 8834 replaced by an authoritative
+	// 18 + 8831 cached), and a monotonic guard would strand the pre-replacement total for the
+	// cache fold to add to -- reintroducing the very double count on TotalTokens. Anthropic
+	// usage events carry no total_tokens field, so this value is derived here and nowhere else.
 	calculatedTotal := usage.InputTokens + usage.OutputTokens
-	if calculatedTotal > usage.TotalTokens {
-		usage.TotalTokens = calculatedTotal
-		if billedUsage != nil {
-			billedUsage.TotalTokens = calculatedTotal
-		}
+	usage.TotalTokens = calculatedTotal
+	if billedUsage != nil {
+		billedUsage.TotalTokens = calculatedTotal
 	}
 	// Handle cached tokens if present
 	if usageToProcess.CacheReadInputTokens > 0 {
@@ -1123,10 +1126,11 @@ func HandleAnthropicChatCompletionStreaming(
 				if usageToProcess.OutputTokens > usage.CompletionTokens {
 					usage.CompletionTokens = usageToProcess.OutputTokens
 				}
+				// Unconditional for the same reason as the Responses accumulator: an
+				// authoritative input replacement can lower PromptTokens, and a stale total
+				// would survive into normalizeCachedUsage's fold.
 				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
+				usage.TotalTokens = calculatedTotal
 				// Handle cached tokens if present
 				if usageToProcess.CacheReadInputTokens > 0 {
 					if usage.PromptTokensDetails == nil {

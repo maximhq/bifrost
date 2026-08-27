@@ -197,7 +197,7 @@ func usageFromFrame(t *testing.T, frame string) *AnthropicUsage {
 
 // accumulateResponses drives the Responses accumulator over the given frames and applies the
 // same cache fold the real stream applies at the end, returning the billed prompt total.
-func accumulateResponses(t *testing.T, frames ...string) int {
+func accumulateResponses(t *testing.T, frames ...string) (prompt, total int) {
 	t.Helper()
 	usage := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
@@ -205,28 +205,48 @@ func accumulateResponses(t *testing.T, frames ...string) int {
 		accumulateAnthropicResponsesUsage(usage, billed, usageFromFrame(t, f))
 	}
 	normalizeCachedUsage(billed)
-	return billed.PromptTokens
+	// TotalTokens must stay consistent with the folded prompt total. It is derived, never
+	// reported by the upstream, and a monotonic guard here used to strand the pre-replacement
+	// input for the fold to add to -- putting the double count back on the total alone.
+	if want := billed.PromptTokens + billed.CompletionTokens; billed.TotalTokens != want {
+		t.Errorf("total tokens = %d, want %d (prompt %d + completion %d)",
+			billed.TotalTokens, want, billed.PromptTokens, billed.CompletionTokens)
+	}
+	return billed.PromptTokens, billed.TotalTokens
 }
 
 func TestResponsesAccumulatorQwenDoesNotDoubleCountCachedPrompt(t *testing.T) {
 	// 18 fresh input + 8831 cache_read = 8849. The bug reported 8834+8831 = 17665.
-	if got := accumulateResponses(t, qwenMessageStart, qwenMessageDelta); got != 8849 {
-		t.Fatalf("prompt tokens = %d, want 8849", got)
+	// The total is asserted too: it carried the same 17665 until the recompute was made
+	// unconditional.
+	got, total := accumulateResponses(t, qwenMessageStart, qwenMessageDelta)
+	if got != 8849 {
+		t.Errorf("prompt tokens = %d, want 8849", got)
+	}
+	if total != 8849+426 {
+		t.Errorf("total tokens = %d, want %d", total, 8849+426)
 	}
 }
 
 func TestResponsesAccumulatorKimiDoesNotDoubleCountCachedPrompt(t *testing.T) {
 	// 250 fresh + 173056 cache_read = 173306. The bug reported 173306+173056 = 346362.
-	if got := accumulateResponses(t, kimiMessageStart, kimiMessageDelta); got != 173306 {
-		t.Fatalf("prompt tokens = %d, want 173306", got)
+	got, total := accumulateResponses(t, kimiMessageStart, kimiMessageDelta)
+	if got != 173306 {
+		t.Errorf("prompt tokens = %d, want 173306", got)
+	}
+	if total != 173306+166 {
+		t.Errorf("total tokens = %d, want %d", total, 173306+166)
 	}
 }
 
 func TestResponsesAccumulatorOrderIndependent(t *testing.T) {
-	fwd := accumulateResponses(t, qwenMessageStart, qwenMessageDelta)
-	rev := accumulateResponses(t, qwenMessageDelta, qwenMessageStart)
+	fwd, fwdTotal := accumulateResponses(t, qwenMessageStart, qwenMessageDelta)
+	rev, revTotal := accumulateResponses(t, qwenMessageDelta, qwenMessageStart)
 	if fwd != rev {
-		t.Fatalf("order dependent: forward=%d reverse=%d", fwd, rev)
+		t.Errorf("order dependent: forward=%d reverse=%d", fwd, rev)
+	}
+	if fwdTotal != revTotal {
+		t.Errorf("order dependent total: forward=%d reverse=%d", fwdTotal, revTotal)
 	}
 }
 
@@ -241,7 +261,9 @@ func TestResponsesAccumulatorCorrectUpstreamsUnchanged(t *testing.T) {
 		{"stock anthropic", []string{stockAnthropicMessageStart, stockAnthropicMessageDelta}, 8849},
 		{"kimi cache-aware", []string{kimiCacheAwareMessageStart, kimiCacheAwareMessageDelta}, 8931},
 	} {
-		if got := accumulateResponses(t, tc.frames...); got != tc.want {
+		// accumulateResponses also asserts TotalTokens == prompt+completion, so dropping the
+		// monotonic guard is regression-checked for well-behaved upstreams here too.
+		if got, _ := accumulateResponses(t, tc.frames...); got != tc.want {
 			t.Errorf("%s: prompt tokens = %d, want %d", tc.name, got, tc.want)
 		}
 	}
