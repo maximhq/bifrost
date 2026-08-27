@@ -39,6 +39,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPHealthCheckRequest:   {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
+	BifrostContextKeyBillingAttemptStartTime: {},
 	BifrostContextKeyRoutingInfo:             {},
 	BifrostContextKeyMCPInboundBearer:        {},
 }
@@ -424,6 +425,33 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
+}
+
+// SetBillingAttemptStartTime records the provider-attempt start time. This
+// internal setter bypasses the restricted-write guard because streaming
+// post-hooks may hold blockRestrictedWrites while the orchestrator starts or
+// retries an attempt.
+func (bc *BifrostContext) SetBillingAttemptStartTime(t time.Time) {
+	bc.setReservedValue(BifrostContextKeyBillingAttemptStartTime, t)
+}
+
+// ClearBillingAttemptStartTime removes a previous provider-attempt stamp. It is
+// called at request entry so a short-circuit cannot inherit an attempt from an
+// earlier call on a reused context.
+func (bc *BifrostContext) ClearBillingAttemptStartTime() {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.ClearBillingAttemptStartTime()
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	// Store an explicit nil sentinel instead of deleting the key: Value falls
+	// back to the parent when a key is absent locally, so this must also mask
+	// any timestamp inherited from a parent context.
+	bc.userValues[BifrostContextKeyBillingAttemptStartTime] = nil
 }
 
 // SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,

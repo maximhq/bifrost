@@ -169,6 +169,17 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 	data.ImageGenerationOutput = completeImage
 	data.ErrorDetails = bifrostErr
 
+	// Retain the attempt start from the highest-index chunk that carries one.
+	// Chunks can be processed by multiple plugins or arrive out of order; arrival
+	// order must not override the terminal attempt timestamp.
+	billingChunkIndex := -1
+	for _, chunk := range acc.ImageStreamChunks {
+		if chunk.BillingAttemptStartedAt != nil && chunk.ChunkIndex > billingChunkIndex {
+			data.BillingAttemptStartedAt = chunk.BillingAttemptStartedAt
+			billingChunkIndex = chunk.ChunkIndex
+		}
+	}
+
 	// Update token usage from final chunk if available
 	if len(acc.ImageStreamChunks) > 0 {
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
@@ -224,6 +235,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		chunk.BillingAttemptStartedAt = bifrostErr.ExtraFields.BillingAttemptStartedAt
 	} else if result != nil && result.ImageGenerationStreamResponse != nil {
 		// Create a deep copy of the delta to avoid pointing to stack memory
 		var partialImageIndex *int
@@ -280,6 +292,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			chunk.FinishReason = bifrost.Ptr("completed")
+			chunk.BillingAttemptStartedAt = result.GetExtraFields().BillingAttemptStartedAt
 		}
 	}
 

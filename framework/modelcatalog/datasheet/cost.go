@@ -5,10 +5,18 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// CostCalculationOptions carries inputs that cannot be inferred from a bare
+// usage object. BillingAttemptStartedAt is authoritative: a nil value means
+// unknown and intentionally falls back to base pricing.
+type CostCalculationOptions struct {
+	BillingAttemptStartedAt *time.Time
+}
 
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache and guardrail billing, and tiered pricing.
@@ -37,14 +45,15 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	}
 
 	extraFields := result.GetExtraFields()
+	options := CostCalculationOptions{BillingAttemptStartedAt: extraFields.BillingAttemptStartedAt}
 
 	// Handle semantic cache billing
 	cacheDebug := extraFields.CacheDebug
 	var requestCost *schemas.BifrostCost
 	if cacheDebug != nil {
-		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes, options)
 	} else {
-		requestCost = s.calculateBaseCost(result, lookupScopes)
+		requestCost = s.calculateBaseCost(result, lookupScopes, options)
 	}
 
 	// Handle guardrail judge-call billing
@@ -85,7 +94,14 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 // wrapper over CalculateCostBreakdownForUsage returning only the total, so both
 // paths compute cost identically.
 func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) float64 {
-	breakdown := s.CalculateCostBreakdownForUsage(usage, provider, model, requestType, scopes)
+	return s.CalculateCostForUsageWithOptions(usage, provider, model, requestType, scopes, nil)
+}
+
+// CalculateCostForUsageWithOptions is CalculateCostForUsage with an explicit
+// billing instant. The option must come from the provider attempt that produced
+// usage; callers must never synthesize it from completion or log timestamps.
+func (s *Store) CalculateCostForUsageWithOptions(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes, options *CostCalculationOptions) float64 {
+	breakdown := s.CalculateCostBreakdownForUsageWithOptions(usage, provider, model, requestType, scopes, options)
 	if breakdown == nil {
 		return 0
 	}
@@ -98,6 +114,12 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 // output / additional split, not just the scalar total. Returns nil when there
 // is no cost to record.
 func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) *schemas.BifrostCost {
+	return s.CalculateCostBreakdownForUsageWithOptions(usage, provider, model, requestType, scopes, nil)
+}
+
+// CalculateCostBreakdownForUsageWithOptions is the explicit-billing-time variant
+// of CalculateCostBreakdownForUsage.
+func (s *Store) CalculateCostBreakdownForUsageWithOptions(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes, options *CostCalculationOptions) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
 	}
@@ -117,6 +139,10 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	input := costInput{usage: usage}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
+	var calculationOptions CostCalculationOptions
+	if options != nil {
+		calculationOptions = *options
+	}
 	return s.computeCostFromInput(
 		input,
 		schemas.RoutingInfo{
@@ -126,6 +152,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
+		calculationOptions,
 	)
 }
 
@@ -171,12 +198,13 @@ func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall
 	if requestType == "" {
 		requestType = schemas.ChatCompletionRequest
 	}
-	return s.CalculateCostForUsage(
+	return s.CalculateCostForUsageWithOptions(
 		usage,
 		call.JudgeProvider,
 		call.JudgeModel,
 		requestType,
 		&judgeScopes,
+		&CostCalculationOptions{BillingAttemptStartedAt: call.StartedAt},
 	)
 }
 
@@ -289,7 +317,7 @@ func cloneFloat64Pointer(value *float64) *float64 {
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) *schemas.BifrostCost {
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes, options CostCalculationOptions) *schemas.BifrostCost {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
@@ -313,7 +341,7 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
-	base := s.calculateBaseCost(result, scopes)
+	base := s.calculateBaseCost(result, scopes, options)
 	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
 	if embeddingCost == 0 {
 		return base
@@ -383,7 +411,7 @@ func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) 
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) *schemas.BifrostCost {
+func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes, options CostCalculationOptions) *schemas.BifrostCost {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
 		return nil
@@ -451,10 +479,10 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// "model-router" deployment name on RoutingInfo.Model.
 	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
 		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
-		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes, options)
 	}
 
-	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+	return s.computeCostFromInput(input, routingInfo, requestType, scopes, options)
 }
 
 // calculateAzureModelRouterCost bills the Model Router deployment's own
@@ -462,20 +490,20 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 // model it actually routed to, looked up fresh under the served model name so
 // regular per-token/tiered pricing applies to it exactly as if it had been
 // called directly.
-func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *schemas.BifrostCost {
+func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes, options CostCalculationOptions) *schemas.BifrostCost {
 	pricingRequestType := requestType
 	if pricingRequestType == schemas.TextCompletionRequest {
 		pricingRequestType = schemas.ChatCompletionRequest
 	}
 
-	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
+	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes, options)
 
 	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
 		}
-		cost = cost.Add(s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes))
+		cost = cost.Add(s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes, options))
 	}
 
 	return cost
@@ -503,7 +531,7 @@ func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
 // type and routes the extracted usage to the appropriate per-modality compute
 // function. Shared by calculateBaseCost (response-driven) and
 // CalculateCostForUsage (bare-usage-driven, for failed/cancelled requests).
-func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *schemas.BifrostCost {
+func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes, options CostCalculationOptions) *schemas.BifrostCost {
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -566,7 +594,115 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost.InputCostDetails.RequestCost += *pricing.CostPerRequest
 		cost.TotalCost += *pricing.CostPerRequest
 	}
+
+	// Time schedules multiply the final resolved rate, so they compose with
+	// service and context tiers rather than replacing them. They also scale the
+	// flat request fee because it is part of the model's final price.
+	cost = s.applyPricingSchedule(routingInfo, cost, options.BillingAttemptStartedAt)
 	return cost
+}
+
+// applyPricingSchedule resolves the model-level schedule and returns a scaled
+// copy of cost. It never mutates the input because it can alias
+// provider-supplied or caller-owned breakdowns.
+func (s *Store) applyPricingSchedule(routingInfo schemas.RoutingInfo, cost *schemas.BifrostCost, at *time.Time) *schemas.BifrostCost {
+	if cost == nil {
+		return nil
+	}
+
+	var aliasModelID, aliasModelName, serverSideFallbackModel string
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		aliasModelID = rka.ModelID
+		if rka.ModelName != nil {
+			aliasModelName = *rka.ModelName
+		}
+	}
+	if routingInfo.ServerSideFallbackModel != nil {
+		serverSideFallbackModel = *routingInfo.ServerSideFallbackModel
+	}
+
+	// Use the same candidate precedence as resolvePricing so an aliased request
+	// follows its canonical pricing row and its schedule together.
+	s.mu.RLock()
+	var model string
+	var schedule *PricingTimeSchedule
+	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
+		if candidate == "" {
+			continue
+		}
+		if candidateSchedule, exists := s.pricingSchedules[candidate]; exists {
+			model, schedule = candidate, candidateSchedule
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if schedule == nil {
+		return cost
+	}
+
+	details := &schemas.PricingScheduleCostDetails{Multiplier: 1}
+	if at == nil {
+		details.TimestampAvailable = false
+	} else {
+		details.TimestampAvailable = true
+		evaluation, err := EvaluatePricingTimeSchedule(schedule, *at)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("ignoring invalid pricing schedule for %s: %v", model, err)
+			}
+		} else {
+			details.Multiplier = evaluation.Multiplier
+			details.Matched = evaluation.Matched
+		}
+	}
+	if details.Multiplier == 1 {
+		cost.PricingSchedule = details
+		return cost
+	}
+
+	scaled := scaleBifrostCost(cost, details.Multiplier)
+	scaled.PricingSchedule = details
+	return scaled
+}
+
+// scaleBifrostCost deep-copies and multiplies every cost category.
+func scaleBifrostCost(cost *schemas.BifrostCost, multiplier float64) *schemas.BifrostCost {
+	if cost == nil {
+		return nil
+	}
+	scaled := *cost
+	scaled.InputCost *= multiplier
+	scaled.OutputCost *= multiplier
+	scaled.AdditionalCost *= multiplier
+	scaled.TotalCost *= multiplier
+	if cost.InputCostDetails != nil {
+		details := *cost.InputCostDetails
+		details.TextCost *= multiplier
+		details.AudioCost *= multiplier
+		details.ImageCost *= multiplier
+		details.CachedReadCost *= multiplier
+		details.CachedWriteCost *= multiplier
+		details.RequestCost *= multiplier
+		scaled.InputCostDetails = &details
+	}
+	if cost.OutputCostDetails != nil {
+		details := *cost.OutputCostDetails
+		details.TextCost *= multiplier
+		details.AudioCost *= multiplier
+		details.ImageCost *= multiplier
+		details.ReasoningCost *= multiplier
+		details.CitationCost *= multiplier
+		details.SearchQueriesCost *= multiplier
+		scaled.OutputCostDetails = &details
+	}
+	if cost.AdditionalCostDetails != nil {
+		details := *cost.AdditionalCostDetails
+		details.GuardrailCost *= multiplier
+		details.MCPCost *= multiplier
+		details.SemanticCacheCost *= multiplier
+		scaled.AdditionalCostDetails = &details
+	}
+	return &scaled
 }
 
 // ---------------------------------------------------------------------------

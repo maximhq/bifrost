@@ -1,5 +1,7 @@
 package schemas
 
+import "time"
+
 // BifrostGuardrailDebug carries request-scoped guardrail execution metadata.
 type BifrostGuardrailDebug struct {
 	JudgeCalls []BifrostGuardrailJudgeCall `json:"judge_calls,omitempty"`
@@ -22,6 +24,19 @@ type BifrostGuardrailJudgeCall struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens,omitempty"`
+	// StartedAt is the start of this internal judge invocation. It must be priced
+	// independently from the parent request: output guardrails can run after the main
+	// attempt completes, and a schedule boundary may fall between the two calls.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+}
+
+// cloneTime returns an owned copy of a timestamp.
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // Clone returns an owned snapshot of the guardrail debug data.
@@ -37,6 +52,7 @@ func (d *BifrostGuardrailDebug) Clone() *BifrostGuardrailDebug {
 		clone.JudgeCalls[index].RuleID = cloneUint(call.RuleID)
 		clone.JudgeCalls[index].PromptTokensDetails = cloneChatPromptTokensDetails(call.PromptTokensDetails)
 		clone.JudgeCalls[index].CompletionTokensDetails = cloneChatCompletionTokensDetails(call.CompletionTokensDetails)
+		clone.JudgeCalls[index].StartedAt = cloneTime(call.StartedAt)
 	}
 	return clone
 }

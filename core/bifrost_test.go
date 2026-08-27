@@ -3253,3 +3253,40 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
 	}
 }
+
+// TestHandleStreamRequest_RequiresContext pins the streaming lifecycle contract:
+// the caller must own the context so it can cancel an abandoned stream.
+func TestHandleStreamRequest_RequiresContext(t *testing.T) {
+	bifrost := &Bifrost{
+		bifrostRequestPool: sync.Pool{New: func() interface{} { return &schemas.BifrostRequest{} }},
+		logger:             NewNoOpLogger(),
+	}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "test-model",
+			Input:    []schemas.ChatMessage{{}},
+		},
+	}
+
+	stream, bifrostErr := bifrost.handleStreamRequest(nil, req)
+	if stream != nil {
+		t.Fatal("expected no stream for a nil streaming context")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("expected a detailed error, got %#v", bifrostErr)
+	}
+	if bifrostErr.Error.Message != "context is required for streaming requests" {
+		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
+	}
+	if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionStreamRequest {
+		t.Fatalf("unexpected request type: %v", bifrostErr.ExtraFields.RequestType)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+		t.Fatalf("unexpected provider: %v", bifrostErr.ExtraFields.Provider)
+	}
+	if bifrostErr.ExtraFields.OriginalModelRequested != "test-model" || bifrostErr.ExtraFields.ResolvedModelUsed != "test-model" {
+		t.Fatalf("unexpected model metadata: %#v", bifrostErr.ExtraFields)
+	}
+}
