@@ -294,7 +294,8 @@ Common fields on each `client_configs` entry:
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `tool_sync_interval` | string \| integer | Per-client tool-list sync interval as a Go duration string in whole seconds (for example `"5m"` or `"90s"`), or a legacy non-negative integer in nanoseconds that is a whole number of seconds. `"0s"`/omitted falls back to the global `mcp.tool_sync_interval`. |
 | `tool_execution_timeout` | integer | Per-client tool execution timeout in seconds. `0`/omitted falls back to the global `client.mcp_tool_execution_timeout`. |
-| `allow_on_all_virtual_keys` | boolean | When `true`, every virtual key can use this client without an explicit allowlist entry. |
+| `allow_by_default` | boolean | When `true`, any caller can use this client without an explicit assignment, with all tools allowed. An explicit assignment for a caller takes precedence for that caller, including an empty tool list. |
+| `allow_on_all_virtual_keys` | boolean | Deprecated alias of `allow_by_default`, read only when `allow_by_default` is absent. |
 | `tls_config` | object | `{ "insecure_skip_verify": bool, "ca_cert_pem": string }` — skip TLS verification (development only) and/or trust a custom CA certificate for this client's connection. `ca_cert_pem` supports `env.VAR_NAME`. |
 
 Auth-type-specific fields:

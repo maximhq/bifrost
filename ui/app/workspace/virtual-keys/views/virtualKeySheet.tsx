@@ -1352,11 +1352,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												</TooltipProvider>
 											</div>
 
-											{/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
+											{/* MCP servers allowed by default, excluding explicitly overridden ones */}
 											{(() => {
 												const defaultMCPClients = mcpClientsData.filter(
 													(client) =>
-														client.config.allow_on_all_virtual_keys &&
+														client.config.allow_by_default &&
 														!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
 												);
 												return defaultMCPClients.length > 0 ? (

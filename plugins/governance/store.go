@@ -1328,10 +1328,10 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 
 // permitForVirtualKey builds the permit a virtual key confers: one provider permit per configured
 // provider, and one MCP permit per MCP client the key may execute tools of: its own MCP configs,
-// plus the clients that are open to every virtual key.
+// plus the clients allowed by default.
 //
-// allowAllVKsClients maps client id to client name, as the in-memory store reports it. A client the
-// key configures explicitly is never widened by that map: the explicit config decides, including
+// allowedByDefaultClients maps client id to client name, as the in-memory store reports it. A client
+// the key configures explicitly is never widened by that map: the explicit config decides, including
 // when it grants no tool at all.
 //
 // The result is a snapshot for one attempt. Provider permits carry a copy of the config they came
@@ -1343,9 +1343,9 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		return nil
 	}
 
-	var allowAllVKsClients map[string]string
+	var allowedByDefaultClients map[string]string
 	if gs.inMemoryStore != nil {
-		allowAllVKsClients = gs.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+		allowedByDefaultClients = gs.inMemoryStore.GetMCPClientsAllowedByDefault()
 	}
 
 	providerPermits := make([]schemas.ProviderPermit, 0, len(vk.ProviderConfigs))
@@ -1361,7 +1361,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	}
 
 	// The key's own MCP configs come first, so they own their clients.
-	mcpPermits := make([]schemas.MCPPermit, 0, len(vk.MCPConfigs)+len(allowAllVKsClients))
+	mcpPermits := make([]schemas.MCPPermit, 0, len(vk.MCPConfigs)+len(allowedByDefaultClients))
 	configured := make(map[string]struct{}, len(vk.MCPConfigs))
 	for _, mcpConfig := range vk.MCPConfigs {
 		configured[mcpConfig.MCPClient.ClientID] = struct{}{}
@@ -1372,26 +1372,40 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		})
 	}
 
-	// Clients open to every virtual key grant all their tools, unless the key configured them
-	// above. Sorted so the permit, and everything derived from it, is stable regardless of map
-	// iteration order.
-	openClientIDs := make([]string, 0, len(allowAllVKsClients))
-	for clientID := range allowAllVKsClients {
+	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, configured, allowedByDefaultClients)
+
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
+}
+
+// AppendMCPPermitsAllowedByDefault adds a permit for every client allowed by default that the holder
+// has not configured itself: all of the client's tools, under the client's name. A client in
+// configured is left alone whatever it was configured with, since an explicit assignment decides for
+// its holder even when it grants nothing.
+//
+// One function because every kind of holder appends the same way: a holder that has built its own
+// list hands over the clients it named and gets the list back with the defaults added. Appended in
+// id order, so the permit, and everything derived from it, is stable regardless of map iteration
+// order.
+func AppendMCPPermitsAllowedByDefault(mcpPermits []schemas.MCPPermit, configured map[string]struct{}, allowedByDefault map[string]string) []schemas.MCPPermit {
+	if len(allowedByDefault) == 0 {
+		return mcpPermits
+	}
+	clientIDs := make([]string, 0, len(allowedByDefault))
+	for clientID := range allowedByDefault {
 		if _, ok := configured[clientID]; ok {
 			continue
 		}
-		openClientIDs = append(openClientIDs, clientID)
+		clientIDs = append(clientIDs, clientID)
 	}
-	sort.Strings(openClientIDs)
-	for _, clientID := range openClientIDs {
+	sort.Strings(clientIDs)
+	for _, clientID := range clientIDs {
 		mcpPermits = append(mcpPermits, schemas.MCPPermit{
 			Client:     clientID,
-			ClientName: allowAllVKsClients[clientID],
+			ClientName: allowedByDefault[clientID],
 			Tools:      []string{grant.Wildcard},
 		})
 	}
-
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
+	return mcpPermits
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store

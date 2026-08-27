@@ -304,8 +304,8 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 	return s.Config.Providers
 }
 
-func (s *GovernanceInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[string]string {
-	return s.Config.GetAllowOnAllVirtualKeysClients()
+func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
+	return s.Config.GetMCPClientsAllowedByDefault()
 }
 
 func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
