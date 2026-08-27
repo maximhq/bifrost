@@ -386,6 +386,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
+				// Gemini 3.x publisher models are only served from the global endpoint
+				// (single regions return 404 Publisher model not found). See issue #6589.
+				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
+				Models: []string{"gemini-3.5-flash", "gemini-3.1-flash-lite"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar("global"),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
+				},
+			},
+			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"veo-3.1-generate-preview"},
 				Weight: 1.0,
