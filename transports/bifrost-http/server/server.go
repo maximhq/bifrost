@@ -317,7 +317,7 @@ func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *sche
 	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
@@ -344,7 +344,7 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 	if err := s.Client.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
@@ -355,7 +355,7 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	if err := s.Config.UpdateMCPClient(ctx, id, updatedConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after editing client: %v", err)
 	}
 	return nil
@@ -389,7 +389,7 @@ func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, 
 	if s.MCPServerHandler == nil {
 		return
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to sync MCP servers after tools change for client %s: %v", clientID, err))
 	}
 }
@@ -398,7 +398,7 @@ func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id s
 	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after updating client connection: %v", err)
 	}
 	return nil
@@ -409,7 +409,7 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	if err := s.Config.RemoveMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
 	s.Config.OAuthProvider.EvictUserTokensByMCPClient(id)
@@ -429,7 +429,7 @@ func (s *BifrostHTTPServer) DisableMCPClient(ctx context.Context, id string) err
 	if err := s.Config.DisableMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after disabling client: %v", err)
 	}
 	return nil
@@ -440,7 +440,7 @@ func (s *BifrostHTTPServer) EnableMCPClient(ctx context.Context, id string) erro
 	if err := s.Config.EnableMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after enabling client: %v", err)
 	}
 	return nil
@@ -462,7 +462,7 @@ func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, co
 // then re-syncs the MCP server so the new tools are immediately visible via /mcp.
 func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
 	s.Client.SetClientTools(clientID, tools, toolNameMapping)
-	if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(context.Background()); err != nil {
 		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
 	}
 }
@@ -570,9 +570,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
 	}
 	store := governancePlugin.GetGovernanceStore()
-	if existingVK, found := store.GetVirtualKeyByID(ctx, virtualKey.ID); found && existingVK != nil && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
-		s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
-	}
 	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
@@ -589,7 +586,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	for mcID := range staleIDs {
 		store.DeleteModelConfigInMemory(ctx, mcID)
 	}
-	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return virtualKey, nil
@@ -678,7 +674,6 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return nil
@@ -1367,6 +1362,25 @@ func (s *BifrostHTTPServer) ResolveAccess(ctx *schemas.BifrostContext) (schemas.
 		return nil, nil
 	}
 	return governancePlugin.ResolveAccess(ctx)
+}
+
+// AdmitMCPGatewayRequest runs a /mcp request through the governance funnel before any tool is listed
+// or called, as an MCP tool execution with no tool named yet. Evaluating is what resolves and records
+// the request's access, so what tools/list shows and what tools/call permits come from one answer.
+//
+// Without governance there is nothing to evaluate against and nothing to restrict, which is why a
+// missing plugin answers with no access rather than with access permitting nothing.
+func (s *BifrostHTTPServer) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, nil
+	}
+	if _, refused := governancePlugin.Evaluate(ctx, &governance.EvaluationRequest{RequestType: schemas.MCPToolExecutionRequest}); refused != nil {
+		return nil, refused
+	}
+	// Evaluating refuses a request that carries no grant, so one that was admitted carries the
+	// access it was admitted with.
+	return ctx.Grant().Access(), nil
 }
 
 // backgroundCtx returns the server-lifetime context background workers should
@@ -2081,7 +2095,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 			vkCache = c
 		}
 	}
-	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s, s.OAuth2IdentityResolver, vkCache)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
