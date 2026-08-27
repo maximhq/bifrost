@@ -38,6 +38,12 @@ type CopilotProvider struct {
 	// models skip the failed native attempt and go straight to /responses.
 	// Keyed by model id; value is struct{}.
 	chatUnsupportedModels sync.Map
+
+	// reasoningUnsupportedModels caches model ids that Copilot rejected for
+	// carrying a reasoning effort at all (e.g. claude-haiku-4.5), so later
+	// requests drop reasoning up front instead of spending a failed round trip.
+	// Keyed by model id; value is struct{}.
+	reasoningUnsupportedModels sync.Map
 }
 
 // NewCopilotProvider creates a new Copilot provider instance.
@@ -238,6 +244,25 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 // observed to be unsupported on /chat/completions are cached so later requests
 // skip the failed native attempt.
 func (provider *CopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if provider.isReasoningUnsupported(request.Model) {
+		if stripped := withoutChatReasoning(request); stripped != nil {
+			request = stripped
+		}
+	}
+
+	response, err := provider.chatWithEndpointFallback(ctx, key, request)
+	if err != nil && reasoningRejectedByModel(err) {
+		provider.markReasoningUnsupported(request.Model, err)
+		if stripped := withoutChatReasoning(request); stripped != nil {
+			return provider.chatWithEndpointFallback(ctx, key, stripped)
+		}
+	}
+	return response, err
+}
+
+// chatWithEndpointFallback runs the native /chat/completions attempt and the
+// /responses translation fallback.
+func (provider *CopilotProvider) chatWithEndpointFallback(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if provider.isChatUnsupported(request.Model) {
 		return provider.chatViaResponses(ctx, key, request)
 	}
@@ -305,6 +330,24 @@ func (provider *CopilotProvider) chatViaResponses(ctx *schemas.BifrostContext, k
 // the upstream rejects the model as not accessible on /chat/completions before
 // any chunks are streamed.
 func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if provider.isReasoningUnsupported(request.Model) {
+		if stripped := withoutChatReasoning(request); stripped != nil {
+			request = stripped
+		}
+	}
+
+	stream, err := provider.chatStreamWithEndpointFallback(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if err != nil && reasoningRejectedByModel(err) {
+		provider.markReasoningUnsupported(request.Model, err)
+		if stripped := withoutChatReasoning(request); stripped != nil {
+			return provider.chatStreamWithEndpointFallback(ctx, postHookRunner, postHookSpanFinalizer, key, stripped)
+		}
+	}
+	return stream, err
+}
+
+// chatStreamWithEndpointFallback mirrors chatWithEndpointFallback for streaming.
+func (provider *CopilotProvider) chatStreamWithEndpointFallback(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if provider.isChatUnsupported(request.Model) {
 		return provider.chatStreamViaResponses(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
@@ -392,6 +435,25 @@ func setChatChunkObject(resp *schemas.BifrostChatResponse) *schemas.BifrostChatR
 // model as not served on /responses. Models observed to be unsupported on
 // /responses are cached so later requests skip the failed native attempt.
 func (provider *CopilotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if provider.isReasoningUnsupported(request.Model) {
+		if stripped := withoutResponsesReasoning(request); stripped != nil {
+			request = stripped
+		}
+	}
+
+	response, err := provider.responsesWithEndpointFallback(ctx, key, request)
+	if err != nil && reasoningRejectedByModel(err) {
+		provider.markReasoningUnsupported(request.Model, err)
+		if stripped := withoutResponsesReasoning(request); stripped != nil {
+			return provider.responsesWithEndpointFallback(ctx, key, stripped)
+		}
+	}
+	return response, err
+}
+
+// responsesWithEndpointFallback runs the native /responses attempt and the
+// chat-completions translation fallback.
+func (provider *CopilotProvider) responsesWithEndpointFallback(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if provider.isResponsesUnsupported(request.Model) {
 		return provider.responsesViaChat(ctx, key, request)
 	}
@@ -453,6 +515,24 @@ func (provider *CopilotProvider) responsesViaChat(ctx *schemas.BifrostContext, k
 // the chat-completions translation (and caching the model) when the upstream
 // rejects the model as not served on /responses before any chunks are streamed.
 func (provider *CopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if provider.isReasoningUnsupported(request.Model) {
+		if stripped := withoutResponsesReasoning(request); stripped != nil {
+			request = stripped
+		}
+	}
+
+	stream, err := provider.responsesStreamWithEndpointFallback(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if err != nil && reasoningRejectedByModel(err) {
+		provider.markReasoningUnsupported(request.Model, err)
+		if stripped := withoutResponsesReasoning(request); stripped != nil {
+			return provider.responsesStreamWithEndpointFallback(ctx, postHookRunner, postHookSpanFinalizer, key, stripped)
+		}
+	}
+	return stream, err
+}
+
+// responsesStreamWithEndpointFallback mirrors responsesWithEndpointFallback for streaming.
+func (provider *CopilotProvider) responsesStreamWithEndpointFallback(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if provider.isResponsesUnsupported(request.Model) {
 		return provider.responsesStreamViaChat(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
@@ -576,6 +656,66 @@ func chatUnsupportedByModel(err *schemas.BifrostError) bool {
 	return strings.Contains(msg, "/chat/completions") && strings.Contains(msg, "not accessible")
 }
 
+// reasoningRejectedByModel reports whether Copilot rejected the request because
+// the model does not accept reasoning effort at all. Copilot answers 400 with
+// code invalid_reasoning_effort and "does not support reasoning effort"; an
+// effort merely outside the model's published set names its supported values
+// instead and is handled by clamping in the request converter, so it must not
+// strip reasoning here.
+func reasoningRejectedByModel(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil || *err.StatusCode != fasthttp.StatusBadRequest {
+		return false
+	}
+	if err.Error == nil {
+		return false
+	}
+	if err.Error.Code == nil || *err.Error.Code != "invalid_reasoning_effort" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.GetErrorString()), "does not support reasoning effort")
+}
+
+// isReasoningUnsupported reports whether the model has been cached as rejecting
+// reasoning effort.
+func (provider *CopilotProvider) isReasoningUnsupported(model string) bool {
+	_, ok := provider.reasoningUnsupportedModels.Load(model)
+	return ok
+}
+
+// markReasoningUnsupported caches a model as rejecting reasoning effort so
+// future requests drop it before dispatch. Logs the first time a model is demoted.
+func (provider *CopilotProvider) markReasoningUnsupported(model string, err *schemas.BifrostError) {
+	if _, loaded := provider.reasoningUnsupportedModels.LoadOrStore(model, struct{}{}); !loaded && provider.logger != nil {
+		provider.logger.Debug("copilot: model %s does not accept reasoning effort (%s), dropping reasoning for subsequent requests", model, err.GetErrorString())
+	}
+}
+
+// withoutChatReasoning returns a shallow copy of the request with reasoning
+// removed, or nil when there is nothing to drop. The caller's request is left
+// untouched so a retry never mutates what the caller still owns.
+func withoutChatReasoning(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || request.Params == nil || request.Params.Reasoning == nil {
+		return nil
+	}
+	params := *request.Params
+	params.Reasoning = nil
+	stripped := *request
+	stripped.Params = &params
+	return &stripped
+}
+
+// withoutResponsesReasoning mirrors withoutChatReasoning for Responses requests.
+func withoutResponsesReasoning(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil || request.Params == nil || request.Params.Reasoning == nil {
+		return nil
+	}
+	params := *request.Params
+	params.Reasoning = nil
+	stripped := *request
+	stripped.Params = &params
+	return &stripped
+}
+
 // TextCompletion is not supported by the Copilot provider.
 func (provider *CopilotProvider) TextCompletion(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
@@ -681,7 +821,9 @@ func (provider *CopilotProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
-// CountTokens is not supported by the Copilot provider.
+// CountTokens is not supported by the Copilot provider. Copilot exposes no
+// counting endpoint, and answering with a real capped-output request would bill
+// a full prefill for a call that is free on every provider that supports it.
 func (provider *CopilotProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
