@@ -77,6 +77,51 @@ func TestArmRequestTimeout_StopPreventsFiring(t *testing.T) {
 	}
 }
 
+// TestArmRequestTimeout_DerivedContextDoesNotCancelSharedRoot verifies the
+// handleRequest/handleStreamRequest nil-ctx fix: deriving a fresh
+// per-request context from the shared root (schemas.NewBifrostContext(root,
+// schemas.NoDeadline), exactly as bifrost.ctx is derived from) rather than
+// arming the timer directly on the root itself. A leaked
+// BifrostContextKeyRequestTimeout value on the root (e.g. set on the ctx
+// passed to Init) is still honored by armRequestTimeout on the derived
+// context, but its Cancel() on firing must only affect that one derived
+// context -- not the root, and not any other request derived from it.
+// Cancelling the root must still propagate down to a derived context, since
+// that path (e.g. Shutdown) is relied on elsewhere.
+func TestArmRequestTimeout_DerivedContextDoesNotCancelSharedRoot(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+	root.SetValue(schemas.BifrostContextKeyRequestTimeout, 20*time.Millisecond)
+
+	reqA := schemas.NewBifrostContext(root, schemas.NoDeadline)
+	reqB := schemas.NewBifrostContext(root, schemas.NoDeadline)
+
+	stopA := armRequestTimeout(reqA)
+	defer stopA()
+
+	select {
+	case <-reqA.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("reqA's timer did not fire")
+	}
+
+	select {
+	case <-reqB.Done():
+		t.Fatal("reqA's timer firing must not cancel a sibling context derived from the same root")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if root.Err() != nil {
+		t.Fatalf("reqA's timer firing must not cancel the shared root, got root.Err() = %v", root.Err())
+	}
+
+	cancelRoot()
+	select {
+	case <-reqB.Done():
+	case <-time.After(time.Second):
+		t.Fatal("cancelling the shared root must still propagate down to a derived context")
+	}
+}
+
 // TestWrapStreamForRequestTimeout_NilChannelStopsImmediately verifies a nil
 // input channel calls stop immediately and returns nil, matching the error
 // return paths in handleStreamRequest that have no channel to wrap.
