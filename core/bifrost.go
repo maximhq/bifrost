@@ -5191,6 +5191,15 @@ func populateLatencyExtraFields(ctx *schemas.BifrostContext, resp *schemas.Bifro
 	if start, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
 		resp.PopulateOverheadLatency(ctx, time.Since(start))
 	}
+	populateBillingAttemptResponseExtraFields(ctx, resp)
+}
+
+// populateBillingAttemptResponseExtraFields stamps the current attempt's start
+// time on a response, including responses created by post-hook error recovery.
+func populateBillingAttemptResponseExtraFields(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil {
+		return
+	}
 	if start, ok := ctx.Value(schemas.BifrostContextKeyBillingAttemptStartTime).(time.Time); ok {
 		startCopy := start
 		resp.GetExtraFields().BillingAttemptStartedAt = &startCopy
@@ -5743,6 +5752,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if resp != nil {
 			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			populateBillingAttemptResponseExtraFields(msg.Context, resp)
 		}
 		drainAndAttachPluginLogs(msg.Context)
 		bifrost.releaseChannelMessage(msg)
@@ -6066,6 +6076,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if recoveredResp != nil {
 			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
+			populateBillingAttemptResponseExtraFields(ctx, recoveredResp)
 		}
 		drainAndAttachPluginLogs(ctx)
 		bifrost.releaseChannelMessage(msg)

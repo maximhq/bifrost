@@ -68,3 +68,19 @@ func TestNilUnaryRequestsUseIsolatedContexts(t *testing.T) {
 		t.Fatalf("nil unary caller changed the shared Bifrost request ID: %q", v)
 	}
 }
+
+func TestPopulateBillingAttemptResponseExtraFields(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	startedAt := time.Date(2026, 8, 27, 10, 30, 0, 0, time.UTC)
+	ctx.SetBillingAttemptStartTime(startedAt)
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{},
+	}
+	populateBillingAttemptResponseExtraFields(ctx, resp)
+
+	got := resp.GetExtraFields().BillingAttemptStartedAt
+	if got == nil || !got.Equal(startedAt) {
+		t.Fatalf("billing attempt start = %v, want %v", got, startedAt)
+	}
+}
