@@ -354,24 +354,58 @@ func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to configure Redis TLS CA certificate")
 }
 
+// Fixture for the single document newFakeValkeySearchServer serves. The
+// distance is what FT.SEARCH puts in the KNN alias; GetNearest reports
+// 1 - distance as the similarity, so 0.2 surfaces as a Score of 0.8.
+const (
+	fakeHitDocID    = "doc-sortby"
+	fakeHitDistance = "0.2"
+	fakeHitCacheKey = "session-sortby"
+)
+
+// resp2SearchHit encodes a one-document RESP2 FT.SEARCH reply:
+// [total, docID, [field, value, ...]].
+func resp2SearchHit(docID, distance, cacheKey string) string {
+	bulk := func(v string) string { return fmt.Sprintf("$%d\r\n%s\r\n", len(v), v) }
+	return "*3\r\n:1\r\n" + bulk(docID) +
+		"*4\r\n" + bulk(knnScoreAlias) + bulk(distance) + bulk("cache_key") + bulk(cacheKey)
+}
+
 type fakeRedisSearchServer struct {
-	listener      net.Listener
-	searchErrors  int
-	mu            sync.Mutex
-	ftSearchCalls int
-	sawScan       bool
+	listener     net.Listener
+	searchErrors int
+	// rejectSortBy makes FT.SEARCH fail the way valkey-search does when SORTBY
+	// names the KNN result alias instead of an indexed attribute.
+	rejectSortBy bool
+	// searchHit makes an accepted FT.SEARCH return one document carrying the
+	// KNN alias, so callers can assert on a parsed SearchResult rather than
+	// only on the fact that a retry was issued.
+	searchHit bool
+
+	mu             sync.Mutex
+	ftSearchCalls  int
+	sawScan        bool
+	lastSearchArgs []string
 }
 
 func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
 	t.Helper()
+	return startFakeRedisSearchServer(t, &fakeRedisSearchServer{searchErrors: searchErrors})
+}
+
+// newFakeValkeySearchServer returns a server that mimics valkey-search: it
+// rejects any FT.SEARCH carrying SORTBY and serves the rest normally.
+func newFakeValkeySearchServer(t *testing.T) *fakeRedisSearchServer {
+	t.Helper()
+	return startFakeRedisSearchServer(t, &fakeRedisSearchServer{rejectSortBy: true, searchHit: true})
+}
+
+func startFakeRedisSearchServer(t *testing.T, server *fakeRedisSearchServer) *fakeRedisSearchServer {
+	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-
-	server := &fakeRedisSearchServer{
-		listener:     listener,
-		searchErrors: searchErrors,
-	}
+	server.listener = listener
 
 	go server.serve(t)
 	return server
@@ -424,12 +458,20 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		case "FT.SEARCH":
 			s.mu.Lock()
 			s.ftSearchCalls++
+			s.lastSearchArgs = append([]string(nil), command...)
 			shouldError := s.ftSearchCalls <= s.searchErrors
+			sortByRejected := s.rejectSortBy && commandHasSortByClause(command)
+			searchHit := s.searchHit
 			s.mu.Unlock()
 
-			if shouldError {
+			switch {
+			case sortByRejected:
+				_, _ = writer.WriteString("-Index field `score` does not exist\r\n")
+			case shouldError:
 				_, _ = writer.WriteString("-Invalid query\r\n")
-			} else {
+			case searchHit:
+				_, _ = writer.WriteString(resp2SearchHit(TestNamespace+":"+fakeHitDocID, fakeHitDistance, fakeHitCacheKey))
+			default:
 				_, _ = writer.WriteString("*1\r\n:0\r\n")
 			}
 		case "SCAN":
@@ -461,6 +503,87 @@ func (s *fakeRedisSearchServer) stats() (ftSearchCalls int, sawScan bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ftSearchCalls, s.sawScan
+}
+
+func (s *fakeRedisSearchServer) lastSearch() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.lastSearchArgs...)
+}
+
+// commandHasSortByClause reports whether SORTBY appears as a clause rather than as a
+// projected field name or as some other caller-supplied value. valkey-search rejects
+// sorting on the KNN alias, not returning it (probes B and E on the live server), so a
+// fake that failed on the literal anywhere would also fail a retry that merely projects a
+// field called "SORTBY". Matching the pair the way the real parser does keeps that honest
+// for the namespace too, which is positional and precedes RETURN like the sort clause.
+func commandHasSortByClause(command []string) bool {
+	limit := len(command)
+	for i, part := range command {
+		if strings.EqualFold(part, "RETURN") {
+			limit = i
+			break
+		}
+	}
+	for i := 0; i+1 < limit; i++ {
+		if strings.EqualFold(command[i], "SORTBY") && strings.EqualFold(command[i+1], knnScoreAlias) {
+			return true
+		}
+	}
+	return false
+}
+
+// The fake server is only useful if it fails for the reason the real one does, so pin the
+// three shapes that separate a sort clause from a positional value spelled the same way.
+func TestCommandHasSortByClause(t *testing.T) {
+	const query = "(*)=>[KNN 1 @embedding $vec AS score]"
+
+	tests := []struct {
+		name    string
+		command []string
+		want    bool
+	}{
+		{
+			name:    "sort clause on the KNN alias",
+			command: []string{"FT.SEARCH", TestNamespace, query, "SORTBY", knnScoreAlias, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "cache_key", "DIALECT", "2"},
+			want:    true,
+		},
+		{
+			name:    "namespace named SORTBY, clause already dropped",
+			command: []string{"FT.SEARCH", "SORTBY", query, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "cache_key", "DIALECT", "2"},
+			want:    false,
+		},
+		{
+			name:    "projected field named SORTBY, clause already dropped",
+			command: []string{"FT.SEARCH", TestNamespace, query, "LIMIT", "0", "1", "RETURN", "2", knnScoreAlias, "SORTBY", "DIALECT", "2"},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, commandHasSortByClause(tt.command))
+		})
+	}
+}
+
+func commandArgCount(command []string, arg string) int {
+	count := 0
+	for _, part := range command {
+		if strings.EqualFold(part, arg) {
+			count++
+		}
+	}
+	return count
+}
+
+func commandContainsArg(command []string, arg string) bool {
+	for _, part := range command {
+		if strings.EqualFold(part, arg) {
+			return true
+		}
+	}
+	return false
 }
 
 func readRESPCommand(reader *bufio.Reader) ([]string, error) {
@@ -505,6 +628,176 @@ func readRESPCommand(reader *bufio.Reader) ([]string, error) {
 	}
 
 	return command, nil
+}
+
+func TestIsKNNSortByUnsupported(t *testing.T) {
+	tests := []struct {
+		name   string
+		errMsg string
+		want   bool
+	}{
+		{
+			name:   "redisearch wording with backticks",
+			errMsg: "unexpected argument `sortby`",
+			want:   true,
+		},
+		{
+			name:   "redisearch wording without backticks",
+			errMsg: "unexpected argument sortby",
+			want:   true,
+		},
+		{
+			name:   "valkey-search rejects the knn alias as an index field",
+			errMsg: "index field `score` does not exist",
+			want:   true,
+		},
+		{
+			name:   "unrelated missing field is not treated as a sortby problem",
+			errMsg: "index field `provider` does not exist",
+			want:   false,
+		},
+		{
+			name:   "field name merely containing the alias is not the alias",
+			errMsg: "index field `llm_scores` does not exist",
+			want:   false,
+		},
+		{
+			name:   "alias outside an index-field phrase is not a sortby problem",
+			errMsg: "property `score` is not sortable and does not exist here",
+			want:   false,
+		},
+		{
+			name:   "unrelated search error",
+			errMsg: "invalid query",
+			want:   false,
+		},
+		{
+			name:   "empty",
+			errMsg: "",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isKNNSortByUnsupported(tt.errMsg))
+		})
+	}
+}
+
+// Regression: valkey-search rejects SORTBY on the KNN result alias, which made
+// every semantic cache lookup fail. The existing retry only matched RediSearch's
+// wording, so it never fired on Valkey.
+func TestRedisStore_GetNearest_RetriesWithoutSortByWhenAliasRejected(t *testing.T) {
+	server := newFakeValkeySearchServer(t)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: schemas.Duration(time.Second),
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	results, err := store.GetNearest(ctx, TestNamespace, []float32{0.1, 0.2, 0.3}, nil, nil, 0.5, 1)
+	require.NoError(t, err, "the rejected SORTBY should be retried, not surfaced")
+
+	// The retry must survive parsing, not merely be issued: the document the
+	// fake serves has to come back with the KNN alias resolved into Score.
+	require.Len(t, results, 1, "the retry's document should be parsed and returned")
+	assert.Equal(t, fakeHitDocID, results[0].ID)
+	assert.Equal(t, fakeHitCacheKey, results[0].Properties["cache_key"])
+	require.NotNil(t, results[0].Score, "Properties[%q] should populate Score", knnScoreAlias)
+	assert.InDelta(t, 0.8, *results[0].Score, 0.000001, "Score is the similarity 1 - distance")
+
+	ftSearchCalls, _ := server.stats()
+	assert.Equal(t, 2, ftSearchCalls, "expected the SORTBY query, then one retry without it")
+
+	lastSearch := server.lastSearch()
+	assert.False(t, commandContainsArg(lastSearch, "SORTBY"), "retry must drop SORTBY: %v", lastSearch)
+	assert.True(t, commandContainsArg(lastSearch, "RETURN"), "retry must keep the RETURN clause: %v", lastSearch)
+	assert.True(t, commandContainsArg(lastSearch, "DIALECT"), "retry must keep DIALECT: %v", lastSearch)
+}
+
+// The compat retry drops the SORTBY clause by position, not by searching args for the
+// literal. namespace and the RETURN field names share that slice, so a caller-supplied
+// value equal to "SORTBY" would otherwise be mistaken for the clause and take the
+// argument after it with it, sending a malformed command. No caller in this repo passes
+// such a field - GetNearest is exported, so this guards the API rather than a live path.
+func TestRedisStore_GetNearest_RetryKeepsSelectFieldNamedSortBy(t *testing.T) {
+	server := newFakeValkeySearchServer(t)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: schemas.Duration(time.Second),
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := store.GetNearest(ctx, TestNamespace, []float32{0.1, 0.2, 0.3}, nil, []string{"SORTBY"}, 0.5, 1)
+	require.NoError(t, err)
+
+	ftSearchCalls, _ := server.stats()
+	require.Equal(t, 2, ftSearchCalls, "expected the SORTBY query, then one retry without it")
+
+	lastSearch := server.lastSearch()
+	// The sort clause is gone, but the projected field of the same name survives.
+	assert.Equal(t, 1, commandArgCount(lastSearch, "SORTBY"), "only the sort clause should be dropped: %v", lastSearch)
+	// A scanning strip would have eaten LIMIT as the sort clause's field value.
+	assert.True(t, commandContainsArg(lastSearch, "LIMIT"), "retry must keep the LIMIT clause: %v", lastSearch)
+	assert.Equal(t, []string{"RETURN", "2", knnScoreAlias, "SORTBY", "LIMIT"}, returnClause(lastSearch),
+		"RETURN must still declare and carry both projected fields: %v", lastSearch)
+}
+
+// returnClause slices out RETURN, its declared count, that many field names, and the
+// argument that follows, so a test can assert the projection survived intact.
+func returnClause(command []string) []string {
+	for i, part := range command {
+		if !strings.EqualFold(part, "RETURN") || i+1 >= len(command) {
+			continue
+		}
+		n, err := strconv.Atoi(command[i+1])
+		if err != nil || i+2+n >= len(command) {
+			return command[i:]
+		}
+		return command[i : i+3+n]
+	}
+	return nil
 }
 
 func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testing.T) {
