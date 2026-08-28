@@ -1592,7 +1592,7 @@ Even when routing rules determine the provider, load balancing Level 2 still opt
 Routing rules can be configured through:
 
 - **Dashboard**: Visual rule builder with CEL expression editor
-- **API**: `POST /api/routing/rules` and related endpoints
+- **API**: `POST /api/routing/rules` and related endpoints (the `/api/routing/*` namespace is available in **Bifrost v2.0.0 and above**; earlier versions use `/api/governance/routing-rules`)
 - **Scope**: Create rules at global, customer, team, or virtual key levels
 - **Priority**: Order rules within scope with numeric priority
 

@@ -377,7 +377,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Get current config with proper locking
 	currentConfig := h.store.ClientConfig
-	updatedConfig := currentConfig
+	// Build the update on an independent copy: the live config must not
+	// change until persistence succeeds, or a failed store write would leave
+	// memory ahead of the database. A shallow copy is enough because every
+	// edit below replaces a whole field; nothing mutates through the shared
+	// pointer or slice fields.
+	copied := *currentConfig
+	updatedConfig := &copied
 
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
 	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
@@ -487,8 +493,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
-	// MCPToolSyncInterval supports 0 (disabled), so compare against current value
-	// instead of a > 0 guard used by other numeric fields.
+	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	// 0 means the built-in default, so compare against the current value
+	// instead of the > 0 guard used by other numeric fields.
 	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
@@ -507,7 +517,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if h.store.MCPConfig.ToolManagerConfig == nil {
 			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
 		}
-		h.store.MCPConfig.ToolSyncInterval = time.Duration(updatedConfig.MCPToolSyncInterval) * time.Minute
 		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
 		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
 		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
@@ -610,7 +619,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
 		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
 	}
-	// 0 is a valid value (disabled), so persist it when changed.
+	// 0 is a valid value (the built-in default), so persist it when changed.
 	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
@@ -696,8 +705,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Apply the in-memory change only after persistence succeeds.
-	h.store.ClientConfig = updatedConfig
+	// Apply the in-memory change only after persistence succeeds, copying
+	// into the live struct (the same way ReloadClientConfigFromConfigStore
+	// publishes) so every holder of the pointer observes it.
+	*h.store.ClientConfig = *updatedConfig
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("failed to reload client config from config store: %v", err)
@@ -1261,6 +1272,21 @@ func checkURLAccessibility(rawURL string) error {
 	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// validateGlobalToolSyncIntervalMinutes checks a client-config
+// mcp_tool_sync_interval: 0 means the built-in default, negatives are
+// rejected, and the ceiling is the minutes->Duration overflow edge shared
+// with the per-client tool_sync_interval (maxToolSyncIntervalMinutes), since
+// the stored minutes are multiplied by time.Minute on every reload.
+func validateGlobalToolSyncIntervalMinutes(minutes int) error {
+	if minutes < 0 {
+		return fmt.Errorf("mcp_tool_sync_interval must be 0 (use the default) or a positive number of minutes")
+	}
+	if int64(minutes) > maxToolSyncIntervalMinutes {
+		return fmt.Errorf("mcp_tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes)
 	}
 	return nil
 }

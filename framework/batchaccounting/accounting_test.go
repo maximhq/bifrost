@@ -1520,11 +1520,22 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 	assert.Equal(t, []string{"budget-creator"}, reporter.reports[0].BudgetIDs)
 }
 
-// Same virtual key on both sides: the job still owns the billing ids, but the log
-// entry's denormalized names are safe to copy because they describe that same key.
-func TestAccountBatchResults_FillsNamesFromMatchingVirtualKey(t *testing.T) {
+// The denormalized names come from the log of the request that CREATED the batch,
+// not from whoever settles it.
+func TestAccountBatchResults_FillsNamesFromSourceLog(t *testing.T) {
 	store := newFakeAccountingStore()
 	sharedVK := "vk-shared"
+	sourceLogID := "create-request"
+
+	store.logs[sourceLogID] = &logstore.Log{
+		ID:             sourceLogID,
+		VirtualKeyID:   &sharedVK,
+		VirtualKeyName: strPtr("shared vk"),
+		UserID:         strPtr("user-creator"),
+		UserName:       strPtr("Creator"),
+		TeamID:         strPtr("team-1"),
+		TeamName:       strPtr("Team One"),
+	}
 
 	job := &cstables.TableBatchJob{
 		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_same_vk"),
@@ -1533,6 +1544,9 @@ func TestAccountBatchResults_FillsNamesFromMatchingVirtualKey(t *testing.T) {
 		AccountingStatus: cstables.BatchJobAccountingStatusPending,
 		SelectedKeyID:    "key-1",
 		VirtualKeyID:     &sharedVK,
+		UserID:           strPtr("user-creator"),
+		TeamID:           strPtr("team-1"),
+		SourceLogID:      &sourceLogID,
 	}
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
 
@@ -1542,10 +1556,8 @@ func TestAccountBatchResults_FillsNamesFromMatchingVirtualKey(t *testing.T) {
 		FallbackModel: "gpt-4o-mini",
 		BatchJob:      job,
 		BaseLog: &logstore.Log{
-			ID:             "results-request",
-			VirtualKeyID:   &sharedVK,
-			VirtualKeyName: strPtr("shared vk"),
-			TeamID:         strPtr("team-1"),
+			ID:           "results-request",
+			VirtualKeyID: &sharedVK,
 		},
 		Results:   []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		ClaimedBy: "test",
@@ -1556,8 +1568,132 @@ func TestAccountBatchResults_FillsNamesFromMatchingVirtualKey(t *testing.T) {
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.VirtualKeyName)
 	assert.Equal(t, "shared vk", *logged.VirtualKeyName)
+	require.NotNil(t, logged.UserID)
+	assert.Equal(t, "user-creator", *logged.UserID)
+	require.NotNil(t, logged.UserName)
+	assert.Equal(t, "Creator", *logged.UserName)
 	require.NotNil(t, logged.TeamID)
 	assert.Equal(t, "team-1", *logged.TeamID)
+}
+
+// An access profile hands one virtual key to many users, so matching on the key
+// cannot tell two people apart. The settling user's identity must not land on the
+// creator's cost row even though both requests carry the same virtual key.
+func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	sharedVK := "vk-access-profile"
+	sourceLogID := "create-request"
+	creatorBudgets := `["budget-creator"]`
+
+	store.logs[sourceLogID] = &logstore.Log{
+		ID:             sourceLogID,
+		VirtualKeyID:   &sharedVK,
+		VirtualKeyName: strPtr("access profile key"),
+		UserID:         strPtr("user-alice"),
+		UserName:       strPtr("Alice"),
+	}
+
+	job := &cstables.TableBatchJob{
+		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_shared_vk"),
+		Provider:         string(schemas.OpenAI),
+		BatchID:          "batch_shared_vk",
+		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    "key-1",
+		VirtualKeyID:     &sharedVK,
+		UserID:           strPtr("user-alice"),
+		BudgetIDs:        &creatorBudgets,
+		SourceLogID:      &sourceLogID,
+	}
+	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+
+	// Bob fetches Alice's results. Same access-profile virtual key, different person.
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+		Provider:      schemas.OpenAI,
+		BatchID:       "batch_shared_vk",
+		FallbackModel: "gpt-4o-mini",
+		BatchJob:      job,
+		BaseLog: &logstore.Log{
+			ID:             "results-request",
+			VirtualKeyID:   &sharedVK,
+			VirtualKeyName: strPtr("access profile key"),
+			UserID:         strPtr("user-bob"),
+			UserName:       strPtr("Bob"),
+		},
+		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		UsageReporter: reporter,
+		ClaimedBy:     "test",
+	})
+	require.NoError(t, err)
+
+	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_shared_vk")]
+	require.NotNil(t, logged)
+	require.NotNil(t, logged.UserID)
+	assert.Equal(t, "user-alice", *logged.UserID, "the batch is billed to whoever created it")
+	require.NotNil(t, logged.UserName)
+	assert.Equal(t, "Alice", *logged.UserName)
+	require.NotNil(t, logged.ParentRequestID)
+	assert.Equal(t, "results-request", *logged.ParentRequestID)
+
+	require.Len(t, reporter.reports, 1)
+	assert.Equal(t, "user-alice", reporter.reports[0].UserID)
+	assert.Equal(t, []string{"budget-creator"}, reporter.reports[0].BudgetIDs)
+}
+
+// The sweeper settles with no request context at all: every identity on the cost
+// row has to come off the batch job and the creating request's log.
+func TestAccountBatchResults_SweeperPathKeepsUserAttribution(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	vk := "vk-access-profile"
+	sourceLogID := "create-request"
+
+	store.logs[sourceLogID] = &logstore.Log{
+		ID:           sourceLogID,
+		VirtualKeyID: &vk,
+		UserID:       strPtr("user-alice"),
+		UserName:     strPtr("Alice"),
+		TeamID:       strPtr("team-1"),
+		TeamName:     strPtr("Team One"),
+	}
+
+	job := &cstables.TableBatchJob{
+		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_sweeper"),
+		Provider:         string(schemas.OpenAI),
+		BatchID:          "batch_sweeper",
+		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    "key-1",
+		VirtualKeyID:     &vk,
+		UserID:           strPtr("user-alice"),
+		TeamID:           strPtr("team-1"),
+		SourceLogID:      &sourceLogID,
+	}
+	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+
+	// No BaseLog: this is the sweeper, hours after the request that created the batch.
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+		Provider:      schemas.OpenAI,
+		BatchID:       "batch_sweeper",
+		FallbackModel: "gpt-4o-mini",
+		BatchJob:      job,
+		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		UsageReporter: reporter,
+		ClaimedBy:     "test",
+	})
+	require.NoError(t, err)
+
+	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_sweeper")]
+	require.NotNil(t, logged)
+	require.NotNil(t, logged.UserID)
+	assert.Equal(t, "user-alice", *logged.UserID)
+	require.NotNil(t, logged.UserName)
+	assert.Equal(t, "Alice", *logged.UserName)
+	require.NotNil(t, logged.TeamID)
+	assert.Equal(t, "team-1", *logged.TeamID)
+	assert.Nil(t, logged.ParentRequestID, "nothing triggered this settlement")
+
+	require.Len(t, reporter.reports, 1)
+	assert.Equal(t, "user-alice", reporter.reports[0].UserID, "the user must be billable without a request context")
 }
 
 // A batch created outside Bifrost has no create-time attribution to prefer, so the
@@ -1739,4 +1875,65 @@ func TestAccountBatchResults_TerminalJobsStayClosedWithoutResults(t *testing.T) 
 
 func strPtr(v string) *string {
 	return &v
+}
+
+// Production hands AccountBatchResults a job built from the settling request's own
+// log entry, so that job arrives already populated with the fetcher's key, virtual
+// key and budgets. Merging the persisted row into it must overwrite those, not fill
+// only the gaps — otherwise nothing of the creator's identity ever survives.
+func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	creatorVK := "vk-creator"
+	creatorBudgets := `["budget-creator"]`
+	fetcherVK := "vk-fetcher"
+	fetcherBudgets := `["budget-fetcher"]`
+	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_merge")
+
+	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+		ID:               jobID,
+		Provider:         string(schemas.OpenAI),
+		BatchID:          "batch_merge",
+		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    "key-creator",
+		VirtualKeyID:     &creatorVK,
+		UserID:           strPtr("user-creator"),
+		BudgetIDs:        &creatorBudgets,
+	}))
+
+	// What plugins/logging builds on the /results path: a job derived from the
+	// fetcher's log entry, carrying the fetcher's identity end to end.
+	fetcherBuiltJob := &cstables.TableBatchJob{
+		ID:               jobID,
+		Provider:         string(schemas.OpenAI),
+		BatchID:          "batch_merge",
+		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    "key-fetcher",
+		VirtualKeyID:     &fetcherVK,
+		UserID:           strPtr("user-fetcher"),
+		BudgetIDs:        &fetcherBudgets,
+	}
+
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+		Provider:      schemas.OpenAI,
+		BatchID:       "batch_merge",
+		FallbackModel: "gpt-4o-mini",
+		BatchJob:      fetcherBuiltJob,
+		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		UsageReporter: reporter,
+		ClaimedBy:     "test",
+	})
+	require.NoError(t, err)
+
+	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_merge")]
+	require.NotNil(t, logged)
+	assert.Equal(t, "key-creator", logged.SelectedKeyID)
+	require.NotNil(t, logged.VirtualKeyID)
+	assert.Equal(t, creatorVK, *logged.VirtualKeyID)
+	require.NotNil(t, logged.UserID)
+	assert.Equal(t, "user-creator", *logged.UserID)
+
+	require.Len(t, reporter.reports, 1)
+	assert.Equal(t, []string{"budget-creator"}, reporter.reports[0].BudgetIDs)
+	assert.Equal(t, "user-creator", reporter.reports[0].UserID)
 }

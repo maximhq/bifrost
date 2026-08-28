@@ -11,6 +11,8 @@ icon: "right-left"
 
 This is strictly delegated: there is no shared service-account fallback. A caller with no identity token cannot use a `token_exchange` server — see [Identity requirements](#identity-requirements).
 
+<Info>Token exchange is available in **Bifrost v2.0.0 and above**.</Info>
+
 <Note>
 Requires an **enabled SCIM identity provider** (enterprise). Token exchange runs against whichever IdP handles your SSO, using its token endpoint. See [Prerequisites](#prerequisites).
 </Note>

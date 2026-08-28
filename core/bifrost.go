@@ -64,6 +64,7 @@ type ChannelMessage struct {
 	ResponseStream chan chan *schemas.BifrostStreamChunk
 	Err            chan schemas.BifrostError
 	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
+	sentAt         time.Time          // set by the worker immediately before sending the result/error, so tryRequest can measure the worker->caller goroutine-hop latency ("worker-handoff")
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -4439,6 +4440,17 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 	return nil
 }
 
+// UpdateMCPToolSyncInterval hot-reloads the global MCP tool sync interval and
+// re-times the periodic checkers of every client that follows the global
+// setting. Pass a non-positive interval to fall back to the built-in default.
+func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	bifrost.MCPManager.UpdateToolSyncInterval(interval)
+	return nil
+}
+
 // PROVIDER MANAGEMENT
 
 // createBaseProvider creates a provider based on the base provider type
@@ -5208,6 +5220,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// "handle-setup" overhead phase: model-catalog publish + the pre-request hook
+	// pipeline glue. Per-plugin work nests as its own spans; this bucket is the
+	// remaining core-side setup so it stops folding into "core".
+	setupSpan := bifrost.startCoreSpan(ctx, "handle-setup")
+
 	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
 	// before any hook runs.
 	bifrost.setModelCatalogOnContext(ctx)
@@ -5218,6 +5235,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	bifrost.endCoreSpan(setupSpan)
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider/model after PreRequestHook means no plugin
@@ -5498,6 +5516,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// must be set before requestHandler() is called.
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
 
+	// "pipeline-pre" overhead phase: the LLM pre-hook pipeline glue (loop + pool
+	// around the per-plugin spans that nest inside it), previously part of "core".
+	prePipeSpan := bifrost.startCoreSpan(ctx, "pipeline-pre")
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
 
@@ -5505,6 +5526,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
+	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
@@ -5627,6 +5649,18 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pluginCount := len(*bifrost.llmPlugins.Load())
 	select {
 	case result = <-msg.Response:
+		// Worker->caller goroutine-hop latency: measure the instant we receive so the
+		// breakdown carves this scheduling gap out of "core" into "worker-handoff".
+		if !msg.sentAt.IsZero() {
+			msg.Context.StampWorkerHandoff(time.Since(msg.sentAt))
+		}
+		// "pipeline-post" overhead phase: everything from here to return (latency stamp,
+		// post-hook pipeline glue, raw-field stripping, message release). The defer is
+		// function-scoped and this case ends by returning, so it times exactly the post
+		// block; per-plugin post-hook spans nest inside and subtract out.
+		if ph := bifrost.startCoreSpan(msg.Context, "pipeline-post"); ph.h != nil {
+			defer bifrost.endCoreSpan(ph)
+		}
 		// Accumulator is complete once the provider returns; stamp before post-hooks
 		// so logging reads it off ExtraFields.
 		populateLatencyExtraFields(msg.Context, result)
@@ -5659,6 +5693,14 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
+		// Worker->caller goroutine-hop latency on the error path too.
+		if !msg.sentAt.IsZero() {
+			msg.Context.StampWorkerHandoff(time.Since(msg.sentAt))
+		}
+		// "pipeline-post" overhead phase on the error path (see the success case above).
+		if ph := bifrost.startCoreSpan(msg.Context, "pipeline-post"); ph.h != nil {
+			defer bifrost.endCoreSpan(ph)
+		}
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -6647,24 +6689,101 @@ func executeRequestWithRetries[T any](
 }
 
 // clearAnthropicPassthroughForNonNativeProvider disables Anthropic raw-body passthrough when a
-// request from the Anthropic-format integration resolves to a provider that doesn't speak the
-// Anthropic Messages API natively (e.g. Bedrock), forcing that provider to convert the request
-// itself. Gated on the final resolved provider so it fires regardless of how the provider was
-// picked (prefix, catalog, key alias, governance) and re-runs per attempt for fallbacks. No-op
-// for Anthropic/Vertex/Azure providers and for non-Anthropic integrations.
-func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+// request from the Anthropic-format integration resolves to a provider/model pair that doesn't
+// speak the Anthropic Messages API natively (e.g. Bedrock, or a routing rule that retargets a
+// Claude Code request to an OpenAI-family model on Bedrock Mantle), forcing that provider to
+// convert the request itself. Gated on the final resolved provider and model so it fires
+// regardless of how either was picked (prefix, catalog, key alias, governance, routing rule)
+// and re-runs per attempt for fallbacks. No-op for Anthropic and for non-Anthropic integrations.
+//
+// Vertex, Azure and Bedrock Mantle are multi-family: they serve Anthropic Messages for Claude and
+// OpenAI/Gemini surfaces for everything else, so their exemption reuses the IsAnthropicModelFamily
+// predicate their own dispatch uses. Call this only after key-level alias resolution — that
+// predicate reads the resolved alias from context.
+func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, model string) {
 	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
 		return
 	}
-	if baseProvider == schemas.Anthropic ||
-		baseProvider == schemas.Vertex ||
+	if baseProvider == schemas.Anthropic {
+		return
+	}
+	if (baseProvider == schemas.Vertex ||
 		baseProvider == schemas.Azure ||
-		baseProvider == schemas.BedrockMantle {
+		baseProvider == schemas.BedrockMantle) &&
+		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// applyRawCaptureSignals writes this attempt's raw-payload capture signals, merging provider
+// config with any per-request context overrides. Call it after
+// clearAnthropicPassthroughForNonNativeProvider: that helper can drop the passthrough overrides
+// this derivation reads, so deriving first would leave a converted response captured and
+// unstripped on a request that no longer passes anything through.
+func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
+	// Effective values are computed by merging provider config with any per-request
+	// context overrides (BifrostContextKeySendBackRawRequest/Response and
+	// BifrostContextKeyStoreRawRequestResponse). A context value set to either true
+	// or false fully overrides the provider config for that flag.
+	//
+	// Each flag is independent:
+	//   send_back_raw_request  — include raw request bytes in the client response.
+	//   send_back_raw_response — include raw response bytes in the client response.
+	//   store_raw_request_response — persist raw bytes in log records (logging plugin only).
+	//
+	// Capture is enabled per-side whenever send-back OR store is requested for that side.
+	// Strip flags tell the response path to remove that side's bytes before the payload
+	// reaches the caller (used when store=true but send-back=false for that side).
+	//
+	// All internal signals are always written explicitly on every attempt so stale values
+	// from a previous provider attempt (e.g. different fallback provider config) cannot
+	// leak into the new attempt on a reused context. The user override keys
+	// (BifrostContextKeySendBackRaw*, BifrostContextKeyStoreRawRequestResponse) are
+	// never overwritten — they are read-only from bifrost.go's perspective.
+
+	// Step 1: compute effective value for each flag (provider config ← per-request override).
+	effectiveSendBackReq := config.SendBackRawRequest
+	allowRawOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
+	passthroughOverridePresent, _ := ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+
+	if allowRawOverride || passthroughOverridePresent {
+		if override, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
+			effectiveSendBackReq = override
+		}
+	}
+	effectiveSendBackResp := config.SendBackRawResponse
+	if allowRawOverride || passthroughOverridePresent {
+		if override, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
+			effectiveSendBackResp = override
+		}
+	}
+	effectiveStore := config.StoreRawRequestResponse
+	allowStorageOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
+	if allowStorageOverride {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+			effectiveStore = override
+		}
+	}
+
+	// Step 2: derive per-side capture and strip flags.
+	// Capture if we need to send the data back OR store it — independent per side.
+	captureReq := effectiveSendBackReq || effectiveStore
+	captureResp := effectiveSendBackResp || effectiveStore
+	// Strip from client response if we captured for storage but not for send-back.
+	dropReq := effectiveStore && !effectiveSendBackReq
+	dropResp := effectiveStore && !effectiveSendBackResp
+
+	// Step 3: write all internal signals explicitly (never touch the user override keys).
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, captureReq)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, captureResp)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, dropReq)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
+	// Tells the logging plugin whether to persist raw bytes in log records.
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -6717,6 +6836,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 
+		// "worker-setup" overhead phase: per-attempt base-provider resolution and the
+		// raw-capture flag computation (~a dozen ctx writes) the worker does between
+		// dequeue and key acquisition. No early exits in this block, so a single span
+		// pair is safe; closed just before key acquisition below.
+		workerSetupSpan := bifrost.startCoreSpan(req.Context, "worker-setup")
+
 		var result *schemas.BifrostResponse
 		var stream chan *schemas.BifrostStreamChunk
 		var bifrostError *schemas.BifrostError
@@ -6731,70 +6856,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 
-		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
-		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
-
-		// Determine whether this provider attempt should capture raw payloads.
-		//
-		// Effective values are computed by merging provider config with any per-request
-		// context overrides (BifrostContextKeySendBackRawRequest/Response and
-		// BifrostContextKeyStoreRawRequestResponse). A context value set to either true
-		// or false fully overrides the provider config for that flag.
-		//
-		// Each flag is independent:
-		//   send_back_raw_request  — include raw request bytes in the client response.
-		//   send_back_raw_response — include raw response bytes in the client response.
-		//   store_raw_request_response — persist raw bytes in log records (logging plugin only).
-		//
-		// Capture is enabled per-side whenever send-back OR store is requested for that side.
-		// Strip flags tell the response path to remove that side's bytes before the payload
-		// reaches the caller (used when store=true but send-back=false for that side).
-		//
-		// All internal signals are always written explicitly on every attempt so stale values
-		// from a previous provider attempt (e.g. different fallback provider config) cannot
-		// leak into the new attempt on a reused context. The user override keys
-		// (BifrostContextKeySendBackRaw*, BifrostContextKeyStoreRawRequestResponse) are
-		// never overwritten — they are read-only from bifrost.go's perspective.
-
-		// Step 1: compute effective value for each flag (provider config ← per-request override).
-		effectiveSendBackReq := config.SendBackRawRequest
-		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
-		passthroughOverridePresent, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
-
-		if allowRawOverride || passthroughOverridePresent {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
-				effectiveSendBackReq = override
-			}
-		}
-		effectiveSendBackResp := config.SendBackRawResponse
-		if allowRawOverride || passthroughOverridePresent {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
-				effectiveSendBackResp = override
-			}
-		}
-		effectiveStore := config.StoreRawRequestResponse
-		allowStorageOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
-		if allowStorageOverride {
-			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
-				effectiveStore = override
-			}
-		}
-
-		// Step 2: derive per-side capture and strip flags.
-		// Capture if we need to send the data back OR store it — independent per side.
-		captureReq := effectiveSendBackReq || effectiveStore
-		captureResp := effectiveSendBackResp || effectiveStore
-		// Strip from client response if we captured for storage but not for send-back.
-		dropReq := effectiveStore && !effectiveSendBackReq
-		dropResp := effectiveStore && !effectiveSendBackResp
-
-		// Step 3: write all internal signals explicitly (never touch the user override keys).
-		req.Context.SetValue(schemas.BifrostContextKeyCaptureRawRequest, captureReq)
-		req.Context.SetValue(schemas.BifrostContextKeyCaptureRawResponse, captureResp)
-		req.Context.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, dropReq)
-		req.Context.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
-		// Tells the logging plugin whether to persist raw bytes in log records.
-		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
+		bifrost.endCoreSpan(workerSetupSpan)
 
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
@@ -6882,7 +6944,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Build the key pool for this request. Selection and rotation are deferred to
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
 					// a different key (on rate-limit errors) without re-running the full filtering.
+					// "key-pool" overhead phase: building the candidate key pool (filtering,
+					// governance/alias resolution) is worker-side work that otherwise folds
+					// into "core"; the per-attempt pick is the separate "key.selection" span.
+					keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
 					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+					bifrost.endCoreSpan(keyPoolSpan)
 					if keyPoolErr != nil {
 						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
 						req.Err <- schemas.BifrostError{
@@ -7018,6 +7085,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				applyRawCaptureSignals(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
@@ -7117,6 +7187,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				applyRawCaptureSignals(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
@@ -7137,6 +7210,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				lastAttemptFinalizer(req.Context)
 			}
 		}
+
+		// Stamp the pre-send time so tryRequest can measure the worker->caller
+		// goroutine-hop latency ("worker-handoff") on receipt, regardless of which
+		// branch (error/stream/response) does the send below.
+		req.sentAt = time.Now()
 
 		if bifrostError != nil {
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
@@ -7688,7 +7766,13 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	for i, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
-		// Start span for this plugin's PreLLMHook
+		// Start span for this plugin's PreLLMHook. Capture the parent first so we can
+		// restore it after this plugin ends: without the restore each plugin would set
+		// itself active and never revert, so the next plugin would nest under this one
+		// (a chain) instead of being a sibling. The overhead breakdown subtracts only
+		// DIRECT children, so a chained plugin's time would be counted in both its own
+		// bucket and the enclosing phase span's self-time (e.g. pipeline-pre).
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prehook, schemas.SpanKindPlugin)
 		// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
 		if spanID != "" {
@@ -7711,6 +7795,8 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 		} else {
 			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 		}
+		// Restore the parent so the next plugin is a sibling, not chained under this one.
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 
 		p.executedPreHooks = i + 1
 		if shortCircuit != nil {
@@ -7740,6 +7826,9 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
+		// Capture the parent so it can be restored after this plugin ends, keeping the
+		// next plugin a sibling rather than chained under this one (see RunLLMPreHooks).
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prerequesthook, schemas.SpanKindPlugin)
 		if spanID != "" {
 			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
@@ -7754,9 +7843,11 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
 			p.preHookErrors = append(p.preHookErrors, err)
 			p.logger.Warn("error in PreRequestHook for plugin %s: %s", pluginName, err.Error())
-			continue
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 		}
-		p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		// Restore the parent so the next plugin is a sibling, not chained under this one.
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 	}
 	ctx.UnblockRestrictedWrites()
 
@@ -7823,7 +7914,11 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
 			}
 		} else {
-			// For non-streaming: create span per plugin (existing behavior)
+			// For non-streaming: create span per plugin (existing behavior). Capture the
+			// parent first and restore it below so the next plugin is a sibling rather than
+			// chained under this one (see RunLLMPreHooks) — otherwise later post-hooks would
+			// be double-counted in both their bucket and the enclosing pipeline-post span.
+			prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 			spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
 			// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
 			if spanID != "" {
@@ -7841,6 +7936,8 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 			} else {
 				p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			}
+			// Restore the parent so the next plugin is a sibling, not chained under this one.
+			ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 		}
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that
@@ -8288,6 +8385,49 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // POOL & RESOURCE MANAGEMENT
 
+// coreSpan is the token returned by startCoreSpan and consumed by endCoreSpan. It
+// carries the span handle plus the context and the span ID that was active when the
+// phase opened, so endCoreSpan can restore the prior parent. The zero value is a valid
+// no-op (no trace active), so callers need no nil guard beyond checking cs.h when they
+// want a defer only on the active path.
+type coreSpan struct {
+	h    schemas.SpanHandle
+	ctx  *schemas.BifrostContext
+	prev any
+}
+
+// startCoreSpan opens an internal overhead phase span for a core-pipeline segment
+// (setup, key-pool build, pre/post processing) that sits on no other span and would
+// otherwise fold into the residual "core" bucket. It installs the new span as the
+// ACTIVE parent on ctx so any spans opened during the phase (plugin hooks, provider
+// phases) nest as its children — computeOverheadBreakdown subtracts direct children, so
+// without this the nested work would be counted in both this phase's self-time and its
+// own bucket. endCoreSpan restores the prior parent. Returns a zero coreSpan (no-op)
+// when no trace is active. name becomes the breakdown bucket.
+func (bifrost *Bifrost) startCoreSpan(ctx *schemas.BifrostContext, name string) coreSpan {
+	t := bifrost.getTracer()
+	if t == nil {
+		return coreSpan{}
+	}
+	prev := ctx.Value(schemas.BifrostContextKeySpanID)
+	id, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	if h == nil {
+		return coreSpan{}
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+	return coreSpan{h: h, ctx: ctx, prev: prev}
+}
+
+// endCoreSpan restores the parent that was active before the phase and closes the span.
+// Nil/zero-safe.
+func (bifrost *Bifrost) endCoreSpan(cs coreSpan) {
+	if cs.h == nil {
+		return
+	}
+	cs.ctx.SetValue(schemas.BifrostContextKeySpanID, cs.prev)
+	bifrost.getTracer().EndSpan(cs.h, schemas.SpanStatusOk, "")
+}
+
 // startQueueWaitSpan opens a nil-safe "queue-wait" internal span measuring how long
 // the message sits in the provider queue before a worker dequeues it. The handle is
 // stored on the message; endQueueWaitSpan closes it on dequeue, and
@@ -8332,6 +8472,10 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMe
 	msg.BifrostRequest = req
 	msg.Response = responseChan
 	msg.Err = errorChan
+	// Clear the previous user's send timestamp so a reused message can't report a
+	// stale worker-handoff duration on a path that never re-stamps it (e.g. the
+	// shutdown-drain error sends). The worker sets sentAt fresh before each normal send.
+	msg.sentAt = time.Time{}
 
 	// Conditionally allocate ResponseStream for streaming requests only
 	if IsStreamRequestType(req.RequestType) {
@@ -8646,7 +8790,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - SkipKeySelection (provider allows keyless requests; empty slice returned)
+//   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
@@ -8661,8 +8805,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return []schemas.Key{}, false, nil
 	}
 

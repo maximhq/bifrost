@@ -1,10 +1,10 @@
 module github.com/maximhq/bifrost/plugins/modelcatalogresolver
 
-go 1.26.6
+go 1.27.0
 
 require (
-	github.com/maximhq/bifrost/core v1.7.11
-	github.com/maximhq/bifrost/framework v1.5.9
+	github.com/maximhq/bifrost/core v1.8.3
+	github.com/maximhq/bifrost/framework v1.6.0
 )
 
 require (
@@ -49,8 +49,8 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.2 // indirect
-	github.com/bytedance/sonic/loader v0.5.1 // indirect
+	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2 // indirect
+	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect

@@ -229,6 +229,45 @@ A vector store must be enabled in `config.json` first — the plugin has nowhere
 
 </Tab>
 
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  # The embedding provider's API key is inherited from bifrost.providers.
+  # Configure the provider here — the plugin config has no `keys` field.
+  providers:
+    openai:
+      keys:
+        - name: "embeddings"
+          value: "env.OPENAI_API_KEY"
+          weight: 1
+          models: ["text-embedding-3-small"]
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+
+        ttl: "5m"
+        threshold: 0.8
+
+        conversation_history_threshold: 3
+        exclude_system_prompt: false
+
+        cache_by_model: true
+        cache_by_provider: true
+
+        vector_store_namespace: "BifrostSemanticCachePlugin"
+```
+
+<Note>
+Enable a **vector store** separately (see [Prerequisites](#prerequisites)) — `vectorStore.enabled: true` with a `type`. Provider API keys are **inherited from `bifrost.providers`**; the semantic cache config has no `keys` field. See the ready-to-run overlays in [`helm-charts/bifrost/values-examples/`](https://github.com/maximhq/bifrost/tree/main/helm-charts/bifrost/values-examples) (e.g. `sqlite-redis.yaml`, `postgres-weaviate.yaml`).
+</Note>
+
+</Tab>
+
 <Tab title="Go SDK">
 
 ```go

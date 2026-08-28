@@ -145,8 +145,8 @@ Sources:
 - [ ] **`fine-grained-tool-streaming-2025-05-14`**
 - [ ] **`extended-thinking-2025-01-15`**
 - [ ] **`fast-mode-2026-02-01`** (Opus 4.6 only)
-- [ ] **`compact-2025-09-15`** (compaction)
-- [ ] **`context-management-2025-09-15` / `context-1m-2025-09-15`**
+- [x] **`compact-2025-09-15`** (compaction) — accept-path smoke in Round 10; live compaction-billing iteration sum pinned in folder 59
+- [x] **`context-management-2025-09-15` / `context-1m-2025-09-15`** — compaction billing via `compact_20260112` on `/v1/responses` (folder 59)
 - [ ] **`files-api-2025-04-14`**
 - [ ] **`mcp-client-2025-09-15`**
 - [ ] **`tool-examples-2025-10-29`**
@@ -407,6 +407,7 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Extended/adaptive thinking via cross-model** (Anthropic enabled + Bedrock enabled/adaptive + Vertex Claude enabled/adaptive covered; **anthropic-direct adaptive Opus 4.7 still missing**)
 - [x] **OpenAI Responses reasoning item id/encrypted_content round-trip via Anthropic drop-in** (`/anthropic/v1/messages` → openai/gpt-5: turn-1 `redacted_thinking` block replayed on turn 2 without OpenAI's item-id mismatch 400 — pins #5186; folder 38)
 - [~] **Reasoning/thinking multi-turn replay across the criss-cross matrix** (folder 39: OpenAI-shaped request → Anthropic model reverse direction, plus native-chat Anthropic-origin `reasoning_details` replay per #4943 previously uncovered by the harness; Gemini `thoughtSignature` replay (distinct smuggling mechanism from the OpenAI/Anthropic encrypted_content envelope, #5186 — deserves its own replay-matrix folder) and Azure-hosted-reasoning-model coverage still open)
+- [x] **Reasoning-signature replay onto a model that refuses the field** (folder 60: native `/v1/chat/completions` → `bedrock/moonshotai.kimi-k2.5` with a foreign `reasoning_details[].signature`. Bedrock answers "This model doesn't support the reasoningContent.reasoningText.signature field" — a *field-not-accepted* refusal, not the *payload-unverifiable* wording folder 44 pins, so `isEncryptedReasoningRejection` missed it and the 400 reached the client. Also the first Bedrock and first chat-shape coverage of the fail-soft: a different carrier (`reasoning_details[].signature`) and a different strip (`stripChatUnverifiableReasoning`) than folder 44's `encrypted_content`/`stripResponsesEncryptedContent`.)
 - [ ] **Native `/v1/chat/completions` `reasoning_details` id-loss for OpenAI-origin encrypted reasoning** (same bug *class* as #5186 but a separate code path: `core/schemas/mux.go` `ToChatMessages` never populates `ChatReasoningDetails.ID` on egress, and `ToResponsesMessages` mints a fresh `rs_` id on replay regardless, unaffected by the `/anthropic` surface fix. No tracked issue yet — file one before adding a harness case; a currently-red case with no owner/fix-in-flight breaks this collection's regression-pin convention.)
 - [x] **Prompt caching via cross-model** (Anthropic + Bedrock 1h + Vertex Claude 1h covered)
 - [~] **System message cross-cut** (Vertex Claude added in Round 4; Azure added in Round 4; **other providers were already implicit via cross-cut entries** - if explicit test needed, file a ticket)
