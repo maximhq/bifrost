@@ -564,7 +564,7 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	"attribute-population": "Attribute population",
 	miscellaneous: "Miscellaneous",
 	// Networking (client<->gateway<->provider handling)
-	"provider-internal": "Provider I/O",
+	"provider-internal": "Provider processing",
 	"transport-context": "Request context building",
 	"transport-response-headers": "Response headers",
 	"response-finalize": "Response read",

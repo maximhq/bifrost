@@ -239,6 +239,8 @@
               },
               "features/telemetry",
               "features/otel",
+              "features/observability/content-logging",
+              "features/observability/latency-breakdown",
               "features/semantic-caching",
               "features/skills-repository",
               {
@@ -540,8 +542,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
-              "features/observability/splunk",
-              "features/observability/content-logging"
+              "features/observability/splunk"
             ]
           },
           {
