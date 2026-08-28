@@ -965,6 +965,22 @@ func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 }
 
 // textCompletion handles POST /v1/completions - Process text completion requests
+// rawBodyForPlugins returns the request body when a transport plugin asked
+// for the raw payload to be carried on the bifrost request via
+// BifrostContextKeyUseRawRequestBody, mirroring the integrations router
+// (see GenericRouter's raw body attach). It returns nil otherwise, so
+// assigning the result to a request's RawRequestBody is a no-op for
+// requests no plugin marked.
+func rawBodyForPlugins(bifrostCtx *schemas.BifrostContext, ctx *fasthttp.RequestCtx) []byte {
+	if bifrostCtx == nil {
+		return nil
+	}
+	if carry, ok := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && carry {
+		return ctx.PostBody()
+	}
+	return nil
+}
+
 func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx, h.config)
 	if err != nil {
@@ -976,6 +992,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostTextReq.RawRequestBody = rawBodyForPlugins(bifrostCtx, ctx)
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingTextCompletion(ctx, bifrostTextReq, bifrostCtx, cancel)
 		return
@@ -1059,6 +1076,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostChatReq.RawRequestBody = rawBodyForPlugins(bifrostCtx, ctx)
 	if effectiveStream(req.Stream) {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
@@ -1133,6 +1151,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	bifrostResponsesReq.RawRequestBody = rawBodyForPlugins(bifrostCtx, ctx)
 	if effectiveStream(req.Stream) {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
 		return
@@ -1194,6 +1213,7 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	bifrostEmbeddingReq.RawRequestBody = rawBodyForPlugins(bifrostCtx, ctx)
 	resp, bifrostErr := h.client.EmbeddingRequest(bifrostCtx, bifrostEmbeddingReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
