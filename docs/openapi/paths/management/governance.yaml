@@ -271,8 +271,13 @@ virtual-keys-rotate-by-id:
     summary: Rotate virtual key
     description: |
       Generates a new credential value for the virtual key while leaving its configuration,
-      assignments, budgets, and rate limits unchanged. After a successful response, the previous
-      credential value is no longer valid.
+      assignments, budgets, and rate limits unchanged. On the node handling the request, the
+      previous credential value is invalidated before a successful response is returned.
+
+      In a clustered deployment, peer invalidation is asynchronous. Until each peer processes the
+      cluster update and reloads the virtual key, that peer may continue to accept the previous
+      value. There is no fixed upper bound when a peer is unavailable, so wait for cluster
+      convergence before treating the previous credential as revoked cluster-wide.
 
       The new credential is returned in `virtual_key.value`. Store it securely and update clients
       that use the previous value.

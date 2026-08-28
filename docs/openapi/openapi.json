@@ -47308,7 +47308,7 @@
       "post": {
         "operationId": "rotateVirtualKey",
         "summary": "Rotate virtual key",
-        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged. After a successful response, the previous\ncredential value is no longer valid.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
+        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged. On the node handling the request, the\nprevious credential value is invalidated before a successful response is returned.\n\nIn a clustered deployment, peer invalidation is asynchronous. Until each peer processes the\ncluster update and reloads the virtual key, that peer may continue to accept the previous\nvalue. There is no fixed upper bound when a peer is unavailable, so wait for cluster\nconvergence before treating the previous credential as revoked cluster-wide.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
         "tags": [
           "Governance"
         ],
