@@ -47304,6 +47304,64 @@
         }
       }
     },
+    "/api/governance/virtual-keys/{vk_id}/rotate": {
+      "post": {
+        "operationId": "rotateVirtualKey",
+        "summary": "Rotate virtual key",
+        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged. On the node handling the request, the\nprevious credential value is invalidated before a successful response is returned.\n\nIn a clustered deployment, peer invalidation is asynchronous. Until each peer processes the\ncluster update and reloads the virtual key, that peer may continue to accept the previous\nvalue. There is no fixed upper bound when a peer is unavailable, so wait for cluster\nconvergence before treating the previous credential as revoked cluster-wide.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual key rotated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualKeyResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override": {
       "put": {
         "operationId": "updateVirtualKeyBudgetOverride",
@@ -74711,7 +74769,7 @@
       "post": {
         "operationId": "recalculateLogCosts",
         "summary": "Recalculate log costs",
-        "description": "Starts an asynchronous background job that recalculates log costs in batches.\nThe returned payload is a job status object that can be polled via the status endpoint.\n",
+        "description": "Starts an asynchronous background job that recalculates log costs in batches.\nThe returned payload is a job status object that can be polled via the status endpoint.\n\nRecalculation updates the cost fields on matching log records only. It does not\nretroactively debit, credit, or otherwise adjust governance budget usage. Governance\nbudgets retain the usage recorded when each request was originally processed.\n",
         "tags": [
           "Logging"
         ],
@@ -74820,6 +74878,83 @@
           },
           "404": {
             "description": "Recalculation job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Background job runner is not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/recalculate-cost/cancel": {
+      "post": {
+        "operationId": "cancelRecalculateCost",
+        "summary": "Cancel log cost recalculation",
+        "description": "Cancels the recalculation job selected by `id`, or the current in-flight recalculation\nwhen `id` is omitted. Cancellation stops further batches; cost updates already committed\nto log records are retained and are not rolled back. Logs that the job has not processed\nremain unchanged.\n\nThe response uses the same job-status shape as the status endpoint and includes the\npartial progress recorded at the time of the response. The worker may still be unwinding,\nso poll the status endpoint with the returned `id` to obtain its final counters. If the\nselected job has already reached a terminal state, the endpoint returns it unchanged.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Optional recalculation job ID. Omit to cancel the current in-flight recalculation.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recalculation cancellation accepted, or the selected job was already terminal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecalculateCostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The supplied job ID belongs to a different background-job type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested job was not found, or there is no in-flight recalculation to cancel",
             "content": {
               "application/json": {
                 "schema": {
@@ -100764,95 +100899,111 @@
         "description": "Recalculate cost request",
         "properties": {
           "filters": {
-            "type": "object",
-            "description": "Log search filters",
-            "properties": {
-              "providers": {
-                "type": "array",
-                "items": {
-                  "type": "string"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "Log search filters",
+                "properties": {
+                  "providers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "status": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "objects": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "selected_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "virtual_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "routing_rule_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "routing_engine_used": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Filter by routing engine (routing-rule, governance, or loadbalancing)"
+                  },
+                  "start_time": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end_time": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "min_latency": {
+                    "type": "number"
+                  },
+                  "max_latency": {
+                    "type": "number"
+                  },
+                  "min_tokens": {
+                    "type": "integer"
+                  },
+                  "max_tokens": {
+                    "type": "integer"
+                  },
+                  "min_cost": {
+                    "type": "number"
+                  },
+                  "max_cost": {
+                    "type": "number"
+                  },
+                  "missing_cost_only": {
+                    "type": "boolean"
+                  },
+                  "content_search": {
+                    "type": "string"
+                  }
                 }
               },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
+              {
+                "type": "object",
+                "properties": {
+                  "period": {
+                    "type": "string",
+                    "enum": [
+                      "1h",
+                      "6h",
+                      "24h",
+                      "7d",
+                      "30d"
+                    ],
+                    "description": "Relative time window resolved when the job is created. When recognized, it takes precedence over start_time and end_time."
+                  }
                 }
-              },
-              "status": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "objects": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "selected_key_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "virtual_key_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "routing_rule_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "routing_engine_used": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Filter by routing engine (routing-rule, governance, or loadbalancing)"
-              },
-              "start_time": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "end_time": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "min_latency": {
-                "type": "number"
-              },
-              "max_latency": {
-                "type": "number"
-              },
-              "min_tokens": {
-                "type": "integer"
-              },
-              "max_tokens": {
-                "type": "integer"
-              },
-              "min_cost": {
-                "type": "number"
-              },
-              "max_cost": {
-                "type": "number"
-              },
-              "missing_cost_only": {
-                "type": "boolean"
-              },
-              "content_search": {
-                "type": "string"
               }
-            }
-          },
-          "limit": {
-            "type": "integer",
-            "description": "Maximum number of logs to process (default 200, max 1000)"
+            ]
           }
         }
       },
@@ -100866,7 +101017,15 @@
           },
           "status": {
             "type": "string",
-            "description": "Current job status"
+            "description": "Current job status",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "idle"
+            ]
           },
           "total": {
             "type": "integer",
@@ -100887,6 +101046,11 @@
             "type": "integer",
             "format": "int64",
             "description": "Logs skipped during processing"
+          },
+          "unpriceable": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Subset of skipped logs whose pricing inputs could not be recovered, so their existing cost was left unchanged."
           },
           "message": {
             "type": "string",

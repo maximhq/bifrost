@@ -265,6 +265,49 @@ virtual-keys-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+virtual-keys-rotate-by-id:
+  post:
+    operationId: rotateVirtualKey
+    summary: Rotate virtual key
+    description: |
+      Generates a new credential value for the virtual key while leaving its configuration,
+      assignments, budgets, and rate limits unchanged. On the node handling the request, the
+      previous credential value is invalidated before a successful response is returned.
+
+      In a clustered deployment, peer invalidation is asynchronous. Until each peer processes the
+      cluster update and reloads the virtual key, that peer may continue to accept the previous
+      value. There is no fixed upper bound when a peer is unavailable, so wait for cluster
+      convergence before treating the previous credential as revoked cluster-wide.
+
+      The new credential is returned in `virtual_key.value`. Store it securely and update clients
+      that use the previous value.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key rotated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/VirtualKeyResponse'
+      '404':
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 virtual-keys-budget-override:
   put:
     operationId: updateVirtualKeyBudgetOverride

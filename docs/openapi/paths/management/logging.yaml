@@ -880,6 +880,10 @@ logs-recalculate-cost:
     description: |
       Starts an asynchronous background job that recalculates log costs in batches.
       The returned payload is a job status object that can be polled via the status endpoint.
+
+      Recalculation updates the cost fields on matching log records only. It does not
+      retroactively debit, credit, or otherwise adjust governance budget usage. Governance
+      budgets retain the usage recorded when each request was originally processed.
     tags:
       - Logging
     requestBody:
@@ -940,6 +944,58 @@ logs-recalculate-cost-status:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '404':
         description: Recalculation job not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost-cancel:
+  post:
+    operationId: cancelRecalculateCost
+    summary: Cancel log cost recalculation
+    description: |
+      Cancels the recalculation job selected by `id`, or the current in-flight recalculation
+      when `id` is omitted. Cancellation stops further batches; cost updates already committed
+      to log records are retained and are not rolled back. Logs that the job has not processed
+      remain unchanged.
+
+      The response uses the same job-status shape as the status endpoint and includes the
+      partial progress recorded at the time of the response. The worker may still be unwinding,
+      so poll the status endpoint with the returned `id` to obtain its final counters. If the
+      selected job has already reached a terminal state, the endpoint returns it unchanged.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID. Omit to cancel the current in-flight recalculation.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Recalculation cancellation accepted, or the selected job was already terminal
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '400':
+        description: The supplied job ID belongs to a different background-job type
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '404':
+        description: The requested job was not found, or there is no in-flight recalculation to cancel
         content:
           application/json:
             schema:
