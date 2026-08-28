@@ -74,6 +74,19 @@ var unverifiablePayloadMarkers = []string{
 	"unrecognized prefix",
 }
 
+// unsupportedFieldMarkers are the ways an upstream says it does not accept the field at
+// all, as opposed to accepting it and failing to verify what arrived in it. Bedrock
+// Converse answers a replayed reasoning signature on a non-Anthropic model this way:
+// "This model doesn't support the reasoningContent.reasoningText.signature field. Remove
+// reasoningContent.reasoningText.signature and try again." That is what a mid-conversation
+// model switch earns -- a Claude-minted signature replayed onto Kimi, GLM or DeepSeek --
+// and the verdict matches an unverifiable payload: this model will never take the token,
+// so it earns the same fail-soft strip.
+var unsupportedFieldMarkers = []string{
+	"does not support",
+	"doesn't support",
+}
+
 // namesEncryptedReasoningField reports whether a lowercased error message points at
 // the field this request's encrypted reasoning was written into.
 func namesEncryptedReasoningField(message string) bool {
@@ -146,7 +159,11 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		return false
 	}
 
-	return namesEncryptedReasoningField(message) && containsAnyMarker(message, unverifiablePayloadMarkers)
+	if !namesEncryptedReasoningField(message) {
+		return false
+	}
+	return containsAnyMarker(message, unverifiablePayloadMarkers) ||
+		containsAnyMarker(message, unsupportedFieldMarkers)
 }
 
 // encryptedReasoningCarriers returns the input array and raw body of the request
