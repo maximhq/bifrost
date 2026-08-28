@@ -1043,6 +1043,11 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # Attribute -> access-profile mapping: first matching rule wins (a user holds a single access profile).
+      # attributeAccessProfileMappings:
+      #   - attribute: "department"
+      #     value: "platform"
+      #     accessProfile: "platform-profile"
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1093,6 +1098,7 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []          # [{ attribute, value, accessProfile }] - first match wins
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1115,6 +1121,7 @@ bifrost:
       #     role: "admin"
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []          # [{ attribute, value, accessProfile }] - first match wins
       #
       # Zitadel configuration:
       # domain: "my-instance.zitadel.cloud"      # no scheme
@@ -1128,6 +1135,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []          # [{ attribute, value, accessProfile }] - first match wins
       #
       # Google Workspace configuration:
       # domain: "company.com"
@@ -1143,6 +1151,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []          # [{ attribute, value, accessProfile }] - first match wins
       #
       # Generic OIDC configuration (any standards-compliant OIDC IdP):
       # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
@@ -1159,6 +1168,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []          # [{ attribute, value, accessProfile }] - first match wins
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:

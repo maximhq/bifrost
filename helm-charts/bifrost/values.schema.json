@@ -2589,6 +2589,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -2664,6 +2665,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -2733,6 +2735,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -2800,6 +2803,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -2877,6 +2881,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -2976,6 +2981,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -3050,6 +3056,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -7054,6 +7061,29 @@
           }
         },
         "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. A user holds a single access profile, so on multiple matches the first matching rule (declaration order) whose profile exists wins - unlike team/business-unit mappings, this is not an all-matches-apply list.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match"
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in access_profiles) to assign on match. Overrides the profile the user would otherwise inherit from their role's default."
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
     },
