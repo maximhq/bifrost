@@ -187,16 +187,37 @@ function VKActiveSwitch({
 	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	// Managed takes precedence: an access-profile-managed VK can't be toggled here even by a
+	// caller who does have update access.
+	const disabledReason = isManagedByProfile
+		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
+		: !hasUpdateAccess
+			? "You don't have permission to update virtual keys."
+			: undefined;
 
-	return (
+	const control = (
 		<Switch
 			checked={vk.is_active}
-			disabled={!hasUpdateAccess || isManagedByProfile}
+			disabled={!!disabledReason}
 			aria-label={`${vk.is_active ? "Disable" : "Enable"} virtual key ${vk.name}`}
 			data-testid={`vk-active-switch-${vk.name}`}
-			title={isManagedByProfile ? "This virtual key is managed by an access profile." : undefined}
 			onAsyncCheckedChange={(checked) => onToggle(vk, checked)}
 		/>
+	);
+
+	if (!disabledReason) return control;
+
+	// A disabled control emits no pointer events, so the tooltip has to hang off a wrapper.
+	// tabIndex keeps the reason reachable by keyboard, since the switch itself is unfocusable.
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<div tabIndex={0} className="inline-flex" data-testid={`vk-active-switch-tooltip-trigger-${vk.name}`}>
+					{control}
+				</div>
+			</TooltipTrigger>
+			<TooltipContent data-testid={`vk-active-switch-tooltip-content-${vk.name}`}>{disabledReason}</TooltipContent>
+		</Tooltip>
 	);
 }
 

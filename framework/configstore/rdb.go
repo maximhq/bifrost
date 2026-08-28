@@ -5427,6 +5427,9 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 
 		targets := rule.Targets
 		rule.Targets = nil
+		// created_at is immutable: Save writes every column, so a caller passing a rule it
+		// didn't read from the DB would otherwise zero it out. Always keep the persisted value.
+		rule.CreatedAt = existing.CreatedAt
 		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 			return err
 		}
@@ -5520,6 +5523,10 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 			}
 			targets := rule.Targets
 			rule.Targets = nil
+			// Rules in toUpdate come from config.json, which carries no created_at; GORM's Save
+			// selects every column, so an unset CreatedAt would overwrite the original insert
+			// timestamp with the zero time. Carry the persisted value forward.
+			rule.CreatedAt = existing.CreatedAt
 			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 				return err
 			}
