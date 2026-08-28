@@ -5214,7 +5214,11 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
-	q := s.DB().WithContext(ctx).
+	// ScopedDB, not DB: routing-rule reads must honor any row-visibility
+	// QueryScope stashed on ctx (the enterprise DAC wrapper attaches one for
+	// request-driven reads). Background callers (engine bootstrap, cache
+	// reloads on context.Background) carry no scope and stay unfiltered.
+	q := s.ScopedDB(ctx).
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
 			return db.Order("weight DESC").
 				Order("COALESCE(provider, '') ASC").

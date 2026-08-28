@@ -99,3 +99,41 @@ func TestScopedDB_ScopeReturningDB_IsRespected(t *testing.T) {
 	require.NotNil(t, got)
 	require.NoError(t, got.Exec("SELECT 1").Error)
 }
+
+// TestRoutingRuleReads_HonorQueryScope is the regression for the routing-rule
+// read family silently ignoring the row-visibility QueryScope on ctx:
+// loadRoutingRulesOrdered built its query from DB() instead of ScopedDB(), so
+// GetRoutingRules / GetRoutingRule / GetRoutingRulesByScope returned every rule
+// to callers whose scope should have narrowed them (the paginated variant
+// already honored the scope). A ctx without a scope keeps full visibility.
+func TestRoutingRuleReads_HonorQueryScope(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-visible", 0, "openai")))
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-hidden", 1, "openai")))
+
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("id <> ?", "rule-hidden")
+	})
+
+	rules, err := store.GetRoutingRules(scoped)
+	require.NoError(t, err)
+	require.Len(t, rules, 1, "GetRoutingRules must honor the ctx scope")
+	assert.Equal(t, "rule-visible", rules[0].ID)
+
+	_, err = store.GetRoutingRule(scoped, "rule-hidden")
+	assert.ErrorIs(t, err, ErrNotFound, "GetRoutingRule must hide scoped-out rules")
+
+	visible, err := store.GetRoutingRule(scoped, "rule-visible")
+	require.NoError(t, err)
+	assert.Equal(t, "rule-visible", visible.ID)
+
+	byScope, err := store.GetRoutingRulesByScope(scoped, "global", "")
+	require.NoError(t, err)
+	require.Len(t, byScope, 1, "GetRoutingRulesByScope must honor the ctx scope")
+	assert.Equal(t, "rule-visible", byScope[0].ID)
+
+	unscoped, err := store.GetRoutingRules(ctx)
+	require.NoError(t, err)
+	assert.Len(t, unscoped, 2, "a ctx without a scope keeps full visibility")
+}
