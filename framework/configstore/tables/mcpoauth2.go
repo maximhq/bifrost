@@ -63,13 +63,21 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
+	// Always set EncryptionStatus when encryption is enabled so the startup
+	// batch pass does not re-process this row indefinitely. A client_secret
+	// holding an env/vault reference has nothing to encrypt, yet it still
+	// satisfies EncryptPlaintextRows' non-empty client_secret selector — so
+	// leaving the status at 'plain_text' makes that pass select, save and
+	// re-select the same row forever, hanging startup before the config store
+	// is ready. Marking it encrypted is honest: no plaintext secret is at rest.
+	// AfterFind is unaffected — it re-checks IsFromSecret before decrypting.
 	if encrypt.IsEnabled() {
 		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := encryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 			}
-			c.EncryptionStatus = EncryptionStatusEncrypted
 		}
+		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
 }

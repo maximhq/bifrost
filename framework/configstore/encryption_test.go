@@ -1388,3 +1388,91 @@ func TestEncryptPlaintextOAuthTokens_EmptyRefreshToken(t *testing.T) {
 	assert.Equal(t, "access-only-startup", found.AccessToken)
 	assert.Equal(t, "", found.RefreshToken)
 }
+
+// ============================================================================
+// oauth_configs with a secret-reference client_secret — startup loop regression
+// ============================================================================
+
+// TestEncryptPlaintextRows_SecretRefOauthConfigTerminates pins the fix for a
+// startup hang: EncryptPlaintextRows selects oauth_configs on a non-empty
+// client_secret, which an env/vault reference satisfies, but
+// TableOauthConfig.BeforeSave only encrypts (and therefore only used to stamp
+// encryption_status) when the value is NOT a secret reference. That left the row
+// at 'plain_text' after save, so the batch loop re-selected the same row on
+// every iteration and never terminated — startup spun forever before the config
+// store was ready, with nothing logged.
+//
+// The assertion that matters is that the call RETURNS at all; the status check
+// is what guarantees termination rather than merely observing one lucky pass.
+// Run with -timeout so a regression fails loudly instead of hanging the suite.
+func TestEncryptPlaintextRows_SecretRefOauthConfigTerminates(t *testing.T) {
+	for _, ref := range []string{"env.MCP_OAUTH_CLIENT_SECRET", "vault.secret/mcp/oauth#client_secret"} {
+		t.Run(ref, func(t *testing.T) {
+			store, db := setupEncryptionTestStore(t)
+			ctx := context.Background()
+			now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+			insertPlaintextRow(t, db,
+				`INSERT INTO oauth_configs (id, client_secret, redirect_uri, status, encryption_status, created_at, updated_at)
+				 VALUES (?, ?, ?, 'pending', 'plain_text', ?, ?)`,
+				"cfg-secret-ref", ref, "https://example.com/cb", now, now)
+
+			done := make(chan error, 1)
+			go func() { done <- store.EncryptPlaintextRows(ctx) }()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(20 * time.Second):
+				t.Fatal("EncryptPlaintextRows did not terminate: the secret-reference row is being re-selected indefinitely")
+			}
+
+			// Terminating is only durable if the row no longer matches the
+			// selector on the next pass.
+			var status string
+			require.NoError(t, db.Raw(
+				`SELECT encryption_status FROM oauth_configs WHERE id = ?`, "cfg-secret-ref").Scan(&status).Error)
+			assert.Equal(t, encryptionStatusEncrypted, status,
+				"a secret-reference row must be stamped so the startup pass stops selecting it")
+
+			// The reference itself must survive untouched — there is nothing to
+			// encrypt, and rewriting it would break resolution at runtime.
+			var stored string
+			require.NoError(t, db.Raw(
+				`SELECT client_secret FROM oauth_configs WHERE id = ?`, "cfg-secret-ref").Scan(&stored).Error)
+			assert.Equal(t, ref, stored, "secret references must be stored verbatim, never encrypted")
+
+			// A second pass must be a no-op, which is the real termination proof.
+			require.NoError(t, store.EncryptPlaintextRows(ctx))
+		})
+	}
+}
+
+// TestEncryptPlaintextRows_LiteralSecretStillEncrypted guards the other side of
+// the fix: stamping the status unconditionally must not skip encrypting a real
+// plaintext literal.
+func TestEncryptPlaintextRows_LiteralSecretStillEncrypted(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	const literal = "super-secret-literal"
+
+	insertPlaintextRow(t, db,
+		`INSERT INTO oauth_configs (id, client_secret, redirect_uri, status, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'pending', 'plain_text', ?, ?)`,
+		"cfg-literal", literal, "https://example.com/cb", now, now)
+
+	require.NoError(t, store.EncryptPlaintextRows(ctx))
+
+	var stored, status string
+	require.NoError(t, db.Raw(
+		`SELECT client_secret, encryption_status FROM oauth_configs WHERE id = ?`, "cfg-literal").
+		Row().Scan(&stored, &status))
+	assert.Equal(t, encryptionStatusEncrypted, status)
+	assert.NotEqual(t, literal, stored, "a plaintext literal must actually be encrypted at rest")
+
+	// And it must still decrypt back through the normal read path.
+	var cfg tables.TableOauthConfig
+	require.NoError(t, store.DB().WithContext(ctx).First(&cfg, "id = ?", "cfg-literal").Error)
+	require.NotNil(t, cfg.ClientSecret)
+	assert.Equal(t, literal, cfg.ClientSecret.Val)
+}
