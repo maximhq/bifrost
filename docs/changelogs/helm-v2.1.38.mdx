@@ -1,0 +1,12 @@
+---
+title: "v2.1.38"
+description: "Helm v2.1.38 changelog - 2026-08-28"
+---
+
+<Update label="Bifrost Helm" description="v2.1.38">
+
+## Changelog
+
+- Added `bifrost.scim.config.attributeAccessProfileMappings` (Okta, Entra, Keycloak, Zitadel, Google Workspace, and Generic OIDC provider blocks) — maps claim values directly to Bifrost access profiles, bypassing the default role-derived assignment. Unlike team/business-unit mappings, the first matching rule (declaration order) wins, since a user holds a single access profile. Renders through to `scim_config.config.attributeAccessProfileMappings` in `config.json` unchanged.
+
+</Update>

@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.37
+**Latest Version:** 2.1.38
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.scim.config.attributeAccessProfileMappings` (per-provider), mapping claim values directly to access profiles - first matching rule wins. Renders through to `scim_config.config.attributeAccessProfileMappings` in `config.json` unchanged.
 
 ### 2.1.37
 
