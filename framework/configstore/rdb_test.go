@@ -3781,3 +3781,48 @@ func TestUpsertModelPricesBatch_SizeQualityImageColumnsSurviveResync(t *testing.
 	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, "OutputCostPerImageAbove1536x1024PixelsStandardQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
 	assert.InDelta(t, 0.014, *updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, 1e-9)
 }
+
+// TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate guards created_at against GORM's Save,
+// which selects every column: rules arriving from a config.json reload carry no created_at, so
+// without an explicit carry-forward the original insert timestamp is overwritten with the zero
+// time. Both the batch (SyncRoutingRules) and single (UpdateRoutingRule) paths are covered.
+func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	assertCreatedAt := func(t *testing.T, store *RDBConfigStore, id string, want time.Time) {
+		t.Helper()
+		got, err := store.GetRoutingRule(ctx, id)
+		require.NoError(t, err)
+		require.False(t, got.CreatedAt.IsZero(), "created_at must not be zeroed by an update")
+		require.Equal(t, want, got.CreatedAt, "created_at must be preserved")
+	}
+
+	t.Run("SyncRoutingRules preserves created_at", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+		created, err := store.GetRoutingRule(ctx, "rule-a")
+		require.NoError(t, err)
+		require.False(t, created.CreatedAt.IsZero())
+
+		// Shape of a config-file rule: no created_at, changed payload.
+		fileRule := routingRuleFixture("rule-a", 3, "anthropic")
+		fileRule.Description = "edited in config.json"
+		require.NoError(t, store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*fileRule}))
+
+		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
+	})
+
+	t.Run("UpdateRoutingRule preserves created_at", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+		created, err := store.GetRoutingRule(ctx, "rule-a")
+		require.NoError(t, err)
+		require.False(t, created.CreatedAt.IsZero())
+
+		partial := routingRuleFixture("rule-a", 3, "anthropic")
+		partial.Description = "updated without reading the row first"
+		require.NoError(t, store.UpdateRoutingRule(ctx, partial))
+
+		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
+	})
+}
