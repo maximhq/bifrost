@@ -40,6 +40,7 @@ import {
 	ShieldCheck,
 	Shuffle,
 	Siren,
+	Split,
 	SlidersHorizontal,
 	Telescope,
 	ToolCase,
@@ -1018,6 +1019,13 @@ export default function AppSidebar() {
 									url: "/workspace/config/proxy",
 									icon: Globe,
 									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+								{
+									title: "Canary Setup",
+									url: "/workspace/config/canary",
+									icon: Split,
+									description: "Canary deployment traffic forwarding",
 									hasAccess: hasSettingsAccess,
 								},
 							]
