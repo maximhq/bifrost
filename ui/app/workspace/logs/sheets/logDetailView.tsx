@@ -2643,7 +2643,8 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
+                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
