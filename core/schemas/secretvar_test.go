@@ -504,6 +504,31 @@ func TestSecretVar_FullyRedacted(t *testing.T) {
 	}
 }
 
+func TestIsRedactionSentinel(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "angle bracket sentinel", value: "<redacted>", want: true},
+		{name: "angle bracket sentinel is case insensitive", value: "<REDACTED>", want: true},
+		{name: "square bracket sentinel", value: "[redacted]", want: true},
+		{name: "square bracket sentinel is case insensitive", value: "[REDACTED]", want: true},
+		{name: "empty value", value: "", want: false},
+		{name: "short generic mask", value: "****", want: false},
+		{name: "32-character generic mask", value: "abcd************************wxyz", want: false},
+		{name: "similar literal", value: "redacted", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRedactionSentinel(tt.value); got != tt.want {
+				t.Fatalf("IsRedactionSentinel(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSecretVar_IsRedacted(t *testing.T) {
 	tests := []struct {
 		name     string

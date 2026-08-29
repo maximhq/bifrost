@@ -83,6 +83,84 @@ func getPasswordPolicyFailures(password string) []string {
 	return failures
 }
 
+// shouldPreserveAdminPassword reports whether an incoming admin password is a
+// placeholder for the existing credential. Admin password redaction is more
+// specific than the generic SecretVar masking rules: a user-entered value that
+// happens to match a generic secret mask must still be treated as a new password.
+func shouldPreserveAdminPassword(password *schemas.SecretVar) bool {
+	if password == nil {
+		return true
+	}
+	if password.IsFromSecret() {
+		return false
+	}
+
+	value := password.GetValue()
+	return value == "" || schemas.IsRedactionSentinel(value)
+}
+
+type adminPasswordAction uint8
+
+const (
+	adminPasswordPreserve adminPasswordAction = iota
+	adminPasswordRehashLegacy
+	adminPasswordReplace
+)
+
+// getAdminPasswordAction classifies a submitted credential before any live
+// config mutation. Disabled auth may preserve an unresolved secret for
+// recovery or an external value that still matches the stored bcrypt hash.
+// Historical plaintext credentials are migrated without applying today's
+// policy to an already-installed password.
+func getAdminPasswordAction(submittedPassword, storedPassword *schemas.SecretVar, authEnabled bool) adminPasswordAction {
+	if shouldPreserveAdminPassword(submittedPassword) {
+		return adminPasswordPreserve
+	}
+	if authEnabled || !submittedPassword.IsFromSecret() {
+		return adminPasswordReplace
+	}
+	if submittedPassword.GetValue() == "" {
+		return adminPasswordPreserve
+	}
+	if storedPassword == nil || storedPassword.GetValue() == "" {
+		return adminPasswordReplace
+	}
+
+	matches, err := encrypt.CompareHash(storedPassword.GetValue(), submittedPassword.GetValue())
+	if err == nil && matches {
+		return adminPasswordPreserve
+	}
+	if err != nil && storedPassword.GetValue() == submittedPassword.GetValue() {
+		return adminPasswordRehashLegacy
+	}
+	return adminPasswordReplace
+}
+
+func validateSubmittedAdminPassword(password *schemas.SecretVar) error {
+	if shouldPreserveAdminPassword(password) {
+		return nil
+	}
+	if password.IsFromSecret() && password.GetValue() == "" {
+		return fmt.Errorf("external reference %s for admin_password resolved to an empty value", password.GetRawRef())
+	}
+
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		return fmt.Errorf("auth password must include %s", strings.Join(failures, ", "))
+	}
+	return nil
+}
+
+func hashAdminPassword(password *schemas.SecretVar) (*schemas.SecretVar, error) {
+	hashedPassword, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		return nil, err
+	}
+
+	storedPassword := password.Clone()
+	storedPassword.Val = hashedPassword
+	return storedPassword, nil
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -293,6 +371,29 @@ type authConfigWithSetupToken struct {
 	SetupToken string `json:"setup_token,omitempty"`
 }
 
+// clientConfigUpdate keeps request-only presence separate from the persisted
+// ClientConfig. A nil interval means it was omitted, while a non-nil zero
+// explicitly restores the built-in default.
+type clientConfigUpdate struct {
+	configstore.ClientConfig
+	MCPToolSyncInterval *int `json:"mcp_tool_sync_interval"`
+}
+
+func (c *clientConfigUpdate) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &c.ClientConfig); err != nil {
+		return err
+	}
+
+	var presence struct {
+		MCPToolSyncInterval *int `json:"mcp_tool_sync_interval"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return err
+	}
+	c.MCPToolSyncInterval = presence.MCPToolSyncInterval
+	return nil
+}
+
 // updateConfig updates the core configuration settings.
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
@@ -303,7 +404,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	payload := struct {
-		ClientConfig    configstore.ClientConfig               `json:"client_config"`
+		ClientConfig    clientConfigUpdate                     `json:"client_config"`
 		FrameworkConfig configstoreTables.TableFrameworkConfig `json:"framework_config"`
 		AuthConfig      *authConfigWithSetupToken              `json:"auth_config"`
 	}{}
@@ -311,6 +412,37 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
+	}
+
+	passwordAction := adminPasswordPreserve
+	var preparedAdminPassword *schemas.SecretVar
+	if payload.AuthConfig != nil {
+		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to get auth config from store: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+
+		var storedPassword *schemas.SecretVar
+		if authConfig != nil {
+			storedPassword = authConfig.AdminPassword
+		}
+		passwordAction = getAdminPasswordAction(payload.AuthConfig.AdminPassword, storedPassword, payload.AuthConfig.IsEnabled)
+		if passwordAction == adminPasswordReplace {
+			if err := validateSubmittedAdminPassword(payload.AuthConfig.AdminPassword); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if passwordAction != adminPasswordPreserve {
+			preparedAdminPassword, err = hashAdminPassword(payload.AuthConfig.AdminPassword)
+			if err != nil {
+				logger.Warn("failed to hash password: %v", err)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+				return
+			}
+		}
 	}
 
 	// Validate MCP external URL overrides up front — the rest of this handler
@@ -493,14 +625,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
-	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-	// 0 means the built-in default, so compare against the current value
-	// instead of the > 0 guard used by other numeric fields.
-	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
-		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	if interval := payload.ClientConfig.MCPToolSyncInterval; interval != nil {
+		if err := validateGlobalToolSyncIntervalMinutes(*interval); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		if *interval != currentConfig.MCPToolSyncInterval {
+			updatedConfig.MCPToolSyncInterval = *interval
+		}
 	}
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 
@@ -618,10 +750,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
 		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
-	}
-	// 0 is a valid value (the built-in default), so persist it when changed.
-	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
-		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
 	// Only update MCPCodeModeBindingLevel if payload is non-empty to avoid clearing stored value
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
@@ -850,14 +978,23 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
-		// Getting current governance config
+		// Refresh immediately before the auth update so password preservation
+		// never uses the earlier validation snapshot.
 		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn("failed to get auth config from store: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
-				return
-			}
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to refresh auth config from store: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+
+		// A legacy rehash is valid only while the latest stored value is still
+		// the plaintext observed during validation. If another request rotated
+		// it in the meantime, preserve that newer credential.
+		effectivePasswordAction := passwordAction
+		if passwordAction == adminPasswordRehashLegacy &&
+			(authConfig == nil || authConfig.AdminPassword == nil ||
+				authConfig.AdminPassword.GetValue() != payload.AuthConfig.AdminPassword.GetValue()) {
+			effectivePasswordAction = adminPasswordPreserve
 		}
 
 		// Check if auth config has changed
@@ -869,11 +1006,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
-			// Password is considered changed when it was intentionally submitted —
-			// ShouldPreserveStored() returns false for both plain values and secret refs.
-			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			// Rehashing historical plaintext preserves the logical credential, so it
+			// does not require signing out existing sessions.
+			passwordChanged := effectivePasswordAction == adminPasswordReplace
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
+				payload.AuthConfig.AdminUserName.GetValue() != "" &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
 				usernameChanged ||
@@ -896,11 +1033,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.GetRawRef()))
 				return
 			}
-			if payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", payload.AuthConfig.AdminPassword.GetRawRef()))
-				return
+			if authConfig != nil && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
 			}
-
 			if authConfig == nil && (payload.AuthConfig.AdminUserName.GetValue() == "" || payload.AuthConfig.AdminPassword.GetValue() == "") {
 				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
 				return
@@ -916,56 +1051,33 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
-			// Fetching current Auth config
-			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
-					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
-						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
-						return
-					}
-					// Assuming that password hasn't been changed
-					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
-				} else {
-					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
-						return
-					}
-					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+			if effectivePasswordAction == adminPasswordPreserve {
+				if authConfig == nil || authConfig.AdminPassword == nil || authConfig.AdminPassword.GetValue() == "" {
+					SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
+					return
 				}
+				// Assuming that password hasn't been changed
+				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				payload.AuthConfig.AdminPassword = preparedAdminPassword
 			}
 			// Save auth config - this handles both first-time creation and updates
-			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
-			if err != nil {
+			if err := h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig); err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			if effectivePasswordAction == adminPasswordPreserve {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				payload.AuthConfig.AdminPassword = preparedAdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
 			}
-			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
-			if err != nil {
+			if err := h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig); err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
