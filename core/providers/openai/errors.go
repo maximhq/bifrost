@@ -82,6 +82,30 @@ func responsesStreamError(response *schemas.BifrostResponsesStreamResponse) *sch
 	return bifrostErr
 }
 
+// responsesFailedEventHasErrorDetail reports whether a response.failed event
+// carries any usable error payload of its own. Azure emits response.failed with
+// "error": null everywhere and follows it with a terminal {"type":"error"}
+// frame holding the real reason (e.g. content_policy_violation); when nothing
+// usable is present the stream loop holds the failed event and keeps reading
+// for that richer frame instead of surfacing a detail-free error (issue #6419).
+func responsesFailedEventHasErrorDetail(response *schemas.BifrostResponsesStreamResponse) bool {
+	if response.Message != nil && *response.Message != "" {
+		return true
+	}
+	if response.Code != nil && *response.Code != "" {
+		return true
+	}
+	if response.Error != nil &&
+		(response.Error.Message != "" || response.Error.Code != "" || response.Error.Type != "") {
+		return true
+	}
+	if response.Response != nil && response.Response.Error != nil &&
+		(response.Response.Error.Message != "" || response.Response.Error.Code != "") {
+		return true
+	}
+	return false
+}
+
 // ParseOpenAIError parses OpenAI error responses.
 func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
