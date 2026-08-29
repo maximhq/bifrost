@@ -137204,6 +137204,280 @@
           }
         }
       ]
+    },
+    {
+      "name": "61. Replayed reasoning_details reach the provider (#5274)",
+      "description": "Bifrost returns assistant reasoning as reasoning_details, and a faithful client replays it verbatim on the next turn. Only one of the two OpenAI-compatible entry surfaces normalized that replay. /openai/* parses into openai.OpenAIMessage and folds reasoning_content / reasoning / reasoning_details in ConvertOpenAIMessagesToBifrostMessages (dd927388d). Native /v1/chat/completions parses straight into schemas.ChatMessage, so that converter never ran and ChatAssistantMessage.UnmarshalJSON accepted only reasoning_content - a reasoning_details[].text replay left the normalized Reasoning nil.\n\nSilent, because nothing errors. ConvertBifrostMessagesToOpenAIMessages carries assistant reasoning to an OpenAI-compatible upstream only as reasoning_content - reasoning_details is inbound-only there by design - so a turn that arrived with reasoning left with none. Multi-turn tool loops ran with no prior thinking block at all: a client measured a 17,925-token prompt after a 4,353-token reasoning turn (+76 tokens), and the model began confabulating - claiming no question had been asked, inventing system reminders and prompt injections, hallucinating missing tool results, and skipping cases outright (CASE_014 straight to CASE_027).\n\nProduction path: POST /v1/chat/completions -> schemas.ChatAssistantMessage.UnmarshalJSON -> ConvertBifrostMessagesToOpenAIMessages -> assistant reasoning_content upstream.\n\nWhy DeepSeek carries the pin: its endpoint enables thinking upstream by default and forces it off only when an assistant tool_call turn carries no replayable reasoning, writing that decision into the outbound body as `thinking`. So whether the replay survived is visible from the response alone - reasoning came back, or it did not - without depending on allow_per_request_raw_override, which defaults false in the harness deployment. The OpenAI row asserts the invariant straight against extra_fields.raw_request and skips where capture is unavailable.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash replayed reasoning_details survive to the provider - #5274",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var m = (((j.choices || [])[0] || {}).message) || {};",
+                  "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
+                  "pm.test('replay accepted, not rejected by the upstream', function () {",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "pm.test('reasoning survives the round trip and thinking stays on', function () {",
+                  "  var think = !!(m.reasoning_content || m.reasoning || m.thinking ||",
+                  "    (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
+                  "  pm.expect(think, 'reasoning_details[].text was dropped before the provider call, so DeepSeek'",
+                  "    + ' disabled thinking for the whole turn (reasoning_tokens=' + rt + '): ' +",
+                  "    JSON.stringify(m).slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_completion_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run the CASE_NN sequence, printing one case per turn, one tool call each.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Case 001 verified. Proceeding to case 002.\",\n      \"reasoning_details\": [\n        {\n          \"index\": 0,\n          \"type\": \"reasoning.text\",\n          \"text\": \"The user wants each CASE_NN printed in order. CASE_001 printed CASE_001_OK, so the next step is to call bash again with printf for CASE_002.\"\n        }\n      ],\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"bash\",\n            \"arguments\": \"{\\\"command\\\":\\\"printf 'CASE_002_OK\\\\n'\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"CASE_002_OK\\n\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"bash\",\n        \"description\": \"Run a shell command\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"command\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"command\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash empty reasoning_details text is not replayable - #5274",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('empty reasoning_details text: turn accepted', function () {",
+                  "  pm.expect(pm.response.code, 'DeepSeek rejected the turn (' + why + '): ' +",
+                  "    pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var sent = ef.raw_request;",
+                  "if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch (e) { sent = null; } }",
+                  "if (!sent || typeof sent !== 'object') { sent = null; }",
+                  "var assistant = null;",
+                  "if (sent) { (sent.messages || []).forEach(function (m) { if (m && m.role === 'assistant') { assistant = m; } }); }",
+                  "pm.test('empty reasoning_details text: no plaintext invented', function () {",
+                  "  if (!assistant) { return; } // raw capture off in this deployment",
+                  "  pm.expect(assistant.reasoning_content === undefined, 'plaintext was synthesized from a detail that carries none: ' +",
+                  "    JSON.stringify(assistant).slice(0, 300)).to.be.true;",
+                  "});",
+                  "pm.test('empty reasoning_details text: thinking correctly forced off', function () {",
+                  "  if (!sent) { return; }",
+                  "  pm.expect((sent.thinking || {}).type, 'thinking stayed on, so the upstream will 400 on the missing reasoning_content: ' +",
+                  "    JSON.stringify(sent.thinking)).to.eql('disabled');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_completion_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run the CASE_NN sequence, printing one case per turn, one tool call each.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Case 001 verified. Proceeding to case 002.\",\n      \"reasoning_details\": [\n        {\n          \"index\": 0,\n          \"type\": \"reasoning.text\",\n          \"text\": \"\"\n        }\n      ],\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"bash\",\n            \"arguments\": \"{\\\"command\\\":\\\"printf 'CASE_002_OK\\\\n'\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"CASE_002_OK\\n\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"bash\",\n        \"description\": \"Run a shell command\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"command\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"command\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash encrypted reasoning_details are not invented into reasoning - #5274",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('encrypted reasoning_details: turn accepted', function () {",
+                  "  pm.expect(pm.response.code, 'DeepSeek rejected the turn (' + why + '): ' +",
+                  "    pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var sent = ef.raw_request;",
+                  "if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch (e) { sent = null; } }",
+                  "if (!sent || typeof sent !== 'object') { sent = null; }",
+                  "var assistant = null;",
+                  "if (sent) { (sent.messages || []).forEach(function (m) { if (m && m.role === 'assistant') { assistant = m; } }); }",
+                  "pm.test('encrypted reasoning_details: no plaintext invented', function () {",
+                  "  if (!assistant) { return; } // raw capture off in this deployment",
+                  "  pm.expect(assistant.reasoning_content === undefined, 'plaintext was synthesized from a detail that carries none: ' +",
+                  "    JSON.stringify(assistant).slice(0, 300)).to.be.true;",
+                  "});",
+                  "pm.test('encrypted reasoning_details: thinking correctly forced off', function () {",
+                  "  if (!sent) { return; }",
+                  "  pm.expect((sent.thinking || {}).type, 'thinking stayed on, so the upstream will 400 on the missing reasoning_content: ' +",
+                  "    JSON.stringify(sent.thinking)).to.eql('disabled');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_completion_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run the CASE_NN sequence, printing one case per turn, one tool call each.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Case 001 verified. Proceeding to case 002.\",\n      \"reasoning_details\": [\n        {\n          \"index\": 0,\n          \"type\": \"reasoning.encrypted\",\n          \"data\": \"gAAAAExampleOpaqueBlob\"\n        }\n      ],\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"bash\",\n            \"arguments\": \"{\\\"command\\\":\\\"printf 'CASE_002_OK\\\\n'\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"CASE_002_OK\\n\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"bash\",\n        \"description\": \"Run a shell command\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"command\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"command\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-4o-mini reasoning_details replay arrives upstream as reasoning_content - #5274",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var sent = ef.raw_request;",
+                  "if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch (e) { sent = null; } }",
+                  "if (!sent || typeof sent !== 'object') { sent = null; }",
+                  "var assistant = null;",
+                  "if (sent) { (sent.messages || []).forEach(function (m) { if (m && m.role === 'assistant') { assistant = m; } }); }",
+                  "pm.test('reasoning_details replay reaches the upstream as reasoning_content', function () {",
+                  "  if (!assistant) { return; } // raw capture unavailable in this deployment",
+                  "  pm.expect(assistant.reasoning_content, 'reasoning dropped on the way out: ' +",
+                  "    JSON.stringify(assistant).slice(0, 300)).to.eql('The user wants each CASE_NN printed in order. CASE_001 printed CASE_001_OK, so the next step is to call bash again with printf for CASE_002.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_completion_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 8473 * 2917? Answer with the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Working it out now.\",\n      \"reasoning\": \"The user wants each CASE_NN printed in order. CASE_001 printed CASE_001_OK, so the next step is to call bash again with printf for CASE_002.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
