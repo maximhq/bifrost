@@ -146,7 +146,10 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			}
 			if reasoning == nil {
 				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
-					if detail.Text != nil {
+					// Empty text is absent text, not reasoning: folding it would set a
+					// non-nil Reasoning and satisfy the DeepSeek replay gate with "",
+					// which then ships an empty reasoning_content upstream.
+					if detail.Text != nil && *detail.Text != "" {
 						reasoning = detail.Text
 						break
 					}
