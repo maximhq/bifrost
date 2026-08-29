@@ -360,6 +360,19 @@
             "pages": ["edge/overview", "edge/how-it-works"]
           },
           {
+            "group": "Set up Edge",
+            "icon": "rocket",
+            "pages": [
+              "edge/setup",
+              "edge/setup-bifrost",
+              "edge/setup-edge-control",
+              "edge/install-direct",
+              "edge/install-mdm",
+              "edge/sign-in-and-verify",
+              "edge/troubleshooting"
+            ]
+          },
+          {
             "group": "Governance & Control",
             "icon": "shield-halved",
             "pages": ["edge/app-governance", "edge/mcp-governance", "edge/security"]
