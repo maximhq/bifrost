@@ -56,16 +56,34 @@ func (d *CohereRerankDocument) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// CohereRerankRequestDocument is a request-side document. Cohere v2 defines the
+// request's documents as an array of STRINGS (the object form was v1), so it
+// marshals as the bare ranked text — strict Cohere-v2-compatible servers 422 on
+// objects (issue #6640). Unmarshalling stays lenient (string or object) for the
+// /cohere integration ingress. ID/metadata never ride the request wire; Bifrost
+// restores IDs response-side from the request's documents slice.
+type CohereRerankRequestDocument CohereRerankDocument
+
+// MarshalJSON emits the Cohere v2 wire shape: a bare string.
+func (d CohereRerankRequestDocument) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(d.Text)
+}
+
+// UnmarshalJSON accepts a bare string or an object, like CohereRerankDocument.
+func (d *CohereRerankRequestDocument) UnmarshalJSON(data []byte) error {
+	return (*CohereRerankDocument)(d).UnmarshalJSON(data)
+}
+
 // CohereRerankRequest represents a Cohere rerank API request.
 type CohereRerankRequest struct {
-	Model           string                 `json:"model"`
-	Query           string                 `json:"query"`
-	Documents       []CohereRerankDocument `json:"documents"`
-	TopN            *int                   `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                   `json:"priority,omitempty"`
-	ReturnDocuments *bool                  `json:"return_documents,omitempty"`
-	ExtraParams     map[string]interface{} `json:"-"`
+	Model           string                        `json:"model"`
+	Query           string                        `json:"query"`
+	Documents       []CohereRerankRequestDocument `json:"documents"`
+	TopN            *int                          `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                          `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                          `json:"priority,omitempty"`
+	ReturnDocuments *bool                         `json:"return_documents,omitempty"`
+	ExtraParams     map[string]interface{}        `json:"-"`
 }
 
 // GetExtraParams returns extra parameters for the rerank request.
