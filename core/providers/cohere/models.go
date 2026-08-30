@@ -56,34 +56,39 @@ func (d *CohereRerankDocument) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// CohereRerankRequestDocument is a request-side document. Cohere v2 defines the
-// request's documents as an array of STRINGS (the object form was v1), so it
-// marshals as the bare ranked text — strict Cohere-v2-compatible servers 422 on
-// objects (issue #6640). Unmarshalling stays lenient (string or object) for the
-// /cohere integration ingress. ID/metadata never ride the request wire; Bifrost
-// restores IDs response-side from the request's documents slice.
-type CohereRerankRequestDocument CohereRerankDocument
-
-// MarshalJSON emits the Cohere v2 wire shape: a bare string.
-func (d CohereRerankRequestDocument) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(d.Text)
-}
-
-// UnmarshalJSON accepts a bare string or an object, like CohereRerankDocument.
-func (d *CohereRerankRequestDocument) UnmarshalJSON(data []byte) error {
-	return (*CohereRerankDocument)(d).UnmarshalJSON(data)
-}
-
 // CohereRerankRequest represents a Cohere rerank API request.
 type CohereRerankRequest struct {
-	Model           string                        `json:"model"`
-	Query           string                        `json:"query"`
-	Documents       []CohereRerankRequestDocument `json:"documents"`
-	TopN            *int                          `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                          `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                          `json:"priority,omitempty"`
-	ReturnDocuments *bool                         `json:"return_documents,omitempty"`
-	ExtraParams     map[string]interface{}        `json:"-"`
+	Model           string                 `json:"model"`
+	Query           string                 `json:"query"`
+	Documents       []CohereRerankDocument `json:"documents"`
+	TopN            *int                   `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                   `json:"priority,omitempty"`
+	ReturnDocuments *bool                  `json:"return_documents,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
+}
+
+// MarshalJSON emits the request's documents as bare strings. Cohere v2 defines
+// the request's documents as an array of STRINGS (the object form was v1), so
+// strict Cohere-v2-compatible servers 422 on objects (issue #6640). The Text
+// field already holds the single ranked string (ToCohereRerankRequest collapses
+// structured documents via rerankDocumentText); ID/metadata never ride the
+// request wire — Bifrost restores IDs response-side from the request's
+// documents slice. Unmarshalling stays lenient per document, and responses keep
+// the object form (CohereRerankResult.Document is unaffected).
+func (r CohereRerankRequest) MarshalJSON() ([]byte, error) {
+	type alias CohereRerankRequest
+	documents := make([]string, len(r.Documents))
+	for i, doc := range r.Documents {
+		documents[i] = doc.Text
+	}
+	return sonic.Marshal(struct {
+		alias
+		Documents []string `json:"documents"`
+	}{
+		alias:     alias(r),
+		Documents: documents,
+	})
 }
 
 // GetExtraParams returns extra parameters for the rerank request.

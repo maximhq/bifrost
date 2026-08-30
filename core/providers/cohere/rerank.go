@@ -18,9 +18,9 @@ func ToCohereRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *CohereRera
 		Query: bifrostReq.Query,
 	}
 
-	documents := make([]CohereRerankRequestDocument, len(bifrostReq.Documents))
+	documents := make([]CohereRerankDocument, len(bifrostReq.Documents))
 	for i, doc := range bifrostReq.Documents {
-		documents[i] = CohereRerankRequestDocument{
+		documents[i] = CohereRerankDocument{
 			Text:     rerankDocumentText(doc),
 			ID:       doc.ID,
 			Metadata: doc.Meta,

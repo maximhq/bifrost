@@ -55,7 +55,7 @@ func TestCohereRerankRouteRequestConverter(t *testing.T) {
 	req := &cohere.CohereRerankRequest{
 		Model:     "rerank-v3.5",
 		Query:     "what is bifrost?",
-		Documents: []cohere.CohereRerankRequestDocument{{Text: "doc1"}, {Text: "doc2"}},
+		Documents: []cohere.CohereRerankDocument{{Text: "doc1"}, {Text: "doc2"}},
 		TopN:      &topN,
 	}
 
