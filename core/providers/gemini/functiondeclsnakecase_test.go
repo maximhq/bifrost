@@ -118,6 +118,25 @@ func TestFunctionDeclarationSnakeCaseAliases(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit snake_case null clears a reused declaration", func(t *testing.T) {
+		// Decoding into a reused struct: a payload carrying an explicit
+		// parameters_json_schema null (and no camelCase key) must clear the
+		// stale value, not leave the previous schema behind.
+		var fd FunctionDeclaration
+		if err := sonic.Unmarshal([]byte(`{"name":"a","parameters_json_schema":{"type":"object"}}`), &fd); err != nil {
+			t.Fatalf("first unmarshal: %v", err)
+		}
+		if fd.ParametersJSONSchema == nil {
+			t.Fatal("precondition: first decode must set the schema")
+		}
+		if err := sonic.Unmarshal([]byte(`{"name":"b","parameters_json_schema":null}`), &fd); err != nil {
+			t.Fatalf("second unmarshal: %v", err)
+		}
+		if fd.ParametersJSONSchema != nil {
+			t.Errorf("explicit snake_case null must clear the reused declaration, got %+v", fd.ParametersJSONSchema)
+		}
+	})
+
 	t.Run("plain parameters still binds through the shim", func(t *testing.T) {
 		fd := unmarshalSingleDeclTool(t, `{
 			"function_declarations": [{

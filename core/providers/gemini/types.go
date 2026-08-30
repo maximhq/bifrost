@@ -439,13 +439,14 @@ func (fd *FunctionDeclaration) UnmarshalJSON(data []byte) error {
 	}
 
 	// Use snake_case only when the camelCase key is absent. Presence, not the
-	// decoded value, decides: an explicit camelCase null decodes to nil just
-	// like an omitted key, and must not be overridden by the snake_case
-	// sibling. See hasJSONKey.
-	if !hasJSONKey(data, "parametersJsonSchema") && aux.ParametersJSONSchemaSnake != nil {
+	// decoded value, decides on both sides: an explicit null decodes to nil
+	// just like an omitted key, so a camelCase null must not be overridden by
+	// the snake_case sibling, and a snake_case null must clear any stale value
+	// on a reused declaration. See hasJSONKey.
+	if !hasJSONKey(data, "parametersJsonSchema") && hasJSONKey(data, "parameters_json_schema") {
 		fd.ParametersJSONSchema = aux.ParametersJSONSchemaSnake
 	}
-	if !hasJSONKey(data, "responseJsonSchema") && aux.ResponseJSONSchemaSnake != nil {
+	if !hasJSONKey(data, "responseJsonSchema") && hasJSONKey(data, "response_json_schema") {
 		fd.ResponseJSONSchema = aux.ResponseJSONSchemaSnake
 	}
 	return nil
