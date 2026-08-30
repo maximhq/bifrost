@@ -58,6 +58,30 @@ func TestPreRequestHookUsesGeneralLaneBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestPreRequestHookRoutesResponsesRequest(t *testing.T) {
+	shadow := false
+	plugin, err := Init(&Config{ShadowMode: &shadow})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	req := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "agent-main-auto",
+		},
+	}
+	if err := plugin.PreRequestHook(testContext(), req); err != nil {
+		t.Fatalf("PreRequestHook() error = %v", err)
+	}
+	provider, model, _ := req.GetRequestFields()
+	if provider != schemas.OpenAI {
+		t.Fatalf("provider = %q, want unchanged %q", provider, schemas.OpenAI)
+	}
+	if model != "agent-main-general" {
+		t.Fatalf("model = %q, want agent-main-general", model)
+	}
+}
+
 func TestPreRequestHookBypassesUnmanagedAndUnsupportedRequests(t *testing.T) {
 	shadow := false
 	plugin, err := Init(&Config{ShadowMode: &shadow})
