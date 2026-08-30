@@ -2723,6 +2723,19 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// enterprise ones — registered after that snapshot, causing the client to fail
 	// and only recover on a later health-monitor reconnect).
 	s.Client.ConnectConfiguredMCPClients(s.Ctx)
+	// NewMCPServerHandler (inside RegisterInferenceRoutes, above) already synced the served
+	// server once, before any client had dialed - it necessarily served zero tools. The
+	// callback registered above would ordinarily pick up what the boot dial just discovered,
+	// but it is gated on a genuine change in a client's tool hash, and a client whose tools
+	// were persisted to the config store on a previous run boots with that hash already
+	// recorded: rediscovering the same tools now looks like no change at all, so the callback
+	// never fires and the served server would stay at the zero tools it started with. This is
+	// the one place that resync is not conditional on anything changing: the boot dial is
+	// synchronous (ConnectConfiguredMCPClients blocks until every client has been attempted),
+	// so by the time it returns every client's tools are exactly what this request should see.
+	if err := s.MCPServerHandler.SyncMCPServer(s.Ctx); err != nil {
+		logger.Warn("failed to sync MCP server after the boot dial: %v", err)
+	}
 	// A proactively refreshed shared OAuth token leaves the live MCP connection
 	// still holding the old bearer (the credential is baked into the transport
 	// at connect time), so recycle the connection as soon as the refresh worker

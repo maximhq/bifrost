@@ -133,6 +133,24 @@ func TestDerivedContextSharesTheAncestorsGrant(t *testing.T) {
 	}
 }
 
+// A library sitting between the transport and Bifrost's own code can wrap the context with its
+// own context.WithValue before handing it back (mcp-go's HandleMessage does exactly this on every
+// request). That wrapper is a real ancestor with a real grant behind it, unlike the "nothing to
+// derive from" cases above, and losing it here is what let an MCP tool call see no grant even
+// though the request that reached the gateway had one resolved and installed on it.
+func TestDerivedContextThroughAForeignWrapperStillSharesTheGrant(t *testing.T) {
+	parent := NewBifrostContext(context.Background(), NoDeadline)
+	inner := &fakeGrant{limits: &fakeLimits{budgets: []Limit{{ID: "parent"}}}}
+	parent.SetGrant(inner)
+
+	wrapped := context.WithValue(parent, fakeForeignContextKey{}, "v")
+	child := NewBifrostContext(wrapped, NoDeadline)
+
+	if child.Grant() != Grant(inner) {
+		t.Fatal("a foreign wrapper inserted between two BifrostContexts must not hide the ancestor's grant")
+	}
+}
+
 func TestDerivedContextWithoutAncestorGrantHasNone(t *testing.T) {
 	parent := NewBifrostContext(context.Background(), NoDeadline)
 	child := NewBifrostContext(parent, NoDeadline)

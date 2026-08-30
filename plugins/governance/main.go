@@ -1376,8 +1376,17 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	// surfaces the error on the per-user auth path, and shared-connection auth types never read it. A
 	// context with no grant is reported the same way: the connect path is transport setup, and the
 	// tool call that follows is where a wiring fault is refused.
+	//
+	// A context carrying BifrostContextKeyMCPHealthCheckRequest is Bifrost's own connection check,
+	// not a caller's request — the periodic checker and the admin verification probe both build a
+	// fresh context with no grant by design, since there is no caller to have one. Warning on that
+	// every tick is not a wiring fault surfaced, it is log volume with nothing to act on.
 	if _, err := p.ResolveAccess(ctx); err != nil {
-		p.logger.Warn("governance: %v", err)
+		if isHealthCheck, _ := ctx.Value(schemas.BifrostContextKeyMCPHealthCheckRequest).(bool); isHealthCheck {
+			p.logger.Debug("governance: %v", err)
+		} else {
+			p.logger.Warn("governance: %v", err)
+		}
 	}
 	return req, nil, nil
 }
