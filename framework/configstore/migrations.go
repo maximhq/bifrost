@@ -477,6 +477,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_batch_jobs_attribution_columns"}, run: migrationAddBatchJobsAttributionColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
+	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
 }
 
 // migrationAddBatchJobsAttributionColumns adds the requester-identity columns to
@@ -12322,6 +12323,86 @@ func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB
 			for _, field := range columns {
 				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
 					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationDropLegacyOauthUserFKConstraints drops the real foreign key constraints
+// GORM created on oauth_user_tokens and oauth_user_sessions for their MCPClient and
+// VirtualKey preload relations. Both relations were always meant to be display-only
+// (their comments said so from the start), but the struct tags never carried
+// "-:migration" (or even "constraint:-") to tell GORM that, so
+// migrationAddPerUserOAuthTables's mg.CreateTable created a real
+// fk_oauth_user_tokens_mcp_client / fk_oauth_user_tokens_virtual_key /
+// fk_oauth_user_sessions_mcp_client / fk_oauth_user_sessions_virtual_key constraint
+// on every deployment that ever ran it.
+//
+// This went unnoticed for a long time because DeleteMCPClientConfig used to
+// explicitly delete matching oauth_user_tokens (and, before the flow-table merge,
+// oauth_user_sessions) rows before deleting the client, so the constraint was never
+// actually violated in practice. migrationMergeOauthTokenTables (and the flow-table
+// merge before it) replaced that with a delete against the new mcp_oauth_tokens /
+// mcp_oauth_flows tables only, reasoning that the old tables are "no longer read or
+// written by any application code" — true for new activity, but the old tables'
+// pre-merge rows were only ever copied forward, never deleted from the source (see
+// that migration's own comment: both older tables are "left completely untouched
+// and undropped... kept solely as a rollback safety net"). Any MCP client that had
+// per-user OAuth activity before its merge migration ran keeps an orphaned-but-still-
+// enforced row in the old table, and deleting that client now fails outright on the
+// live constraint.
+//
+// This migration removes only the constraints, not the tables or their rows: the
+// rollback safety net the merge migrations already committed to stays intact, this
+// just stops it from blocking an otherwise-ordinary delete. The struct tags are
+// fixed alongside this (see TableOauthUserToken/TableOauthUserSession) so a fresh
+// install never creates these constraints in the first place.
+func migrationDropLegacyOauthUserFKConstraints(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_legacy_oauth_user_fk_constraints"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	type constraintTarget struct {
+		model any
+		field string
+	}
+	targets := []constraintTarget{
+		{&tables.TableOauthUserToken{}, "MCPClient"},
+		{&tables.TableOauthUserToken{}, "VirtualKey"},
+		{&tables.TableOauthUserSession{}, "MCPClient"},
+		{&tables.TableOauthUserSession{}, "VirtualKey"},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, target := range targets {
+				if !mig.HasConstraint(target.model, target.field) {
+					continue
+				}
+				if err := mig.DropConstraint(target.model, target.field); err != nil {
+					return fmt.Errorf("failed to drop %s constraint on %T: %w", target.field, target.model, err)
+				}
+			}
+			return nil
+		},
+		// Recreates the constraints the forward migration dropped. Schema-only:
+		// neither direction touches a row in either table.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, target := range targets {
+				if mig.HasConstraint(target.model, target.field) {
+					continue
+				}
+				if err := mig.CreateConstraint(target.model, target.field); err != nil {
+					return fmt.Errorf("failed to recreate %s constraint on %T: %w", target.field, target.model, err)
 				}
 			}
 			return nil
