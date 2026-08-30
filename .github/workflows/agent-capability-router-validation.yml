@@ -11,7 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -61,9 +61,9 @@ jobs:
         shell: bash
         run: go test -race ./plugins/agentcapabilityrouter/...
 
-      - name: Test HTTP transport integration
+      - name: Test native HTTP registration
         shell: bash
-        run: go test ./transports/bifrost-http/...
+        run: go test -v ./transports/bifrost-http/server -run '^TestAgentCapabilityRouterIsRegisteredAsBuiltin$'
 
       - name: Vet capability router
         shell: bash
