@@ -100,7 +100,7 @@ func responsesFailedEventHasErrorDetail(response *schemas.BifrostResponsesStream
 		return true
 	}
 	if response.Response != nil && response.Response.Error != nil &&
-		(response.Response.Error.Message != "" || response.Response.Error.Code != "") {
+		(response.Response.Error.Message != "" || response.Response.Error.Code != "" || response.Response.Error.Type != "") {
 		return true
 	}
 	return false

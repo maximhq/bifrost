@@ -86,6 +86,23 @@ data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","o
 	}
 }
 
+// A response.failed whose nested error carries only a type is still detail and
+// must surface immediately, not be deferred.
+func TestResponsesStreamFailedWithTypeOnlyDetailSurfacesImmediately(t *testing.T) {
+	frames := `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"model":"repro-model","status":"in_progress"}}
+
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","object":"response","created_at":1,"model":"repro-model","status":"failed","error":{"type":"invalid_request_error"}}}
+
+`
+	_, got := runResponsesStream(t, frames)
+	if got == nil || got.Error == nil {
+		t.Fatal("expected a terminal error chunk, got none")
+	}
+	if got.Error.Type == nil || *got.Error.Type != "invalid_request_error" {
+		t.Fatalf("error type = %v, want the failed event's own nested type", got.Error.Type)
+	}
+}
+
 // A detail-free response.failed with nothing after it must still produce the
 // generic failed-derived error at stream end, not a silent close or a
 // truncation error.
