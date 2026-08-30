@@ -1196,6 +1196,15 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if oc := cc.OAuth2ServerConfig; oc != nil && oc.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
 		return fmt.Errorf("oauth2_server_config.auth_code_ttl %d exceeds the maximum of %d seconds (15 minutes)", oc.AuthCodeTTL, configstoreTables.MaxAuthCodeTTL)
 	}
+	// Same reasoning for the rotation grace period: PUT /api/config bounds it,
+	// but config.json and pre-existing DB rows reach the runtime through here.
+	// An out-of-range cooldown would keep a retired virtual key authenticating
+	// past the ceiling the API promises.
+	if cd := cc.VKRotationCooldown.D(); cd < 0 {
+		return fmt.Errorf("vk_rotation_cooldown %s must not be negative", cd)
+	} else if cd > configstore.MaxVKRotationCooldown {
+		return fmt.Errorf("vk_rotation_cooldown %s exceeds the maximum of %s (30 days)", cd, configstore.MaxVKRotationCooldown)
+	}
 	return nil
 }
 

@@ -1,0 +1,3990 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Rotation Cooldown",
+    "description": "Virtual key rotation-cooldown tests. Covers the default state (cooldown never configured, so rotation revokes the old value immediately), the vk_rotation_cooldown config API (duration strings, integer nanoseconds, bounds, zero-clears), rotation semantics (single, bulk, partial failure, re-rotation overwrite), and runtime grace-window enforcement across /v1/chat/completions, /v1/models, and the self-service quota endpoint at 1m and 3m windows. The 3m window opens first so both waits overlap. Config PUTs are read-modify-write of a snapshot taken in Setup and restored in Teardown; intended for fresh e2e environments where client_config carries no redacted secret-bearing fields. Also covers immediate revocation when the cooldown is emptied or zero (an empty duration string is accepted as 'no cooldown'): re-rotating a key that holds a live grace value kills both retired values at once on inference and quota. Self-provisions VKs and cleans up. Wall clock: roughly 4 minutes (dominated by the 1m and 3m grace windows).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "client_config_snapshot",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_new_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_rotate_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_prev_expires_iso",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_a_prev_expires_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_new_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_rotate_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_prev_expires_iso",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_b_prev_expires_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_second_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_third_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_rotate_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_prev_expires_iso",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_c_prev_expires_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_d_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_d_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_d_new_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_d_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_d_rotate_epoch",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_e_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_e_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_e_second_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_e_third_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_e_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_f_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_f_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_f_new_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_f_name",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Snapshot client config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config;",
+                  "pm.test('client_config present', function() { pm.expect(cc).to.be.an('object'); });",
+                  "// Config PUTs validate the whole client_config (e.g. log_retention_days >= 1),",
+                  "// so every PUT in this collection mutates this snapshot instead of sending a",
+                  "// minimal payload. Teardown restores it verbatim.",
+                  "var snap = cc || {};",
+                  "// A fresh install reports log_retention_days 0, which the PUT validator",
+                  "// rejects (must be >= 1) - normalize so the snapshot is PUT-able.",
+                  "if (!snap.log_retention_days || snap.log_retention_days < 1) { snap.log_retention_days = 30; }",
+                  "pm.collectionVariables.set('client_config_snapshot', JSON.stringify(snap));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK A (1m rotation subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation 1m ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_a_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK Rotation 1m returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK Rotation 1m has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_a_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_a_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Rotation 1m\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK B (3m rotation subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation 3m ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_b_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK Rotation 3m returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK Rotation 3m has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_b_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_b_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Rotation 3m\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK C (re-rotation subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation Re-rotate ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_c_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK Rotation Re-rotate returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK Rotation Re-rotate has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_c_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_c_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Rotation Re-rotate\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK D (zero-cooldown subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation Zero ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_d_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK Rotation Zero returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK Rotation Zero has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_d_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_d_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Rotation Zero\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK E (immediate-revocation subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation Revoke ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_e_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK E returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code !== 200 && code !== 201) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.collectionVariables.set('vk_e_id', vk.id);",
+                  "pm.collectionVariables.set('vk_e_value', vk.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK F (default-state subject)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Rotation Default ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.collectionVariables.set('vk_f_name', uniqueName);",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK F returns 200 or 201', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code !== 200 && code !== 201) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.collectionVariables.set('vk_f_id', vk.id);",
+                  "pm.collectionVariables.set('vk_f_value', vk.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Default State - Rotation Is Immediate",
+      "item": [
+        {
+          "name": "Config payload omitting the cooldown leaves it unset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "// Send the config the way a client unaware of the setting would:",
+                  "// the key is not present at all.",
+                  "delete snap.vk_rotation_cooldown;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Config without the cooldown key returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Default state reports no cooldown",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config || {};",
+                  "// The default state: the field is absent, which the server reads as 0.",
+                  "pm.test('vk_rotation_cooldown is unset by default', function() {",
+                  "  var present = Object.prototype.hasOwnProperty.call(cc, 'vk_rotation_cooldown');",
+                  "  pm.expect(present && cc.vk_rotation_cooldown !== 0, 'cooldown: ' + JSON.stringify(cc.vk_rotation_cooldown)).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK F in the default state",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK F returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "var oldValue = pm.collectionVariables.get('vk_f_value');",
+                  "pm.test('A fresh value is issued', function() {",
+                  "  pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk.value).to.not.equal(oldValue);",
+                  "});",
+                  "// The heart of the default-state contract: no grace window at all.",
+                  "pm.test('No grace window is opened by default', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value_expires_at')).to.be.false;",
+                  "});",
+                  "pm.test('rotated_at is still recorded', function() { pm.expect(vk.rotated_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.collectionVariables.set('vk_f_new_value', vk.value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_f_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_f_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old VK F value is dead immediately on inference",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Old value inference returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_f_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old VK F value is dead immediately on quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Old value quota returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_f_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old VK F value is dead immediately on list models",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "// List models fails open for an unknown key (it only narrows provider",
+                  "// fan-out), so the contract here is that the revoked value is no longer",
+                  "// scoped to the VK - never that it still resolves to it.",
+                  "pm.test('List models does not resolve the revoked value', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('previous_value');",
+                  "  pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 401]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_f_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New VK F value works immediately",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('New value quota returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "pm.test('Quota identifies VK F', function() { pm.expect(pm.response.json().virtual_key_name).to.equal(pm.collectionVariables.get('vk_f_name')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_f_new_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Re-rotating in the default state stays immediate",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Second rotate returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.test('Still no grace window on a repeat rotation', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value_expires_at')).to.be.false;",
+                  "});",
+                  "pm.collectionVariables.set('vk_f_new_value', vk.value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_f_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_f_id}}",
+                "rotate"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Config API Validation",
+      "item": [
+        {
+          "name": "Set cooldown to 1m",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '1m';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set cooldown to 1m returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get config returns 1m as nanoseconds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config || {};",
+                  "// schemas.Duration accepts '1m' on write but always marshals int64 nanoseconds.",
+                  "pm.test('vk_rotation_cooldown round-trips as 60000000000 ns', function() {",
+                  "  pm.expect(cc.vk_rotation_cooldown).to.equal(60000000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Set cooldown to 180000000000 integer nanoseconds",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = 180000000000;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set cooldown to 3m in nanoseconds returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get config round-trips the integer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config || {};",
+                  "pm.test('vk_rotation_cooldown is 180000000000 ns', function() {",
+                  "  pm.expect(cc.vk_rotation_cooldown).to.equal(180000000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Negative cooldown is rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '-1m';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Negative cooldown returns 400', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('Error names the violation', function() { pm.expect(pm.response.text()).to.include('must not be negative'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cooldown above 30 days is rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '721h';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Oversized cooldown returns 400', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('Error names the 30 day bound', function() { pm.expect(pm.response.text()).to.include('must not exceed 30 days'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Zero clears the cooldown",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = 0;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Zero cooldown returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get config omits a cleared cooldown",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config || {};",
+                  "// omitempty: a zero cooldown must disappear from the payload entirely.",
+                  "pm.test('vk_rotation_cooldown is omitted when zero', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(cc, 'vk_rotation_cooldown')).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rotation Semantics",
+      "item": [
+        {
+          "name": "Set cooldown to 3m for VK B",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '3m';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set cooldown to 3m returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK B opens a 3m grace window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.collectionVariables.set('vk_b_rotate_epoch', String(Date.now()));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK B opens a 3m grace window returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "var oldValue = pm.collectionVariables.get('vk_b_value');",
+                  "var rotateEpoch = Number(pm.collectionVariables.get('vk_b_rotate_epoch') || 0);",
+                  "pm.test('Rotated value is a fresh sk-bf- secret', function() {",
+                  "  pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk.value.indexOf('sk-bf-')).to.equal(0);",
+                  "  pm.expect(vk.value).to.not.equal(oldValue);",
+                  "});",
+                  "pm.test('rotated_at is set', function() { pm.expect(vk.rotated_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.test('previous_value_expires_at lands 3m after rotation', function() {",
+                  "  pm.expect(vk.previous_value_expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = Date.parse(vk.previous_value_expires_at);",
+                  "  pm.expect(Math.abs(exp - (rotateEpoch + 180000)), 'expiry drift ms (body: ' + pm.response.text() + ')').to.be.below(15000);",
+                  "});",
+                  "pm.test('previous_value is never serialized', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value')).to.be.false;",
+                  "  pm.expect(pm.response.text().indexOf(oldValue)).to.equal(-1);",
+                  "});",
+                  "pm.collectionVariables.set('vk_b_new_value', vk.value);",
+                  "pm.collectionVariables.set('vk_b_prev_expires_iso', vk.previous_value_expires_at || '');",
+                  "// Anchor for the expiry busy-wait: never earlier than the server's own",
+                  "// expiry instant, never earlier than rotate-time + window (clock skew guard).",
+                  "var anchor = Math.max(Date.parse(vk.previous_value_expires_at || '') || 0, rotateEpoch + 180000);",
+                  "pm.collectionVariables.set('vk_b_prev_expires_epoch', String(anchor));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_b_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_b_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Set cooldown to 1m for VK A",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '1m';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set cooldown to 1m returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK A opens a 1m grace window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.collectionVariables.set('vk_a_rotate_epoch', String(Date.now()));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK A opens a 1m grace window returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "var oldValue = pm.collectionVariables.get('vk_a_value');",
+                  "var rotateEpoch = Number(pm.collectionVariables.get('vk_a_rotate_epoch') || 0);",
+                  "pm.test('Rotated value is a fresh sk-bf- secret', function() {",
+                  "  pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk.value.indexOf('sk-bf-')).to.equal(0);",
+                  "  pm.expect(vk.value).to.not.equal(oldValue);",
+                  "});",
+                  "pm.test('rotated_at is set', function() { pm.expect(vk.rotated_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.test('previous_value_expires_at lands 1m after rotation', function() {",
+                  "  pm.expect(vk.previous_value_expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = Date.parse(vk.previous_value_expires_at);",
+                  "  pm.expect(Math.abs(exp - (rotateEpoch + 60000)), 'expiry drift ms (body: ' + pm.response.text() + ')').to.be.below(15000);",
+                  "});",
+                  "pm.test('previous_value is never serialized', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value')).to.be.false;",
+                  "  pm.expect(pm.response.text().indexOf(oldValue)).to.equal(-1);",
+                  "});",
+                  "pm.collectionVariables.set('vk_a_new_value', vk.value);",
+                  "pm.collectionVariables.set('vk_a_prev_expires_iso', vk.previous_value_expires_at || '');",
+                  "// Anchor for the expiry busy-wait: never earlier than the server's own",
+                  "// expiry instant, never earlier than rotate-time + window (clock skew guard).",
+                  "var anchor = Math.max(Date.parse(vk.previous_value_expires_at || '') || 0, rotateEpoch + 60000);",
+                  "pm.collectionVariables.set('vk_a_prev_expires_epoch', String(anchor));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_a_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_a_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mid-window config change leaves B's issued expiry untouched",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_id\", \"vk_b_prev_expires_iso\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get VK B returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || {};",
+                  "// Issued expiries are absolute: dropping the cooldown to 1m after B's",
+                  "// rotation must not shrink B's already-issued 3m window.",
+                  "pm.test('previous_value_expires_at is unchanged', function() {",
+                  "  pm.expect(vk.previous_value_expires_at).to.equal(pm.collectionVariables.get('vk_b_prev_expires_iso'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_b_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_b_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK C opens its first grace window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_c_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.collectionVariables.set('vk_c_rotate_epoch', String(Date.now()));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK C opens its first grace window returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "var oldValue = pm.collectionVariables.get('vk_c_value');",
+                  "var rotateEpoch = Number(pm.collectionVariables.get('vk_c_rotate_epoch') || 0);",
+                  "pm.test('Rotated value is a fresh sk-bf- secret', function() {",
+                  "  pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk.value.indexOf('sk-bf-')).to.equal(0);",
+                  "  pm.expect(vk.value).to.not.equal(oldValue);",
+                  "});",
+                  "pm.test('rotated_at is set', function() { pm.expect(vk.rotated_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.test('previous_value_expires_at lands 1m after rotation', function() {",
+                  "  pm.expect(vk.previous_value_expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = Date.parse(vk.previous_value_expires_at);",
+                  "  pm.expect(Math.abs(exp - (rotateEpoch + 60000)), 'expiry drift ms (body: ' + pm.response.text() + ')').to.be.below(15000);",
+                  "});",
+                  "pm.test('previous_value is never serialized', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value')).to.be.false;",
+                  "  pm.expect(pm.response.text().indexOf(oldValue)).to.equal(-1);",
+                  "});",
+                  "pm.collectionVariables.set('vk_c_new_value', vk.value);",
+                  "pm.collectionVariables.set('vk_c_prev_expires_iso', vk.previous_value_expires_at || '');",
+                  "// Anchor for the expiry busy-wait: never earlier than the server's own",
+                  "// expiry instant, never earlier than rotate-time + window (clock skew guard).",
+                  "var anchor = Math.max(Date.parse(vk.previous_value_expires_at || '') || 0, rotateEpoch + 60000);",
+                  "pm.collectionVariables.set('vk_c_prev_expires_epoch', String(anchor));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_c_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_c_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk rotate with empty ids is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Empty ids returns 400', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('Error requires at least one id', function() { pm.expect(pm.response.text()).to.include('At least one virtual key ID is required'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": []}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk rotate with blank id is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Blank id returns 400', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('Error rejects the empty id', function() { pm.expect(pm.response.text()).to.include('Virtual key ID cannot be empty'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": [\"  \"]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk rotate with only unknown ids fails",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('All-unknown bulk rotate returns 500', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(500); });",
+                  "pm.test('Error reports the failure', function() { pm.expect(pm.response.text()).to.include('Failed to rotate virtual keys'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": [\"vk-does-not-exist-e2e\"]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk rotate partial failure re-rotates VK C",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_c_id\", \"vk_c_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.request.body.raw = JSON.stringify({ids: [pm.collectionVariables.get('vk_c_id'), \"vk-does-not-exist-e2e\"]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Partial bulk rotate returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var jsonData = pm.response.json();",
+                  "pm.test('Known VK rotated', function() {",
+                  "  pm.expect(jsonData.virtual_keys).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(jsonData.virtual_keys[0].id).to.equal(pm.collectionVariables.get('vk_c_id'));",
+                  "});",
+                  "pm.test('Unknown id reported per-id in errors', function() {",
+                  "  pm.expect(jsonData.errors).to.be.an('object');",
+                  "  pm.expect(jsonData.errors[\"vk-does-not-exist-e2e\"]).to.include('not found');",
+                  "});",
+                  "// VK C's first value was retired by the first rotation; this second",
+                  "// rotation retires the second value and must kill the first outright.",
+                  "pm.collectionVariables.set('vk_c_second_value', pm.collectionVariables.get('vk_c_new_value'));",
+                  "pm.collectionVariables.set('vk_c_third_value', jsonData.virtual_keys[0].value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": []}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Re-rotation kills the oldest value immediately",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_c_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Oldest VK C value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_c_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Re-rotation keeps the latest retired value alive",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_c_second_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('Latest retired VK C value: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_c_second_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate unknown VK returns 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unknown VK rotate returns 404', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(404); });",
+                  "pm.test('Error names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/vk-does-not-exist-e2e/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "vk-does-not-exist-e2e",
+                "rotate"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Grace Window - In-Window",
+      "item": [
+        {
+          "name": "Old A value authenticates inference during grace",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('Old VK A value: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New A value authenticates inference",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('New VK A value: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_new_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old A value reads its quota during grace",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via old VK A value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var quota = pm.response.json();",
+                  "pm.test('Quota identifies the virtual key', function() {",
+                  "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('vk_a_name'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old A value lists models during grace",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('List models via old VK A value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "pm.test('Response carries a model list', function() {",
+                  "  pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old B value reads quota inside its longer window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via old VK B value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var quota = pm.response.json();",
+                  "pm.test('Quota identifies the virtual key', function() {",
+                  "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('vk_b_name'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Expiry Enforcement - 1m Window",
+      "item": [
+        {
+          "name": "Old A value is rejected after the 1m window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_value\", \"vk_a_prev_expires_epoch\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "// Wait until the wall clock is safely past VK A's 1m grace-window expiry.",
+                  "// Anchoring to the absolute epoch recorded at rotation time means slow",
+                  "// requests can never shrink the wait below the grace boundary. Newman's",
+                  "// sandbox waits for pending timers before sending the request.",
+                  "var deadline = Number(pm.collectionVariables.get('vk_a_prev_expires_epoch') || 0) + 2000;",
+                  "(function waitForExpiry() {",
+                  "  if (Date.now() < deadline) {",
+                  "    setTimeout(waitForExpiry, 250);",
+                  "  }",
+                  "})();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Expired VK A grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old A value quota is rejected after expiry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Quota via expired VK A grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New A value still authenticates after the window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('New VK A value post-expiry: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_new_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New A value still reads quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via new VK A value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var quota = pm.response.json();",
+                  "pm.test('Quota identifies the virtual key', function() {",
+                  "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('vk_a_name'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_a_new_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old B value still works mid-3m-window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via old VK B value at ~t+70s returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var quota = pm.response.json();",
+                  "pm.test('Quota identifies the virtual key', function() {",
+                  "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('vk_b_name'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Expiry Enforcement - 3m Window",
+      "item": [
+        {
+          "name": "Old B value is rejected after the 3m window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_value\", \"vk_b_prev_expires_epoch\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "// Wait until the wall clock is safely past VK B's 3m grace-window expiry.",
+                  "// Anchoring to the absolute epoch recorded at rotation time means slow",
+                  "// requests can never shrink the wait below the grace boundary. Newman's",
+                  "// sandbox waits for pending timers before sending the request.",
+                  "var deadline = Number(pm.collectionVariables.get('vk_b_prev_expires_epoch') || 0) + 2000;",
+                  "(function waitForExpiry() {",
+                  "  if (Date.now() < deadline) {",
+                  "    setTimeout(waitForExpiry, 250);",
+                  "  }",
+                  "})();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Expired VK B grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old B value quota is rejected after expiry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Quota via expired VK B grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New B value still authenticates",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('New VK B value post-expiry: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_new_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New B value reads quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via new VK B value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var quota = pm.response.json();",
+                  "pm.test('Quota identifies the virtual key', function() {",
+                  "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('vk_b_name'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_b_new_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Zero Cooldown",
+      "item": [
+        {
+          "name": "Clear the cooldown before rotating VK D",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = 0;",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Clear cooldown returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK D with zero cooldown",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_d_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK D returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.test('Zero cooldown leaves no grace window', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value_expires_at')).to.be.false;",
+                  "});",
+                  "pm.test('rotated_at is still set', function() { pm.expect(vk.rotated_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.collectionVariables.set('vk_d_new_value', vk.value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_d_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_d_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old D value dies immediately on inference",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_d_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Old VK D value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_d_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Old D value dies immediately on quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_d_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Quota via old VK D value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_d_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "New D value authenticates",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_d_new_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject the presented value as unknown.",
+                  "pm.test('New VK D value: response carries no virtual-key rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_d_new_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Immediate Revocation When Cooldown Is Empty Or Zero",
+      "item": [
+        {
+          "name": "Set a long cooldown so VK E retires its first value",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '30m';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set 30m cooldown returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rotate VK E into a live 30m grace window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Rotate VK E returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.test('Grace window is open', function() { pm.expect(vk.previous_value_expires_at).to.be.a('string').and.not.be.empty; });",
+                  "pm.collectionVariables.set('vk_e_second_value', vk.value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_e_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_e_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "First VK E value is live inside the window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via the retired VK E value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "pm.test('Quota identifies VK E', function() { pm.expect(pm.response.json().virtual_key_name).to.equal(pm.collectionVariables.get('vk_e_name')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Empty-string cooldown is accepted and clears the setting",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "snap.vk_rotation_cooldown = '';",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An empty duration means 'no cooldown', the same as 0 - it must not 400.",
+                  "pm.test('Empty cooldown returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get config omits the emptied cooldown",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config || {};",
+                  "pm.test('An empty cooldown persists as unset', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(cc, 'vk_rotation_cooldown')).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Re-rotate VK E with the cooldown emptied",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Re-rotate VK E returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var vk = pm.response.json().virtual_key || {};",
+                  "pm.test('No grace window is opened', function() {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(vk, 'previous_value_expires_at')).to.be.false;",
+                  "});",
+                  "pm.collectionVariables.set('vk_e_third_value', vk.value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_e_id}}/rotate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_e_id}}",
+                "rotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "First VK E value is revoked immediately on inference",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Previously-live VK E grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "First VK E value is revoked immediately on quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Quota via the revoked VK E grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Second VK E value is revoked immediately on inference",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_second_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Just-retired VK E value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_second_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Second VK E value is revoked immediately on quota",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_second_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Quota via the just-retired VK E value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+                  "pm.test('Quota rejection names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_second_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Current VK E value keeps working",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_third_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Quota via the current VK E value returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_e_third_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown",
+      "item": [
+        {
+          "name": "Restore client config snapshot",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var snapRaw = pm.collectionVariables.get('client_config_snapshot');",
+                  "if (!snapRaw && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(snapRaw || '{}'); } catch (e) { snap = {}; }",
+                  "pm.request.body.raw = JSON.stringify({client_config: snap});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Restore client config returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK A",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_a_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK A returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_a_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_a_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK B",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_b_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK B returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_b_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_b_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK C",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_c_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK C returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_c_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_c_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK D",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_d_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK D returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_d_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_d_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK E",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_e_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK E returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_e_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_e_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete VK F",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"vk_f_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK F returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_f_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_f_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -2487,6 +2487,41 @@ func TestValidateClientConfig_AuthCodeTTL(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_VKRotationCooldown covers the same load-time
+// invariant for the rotation grace period. PUT /api/config rejects a cooldown
+// outside 0..30d, but config.json and any pre-existing DB row bypass that
+// handler, so the bound has to hold here too: an unbounded cooldown keeps a
+// retired credential authenticating indefinitely.
+func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
+	cooldown := func(d time.Duration) *configstore.ClientConfig {
+		return &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(d)}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"unset means no grace period", &configstore.ClientConfig{}, false},
+		{"zero is valid", cooldown(0), false},
+		{"in-range", cooldown(5 * time.Minute), false},
+		{"exactly at cap", cooldown(configstore.MaxVKRotationCooldown), false},
+		{"one nanosecond over cap", cooldown(configstore.MaxVKRotationCooldown + 1), true},
+		{"744h is over the 30 day cap", cooldown(744 * time.Hour), true},
+		{"negative", cooldown(-time.Minute), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "vk_rotation_cooldown")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot verifies an over-cap auth_code_ttl
 // in config.json makes LoadConfig fail rather than silently clamping the value.
 func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {

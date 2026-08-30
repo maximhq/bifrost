@@ -4904,6 +4904,16 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// An expired key is spent: it cannot make requests, so it has no business
+	// reading its own governance data either. Matches the inference path's
+	// expiry rejection (resolver.go). Inactive keys are deliberately still
+	// served - the response carries is_active so a dashboard can explain that
+	// state, and reactivation is a live option.
+	if vk.IsExpiredAt(time.Now().UTC()) {
+		SendError(ctx, 403, "Virtual key has expired")
+		return
+	}
+
 	// collectVKModelUsage hydrates the wildcard VK/provider governance (in place) and
 	// returns the configured per-model limits — both from a single VK-scoped model-config load.
 	// Fail closed: a load error must not degrade to empty governance (it would leave vk.Budgets
