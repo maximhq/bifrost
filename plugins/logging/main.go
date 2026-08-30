@@ -20,8 +20,8 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -427,19 +427,21 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	usageReporter := p.batchUsageReporter
 	p.mu.Unlock()
 
-	summary, err := batchaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, batchaccounting.Request{
+	summary, err := jobaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, jobaccounting.JobRequest{
 		Provider:      schemas.ModelProvider(entry.Provider),
-		BatchID:       batchResp.BatchID,
+		ProviderJobID: batchResp.BatchID,
 		FallbackModel: entry.Model,
-		Endpoint:      batchResp.Endpoint,
-		Results:       batchResp.Results,
-		ParseErrors:   batchResp.ExtraFields.ParseErrors,
-		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		Job:           batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
 		BaseLog:       entry,
 		Emitter:       p,
 		UsageReporter: usageReporter,
 		ClaimedBy:     claimedBy,
 		Scopes:        pricingScopes,
+		Payload: jobaccounting.BatchPayload{
+			Endpoint:    batchResp.Endpoint,
+			Results:     batchResp.Results,
+			ParseErrors: batchResp.ExtraFields.ParseErrors,
+		},
 	})
 	if err != nil {
 		p.logger.Warn("failed to account batch results for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, err)
@@ -451,7 +453,7 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	attachBatchResultsDisplay(entry, batchResp, summary)
 }
 
-func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *batchaccounting.Summary) {
+func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *jobaccounting.Outcome) {
 	debug := &schemas.BifrostBatchDebug{BatchID: batchResp.BatchID}
 	if counts := schemas.BatchRequestCountsFromResults(batchResp.Results); !counts.IsZero() {
 		debug.RequestCounts = &counts
@@ -802,7 +804,7 @@ type compiledUserAgentMapping struct {
 type LoggerPlugin struct {
 	ctx                          context.Context
 	store                        logstore.LogStore
-	batchStore                   batchaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
+	batchStore                   jobaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
@@ -816,7 +818,7 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
-	batchUsageReporter           batchaccounting.UsageReporter
+	batchUsageReporter           jobaccounting.UsageReporter
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
@@ -844,7 +846,7 @@ type LoggerPlugin struct {
 // Init creates new logger plugin with given log store. batchStore is the
 // configstore-backed coordination store for delayed batch accounting; it may be
 // nil, which disables batch accounting.
-func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, batchStore batchaccounting.SweepStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
+func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, batchStore jobaccounting.SweepStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -1024,13 +1026,13 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.logCallback = callback
 }
 
-func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.UsageReporter) {
+func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.batchUsageReporter = reporter
 }
 
-func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
 	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
@@ -1062,7 +1064,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.Batch
 	usageReporter := p.batchUsageReporter
 	p.mu.Unlock()
 	claimedBy := p.batchRunnerID("batch-sweeper")
-	sweeper := batchaccounting.NewSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
+	sweeper := jobaccounting.NewBatchSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
 		KVStore:   kvStore,

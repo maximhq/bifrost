@@ -23,7 +23,7 @@ func TestLocalGovernanceStore_GetGovernanceUsageDataExcludesUnrelatedState(t *te
 		},
 		Budgets:    []configstoreTables.TableBudget{{ID: "budget1"}},
 		RateLimits: []configstoreTables.TableRateLimit{{ID: "rate-limit1"}},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	data := store.GetGovernanceUsageData(context.Background())

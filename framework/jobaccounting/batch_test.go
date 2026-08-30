@@ -1,4 +1,4 @@
-package batchaccounting
+package jobaccounting
 
 import (
 	"context"
@@ -22,6 +22,9 @@ type fakeAccountingStore struct {
 	// deleted budget), which is what the accounting retry budget has to bound.
 	failCompleteAlways bool
 	failGetOnce        bool
+	// failUnpriceable models the unpriceable marker write failing, which is the one
+	// path that used to return without releasing the runner fence.
+	failUnpriceable bool
 }
 
 func newFakeAccountingStore() *fakeAccountingStore {
@@ -197,6 +200,9 @@ func (s *fakeAccountingStore) CompleteBatchJob(ctx context.Context, id, runnerID
 }
 
 func (s *fakeAccountingStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+	if s.failUnpriceable {
+		return errors.New("unpriceable marker write failed")
+	}
 	entry, ownErr := s.ownedJob(id, runnerID)
 	if ownErr != nil {
 		return ownErr
@@ -261,7 +267,7 @@ func (w *fakeAggregateLogWriter) EmitBatchAggregateLog(ctx context.Context, entr
 }
 
 type fakeUsageReporter struct {
-	reports []BatchUsageReport
+	reports []UsageReport
 }
 
 type requestTypePricing struct {
@@ -273,7 +279,7 @@ func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bi
 	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens), Priced: true}
 }
 
-func (r *fakeUsageReporter) ReportBatchUsage(ctx context.Context, report BatchUsageReport) error {
+func (r *fakeUsageReporter) ReportBatchUsage(ctx context.Context, report UsageReport) error {
 	r.reports = append(r.reports, report)
 	return nil
 }
@@ -288,18 +294,20 @@ func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {
 		SelectedKeyName: "primary",
 	}
 
-	req := Request{
+	req := JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_123",
+		ProviderJobID: "batch_123",
 		FallbackModel: "gpt-4o-mini",
 		BaseLog:       baseLog,
 		ClaimedBy:     "test-node",
 		Now:           time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
-		RequestCounts: &schemas.BatchRequestCounts{Total: 3, Completed: 2, Failed: 1},
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 18, 9),
-			openAIResult(200, "gpt-4o", 20, 5),
-			openAIResult(500, "gpt-4o-mini", 100, 100),
+		Payload: BatchPayload{
+			RequestCounts: &schemas.BatchRequestCounts{Total: 3, Completed: 2, Failed: 1},
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 18, 9),
+				openAIResult(200, "gpt-4o", 20, 5),
+				openAIResult(500, "gpt-4o-mini", 100, 100),
+			},
 		},
 	}
 
@@ -313,7 +321,7 @@ func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {
 	assert.InDelta(t, 0.00048, summary.Cost, 1e-12)
 	require.Len(t, store.logs, 1)
 
-	logEntry := store.logs[AccountingLogID(schemas.OpenAI, "batch_123")]
+	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_123")]
 	require.NotNil(t, logEntry)
 	assert.Equal(t, "request-1", *logEntry.ParentRequestID)
 	assert.Equal(t, string(schemas.BatchResultsRequest), logEntry.Object)
@@ -355,11 +363,13 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
 	result := openAIResult(200, "", 18, 9)
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider:  schemas.OpenAI,
-		BatchID:   "batch_missing_model",
-		ClaimedBy: "test-node",
-		Results:   []schemas.BatchResultItem{result},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_missing_model",
+		ClaimedBy:     "test-node",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{result},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -376,7 +386,7 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 	// the missing-rates case this one is not backfillable — there is no model to
 	// look up — so the row is a record of the usage, not a recoverable cost.
 	require.Len(t, store.logs, 1)
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_missing_model")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_missing_model")]
 	require.NotNil(t, logged)
 	assert.Nil(t, logged.Cost)
 	assert.Equal(t, 18, logged.PromptTokens)
@@ -386,10 +396,12 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 func TestAccountBatchResults_MissingBatchPricingMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.OpenAI,
-		BatchID:  "batch_missing_pricing",
-		Results:  []schemas.BatchResultItem{openAIResult(200, "unknown-model", 18, 9)},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_missing_pricing",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "unknown-model", 18, 9)},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -406,7 +418,7 @@ func TestAccountBatchResults_MissingBatchPricingMarksUnpriceable(t *testing.T) {
 	// with an unknown cost and stays attributable, which is exactly what the
 	// missing-cost backfill needs to price it once rates are added.
 	require.Len(t, store.logs, 1, "usage we could not price must still be logged, not dropped")
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_missing_pricing")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_missing_pricing")]
 	require.NotNil(t, logged)
 	assert.Nil(t, logged.Cost, "cost must be unknown (nil), not zero")
 	assert.Equal(t, "unknown-model", logged.Model)
@@ -433,11 +445,13 @@ func TestAccountBatchResults_ProviderCostPassthrough(t *testing.T) {
 		"total_cost": 0.123,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider:  schemas.OpenAI,
-		BatchID:   "batch_provider_cost",
-		ClaimedBy: "test-node",
-		Results:   []schemas.BatchResultItem{result},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_provider_cost",
+		ClaimedBy:     "test-node",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{result},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -456,10 +470,12 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 		"total_cost": 0.0,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.OpenAI,
-		BatchID:  "batch_zero_cost",
-		Results:  []schemas.BatchResultItem{result},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_zero_cost",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{result},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -471,12 +487,14 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.Anthropic,
-		BatchID:  "anthropic_batch",
-		Results: []schemas.BatchResultItem{
-			anthropicResult("claude-3-5-haiku", 10, 2, 3, 5),
-			anthropicResult("claude-3-5-haiku", 7, 0, 0, 4),
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.Anthropic,
+		ProviderJobID: "anthropic_batch",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				anthropicResult("claude-3-5-haiku", 10, 2, 3, 5),
+				anthropicResult("claude-3-5-haiku", 7, 0, 0, 4),
+			},
 		},
 	})
 	require.NoError(t, err)
@@ -491,13 +509,15 @@ func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.Bedrock,
-		BatchID:       "bedrock_batch",
+		ProviderJobID: "bedrock_batch",
 		FallbackModel: "amazon.nova-lite-v1:0",
-		Results: []schemas.BatchResultItem{
-			bedrockResult("", 12, 6),
-			bedrockResult("amazon.nova-lite-v1:0", 8, 2),
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				bedrockResult("", 12, 6),
+				bedrockResult("amazon.nova-lite-v1:0", 8, 2),
+			},
 		},
 	})
 	require.NoError(t, err)
@@ -512,23 +532,25 @@ func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T
 func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.Bedrock,
-		BatchID:       "bedrock_cache_batch",
+		ProviderJobID: "bedrock_cache_batch",
 		FallbackModel: "amazon.nova-lite-v1:0",
-		Results: []schemas.BatchResultItem{
-			{
-				CustomID: "custom-id",
-				Response: &schemas.BatchResultResponse{
-					StatusCode: 200,
-					Body: map[string]interface{}{
-						"usage": map[string]interface{}{
-							"inputTokens":  12,
-							"outputTokens": 6,
-							"totalTokens":  18,
-							"cacheDetails": []map[string]interface{}{
-								{"inputTokens": 4, "ttl": "5m"},
-								{"inputTokens": 3, "ttl": "1h"},
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				{
+					CustomID: "custom-id",
+					Response: &schemas.BatchResultResponse{
+						StatusCode: 200,
+						Body: map[string]interface{}{
+							"usage": map[string]interface{}{
+								"inputTokens":  12,
+								"outputTokens": 6,
+								"totalTokens":  18,
+								"cacheDetails": []map[string]interface{}{
+									{"inputTokens": 4, "ttl": "5m"},
+									{"inputTokens": 3, "ttl": "1h"},
+								},
 							},
 						},
 					},
@@ -553,13 +575,15 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.Gemini,
-		BatchID:       "gemini_batch",
+		ProviderJobID: "gemini_batch",
 		FallbackModel: "gemini-2.0-flash",
-		Results: []schemas.BatchResultItem{
-			geminiResult(11, 3),
-			geminiResult(7, 2),
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				geminiResult(11, 3),
+				geminiResult(7, 2),
+			},
 		},
 	})
 	require.NoError(t, err)
@@ -576,13 +600,15 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	writer := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_writer",
+		ProviderJobID: "batch_writer",
 		FallbackModel: "gpt-4o-mini",
 		Emitter:       writer,
 		UsageReporter: reporter,
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -590,7 +616,7 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	require.Len(t, store.logs, 1)
 	require.Len(t, writer.emitted, 1)
 	require.Len(t, reporter.reports, 1)
-	assert.Equal(t, AccountingLogID(schemas.OpenAI, "batch_writer"), reporter.reports[0].RequestID)
+	assert.Equal(t, AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_writer"), reporter.reports[0].RequestID)
 	assert.Equal(t, int64(27), reporter.reports[0].TokensUsed)
 }
 
@@ -600,13 +626,15 @@ func TestAccountBatchResults_RetryAfterCompleteFailureDoesNotReportGovernanceTwi
 	writer := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	req := Request{
+	req := JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_retry_governance",
+		ProviderJobID: "batch_retry_governance",
 		FallbackModel: "gpt-4o-mini",
 		Emitter:       writer,
 		UsageReporter: reporter,
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+		},
 	}
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
@@ -628,18 +656,20 @@ func TestAccountBatchResults_RecordsPartialPricingMetadata(t *testing.T) {
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.OpenAI,
-		BatchID:  "batch_partial",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 10, 5),
-			openAIResult(200, "", 10, 5),
-			openAIResult(200, "unknown-model", 10, 5),
-			{CustomID: "failed", Error: &schemas.BatchResultError{Code: "bad_request"}},
-			{CustomID: "http-failed", Response: &schemas.BatchResultResponse{StatusCode: 400}},
-			{CustomID: "anthropic-failed", Result: &schemas.BatchResultData{Type: "errored"}},
-		},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_partial",
 		UsageReporter: reporter,
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 10, 5),
+				openAIResult(200, "", 10, 5),
+				openAIResult(200, "unknown-model", 10, 5),
+				{CustomID: "failed", Error: &schemas.BatchResultError{Code: "bad_request"}},
+				{CustomID: "http-failed", Response: &schemas.BatchResultResponse{StatusCode: 400}},
+				{CustomID: "anthropic-failed", Result: &schemas.BatchResultData{Type: "errored"}},
+			},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -669,7 +699,7 @@ func TestAccountBatchResults_RecordsPartialPricingMetadata(t *testing.T) {
 	assert.Nil(t, summary.ModelBreakdowns["unknown-model"].Cost)
 	assert.Equal(t, 10, summary.ModelBreakdowns["unknown-model"].Usage.PromptTokens)
 
-	logEntry := store.logs[AccountingLogID(schemas.OpenAI, "batch_partial")]
+	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_partial")]
 	require.NotNil(t, logEntry)
 	require.NotNil(t, logEntry.BatchDebugParsed)
 	require.NotNil(t, logEntry.BatchDebugParsed.Accounting)
@@ -745,7 +775,7 @@ func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 	})
@@ -785,7 +815,7 @@ func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Limit: 10,
 	})
 
@@ -823,7 +853,7 @@ func TestSweeper_AccountsCompletedGeminiJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Limit: 10,
 	})
 
@@ -851,7 +881,7 @@ func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 
 	fetcher := &fakeBatchResultFetcher{}
 	kv := &fakeKVStore{setNXAllowed: false}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 		KVStore:  kv,
@@ -882,7 +912,7 @@ func TestSweeper_ReleasesProviderPollLeaseAfterSuccessfulPoll(t *testing.T) {
 		Status: schemas.BatchStatusInProgress,
 	}}
 	kv := &fakeKVStore{setNXAllowed: true}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 		KVStore:  kv,
@@ -914,7 +944,7 @@ func TestSweeper_RescheduleUsesBackoffAndJitter(t *testing.T) {
 			Status: schemas.BatchStatusInProgress,
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -954,7 +984,7 @@ func TestSweeper_ExpiredBatchSettlesTheRowsThatCompleted(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -983,7 +1013,7 @@ func TestSweeper_ExpiredBatchWithoutResultsIsTerminalWithoutResults(t *testing.T
 		},
 		resultsResp: &schemas.BifrostBatchResultsResponse{BatchID: "batch_expired_empty"},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -1011,7 +1041,7 @@ func TestSweeper_DeletedBatchDoesNotFetchResults(t *testing.T) {
 		ID:     "batch_deleted",
 		Status: schemas.BatchStatusDeleted,
 	}}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -1047,7 +1077,7 @@ func TestSweeper_ReschedulesAfterSettlementFailure(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -1074,7 +1104,7 @@ func TestSweeper_SettlementFailureHitsPollAttemptCap(t *testing.T) {
 		BatchID:          "batch_settle_cap",
 		Model:            "gpt-4o-mini",
 		AccountingStatus: cstables.BatchJobAccountingStatusPending,
-		PollAttempts:     maxPollAttempts - 1,
+		PollAttempts:     MaxPollAttempts - 1,
 		NextCheckAt:      &now,
 	}
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
@@ -1089,7 +1119,7 @@ func TestSweeper_SettlementFailureHitsPollAttemptCap(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -1180,16 +1210,18 @@ func TestAccountBatchResults_ExternalBatchWithoutRow(t *testing.T) {
 	writer := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "ext-batch-no-job",
+		ProviderJobID: "ext-batch-no-job",
 		FallbackModel: "gpt-4o-mini",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 10, 5),
-		},
 		Emitter:       writer,
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 10, 5),
+			},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1205,15 +1237,17 @@ func TestAccountBatchResults_ExternalBatchWithoutRow(t *testing.T) {
 func TestAccountBatchResults_EmbeddingEndpointUsesEmbeddingPricing(t *testing.T) {
 	store := newFakeAccountingStore()
 	pricing := &requestTypePricing{}
-	summary, err := AccountBatchResults(context.Background(), store, store, pricing, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, pricing, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "embedding-batch",
+		ProviderJobID: "embedding-batch",
 		FallbackModel: "text-embedding-3-small",
-		Endpoint:      schemas.BatchEndpointEmbeddings,
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "text-embedding-3-small", 25, 0),
+		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Endpoint: schemas.BatchEndpointEmbeddings,
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "text-embedding-3-small", 25, 0),
+			},
 		},
-		ClaimedBy: "test",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1222,7 +1256,7 @@ func TestAccountBatchResults_EmbeddingEndpointUsesEmbeddingPricing(t *testing.T)
 
 	// The row's Object is "batch_results" for every batch, so the endpoint is the
 	// only thing that lets a later repricing pass reach these same embedding rates.
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "embedding-batch")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "embedding-batch")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.BatchDebugParsed)
 	assert.Equal(t, string(schemas.BatchEndpointEmbeddings), logged.BatchDebugParsed.Endpoint)
@@ -1265,21 +1299,23 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 func TestAccountBatchResults_MixedMissingModelIsNotAttributed(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.OpenAI,
-		BatchID:  "batch_mixed_unpriced",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "", 10, 5),              // missing model: 15 tokens, unattributable
-			openAIResult(200, "unknown-model", 20, 8), // known model, no batch rates
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_mixed_unpriced",
+		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "", 10, 5),              // missing model: 15 tokens, unattributable
+				openAIResult(200, "unknown-model", 20, 8), // known model, no batch rates
+			},
 		},
-		ClaimedBy: "test",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	assert.False(t, summary.Accounted)
 
 	require.Len(t, store.logs, 1, "the usage must still be logged")
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_mixed_unpriced")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_mixed_unpriced")]
 	require.NotNil(t, logged)
 	assert.Nil(t, logged.Cost)
 	// Both rows' tokens are present, so the row cannot claim to be one model.
@@ -1295,15 +1331,15 @@ func TestNewSweeperDefaultsToDistinctRunnerIDs(t *testing.T) {
 	store := newFakeAccountingStore()
 	cfg := SweeperConfig{Interval: time.Minute}
 
-	a := NewSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
-	b := NewSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
+	a := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
+	b := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
 
 	assert.NotEmpty(t, a.config.ClaimedBy)
 	assert.NotEqual(t, a.config.ClaimedBy, b.config.ClaimedBy,
 		"two sweepers defaulting ClaimedBy must not share a runner identity")
 
 	// An explicit id is still honored untouched.
-	explicit := NewSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil,
+	explicit := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil,
 		SweeperConfig{Interval: time.Minute, ClaimedBy: "node-7"})
 	assert.Equal(t, "node-7", explicit.config.ClaimedBy)
 }
@@ -1316,15 +1352,17 @@ func TestAccountBatchResults_PersistedJobReadFailureFailsClosed(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 	store.failGetOnce = true
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "read-failure",
+		ProviderJobID: "read-failure",
 		FallbackModel: "gpt-4o-mini",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 10, 5),
-		},
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 10, 5),
+			},
+		},
 	})
 
 	require.Error(t, err, "a failed persisted-job read must surface, not be swallowed")
@@ -1345,17 +1383,19 @@ func TestAccountBatchResults_PersistedJobReadFailureFailsClosed(t *testing.T) {
 func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "malformed-results",
+		ProviderJobID: "malformed-results",
 		FallbackModel: "gpt-4o-mini",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 10, 5),
-			openAIResult(200, "gpt-4o-mini", 20, 4),
-		},
-		ParseErrors:   []schemas.BatchError{{Code: "parse_error", Message: "invalid JSONL"}},
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 10, 5),
+				openAIResult(200, "gpt-4o-mini", 20, 4),
+			},
+			ParseErrors: []schemas.BatchError{{Code: "parse_error", Message: "invalid JSONL"}},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1368,7 +1408,7 @@ func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 	require.NotNil(t, job)
 	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, job.AccountingStatus)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "malformed-results")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "malformed-results")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.Cost)
 	assert.InDelta(t, 0.00024, *logged.Cost, 1e-12)
@@ -1387,15 +1427,17 @@ func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 // they stay the reason the batch is unpriceable.
 func TestAccountBatchResults_AllRowsUnparseableMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "all-malformed",
+		ProviderJobID: "all-malformed",
 		FallbackModel: "gpt-4o-mini",
-		ParseErrors: []schemas.BatchError{
-			{Code: "parse_error", Message: "invalid JSONL"},
-			{Code: "parse_error", Message: "invalid JSONL"},
+		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			ParseErrors: []schemas.BatchError{
+				{Code: "parse_error", Message: "invalid JSONL"},
+				{Code: "parse_error", Message: "invalid JSONL"},
+			},
 		},
-		ClaimedBy: "test",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1416,15 +1458,17 @@ func TestAccountBatchResults_PartiallyPricedBatchKeepsCostUnknown(t *testing.T) 
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-		Provider: schemas.OpenAI,
-		BatchID:  "batch_half_priced",
-		Results: []schemas.BatchResultItem{
-			openAIResult(200, "gpt-4o-mini", 10, 5),
-			openAIResult(200, "unknown-model", 20, 8),
-		},
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_half_priced",
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				openAIResult(200, "gpt-4o-mini", 10, 5),
+				openAIResult(200, "unknown-model", 20, 8),
+			},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1433,7 +1477,7 @@ func TestAccountBatchResults_PartiallyPricedBatchKeepsCostUnknown(t *testing.T) 
 	assert.Equal(t, UnpriceableReasonMissingBatchPricing, summary.UnpriceableReason)
 	assert.Empty(t, reporter.reports)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_half_priced")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_half_priced")]
 	require.NotNil(t, logged)
 	assert.Nil(t, logged.Cost, "cost must be unknown, not the priced half")
 	assert.Equal(t, 30, logged.PromptTokens, "the unpriced model's tokens belong in the row total")
@@ -1478,11 +1522,11 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 	}
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_attribution",
+		ProviderJobID: "batch_attribution",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob:      job,
+		Job:           job,
 		BaseLog: &logstore.Log{
 			ID:              "results-request",
 			SelectedKeyID:   "key-fetcher",
@@ -1492,15 +1536,17 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 			TeamID:          strPtr("team-fetcher"),
 			BudgetIDsParsed: []string{"budget-fetcher"},
 		},
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	assert.True(t, summary.Accounted)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_attribution")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_attribution")]
 	require.NotNil(t, logged)
 	assert.Equal(t, "key-creator", logged.SelectedKeyID)
 	require.NotNil(t, logged.VirtualKeyID)
@@ -1550,21 +1596,23 @@ func TestAccountBatchResults_FillsNamesFromSourceLog(t *testing.T) {
 	}
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_same_vk",
+		ProviderJobID: "batch_same_vk",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob:      job,
+		Job:           job,
 		BaseLog: &logstore.Log{
 			ID:           "results-request",
 			VirtualKeyID: &sharedVK,
 		},
-		Results:   []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		ClaimedBy: "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_same_vk")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_same_vk")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.VirtualKeyName)
 	assert.Equal(t, "shared vk", *logged.VirtualKeyName)
@@ -1608,11 +1656,11 @@ func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
 
 	// Bob fetches Alice's results. Same access-profile virtual key, different person.
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_shared_vk",
+		ProviderJobID: "batch_shared_vk",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob:      job,
+		Job:           job,
 		BaseLog: &logstore.Log{
 			ID:             "results-request",
 			VirtualKeyID:   &sharedVK,
@@ -1620,13 +1668,15 @@ func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
 			UserID:         strPtr("user-bob"),
 			UserName:       strPtr("Bob"),
 		},
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_shared_vk")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_shared_vk")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.UserID)
 	assert.Equal(t, "user-alice", *logged.UserID, "the batch is billed to whoever created it")
@@ -1671,18 +1721,20 @@ func TestAccountBatchResults_SweeperPathKeepsUserAttribution(t *testing.T) {
 	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
 
 	// No BaseLog: this is the sweeper, hours after the request that created the batch.
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_sweeper",
+		ProviderJobID: "batch_sweeper",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob:      job,
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		Job:           job,
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_sweeper")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_sweeper")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.UserID)
 	assert.Equal(t, "user-alice", *logged.UserID)
@@ -1703,9 +1755,9 @@ func TestAccountBatchResults_WithoutJobAttributionUsesBaseLog(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 	fetcherVK := "vk-fetcher"
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_external",
+		ProviderJobID: "batch_external",
 		FallbackModel: "gpt-4o-mini",
 		BaseLog: &logstore.Log{
 			ID:              "results-request",
@@ -1714,13 +1766,15 @@ func TestAccountBatchResults_WithoutJobAttributionUsesBaseLog(t *testing.T) {
 			VirtualKeyID:    &fetcherVK,
 			BudgetIDsParsed: []string{"budget-fetcher"},
 		},
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_external")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_external")]
 	require.NotNil(t, logged)
 	assert.Equal(t, "key-fetcher", logged.SelectedKeyID)
 	assert.Equal(t, "fetcher key", logged.SelectedKeyName)
@@ -1747,12 +1801,14 @@ func TestAccountBatchResults_ReclaimsUnpriceableJobWhenResultsArrive(t *testing.
 		UnpriceableReason: &reason,
 	}))
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_reclaim",
+		ProviderJobID: "batch_reclaim",
 		FallbackModel: "gpt-4o-mini",
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1779,12 +1835,14 @@ func TestAccountBatchResults_LosingClaimWithNoExistingLogMirrorsNothing(t *testi
 		ClaimedAt:        &now,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_in_flight",
+		ProviderJobID: "batch_in_flight",
 		FallbackModel: "gpt-4o-mini",
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summary)
@@ -1801,18 +1859,20 @@ func TestAccountBatchResults_LosingClaimWithNoExistingLogMirrorsNothing(t *testi
 // silently relabel it "completed" just because it settled.
 func TestAccountBatchResults_StatusPersistsAndMirrorsOnRepeatCall(t *testing.T) {
 	store := newFakeAccountingStore()
-	req := Request{
+	req := JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_status",
+		ProviderJobID: "batch_status",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob: &cstables.TableBatchJob{
+		Job: &cstables.TableBatchJob{
 			Provider:       string(schemas.OpenAI),
 			BatchID:        "batch_status",
 			Model:          "gpt-4o-mini",
 			ProviderStatus: string(schemas.BatchStatusEnded),
 		},
-		Results:   []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
 		ClaimedBy: "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	}
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
@@ -1821,7 +1881,7 @@ func TestAccountBatchResults_StatusPersistsAndMirrorsOnRepeatCall(t *testing.T) 
 	assert.True(t, summary.Accounted)
 	assert.Equal(t, string(schemas.BatchStatusEnded), summary.Status)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_status")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_status")]
 	require.NotNil(t, logged)
 	require.NotNil(t, logged.BatchDebugParsed)
 	assert.Equal(t, string(schemas.BatchStatusEnded), logged.BatchDebugParsed.Status)
@@ -1859,11 +1919,13 @@ func TestAccountBatchResults_TerminalJobsStayClosedWithoutResults(t *testing.T) 
 			if tc.status == cstables.BatchJobAccountingStatusUnpriceable {
 				results = nil
 			}
-			summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
-				Provider:  schemas.OpenAI,
-				BatchID:   "batch_closed",
-				Results:   results,
-				ClaimedBy: "test",
+			summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+				Provider:      schemas.OpenAI,
+				ProviderJobID: "batch_closed",
+				ClaimedBy:     "test",
+				Payload: BatchPayload{
+					Results: results,
+				},
 			})
 			require.NoError(t, err)
 			require.NotNil(t, summary)
@@ -1914,18 +1976,20 @@ func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testin
 		BudgetIDs:        &fetcherBudgets,
 	}
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, Request{
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
-		BatchID:       "batch_merge",
+		ProviderJobID: "batch_merge",
 		FallbackModel: "gpt-4o-mini",
-		BatchJob:      fetcherBuiltJob,
-		Results:       []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		Job:           fetcherBuiltJob,
 		UsageReporter: reporter,
 		ClaimedBy:     "test",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)},
+		},
 	})
 	require.NoError(t, err)
 
-	logged := store.logs[AccountingLogID(schemas.OpenAI, "batch_merge")]
+	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "batch_merge")]
 	require.NotNil(t, logged)
 	assert.Equal(t, "key-creator", logged.SelectedKeyID)
 	require.NotNil(t, logged.VirtualKeyID)
@@ -1936,4 +2000,76 @@ func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testin
 	require.Len(t, reporter.reports, 1)
 	assert.Equal(t, []string{"budget-creator"}, reporter.reports[0].BudgetIDs)
 	assert.Equal(t, "user-creator", reporter.reports[0].UserID)
+}
+
+// A settlement that cannot even record why it is unpriceable must still release the
+// runner fence. Leaving the job "processing" under a runner that has already given
+// up strands it until the claim TTL expires — every other failure path in
+// AccountJob releases, and this one used to be the exception.
+func TestAccountBatchResults_UnpriceableMarkerFailureReleasesTheClaim(t *testing.T) {
+	store := newFakeAccountingStore()
+	store.failUnpriceable = true
+
+	// No results: settlement is unpriceable, so it takes the marker path.
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_unpriceable_release",
+		ClaimedBy:     "node-1",
+		Payload:       BatchPayload{},
+	})
+	require.Error(t, err)
+
+	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_unpriceable_release")]
+	require.NotNil(t, job)
+	assert.NotEqual(t, cstables.BatchJobAccountingStatusProcessing, job.AccountingStatus,
+		"the fence must be released, not left held by a runner that gave up")
+	assert.Nil(t, job.RunnerID)
+}
+
+// A failed batch is not an empty one: the requests that completed before it died
+// were charged by the provider and their rows are in the output file. Whether the
+// sweeper goes looking for that file turns entirely on the identifiers on the job
+// row, so a retrieve that simply does not mention output_file_id must not be read
+// as "the file is gone" — the raw results live nowhere else, and giving up on them
+// loses that money permanently.
+func TestSweeper_FailedBatchKeepsPersistedOutputFileWhenRetrieveOmitsIt(t *testing.T) {
+	store := newFakeAccountingStore()
+	due := time.Now().UTC().Add(-time.Minute)
+	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_failed_partial")
+	outputFileID := "file-partial-output"
+	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+		ID:               jobID,
+		Provider:         string(schemas.OpenAI),
+		BatchID:          "batch_failed_partial",
+		Model:            "gpt-4o-mini",
+		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		NextCheckAt:      &due,
+		// Recorded by an earlier poll, when the provider did report it.
+		OutputFileID: &outputFileID,
+	}))
+
+	fetcher := &fakeBatchResultFetcher{
+		// The failing retrieve says nothing about the output file.
+		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
+			ID:     "batch_failed_partial",
+			Status: schemas.BatchStatusFailed,
+		},
+		resultsResp: &schemas.BifrostBatchResultsResponse{
+			BatchID: "batch_failed_partial",
+			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
+		},
+	}
+	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, fetcher.resultsCalls,
+		"the persisted output file id must survive a retrieve that omits it, or the completed rows are never fetched")
+	require.Len(t, store.logs, 1, "the work the provider already charged for must still be billed")
+
+	settled := store.jobs[jobID]
+	require.NotNil(t, settled)
+	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, settled.AccountingStatus)
+	require.NotNil(t, settled.OutputFileID)
+	assert.Equal(t, outputFileID, *settled.OutputFileID)
 }

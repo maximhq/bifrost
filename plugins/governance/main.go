@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -1512,7 +1512,7 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }
 
-func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) error {
+func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
 	if usage.Cost > 0 {
@@ -1568,7 +1568,7 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
-func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage jobaccounting.UsageReport) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}

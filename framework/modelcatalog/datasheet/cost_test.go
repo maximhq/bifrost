@@ -5057,7 +5057,7 @@ func TestCalculateCostForUsage_BatchResults_InferenceGeoUSMultiplier(t *testing.
 }
 
 // TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge covers the
-// real batch-settlement entry point (used by batchaccounting.summarizeResults
+// real batch-settlement entry point (used by jobaccounting.summarizeResults
 // and the recalculate-costs path, unlike CalculateCostForUsage's batch branch
 // which only handles bare billed-usage on a failed retrieve). It must apply
 // the same flat per-request surcharge CalculateCostForUsage does, so the two
