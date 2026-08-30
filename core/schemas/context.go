@@ -237,15 +237,28 @@ func (bc *BifrostContext) Grant() Grant {
 	return nil
 }
 
-// inheritedGrant finds the grant of the nearest ancestor request context that has one. Only
-// BifrostContext parents are walked: a pooled transport context is never read through (see
-// Value), and a foreign context has nothing to offer.
+// bifrostContextSelfKey is a private sentinel Value answers with the BifrostContext itself.
+// inheritedGrant reads it to find the nearest BifrostContext ancestor through a foreign wrapper -
+// a library between the transport and this code inserting its own context.WithValue, for
+// instance, as mcp-go's HandleMessage does on every request it dispatches to a registered tool.
+// Value delegates through any wrapper per the context.Context contract; a type assertion on the
+// concrete parent does not, so the direct walk below falls back to this when the immediate parent
+// is not itself a *BifrostContext.
+type bifrostContextSelfKey struct{}
+
+// inheritedGrant finds the grant of the nearest ancestor request context that has one. A
+// BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
+// giving up, since a foreign context with nothing to offer still answers nil for that key the
+// same as for any other.
 func (bc *BifrostContext) inheritedGrant() Grant {
 	parent := bc.parent
 	for parent != nil {
 		ancestor, ok := parent.(*BifrostContext)
 		if !ok {
-			return nil
+			ancestor, ok = parent.Value(bifrostContextSelfKey{}).(*BifrostContext)
+			if !ok {
+				return nil
+			}
 		}
 		ancestor = ancestor.Root()
 		if g := ancestor.grant.Load(); g != nil {
@@ -373,6 +386,11 @@ func (bc *BifrostContext) Err() error {
 func (bc *BifrostContext) Value(key any) any {
 	if bc.valueDelegate != nil {
 		return bc.valueDelegate.Value(key)
+	}
+	// A scoped context never reaches this line - it returned via its delegate above - so bc is
+	// already the root here. See bifrostContextSelfKey and inheritedGrant.
+	if _, ok := key.(bifrostContextSelfKey); ok {
+		return bc
 	}
 	bc.valuesMu.RLock()
 	if val, ok := bc.userValues[key]; ok {
