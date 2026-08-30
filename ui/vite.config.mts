@@ -51,6 +51,15 @@ export default defineConfig({
 		"process.env.BIFROST_PORT": JSON.stringify(process.env.BIFROST_PORT ?? ""),
 	},
 	server: {
+		// Pinned rather than left to resolve "localhost": Node's listen() with a bare
+		// hostname binds whichever address it resolves first, not both, and "localhost"
+		// resolves to both ::1 and 127.0.0.1 here - which one wins is not guaranteed
+		// stable across restarts. Bifrost's dev-mode UI proxy (ui.go's uiDevClient)
+		// dials this by the literal string "localhost:3000" too, so a run that bound
+		// IPv6-only left every proxied request (including the OAuth popup's hard
+		// navigation back to /workspace/mcp-registry/oauth-callback) hitting connection
+		// refused. Pinning both sides to the same explicit address removes the race.
+		host: "127.0.0.1",
 		port: 3000,
 		proxy: {
 			"/api": {

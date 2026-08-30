@@ -2838,8 +2838,16 @@ func (s *BifrostHTTPServer) Start() error {
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		// Perform graceful shutdown
-		if err := s.Server.Shutdown(); err != nil {
+		// Perform graceful shutdown. ShutdownWithContext, not the bare Shutdown() (which
+		// delegates to ShutdownWithContext(context.Background()) internally): the plain
+		// call waits for every open connection to go idle with no deadline of its own, so
+		// one connection that never closes on its own - a stuck SSE stream, a long-poll,
+		// a client that simply never sends its FIN - blocks this line forever. Nothing
+		// after it (client shutdown, storage cleanup, the 30s cleanup-timeout logging
+		// below) ever runs, and the process never exits: it sits holding its DB
+		// connections and the cluster gossip port indefinitely, so a hung shutdown here
+		// also breaks whatever replacement process is supposed to take its place.
+		if err := s.Server.ShutdownWithContext(shutdownCtx); err != nil {
 			logger.Error("error during graceful shutdown: %v", err)
 		} else {
 			logger.Info("server gracefully shutdown")
