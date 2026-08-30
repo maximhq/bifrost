@@ -134,8 +134,16 @@ type ExternalQuotaBudgetResult struct {
 	// Budgets replaces the VK's own budget rows in the quota response.
 	Budgets []configstoreTables.TableBudget
 	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
-	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	// the primary access-profile rate limit that carries the real usage for an
+	// AP-managed VK — the first of RateLimits below, kept for callers that only
+	// ever read a single rate limit).
 	RateLimit *configstoreTables.TableRateLimit
+	// RateLimits carries every rate limit currently governing the VK's spend
+	// (enterprise: a VK managed by several access profiles at once is throttled by
+	// all of their rate limits together). Empty when the VK has none. RateLimit
+	// above is redundant with RateLimits[0] when both are set — kept only so
+	// existing single-value consumers don't need to change.
+	RateLimits []configstoreTables.TableRateLimit
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -1228,6 +1236,7 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	vk.IsAccessProfileManaged = ext.Managed
 	vk.Budgets = ext.Budgets
 	vk.RateLimit = ext.RateLimit
+	vk.EffectiveRateLimits = ext.RateLimits
 }
 
 func collectProviderConfigDeleteIDs(
@@ -4926,6 +4935,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 
 	budgetRows := vk.Budgets
 	rateLimit := vk.RateLimit
+	var rateLimits []configstoreTables.TableRateLimit
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -4938,6 +4948,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
+			rateLimits = ext.RateLimits
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -4955,6 +4966,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
+		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

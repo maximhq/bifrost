@@ -257,6 +257,15 @@ type TableVirtualKey struct {
 	// Populated on the governance read paths from the external resolver; false in OSS.
 	IsAccessProfileManaged bool `gorm:"-" json:"is_access_profile_managed,omitempty"`
 
+	// EffectiveRateLimits is a read-only, computed list (never persisted): every rate
+	// limit currently governing this VK's spend, for callers that need the full set
+	// rather than the single primary one RateLimit reports (enterprise: a VK managed by
+	// several access profiles at once is throttled by all of their rate limits
+	// together, not just one). Populated on the governance read paths from the
+	// external resolver; empty in OSS. RateLimit is left untouched for existing
+	// consumers reading the single-value field.
+	EffectiveRateLimits []TableRateLimit `gorm:"-" json:"effective_rate_limits,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
