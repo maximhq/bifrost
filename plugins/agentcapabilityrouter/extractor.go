@@ -53,20 +53,23 @@ func extractAgentSignals(req *schemas.BifrostRequest, historyMessages int) Signa
 }
 
 func inferResponsesKind(message schemas.ResponsesMessage, text string) string {
-	encoded, _ := json.Marshal(message)
-	lower := strings.ToLower(string(encoded))
-	switch {
-	case strings.Contains(lower, "function_call_output"), strings.Contains(lower, "tool_result"):
-		return "tool-result"
-	case strings.Contains(lower, "function_call"), strings.Contains(lower, "tool_call"):
-		return inferToolKind(text)
-	case strings.Contains(lower, `"role":"user"`):
-		return "user"
-	case strings.Contains(lower, `"role":"assistant"`):
-		return "assistant"
-	default:
-		return "context"
+	if message.Type != nil {
+		switch string(*message.Type) {
+		case "function_call_output":
+			return "tool-result"
+		case "function_call":
+			return inferToolKind(text)
+		}
 	}
+	if message.Role != nil {
+		switch string(*message.Role) {
+		case "user":
+			return "user"
+		case "assistant":
+			return "assistant"
+		}
+	}
+	return "context"
 }
 
 func inferToolKind(text string) string {

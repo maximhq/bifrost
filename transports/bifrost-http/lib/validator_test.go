@@ -1595,3 +1595,64 @@ func TestValidateConfigSchema_BedrockKeyConfig_MissingRegion(t *testing.T) {
 // Guardrails tests are skipped for the public schema as guardrails_config
 // is an enterprise feature with a different schema structure.
 // Enterprise-specific tests should be added to the enterprise test suite.
+
+func TestValidateConfigSchema_AgentCapabilityRouter(t *testing.T) {
+	schema := loadLocalSchema(t)
+	tests := []struct {
+		name    string
+		config  string
+		wantErr bool
+	}{
+		{
+			name:   "valid strict config",
+			config: `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"shadow_mode":false,"confidence_threshold":0.8,"history_messages":12,"aliases":{"main":"agent-main-auto","worker":"agent-worker-auto"},"active_roles":{"main":true,"worker":false},"keywords":{"debug":["failed","panic"],"tool-loop":["go test"]}}}]}`,
+		},
+		{
+			name:    "missing config",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown config field",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"unexpected":true}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid confidence threshold",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"confidence_threshold":1.1}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid history depth",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"history_messages":33}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown alias field",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"aliases":{"main":"agent-main-auto","extra":"bad"}}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown role field",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"active_roles":{"planner":true}}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown keyword capability",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"keywords":{"mystery":["foo"]}}}]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(tt.config), schema)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected valid agent capability router config, got: %v", err)
+			}
+		})
+	}
+}

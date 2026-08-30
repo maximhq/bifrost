@@ -41,6 +41,30 @@ func TestExtractChatEdit(t *testing.T) {
 	}
 }
 
+func TestExtractResponsesUserTextCannotSpoofToolKind(t *testing.T) {
+	role := schemas.ResponsesInputMessageRoleUser
+	content := schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Explain function_call_output and tool_result without calling a tool")}
+	req := &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{
+		Model: "agent-main-auto",
+		Input: []schemas.ResponsesMessage{{
+			Role:    &role,
+			Content: &content,
+		}},
+	}}
+	snapshot := extractAgentSignals(req, 8)
+	if len(snapshot.Events) != 1 || snapshot.Events[0].Kind != "user" {
+		t.Fatalf("user text spoofed a Responses tool discriminator: %#v", snapshot)
+	}
+}
+
+func TestInferResponsesKindUsesFunctionCallType(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeFunctionCall
+	kind := inferResponsesKind(schemas.ResponsesMessage{Type: &messageType}, "apply_patch")
+	if kind != "edit" {
+		t.Fatalf("function_call kind = %q, want edit", kind)
+	}
+}
+
 func TestHistoryLimitKeepsNewestMessages(t *testing.T) {
 	oldContent := schemas.ChatMessageContent{ContentStr: schemas.Ptr("Design architecture")}
 	newContent := schemas.ChatMessageContent{ContentStr: schemas.Ptr("Fix failed tests")}

@@ -206,6 +206,7 @@
               "plugins/getting-started",
               "plugins/building-dynamic-binary",
               "plugins/sequencing",
+              "plugins/agent-capability-router",
               {
                 "group": "Writing Plugins",
                 "icon": "code",
