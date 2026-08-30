@@ -38,11 +38,13 @@ Post-hooks execute in **reverse order** of pre-hooks (LIFO pattern). This means 
 
 | Order | Plugin | Role |
 |-------|--------|------|
-| 4 | governance | Routing rules (CEL) + VK-scoped weighted load balancing |
+| 4 | governance | Resolves the Virtual Key and stamps its scope on the request context |
+| 5 | agent-capability-router (when enabled) | Rewrites configured dynamic aliases to deterministic role/capability lanes |
+| 6 | routing | Evaluates CEL rules, computes `complexity_tier` when referenced, then applies VK-scoped provider selection |
 | Higher | adaptive-loadbalancer (Enterprise) | Performance-based provider selection across the model catalog |
-| 9 (last) | model-catalog-resolver | **Final fallback** — fills in `req.Provider` from the model catalog for unprefixed models when no earlier plugin picked one |
+| Last | model-catalog-resolver | **Final fallback** — fills in `req.Provider` from the model catalog for unprefixed models when no earlier plugin picked one |
 
-The resolver runs last so CEL routing rules can match on `provider == ""` (the unresolved state) and earlier plugins always get the canonical bare model. After `PreRequestHook` returns, the core validates that `req.Provider` is non-empty — an unresolvable request returns a 400 with a clear error.
+The capability router runs before `routing` so CEL rules see the classified logical lane while retaining the original caller and Virtual Key scope. The resolver runs last so CEL routing rules can still match on `provider == ""` (the unresolved state). After `PreRequestHook` returns, the core validates that `req.Provider` is non-empty — an unresolvable request returns a 400 with a clear error.
 
 Custom routing plugins can slot into this chain via `placement` + `order` like any other plugin. Place them in `pre_builtin` to override governance, or `post_builtin` to act as a custom fallback after all built-ins.
 
