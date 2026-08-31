@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLocalGovernanceStore_GetGovernanceUsageDataExcludesUnrelatedState(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{
+			*buildVirtualKey("vk1", "sk-bf-test1", "Test VK 1", true),
+		},
+		Budgets:    []configstoreTables.TableBudget{{ID: "budget1"}},
+		RateLimits: []configstoreTables.TableRateLimit{{ID: "rate-limit1"}},
+	}, nil)
+	require.NoError(t, err)
+
+	data := store.GetGovernanceUsageData(context.Background())
+	require.NotNil(t, data)
+	assert.Contains(t, data.Budgets, "budget1")
+	assert.Contains(t, data.RateLimits, "rate-limit1")
+	assert.Nil(t, data.VirtualKeys)
+	assert.Nil(t, data.Teams)
+	assert.Nil(t, data.Customers)
+	assert.Nil(t, data.Users)
+	assert.Nil(t, data.ModelConfigs)
+	assert.Nil(t, data.Providers)
+}
+
 // TestGovernanceStore_GetVirtualKey tests lock-free VK retrieval
 func TestGovernanceStore_GetVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
