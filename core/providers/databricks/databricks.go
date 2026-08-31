@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -274,16 +275,22 @@ func (provider *DatabricksProvider) authHeader(key schemas.Key) (map[string]stri
 	return map[string]string{"Authorization": "Bearer " + token.AccessToken}, nil
 }
 
-// applyGatewayTags forwards Bifrost governance labels to Databricks as request tags, so
-// Databricks-side usage tracking can attribute spend to the same virtual key, team and
-// customer that Bifrost bills against. Opt-in per key.
-//
-// Only display names are forwarded, never user identifiers. The context extra-headers value
-// is a whole map, so it is read, merged and written back rather than overwritten — otherwise
-// this would clobber headers the caller supplied via x-bf-eh-*.
-func (provider *DatabricksProvider) applyGatewayTags(ctx *schemas.BifrostContext, key schemas.Key) {
+// gatewayTagsHeader returns the Databricks-Ai-Gateway-Request-Tags value for this request when
+// the key forwards governance labels, or "" when there is nothing to send. The header is
+// returned rather than stored on the context: the context's extra-headers map is owned by the
+// caller and shared with every other reader (a fallback provider, concurrent goroutines), so it
+// must never be mutated here. A caller-supplied tag header wins: it is more specific than the
+// governance defaults, so nothing is returned when the context already carries one.
+func (provider *DatabricksProvider) gatewayTagsHeader(ctx *schemas.BifrostContext, key schemas.Key) string {
 	if key.DatabricksKeyConfig == nil || !key.DatabricksKeyConfig.ForwardGatewayTags || ctx == nil {
-		return
+		return ""
+	}
+	if existing, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for name := range existing {
+			if strings.EqualFold(name, gatewayRequestTagsHeader) {
+				return ""
+			}
+		}
 	}
 
 	tags := map[string]string{}
@@ -297,23 +304,14 @@ func (provider *DatabricksProvider) applyGatewayTags(ctx *schemas.BifrostContext
 		}
 	}
 	if len(tags) == 0 {
-		return
+		return ""
 	}
 	encoded, err := providerUtils.MarshalSorted(tags)
 	if err != nil {
 		provider.logger.Warn("[databricks] failed to encode ai gateway request tags: %v", err)
-		return
+		return ""
 	}
-
-	extraHeaders := map[string][]string{}
-	if existing, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok && existing != nil {
-		extraHeaders = existing
-	}
-	// A caller-supplied tag header wins: it is more specific than the governance defaults.
-	if _, exists := extraHeaders[gatewayRequestTagsHeader]; !exists {
-		extraHeaders[gatewayRequestTagsHeader] = []string{string(encoded)}
-		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
-	}
+	return string(encoded)
 }
 
 // prepareRequest resolves the upstream URL and auth header for an inference request, and
@@ -331,6 +329,30 @@ func (provider *DatabricksProvider) prepareRequest(ctx *schemas.BifrostContext, 
 	// priority pay-per-token, reasoning_effort, and other model-specific extensions. Enable
 	// extra-param passthrough so they survive to the wire instead of being dropped.
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	provider.applyGatewayTags(ctx, key)
+	if tags := provider.gatewayTagsHeader(ctx, key); tags != "" {
+		auth[gatewayRequestTagsHeader] = tags
+	}
 	return url, auth, nil
+}
+
+// chatStreamOptionsFixup drops stream_options for endpoints whose upstream model rejects it.
+//
+// Bifrost sets stream_options.include_usage on every OpenAI-shaped stream so the final chunk
+// carries token counts for cost attribution. Databricks forwards request fields it does not
+// itself consume straight to the serving model, and the Gemini-backed endpoints map those onto
+// Gemini's generation_config, which rejects unknown names — the request fails with
+// INVALID_ARGUMENT before a single chunk is produced. Those endpoints report usage on the final
+// chunk regardless, so dropping the field costs nothing.
+//
+// Returns nil for every other endpoint, leaving the shared handler's default in place.
+func chatStreamOptionsFixup(model string) func(*openai.OpenAIChatRequest) *openai.OpenAIChatRequest {
+	if !strings.Contains(strings.ToLower(model), "gemini") {
+		return nil
+	}
+	return func(reqBody *openai.OpenAIChatRequest) *openai.OpenAIChatRequest {
+		if reqBody != nil {
+			reqBody.StreamOptions = nil
+		}
+		return reqBody
+	}
 }

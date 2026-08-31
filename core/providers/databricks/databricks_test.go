@@ -748,3 +748,65 @@ func TestDatabricksMissingCredentials(t *testing.T) {
 		})
 	}
 }
+
+// TestDatabricksGatewayTagsDoNotMutateCallerHeaders pins that forwarding governance tags
+// never writes into the caller-owned extra-headers map on the context. That map is shared
+// with every other reader of the context (a fallback provider, concurrent goroutines), so
+// the tag header must travel with the Databricks request alone.
+func TestDatabricksGatewayTagsDoNotMutateCallerHeaders(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotTags, gotCaller string
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotTags = r.Header.Get("Databricks-Ai-Gateway-Request-Tags")
+		gotCaller = r.Header.Get("X-Caller")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL:       *schemas.NewSecretVar(serverHost(t, server)),
+			ForwardGatewayTags: true,
+		},
+	}
+
+	callerHeaders := map[string][]string{"X-Caller": {"1"}}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, "platform")
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, callerHeaders)
+
+	if _, bErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Databricks,
+		Model:    "system.ai.claude-sonnet-4-5",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}); bErr != nil {
+		t.Fatalf("ChatCompletion returned an error: %v", bErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotTags == "" {
+		t.Fatal("request tags header was not sent")
+	}
+	if gotCaller != "1" {
+		t.Errorf("caller header: got %q, want %q", gotCaller, "1")
+	}
+	if _, leaked := callerHeaders["Databricks-Ai-Gateway-Request-Tags"]; leaked {
+		t.Error("the caller-owned extra headers map was mutated with the tag header")
+	}
+	if len(callerHeaders) != 1 {
+		t.Errorf("caller-owned extra headers map has %d entries, want 1", len(callerHeaders))
+	}
+	if ctxHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); len(ctxHeaders) != 1 {
+		t.Errorf("context extra headers has %d entries after the request, want the caller's 1", len(ctxHeaders))
+	}
+}

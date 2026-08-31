@@ -94,7 +94,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
-		nil,
+		chatStreamOptionsFixup(request.Model),
 		nil,
 		nil,
 		provider.logger,

@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sync"
+
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"testing"
 	"time"
 
@@ -128,5 +130,41 @@ func TestOAuthM2M(t *testing.T) {
 	}
 	if tokenMints != 1 {
 		t.Errorf("token mints: got %d, want 1 (the token source must cache across requests)", tokenMints)
+	}
+}
+
+// TestChatStreamOptionsFixup covers the Gemini-backed endpoints that reject the
+// stream_options Bifrost sets on every stream. Every other endpoint must keep the
+// shared handler's default so usage still lands on the final chunk.
+func TestChatStreamOptionsFixup(t *testing.T) {
+	for _, tc := range []struct {
+		model   string
+		dropped bool
+	}{
+		{"databricks-gemini-3-1-pro", true},
+		{"databricks-Gemini-2-5-flash", true},
+		{"system.ai.gemini-2-5-pro", true},
+		{"databricks-claude-sonnet-4-5", false},
+		{"databricks-gpt-5", false},
+		{"system.ai.claude-sonnet-4-5", false},
+	} {
+		fixup := chatStreamOptionsFixup(tc.model)
+		if !tc.dropped {
+			if fixup != nil {
+				t.Errorf("%s: expected no fixup, got one", tc.model)
+			}
+			continue
+		}
+		if fixup == nil {
+			t.Fatalf("%s: expected a fixup, got nil", tc.model)
+		}
+		reqBody := &openai.OpenAIChatRequest{}
+		reqBody.StreamOptions = &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)}
+		if got := fixup(reqBody); got.StreamOptions != nil {
+			t.Errorf("%s: stream_options survived the fixup", tc.model)
+		}
+		if fixup(nil) != nil {
+			t.Errorf("%s: fixup must tolerate a nil body", tc.model)
+		}
 	}
 }
