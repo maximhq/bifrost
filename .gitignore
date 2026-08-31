@@ -75,6 +75,9 @@ settings.local.json
 # MCP servers
 examples/mcps/**/bin/
 examples/mcps/http-no-ping-server/http-server
+# `go build` with no -o drops the binary at the module root, next to main.go, rather
+# than in bin/ - so the module-root name needs ignoring too, per server.
+examples/mcps/remote-test-server/remote-test-server
 examples/mcps/test-tools-server/dist/
 
 # Dependencies

@@ -39,5 +39,8 @@ jobs:
         working-directory: ./docs
         run: |
           echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
+          # Pinned, not @latest: `npx --yes mintlify@latest` takes whatever the registry
+          # serves at run time, so a bad publish breaks docs CI with no repo change and
+          # nothing records what actually ran. Bump this deliberately.
+          npx --yes mintlify@4.2.799 broken-links
           echo "✅ No broken links found"
