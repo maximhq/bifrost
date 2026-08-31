@@ -1058,13 +1058,13 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		PreCallback: extractAnthropicFileListQueryParams,
 	})
 
-	// Retrieve file endpoint - GET /v1/files/{file_id}
+	// Retrieve file metadata endpoint - GET /v1/files/{file_id}
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeAnthropic,
-		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Path:   pathPrefix + "/v1/files/{file_id}",
 		Method: "GET",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.FileContentRequest
+			return schemas.FileRetrieveRequest
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
@@ -1091,6 +1091,41 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicFileRetrieveResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+		PreCallback: extractAnthropicFileIDFromPath,
+	})
+
+	// Download file content endpoint - GET /v1/files/{file_id}/content
+	// No response converter: the router streams the raw bytes with the provider's content type.
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicFileContentRequest{}
+		},
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
+			if contentReq, ok := req.(*anthropic.AnthropicFileContentRequest); ok {
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				// Handle file id conversion for Gemini
+				if provider == schemas.Gemini {
+					contentReq.FileID = strings.Replace(contentReq.FileID, "files-", "files/", 1)
+				}
+				return &FileRequest{
+					Type: schemas.FileContentRequest,
+					ContentRequest: &schemas.BifrostFileContentRequest{
+						FileID:   contentReq.FileID,
+						Provider: provider,
+					},
+				}, nil
+			}
+			return nil, errors.New("invalid file content request type")
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)

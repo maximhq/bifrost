@@ -2158,10 +2158,10 @@ type AnthropicFileResponse struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	Filename     string `json:"filename"`
-	MimeType     string `json:"mime_type"`
+	MimeType     string `json:"mime_type,omitempty"`
 	SizeBytes    int64  `json:"size_bytes"`
 	CreatedAt    string `json:"created_at"`
-	Downloadable bool   `json:"downloadable"`
+	Downloadable *bool  `json:"downloadable,omitempty"`
 }
 
 // AnthropicFileListResponse represents the response from listing files.
@@ -2186,6 +2186,8 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(latency time.Duratio
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
@@ -2213,6 +2215,8 @@ func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(latency time.Durat
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch,
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
