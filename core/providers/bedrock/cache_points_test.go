@@ -267,6 +267,44 @@ func TestToBedrockConverseStreamResponse_CopiesCacheTokens(t *testing.T) {
 	}
 }
 
+// TestToBedrockConverseStreamResponse_IncompleteEmitsTerminalEvent guards
+// against maximhq/bifrost#6081: a turn truncated by max_output_tokens (or
+// content filter) surfaces as ResponsesStreamResponseTypeIncomplete, not
+// Completed. Before this fix, the switch here had no case for Incomplete
+// and fell through to `default: return nil, nil`, so the Bedrock-native
+// ConverseStream ingress silently dropped messageStop/metadata for a
+// truncated turn instead of relaying the stopReason AWS itself sends.
+func TestToBedrockConverseStreamResponse_IncompleteEmitsTerminalEvent(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeIncomplete,
+		Response: &schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr("max_tokens"),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			},
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  55,
+				OutputTokens: 4096,
+				TotalTokens:  4151,
+			},
+		},
+	}
+
+	event, err := ToBedrockConverseStreamResponse(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected a terminal event, got nil (Incomplete silently dropped)")
+	}
+	if event.StopReason == nil || *event.StopReason != "max_tokens" {
+		t.Errorf("StopReason: want max_tokens, got %v", event.StopReason)
+	}
+	if event.Usage == nil || event.Usage.OutputTokens != 4096 {
+		t.Errorf("Usage: want OutputTokens=4096, got %+v", event.Usage)
+	}
+}
+
 // TestBuildBedrockTokenUsage_StreamMatchesNonStream asserts the streaming and non-streaming
 // Converse converters report identical usage from the same Responses usage — the drift that
 // caused issue #4746. Exercises cache write + 5m/1h breakdown in addition to cache read.

@@ -1862,7 +1862,7 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.ContentBlockIndex = &contentBlockIndex
 		event.ContentBlockStop = true
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
 		if bifrostResp.Response != nil {
