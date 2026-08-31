@@ -2,6 +2,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -149,6 +150,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isSGL = effectiveProvider === "sgl";
 	const isDeepseek = effectiveProvider === "deepseek";
 	const isFireworks = effectiveProvider === "fireworks";
+	const isDatabricks = effectiveProvider === "databricks";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -160,6 +162,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 
 	// Auth type state for Bedrock Mantle: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockMantleAuthType, setBedrockMantleAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
+
+	// Auth type state for Databricks: 'pat' (personal access token) or 'oauth_m2m' (service principal)
+	const [databricksAuthType, setDatabricksAuthType] = useState<"pat" | "oauth_m2m">("pat");
 
 	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
 	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
@@ -203,6 +208,21 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			form.setValue("key.vertex_key_config._auth_type", detected);
 		}
 	}, [isVertex, form]);
+
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isDatabricks) {
+			const clientId = form.getValues("key.databricks_key_config.client_id");
+			const clientSecret = form.getValues("key.databricks_key_config.client_secret");
+			const hasServicePrincipal = clientId?.value || clientId?.ref || clientSecret?.value || clientSecret?.ref;
+			const detected: "pat" | "oauth_m2m" = hasServicePrincipal ? "oauth_m2m" : "pat";
+			setDatabricksAuthType(detected);
+			form.setValue("key.databricks_key_config._auth_type", detected);
+		}
+		// databricksDefaults re-runs detection after the key form resets itself, which
+		// happens once the key resolves - after this effect has already run once against
+		// an empty form and settled on the personal access token tab.
+	}, [isDatabricks, form, databricksDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -315,7 +335,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -834,6 +854,165 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									<Input data-testid="key-input-vllm-model-name" placeholder="meta-llama/Llama-3-70b-hf" {...field} />
 								</FormControl>
 								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isDatabricks && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.databricks_key_config.workspace_url"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Workspace URL (Required)</FormLabel>
+								<FormDescription>
+									Your Databricks workspace URL (e.g. https://dbc-1234abcd-5678.cloud.databricks.com or env.DATABRICKS_WORKSPACE_URL)
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-databricks-workspace-url"
+										placeholder="https://dbc-1234abcd-5678.cloud.databricks.com"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.databricks_key_config.api_format"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Inference Surface</FormLabel>
+								<FormDescription>
+									Auto picks by model name: a dotted name such as system.ai.claude-sonnet-4-5 goes to the Unity AI Gateway, anything
+									else to Model Serving. Choose explicitly to pin one surface.
+								</FormDescription>
+								<Select value={field.value ?? "auto"} onValueChange={field.onChange}>
+									<FormControl>
+										<SelectTrigger data-testid="key-select-databricks-api-format">
+											<SelectValue placeholder="Auto" />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value="auto">Auto (by model name)</SelectItem>
+										<SelectItem value="model_serving">Model Serving (/serving-endpoints)</SelectItem>
+										<SelectItem value="ai_gateway">Unity AI Gateway (/ai-gateway/mlflow/v1)</SelectItem>
+									</SelectContent>
+								</Select>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={databricksAuthType}
+							onValueChange={(v) => {
+								setDatabricksAuthType(v as "pat" | "oauth_m2m");
+								form.setValue("key.databricks_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
+								if (v === "oauth_m2m") {
+									// The token and the service principal are alternatives, never both.
+									form.setValue("key.value", undefined, { shouldDirty: true });
+								} else {
+									form.setValue("key.databricks_key_config.client_id", undefined, { shouldDirty: true });
+									form.setValue("key.databricks_key_config.client_secret", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="flex w-full justify-start">
+								<TabsTrigger data-testid="apikey-databricks-pat-tab" value="pat">
+									Personal Access Token
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-databricks-oauth-tab" value="oauth_m2m">
+									OAuth M2M (Service Principal)
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+					{databricksAuthType === "pat" && (
+						<FormField
+							control={control}
+							name="key.value"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Personal Access Token</FormLabel>
+									<FormDescription>Generate one from Settings &gt; Developer &gt; Access tokens in your workspace.</FormDescription>
+									<FormControl>
+										<SecretVarInput data-testid="key-input-databricks-pat" placeholder="dapi... or env.DATABRICKS_TOKEN" type="text" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+					{databricksAuthType === "oauth_m2m" && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								Databricks recommends OAuth machine-to-machine for production. Tokens are minted from the workspace OIDC endpoint and
+								refreshed automatically.
+							</p>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-id"
+												placeholder="Service principal client ID or env.DATABRICKS_CLIENT_ID"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_secret"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client Secret</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-secret"
+												placeholder="Service principal secret or env.DATABRICKS_CLIENT_SECRET"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+					<FormField
+						control={control}
+						name="key.databricks_key_config.forward_gateway_tags"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="databricks-forward-gateway-tags-switch">Forward Governance Tags</FormLabel>
+									<FormDescription>
+										Sends the virtual key, team and customer names as Databricks-Ai-Gateway-Request-Tags, so Databricks usage
+										tracking attributes spend the same way Bifrost does. Names only, never user identifiers.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch
+										id="databricks-forward-gateway-tags-switch"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
 							</FormItem>
 						)}
 					/>

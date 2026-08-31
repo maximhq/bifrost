@@ -222,6 +222,27 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
+export interface DatabricksKeyConfig {
+	workspace_url: SecretVar;
+	api_format?: "auto" | "model_serving" | "ai_gateway";
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	forward_gateway_tags?: boolean;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "pat" | "oauth_m2m";
+}
+
+// Default DatabricksKeyConfig
+export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
+	workspace_url: { value: "", ref: "" },
+	api_format: "auto",
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	forward_gateway_tags: false,
+	_auth_type: "pat",
+} as const satisfies Required<DatabricksKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -242,6 +263,7 @@ export interface ModelProviderKey {
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
+	databricks_key_config?: DatabricksKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

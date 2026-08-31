@@ -277,6 +277,33 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Databricks key config schema
+export const databricksKeyConfigSchema = z
+	.object({
+		workspace_url: secretVarSchema.optional(),
+		api_format: z.enum(["auto", "model_serving", "ai_gateway"]).optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		forward_gateway_tags: z.boolean().optional(),
+		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
+		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.workspace_url), {
+		message: "Workspace URL is required",
+		path: ["workspace_url"],
+	})
+	// The OAuth M2M tab hides the token field, so a key saved from it needs the whole service
+	// principal or it has no credentials at all. Mirrors the Azure Entra ID rule.
+	.refine((data) => data._auth_type !== "oauth_m2m" || (isSecretVarSet(data.client_id) && isSecretVarSet(data.client_secret)), {
+		message: "Client ID and Client Secret are both required for OAuth M2M authentication",
+		path: ["client_id"],
+	})
+	// A service principal only authenticates as a pair; half of one is always a misconfiguration.
+	.refine((data) => isSecretVarSet(data.client_id) === isSecretVarSet(data.client_secret), {
+		message: "Client ID and Client Secret must be set together",
+		path: ["client_secret"],
+	});
+
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
 export const modelFamilySchema = z.enum([
 	"anthropic",
@@ -360,6 +387,7 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		databricks_key_config: databricksKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
@@ -368,6 +396,24 @@ export const modelProviderKeySchema = z
 		(data) => {
 			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
+			}
+			// Databricks authenticates with a personal access token (the key value) or with an
+			// OAuth M2M service principal; only require a key value on the token path.
+			// Decided from the credentials themselves rather than from _auth_type: the form
+			// re-seeds that discriminator only on mount, so a reset (which the key form does
+			// when the key resolves asynchronously) leaves it undefined on an M2M key that is
+			// perfectly valid.
+			if (data.databricks_key_config) {
+				const databricks = data.databricks_key_config;
+				if (databricks._auth_type === "oauth_m2m") {
+					return true;
+				}
+				// Only infer the M2M path from the credentials when the discriminator is absent;
+				// an explicit token method must still carry a token.
+				if (databricks._auth_type === undefined && (isSecretVarSet(databricks.client_id) || isSecretVarSet(databricks.client_secret))) {
+					return true;
+				}
+				return isSecretVarSet(data.value);
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
 			// a top-level API key when the user explicitly chose the api_key auth method.
