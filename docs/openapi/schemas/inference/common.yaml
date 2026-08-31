@@ -4,30 +4,36 @@ ModelProvider:
   type: string
   description: AI model provider identifier
   enum:
-    - openai
-    - azure
     - anthropic
+    - azure
     - bedrock
-    - cohere
-    - vertex
-    - vllm
-    - mistral
-    - ollama
-    - groq
-    - sgl
-    - parasail
-    - perplexity
-    - replicate
+    - bedrock_mantle
     - cerebras
+    - cohere
     - deepseek
     - gemini
+    - groq
+    - mistral
+    - ollama
+    - opencode-go
+    - opencode-zen
+    - openai
+    - parasail
+    - perplexity
+    - sgl
+    - vertex
     - openrouter
     - elevenlabs
     - huggingface
     - nebius
     - xai
+    - replicate
+    - vllm
     - runway
+    - runware
     - fireworks
+    - sarvam
+    - wafer
 
 Fallback:
   type: object
