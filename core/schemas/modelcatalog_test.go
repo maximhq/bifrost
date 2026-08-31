@@ -39,6 +39,9 @@ func TestModelInfoAccessorsNoCatalogWired(t *testing.T) {
 	if got := ctx.CalculateCost(&BifrostResponse{}); got != 0 {
 		t.Fatalf("CalculateCost with no catalog = %v, want 0", got)
 	}
+	if got := ctx.CalculateCostIfAvailable(&BifrostResponse{}); got != nil {
+		t.Fatalf("CalculateCostIfAvailable with no catalog = %v, want nil", got)
+	}
 }
 
 func TestModelInfoAccessorsDelegate(t *testing.T) {

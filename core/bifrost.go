@@ -4861,6 +4861,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		} else if resp != nil {
 			resp.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
 		}
+		populateFinalStreamCost(ctx, resp)
 		return resp, nil
 	}
 
@@ -5211,6 +5212,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer func() {
 		ctx.StampUpstreamLatency()
 		populateLatencyExtraFields(ctx, resp)
+		if resp != nil && bifrostErr == nil {
+			resp.GetExtraFields().Cost = ctx.CalculateCostIfAvailable(resp)
+		}
 	}()
 
 	// Try the primary provider first
@@ -5850,6 +5854,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 				} else if resp != nil {
 					resp.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
+				populateFinalStreamCost(ctx, resp)
 				return resp, nil
 			}
 
@@ -6034,6 +6039,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return nil, recoveredErr
 		}
 		if recoveredResp != nil {
+			populateFinalStreamCost(ctx, recoveredResp)
 			return newBifrostMessageChan(recoveredResp), nil
 		}
 		return nil, &bifrostErrVal
@@ -7152,6 +7158,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
+					populateFinalStreamCost(ctx, resp)
 					return resp, nil
 				}
 				// Store a finalizer callback to create aggregated post-hook spans at stream end.

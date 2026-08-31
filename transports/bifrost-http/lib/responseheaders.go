@@ -32,6 +32,7 @@ const (
 	HeaderBifrostResolvedModel = "x-bifrost-resolved-model"
 	HeaderBifrostFallbackIndex = "x-bifrost-fallback-index"
 	HeaderBifrostRequestType   = "x-bifrost-request-type"
+	HeaderBifrostCostUSD       = "x-bifrost-cost-usd"
 	// Cumulative milliseconds this request spent blocked on upstream sockets,
 	// summed across every attempt and fallback. Subtract from the caller's own
 	// elapsed time to get what Bifrost cost. Distinct from the per-attempt
@@ -119,6 +120,9 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	}
 	if extra.RequestType != "" {
 		ctx.Response.Header.Set(HeaderBifrostRequestType, string(extra.RequestType))
+	}
+	if extra.Cost != nil {
+		ctx.Response.Header.Set(HeaderBifrostCostUSD, strconv.FormatFloat(*extra.Cost, 'f', -1, 64))
 	}
 	ri := extra.RoutingInfo
 	if ri.Provider != "" {
