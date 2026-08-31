@@ -1612,7 +1612,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
-					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+					AllowByDefault:            dbClient.AllowByDefault,
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
@@ -1662,7 +1662,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+			AllowByDefault:            dbClient.AllowByDefault,
 			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1723,9 +1723,9 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 			baseQuery = baseQuery.Where("client_id NOT IN ?", params.StateClientIDs)
 		}
 	}
-	// VK access filter: OR the "open to all VKs" flag with an explicit-assignment
+	// VK access filter: OR the allowed-by-default flag with an explicit-assignment
 	// subquery over the VK⇄MCP join table (matched on the numeric primary key).
-	if params.OnlyAllVirtualKeys || len(params.VirtualKeyIDs) > 0 {
+	if params.OnlyAllowedByDefault || len(params.VirtualKeyIDs) > 0 {
 		var assignedSub *gorm.DB
 		if len(params.VirtualKeyIDs) > 0 {
 			assignedSub = s.DB().WithContext(ctx).
@@ -1734,11 +1734,11 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 				Where("virtual_key_id IN ?", params.VirtualKeyIDs)
 		}
 		switch {
-		case params.OnlyAllVirtualKeys && assignedSub != nil:
+		case params.OnlyAllowedByDefault && assignedSub != nil:
 			baseQuery = baseQuery.Where(
 				s.DB().Where("allow_on_all_virtual_keys = ?", true).Or("id IN (?)", assignedSub),
 			)
-		case params.OnlyAllVirtualKeys:
+		case params.OnlyAllowedByDefault:
 			baseQuery = baseQuery.Where("allow_on_all_virtual_keys = ?", true)
 		default:
 			baseQuery = baseQuery.Where("id IN (?)", assignedSub)
@@ -2099,7 +2099,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+		AllowByDefault:            dbClient.AllowByDefault,
 		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
@@ -2247,7 +2247,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncIntervalSec,
 			ToolExecutionTimeout:   toolExecutionTimeoutSec,
-			AllowOnAllVirtualKeys:  clientConfigCopy.AllowOnAllVirtualKeys,
+			AllowByDefault:         clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -2434,7 +2434,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"tool_execution_timeout":     clientConfigCopy.ToolExecutionTimeout,
-			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
+			"allow_on_all_virtual_keys":  clientConfigCopy.AllowByDefault,
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
 		}
@@ -8166,14 +8166,14 @@ func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context)
 // ----- Per-user credential reconciliation -----
 //
 // The Reconcile* methods orphan/reactivate vk-keyed credentials whose MCP
-// grant changed (allowlist edit, AllowOnAllVirtualKeys toggle, VK delete).
+// grant changed (allowlist edit, AllowByDefault toggle, VK delete).
 // Pending flow rows whose MCP lost the grant are hard-deleted — they're
 // transient in-flight attempts that can't complete without the grant.
 //
 // "Effective allowlist" for a VK = explicit rows in
-// governance_virtual_key_mcp_configs ∪ MCPs with
-// config_mcp_clients.allow_on_all_virtual_keys = true. Mirrors the runtime
-// check in plugins/governance/main.go isMCPToolAllowedByVKWith.
+// governance_virtual_key_mcp_configs ∪ MCPs allowed by default (column
+// config_mcp_clients.allow_on_all_virtual_keys). Mirrors grantForVirtualKey in
+// plugins/governance/store.go.
 //
 // Runtime lookups filter status='active', so orphaned rows are invisible
 // until reactivation. 'needs_reauth' (OAuth) and 'needs_update' (headers)
@@ -8184,7 +8184,7 @@ func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context)
 
 // vkEffectiveMCPClientIDs returns the set of MCP client_ids the given VK
 // can access — union of explicit per-VK allowlist and MCPs marked
-// AllowOnAllVirtualKeys=true.
+// AllowByDefault=true.
 func vkEffectiveMCPClientIDs(tx *gorm.DB, vkID string) ([]string, error) {
 	var explicit []string
 	if err := tx.Table("governance_virtual_key_mcp_configs vkmc").
@@ -8198,7 +8198,7 @@ func vkEffectiveMCPClientIDs(tx *gorm.DB, vkID string) ([]string, error) {
 	if err := tx.Table("config_mcp_clients").
 		Where("allow_on_all_virtual_keys = ?", true).
 		Pluck("client_id", &implicit).Error; err != nil {
-		return nil, fmt.Errorf("read AllowOnAllVirtualKeys MCPs: %w", err)
+		return nil, fmt.Errorf("read AllowByDefault MCPs: %w", err)
 	}
 	if len(implicit) == 0 {
 		return explicit, nil
@@ -8379,7 +8379,7 @@ func (s *RDBConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, v
 
 // ReconcileOauthAfterMCPChange re-evaluates every VK that holds an OAuth
 // credential for the given MCP. Called when an MCP edit mutates who can
-// access it (vk_configs diff or AllowOnAllVirtualKeys toggle).
+// access it (vk_configs diff or AllowByDefault toggle).
 func (s *RDBConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
 	if mcpClientID == "" {
 		return nil

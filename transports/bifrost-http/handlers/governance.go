@@ -2396,10 +2396,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
-	// changed. Mirrors the AP-propagation path: enterprise orphans /
+	// changed. Mirrors the AP-propagation path: the store orphans /
 	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
 	// VK's owner (user-keyed creds) against the new effective allowlist
-	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	// (explicit rows ∪ MCPs with AllowByDefault=true). A store without
+	// per-user credentials does nothing.
 	// Must run before ReloadVirtualKey: the reload also evicts this VK's
 	// cached OAuth tokens and header credentials, and an eviction that lands
 	// before these writes could be refilled from the pre-reconcile rows and

@@ -238,7 +238,7 @@ export default function MCPClientSheet({
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
-			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			allow_by_default: mcpClient.config.allow_by_default || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
@@ -289,7 +289,7 @@ export default function MCPClientSheet({
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
-			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			allow_by_default: mcpClient.config.allow_by_default || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
@@ -438,7 +438,7 @@ export default function MCPClientSheet({
 					// explicit false is rejected for sse/stdio, which always keep
 					// a persistent connection regardless of this field.
 					needs_session_stickiness: mcpClient.config.connection_type === "http" ? data.needs_session_stickiness : undefined,
-					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
+					allow_by_default: data.allow_by_default,
 					disabled: data.disabled,
 					headers: data.headers ?? {},
 					per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? data.per_user_header_keys : undefined,
@@ -1573,15 +1573,15 @@ export default function MCPClientSheet({
 										<div className="space-y-4">
 											<SectionHeader
 												title="Access Control"
-												description="Control whether this server is reachable by all virtual keys without explicit per-key assignment."
+												description="Control whether this server is reachable without an explicit assignment."
 											/>
 											<FormField
 												control={form.control}
-												name="allow_on_all_virtual_keys"
+												name="allow_by_default"
 												render={({ field }) => (
 													<FormItem className="flex flex-row items-center justify-between gap-4 rounded-md border p-4">
 														<div className="flex items-center gap-2">
-															<FormLabel>Allow on All Virtual Keys</FormLabel>
+															<FormLabel>Allow by Default</FormLabel>
 															<TooltipProvider>
 																<Tooltip>
 																	<TooltipTrigger asChild>
@@ -1589,9 +1589,8 @@ export default function MCPClientSheet({
 																	</TooltipTrigger>
 																	<TooltipContent className="max-w-xs">
 																		<p>
-																			When enabled, this MCP server is accessible to all virtual keys without requiring explicit per-key
-																			assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this
-																			server, that config takes precedence and overrides this behaviour.
+																			When enabled, any caller can use this MCP server without an explicit assignment, with all tools
+																			allowed. An explicit assignment for a caller takes precedence over this setting for that caller.
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -1613,7 +1612,7 @@ export default function MCPClientSheet({
 
 										<div className="space-y-4">
 											<SectionHeader
-												title="Virtual Key Access"
+												title="Virtual Key Assignments"
 												description="Control which virtual keys can use this server and which tools they're allowed to call."
 												action={
 													<VirtualKeySelector
@@ -1636,11 +1635,11 @@ export default function MCPClientSheet({
 												}
 											/>
 											<div className="flex flex-col gap-2">
-												{form.watch("allow_on_all_virtual_keys") && (
+												{form.watch("allow_by_default") && (
 													<p className="text-muted-foreground flex items-center gap-1 text-xs">
 														<Info className="h-3 w-3 shrink-0" />
 														Configuring access for a virtual key here overrides the{" "}
-														<span className="font-medium">Allow on All Virtual Keys</span>&nbsp;setting for that key.
+														<span className="font-medium">Allow by Default</span>&nbsp;setting for that key.
 													</p>
 												)}
 											</div>
@@ -1706,9 +1705,9 @@ export default function MCPClientSheet({
 														</TableBody>
 													</Table>
 												</div>
-											) : form.watch("allow_on_all_virtual_keys") ? (
+											) : form.watch("allow_by_default") ? (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">All virtual keys can access this MCP server unless a key has an explicit override.</p>
+													<p className="text-sm">This MCP server is allowed by default; a virtual key with an explicit assignment uses that instead.</p>
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
