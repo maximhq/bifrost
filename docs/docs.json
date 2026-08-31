@@ -375,6 +375,18 @@
             "pages": ["edge/deployment-mdm"]
           },
           {
+            "group": "Onboarding Instructions",
+            "pages": [
+              "edge/setup",
+              "edge/setup-bifrost",
+              "edge/setup-edge-control",
+              "edge/install-direct",
+              "edge/install-mdm",
+              "edge/sign-in-and-verify",
+              "edge/troubleshooting"
+            ]
+          },
+          {
             "group": "Reference",
             "icon": "list",
             "pages": ["edge/supported-applications"]
