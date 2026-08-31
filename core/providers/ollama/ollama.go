@@ -269,6 +269,7 @@ func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
