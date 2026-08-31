@@ -1855,11 +1855,11 @@ func TestResolveLimits(t *testing.T) {
 	})
 }
 
-// TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider covers the case a single-permit
+// TestSelectProviderFunder_TwoPermitsFundTheSameProvider covers the case a single-permit
 // caller never exercises: two permits that each grant the same provider on their own, rather than
 // jointly. Round robin spreads attempts across them, and one being exhausted falls over to the
 // other rather than refusing because not every co-payer has room.
-func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) {
+func TestSelectProviderFunder_TwoPermitsFundTheSameProvider(t *testing.T) {
 	logger := NewMockLogger()
 
 	openaiBudgetA := buildBudget("b-vk-a-openai", 1000, "1d")
@@ -1886,7 +1886,8 @@ func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) 
 
 	t.Run("a single permit skips rotation entirely", func(t *testing.T) {
 		ctx := emptyCtx()
-		budgets, _ := selectProviderScopedLimits(ctx, store, permits[:1], schemas.OpenAI)
+		funder, budgets, _ := selectProviderFunder(ctx, store, permits[:1], schemas.OpenAI)
+		assert.Same(t, permitA, funder)
 		assert.Equal(t, []string{"b-vk-a-openai"}, limitIDsOf(budgets))
 	})
 
@@ -1894,7 +1895,8 @@ func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) 
 		ctx := emptyCtx()
 		var seen []string
 		for i := 0; i < 4; i++ {
-			budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+			funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+			require.NotNil(t, funder)
 			seen = append(seen, limitIDsOf(budgets)[0])
 		}
 		assert.Equal(t, []string{"b-vk-a-openai", "b-vk-b-openai", "b-vk-a-openai", "b-vk-b-openai"}, seen)
@@ -1905,7 +1907,8 @@ func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) 
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
 
 		for i := 0; i < 3; i++ {
-			budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+			funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+			assert.Same(t, permitB, funder, "the exhausted candidate must never be the one selected while the other has room")
 			assert.Equal(t, []string{"b-vk-b-openai"}, limitIDsOf(budgets),
 				"the exhausted candidate must never be the one returned while the other has room")
 		}
@@ -1916,11 +1919,49 @@ func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) 
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-b-openai", openaiBudgetB.MaxLimit))
 
-		budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+		funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+		require.NotNil(t, funder, "a candidate must still be named even when exhausted")
 		require.NotEmpty(t, budgets, "an empty list would read downstream as nothing to check")
 		decision, err := store.CheckBudgets(ctx, budgets, nil)
 		assert.True(t, err != nil || isBudgetViolation(decision), "the returned candidate must actually fail the check")
 	})
+}
+
+// TestGatherLimits_DisjointProvidersNeverChargeEachOther is the regression case for the bug where a
+// permit granting a provider this attempt is not using still had its own holder-level budget and
+// rate limit gathered: two permits with disjoint provider grants (one OpenAI only, one Anthropic
+// only) must each answer only to their own request, never to the other's.
+func TestGatherLimits_DisjointProvidersNeverChargeEachOther(t *testing.T) {
+	logger := NewMockLogger()
+
+	openaiHolderBudget := buildBudget("b-vk-openai-holder", 1000, "1d")
+	anthropicHolderBudget := buildBudget("b-vk-anthropic-holder", 1000, "1d")
+
+	vkOpenAI := buildVirtualKeyWithBudget("vk-openai", "sk-bf-disjoint-openai", "OpenAI-only VK", openaiHolderBudget)
+	// buildVirtualKeyWithBudget already grants openai; leave it as is.
+	vkAnthropic := buildVirtualKey("vk-anthropic", "sk-bf-disjoint-anthropic", "Anthropic-only VK", true)
+	vkAnthropic.Budgets = []configstoreTables.TableBudget{*anthropicHolderBudget}
+	vkAnthropic.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkOpenAI, *vkAnthropic},
+		Budgets:     []configstoreTables.TableBudget{*openaiHolderBudget, *anthropicHolderBudget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	permitOpenAI := store.permitForVirtualKey(context.Background(), vkOpenAI)
+	permitAnthropic := store.permitForVirtualKey(context.Background(), vkAnthropic)
+	access := grant.NewAccess([]schemas.Permit{permitOpenAI, permitAnthropic}, nil, "", nil)
+
+	ctx := emptyCtx()
+	budgets, _ := gatherLimits(ctx, store, access, schemas.OpenAI, "gpt-4o")
+
+	ids := limitIDsOf(budgets)
+	assert.Contains(t, ids, "b-vk-openai-holder", "the OpenAI-granting permit's own budget must be charged")
+	assert.NotContains(t, ids, "b-vk-anthropic-holder",
+		"a permit that only grants Anthropic must not be touched by an OpenAI request")
 }
 
 // Routing asks for this before a request's limits have been settled onto its grant, so the status cannot

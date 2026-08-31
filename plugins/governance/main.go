@@ -916,14 +916,17 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	return limits
 }
 
-// gatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
-// every permit the request carries, what funds the holder and the holder's own model limits; and
-// for every permit that pays for the pair, what funds its use of the provider.
+// gatherLimits assembles every limit an attempt answers to: the deployment's own for the pair, and
+// whatever funds this attempt on the caller's side.
 //
-// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
-// whose budget is spent is spent, however the request reached the provider. Only what is funded
-// per provider follows the pair, and which permits pay for it is the access's to say (see
-// PermitsForModel).
+// Which permits fund the caller's side depends on whether a provider is known. Without one there is
+// nothing to be selective about, so every permit the caller holds answers: its own holder-level
+// budget, and its own model configs for the pair. With one, only the permit that actually funds this
+// attempt's use of it does — see selectProviderFunder. A sibling permit that grants a different
+// provider, or that also grants this one but was not the one selected this attempt, is not funding
+// this attempt, so neither its holder-level budget nor its model configs are touched by it: an access
+// profile that only grants Anthropic must never see its own budget move for an OpenAI request, and a
+// sibling profile that also grants OpenAI but lost this attempt's round robin must not move either.
 //
 // The deployment's own come first, because that is the order refusals report in: what the
 // deployment imposes before what the holder is funded by.
@@ -932,11 +935,41 @@ func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access sch
 	if access == nil {
 		return budgets, rateLimits
 	}
-	carried := access.Bases()
-	if scoping := access.Scoping(); scoping != nil {
-		carried = append(carried, scoping)
+
+	var funders []schemas.Permit
+	if provider == "" {
+		// No provider to be selective about: every carried permit's holder-level limits apply, as
+		// they always have.
+		funders = access.Bases()
+		if scoping := access.Scoping(); scoping != nil {
+			funders = append(funders, scoping)
+		}
+	} else if candidates := access.PermitsForModel(string(provider), model); len(candidates) == 0 {
+		// Nothing explicitly claims this provider through a provider permit, which is not the same
+		// as nothing funding it: a permit can carry a model-scoped budget for a provider it never
+		// declared through ProviderPermits (e.g. a model config that predates provider configs
+		// entirely). Falling back to every carried permit here, exactly as the provider=="" branch
+		// does, keeps that answerable instead of silently dropping it because nothing candidate-list
+		// shaped claimed the pair.
+		funders = access.Bases()
+		if scoping := access.Scoping(); scoping != nil {
+			funders = append(funders, scoping)
+		}
+	} else {
+		// One or more permits explicitly claim this provider: exactly one of them funds this
+		// attempt's use of it — see selectProviderFunder — and only that one's holder-level and
+		// model-scoped limits are gathered below. A sibling permit that also claims this provider but
+		// was not selected, or one that claims a different provider entirely, is not funding this
+		// attempt and must not have any of its limits touched by it.
+		funder, providerBudgets, providerRateLimits := selectProviderFunder(ctx, store, candidates, provider)
+		budgets = append(budgets, providerBudgets...)
+		rateLimits = append(rateLimits, providerRateLimits...)
+		if funder != nil {
+			funders = []schemas.Permit{funder}
+		}
 	}
-	for _, permit := range carried {
+
+	for _, permit := range funders {
 		heldBudgets, heldRateLimits := store.HolderLimits(ctx, permit)
 		budgets = append(budgets, heldBudgets...)
 		rateLimits = append(rateLimits, heldRateLimits...)
@@ -948,16 +981,13 @@ func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access sch
 		budgets = append(budgets, modelBudgets...)
 		rateLimits = append(rateLimits, modelRateLimits...)
 	}
-	if provider != "" {
-		providerBudgets, providerRateLimits := selectProviderScopedLimits(ctx, store, access.PermitsForModel(string(provider), model), provider)
-		budgets = append(budgets, providerBudgets...)
-		rateLimits = append(rateLimits, providerRateLimits...)
-	}
 	return budgets, rateLimits
 }
 
-// selectProviderScopedLimits decides what funds this attempt's use of the provider, out of every
-// permit that pays for the pair.
+// selectProviderFunder decides which permit funds this attempt's use of the provider, out of every
+// permit that pays for the pair, and reports what it funds on the provider itself. The permit is
+// reported too, so gatherLimits can charge that one permit's holder-level and model-scoped limits as
+// well, rather than every permit that happens to also grant this provider.
 //
 // One permit is the ordinary case and is answered exactly as before: its own limits, no rotation.
 // More than one means several permits each fund the same provider on their own (e.g. two access
@@ -968,23 +998,26 @@ func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access sch
 // When every candidate is exhausted, the last one tried is still returned rather than nothing: an
 // empty list reads downstream as nothing to check, which is affordable by default, and a request
 // every candidate has run out of room for is the opposite of that.
-func selectProviderScopedLimits(ctx *schemas.BifrostContext, store GovernanceStore, permits []schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func selectProviderFunder(ctx *schemas.BifrostContext, store GovernanceStore, permits []schemas.Permit, provider schemas.ModelProvider) (funder schemas.Permit, budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	if len(permits) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if len(permits) == 1 {
-		return store.ProviderLimits(ctx, permits[0], provider)
+		budgets, rateLimits = store.ProviderLimits(ctx, permits[0], provider)
+		return permits[0], budgets, rateLimits
 	}
 
 	start := int(store.NextRoundRobinOffset(ctx, providerFundingCursorKey(permits, provider)) % uint64(len(permits)))
+	var lastTried schemas.Permit
 	for i := 0; i < len(permits); i++ {
 		idx := (start + i) % len(permits)
 		budgets, rateLimits = store.ProviderLimits(ctx, permits[idx], provider)
+		lastTried = permits[idx]
 		if providerScopedLimitsAffordable(ctx, store, budgets, rateLimits) {
-			return budgets, rateLimits
+			return lastTried, budgets, rateLimits
 		}
 	}
-	return budgets, rateLimits
+	return lastTried, budgets, rateLimits
 }
 
 // providerScopedLimitsAffordable peeks at whether a candidate's own limits currently have room,
