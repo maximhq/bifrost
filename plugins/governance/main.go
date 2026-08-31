@@ -16,7 +16,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -57,7 +56,6 @@ type BaseGovernancePlugin interface {
 	GetGovernanceStore() GovernanceStore
 	// Routing collaboration: the routing plugin calls these after evaluating routing rules,
 	// so the allowlist and the load balancer both act on the post-rule provider/model.
-	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
 	// ResolveAccess answers what a request may reach, resolving it once and recording it on the
 	// request's grant so every later reader sees the same answer. A request context that carries no
 	// grant is a wiring fault, and is reported as one.
@@ -65,7 +63,7 @@ type BaseGovernancePlugin interface {
 	// request context concretely because resolution reads request-scoped values off it, which a
 	// plain context.Context carrying the same request cannot provide.
 	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
 }
@@ -357,16 +355,16 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
-// GetVirtualKey resolves a virtual key by its value. Exposed so the routing plugin can build
-// the rule scope chain from the same key this plugin governs.
-func (p *GovernancePlugin) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
-	return p.store.GetVirtualKey(ctx, vkValue)
-}
-
-// GetBudgetAndRateLimitStatus reports live budget and rate limit usage for a provider/model
-// pair. Exposed so routing rules can test budget_used, tokens_used and request.
-func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	return p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, vk, budgetBaselines, tokenBaselines, requestBaselines)
+// GetBudgetAndRateLimitStatus reports how close a request is to the limits it answers to, for a
+// provider and model pair. Exposed so routing rules can test budget_used, tokens_used and request
+// counts.
+//
+// It reads the request's access off its grant rather than taking a credential: what governs a
+// request is what granted it, and a rule asking "how much room is left" wants the answer for every
+// holder paying, which for a caller granted access by something other than a key is not answerable
+// from a key at all. Nothing is passed, so nothing can be passed wrongly.
+func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	return p.store.GetBudgetAndRateLimitStatus(ctx, provider, model, budgetBaselines, tokenBaselines, requestBaselines)
 }
 
 // LoadBalanceProvider picks a weighted provider among those the request may reach for req.Model
