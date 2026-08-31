@@ -14,6 +14,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -806,6 +807,10 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
+	}
+	// The headers captured at upgrade are all this connection will ever present.
+	if virtualKey, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); virtualKey != "" {
+		lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, virtualKey))
 	}
 
 	// Forward x-bf-* headers
