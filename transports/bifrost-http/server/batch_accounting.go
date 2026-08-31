@@ -19,7 +19,7 @@ type bifrostBatchResultFetcher struct {
 	client *bifrost.Bifrost
 }
 
-func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}
@@ -29,7 +29,7 @@ func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *csta
 	resp, bifrostErr := f.client.BatchRetrieveRequest(internalBatchContext(ctx), &schemas.BifrostBatchRetrieveRequest{
 		Provider: schemas.ModelProvider(job.Provider),
 		Model:    modelPtr(job.Model),
-		BatchID:  job.BatchID,
+		BatchID:  job.JobID,
 	})
 	if bifrostErr != nil {
 		return nil, fmt.Errorf("%s", bifrostErr.GetErrorString())
@@ -37,7 +37,7 @@ func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *csta
 	return resp, nil
 }
 
-func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}
@@ -47,7 +47,7 @@ func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *
 	resp, bifrostErr := f.client.BatchResultsRequest(internalBatchContext(ctx), &schemas.BifrostBatchResultsRequest{
 		Provider: schemas.ModelProvider(job.Provider),
 		Model:    modelPtr(job.Model),
-		BatchID:  job.BatchID,
+		BatchID:  job.JobID,
 	})
 	if bifrostErr != nil {
 		return nil, fmt.Errorf("%s", bifrostErr.GetErrorString())

@@ -40,6 +40,9 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	if req.Job == nil {
 		return nil, fmt.Errorf("job accounting coordination row is nil")
 	}
+	if req.ClaimedBy == "" {
+		return nil, fmt.Errorf("job accounting runner id (ClaimedBy) is required")
+	}
 
 	now := req.Now
 	if now.IsZero() {
@@ -47,7 +50,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	}
 
 	job := req.Job
-	if err := stateStore.UpsertBatchJob(ctx, job); err != nil {
+	if err := stateStore.UpsertProviderJob(ctx, job); err != nil {
 		return nil, err
 	}
 
@@ -59,7 +62,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	}
 
 	runnerID := req.ClaimedBy
-	claimed, err := stateStore.ClaimBatchJob(ctx, job.ID, runnerID, now.Add(-defaultClaimTTL), req.ForceClaim)
+	claimed, err := stateStore.ClaimProviderJob(ctx, job.ID, runnerID, now.Add(-defaultClaimTTL), req.ForceClaim)
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +82,9 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	// partially-settled job from a new one — proceeding would re-report usage that
 	// already landed. Fail closed, releasing the claim so a later attempt can retry
 	// cleanly rather than waiting out the claim TTL.
-	persisted, err := stateStore.GetBatchJob(ctx, job.ID)
+	persisted, err := stateStore.GetProviderJob(ctx, job.ID)
 	if err != nil {
-		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return nil, err
 	}
 	if persisted != nil {
@@ -99,7 +102,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 
 	settlement, err := settler.Settle(ctx, pricing, req)
 	if err != nil {
-		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return nil, err
 	}
 	if settlement == nil {
@@ -129,12 +132,12 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 				return nil, err
 			}
 		}
-		if err := stateStore.MarkBatchJobUnpriceable(ctx, job.ID, runnerID, settlement.UnpriceableReason, settlement.ReasonErr); err != nil {
+		if err := stateStore.MarkProviderJobUnpriceable(ctx, job.ID, runnerID, settlement.UnpriceableReason, settlement.ReasonErr); err != nil {
 			// Release the fence like every other failure path here. Best-effort by
 			// nature: the mark above is itself a store write, so if it failed this one
 			// probably will too — but leaving the job "processing" under a runner that
 			// has already given up strands it for the whole claim TTL.
-			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
 		return out, nil
@@ -167,24 +170,24 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		// which stops polling but stays claimable by a settlement holding inputs (see
 		// ForceClaim) — so recalculation plus a re-drive remain the recovery path.
 		out.UnpriceableReason = settlement.UnpriceableReason
-		if err := stateStore.MarkBatchJobUnpriceable(ctx, job.ID, runnerID, out.UnpriceableReason, nil); err != nil {
-			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		if err := stateStore.MarkProviderJobUnpriceable(ctx, job.ID, runnerID, out.UnpriceableReason, nil); err != nil {
+			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
 		return out, nil
 	}
 	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
-		if err := req.UsageReporter.ReportBatchUsage(ctx, usageReportFor(req.Provider, entry, out)); err != nil {
-			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		if err := req.UsageReporter.ReportUsage(ctx, usageReportFor(req.Provider, entry, out)); err != nil {
+			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
-		if err := stateStore.MarkBatchJobGovernanceReported(ctx, job.ID, runnerID); err != nil {
-			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		if err := stateStore.MarkProviderJobGovernanceReported(ctx, job.ID, runnerID); err != nil {
+			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
 	}
-	if err := stateStore.CompleteBatchJob(ctx, job.ID, runnerID); err != nil {
-		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+	if err := stateStore.CompleteProviderJob(ctx, job.ID, runnerID); err != nil {
+		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return nil, err
 	}
 	out.Accounted = true
@@ -193,17 +196,17 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 
 // writeAggregateLog persists the aggregate row, marks the job, and emits. Any
 // failure releases the claim so a later attempt can retry cleanly.
-func writeAggregateLog(ctx context.Context, stateStore JobStore, logStore AggregateLogStore, req JobRequest, job *cstables.TableBatchJob, runnerID string, entry *logstore.Log) error {
+func writeAggregateLog(ctx context.Context, stateStore JobStore, logStore AggregateLogStore, req JobRequest, job *cstables.TableProviderJob, runnerID string, entry *logstore.Log) error {
 	if err := logStore.CreateIfNotExists(ctx, entry); err != nil {
-		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return err
 	}
-	if err := stateStore.MarkBatchJobAggregateLogWritten(ctx, job.ID, runnerID); err != nil {
-		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+	if err := stateStore.MarkProviderJobAggregateLogWritten(ctx, job.ID, runnerID); err != nil {
+		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return err
 	}
 	if req.Emitter != nil {
-		req.Emitter.EmitBatchAggregateLog(ctx, entry)
+		req.Emitter.EmitAggregateLog(ctx, entry)
 	}
 	return nil
 }
@@ -235,7 +238,7 @@ func populateOutcomeFromExistingLog(ctx context.Context, logStore AggregateLogSt
 	settler.HydrateFromLog(entry, out)
 }
 
-func mergeJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob) {
+func mergeJobHints(dst *cstables.TableProviderJob, src *cstables.TableProviderJob) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -244,6 +247,10 @@ func mergeJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob) {
 	}
 	if dst.Endpoint == "" {
 		dst.Endpoint = src.Endpoint
+	}
+
+	if dst.Params == nil {
+		dst.Params = src.Params
 	}
 	dst.AggregateLogWrittenAt = src.AggregateLogWrittenAt
 	dst.GovernanceReportedAt = src.GovernanceReportedAt
@@ -257,7 +264,7 @@ func mergeJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob) {
 	dst.SourceLogID = src.SourceLogID
 }
 
-func pricingScopesForJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *cstables.TableBatchJob) *modelcatalog.PricingLookupScopes {
+func pricingScopesForJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *cstables.TableProviderJob) *modelcatalog.PricingLookupScopes {
 	if scopes == nil {
 		scopes = &modelcatalog.PricingLookupScopes{}
 	} else {
@@ -451,7 +458,7 @@ func buildAggregateLog(req JobRequest, settlement *Settlement, out *Outcome, now
 // display names the coordination row does not carry. Best-effort by design: the
 // names are cosmetic, the ids on the job are what bills, so a log row that has been
 // rotated away or cannot be read costs nothing but the labels.
-func resolveSourceLog(ctx context.Context, logStore AggregateLogStore, job *cstables.TableBatchJob, baseLog *logstore.Log) *logstore.Log {
+func resolveSourceLog(ctx context.Context, logStore AggregateLogStore, job *cstables.TableProviderJob, baseLog *logstore.Log) *logstore.Log {
 	if job == nil || job.SourceLogID == nil || *job.SourceLogID == "" {
 		return nil
 	}
@@ -467,7 +474,7 @@ func resolveSourceLog(ctx context.Context, logStore AggregateLogStore, job *csta
 
 // hasJobAttribution reports whether the job captured who to bill at create time.
 // Jobs created outside Bifrost (first seen at settlement) carry none.
-func hasJobAttribution(job *cstables.TableBatchJob) bool {
+func hasJobAttribution(job *cstables.TableProviderJob) bool {
 	if job.SelectedKeyID != "" || (job.VirtualKeyID != nil && *job.VirtualKeyID != "") {
 		return true
 	}
@@ -515,7 +522,7 @@ func applyLogDenormalizations(entry *logstore.Log, source *logstore.Log) {
 	entry.AliasModelFamily = source.AliasModelFamily
 }
 
-func applyJobAttribution(entry *logstore.Log, job *cstables.TableBatchJob) {
+func applyJobAttribution(entry *logstore.Log, job *cstables.TableProviderJob) {
 	entry.SelectedKeyID = job.SelectedKeyID
 	entry.VirtualKeyID = job.VirtualKeyID
 	entry.BudgetIDs = job.BudgetIDs

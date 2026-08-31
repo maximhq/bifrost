@@ -37,7 +37,7 @@
 // The aggregate cost log is genuinely idempotent: CreateIfNotExists keys on a
 // deterministic id, so replaying it is a no-op.
 //
-// Governance reporting is not, and the gap is deliberate. If ReportBatchUsage
+// Governance reporting is not, and the gap is deliberate. If ReportUsage
 // succeeds but the GovernanceReportedAt marker write then fails, the job is left
 // retryable with the report already applied. Two things narrow this, neither
 // closes it:
@@ -74,7 +74,7 @@
 // # Ownership fencing
 //
 // Delayed accounting can run concurrently across nodes (the sweeper on one node,
-// a user-triggered settlement on another). ClaimBatchJob transitions a job to
+// a user-triggered settlement on another). ClaimProviderJob transitions a job to
 // "processing" under a runner id; every subsequent advance/complete is fenced on
 // that runner id, and a job stuck in "processing" past a stale threshold can be
 // re-claimed. This mirrors the sidekiq job runner rather than using a separate

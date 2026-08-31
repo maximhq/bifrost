@@ -1748,39 +1748,39 @@ func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.T
 }
 
 // Batch jobs
-func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+func (m *MockConfigStore) UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error {
 	return nil
 }
 
-func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+func (m *MockConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+func (m *MockConfigStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (m *MockConfigStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	return false, nil
 }
 
-func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) CompleteProviderJob(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+func (m *MockConfigStore) MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
 	return nil
 }
 
-func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
+func (m *MockConfigStore) FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error {
 	return nil
 }
 

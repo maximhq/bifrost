@@ -479,7 +479,7 @@ func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBa
 	entry.BatchDebugParsed = debug
 }
 
-func (p *LoggerPlugin) EmitBatchAggregateLog(ctx context.Context, entry *logstore.Log) {
+func (p *LoggerPlugin) EmitAggregateLog(ctx context.Context, entry *logstore.Log) {
 	p.makePostWriteCallback(nil)(entry)
 }
 
@@ -488,7 +488,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		return
 	}
 
-	var job *tables.TableBatchJob
+	var job *tables.TableProviderJob
 	now := time.Now().UTC()
 	switch {
 	case result.BatchCreateResponse != nil:
@@ -511,7 +511,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		return
 	}
 
-	if job.BatchID == "" {
+	if job.JobID == "" {
 		return
 	}
 	if !tables.IsTerminalBatchProviderStatus(job.ProviderStatus) {
@@ -521,8 +521,8 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		job.ProviderStatus == string(schemas.BatchStatusEnded) {
 		job.NextCheckAt = &now
 	}
-	if err := p.batchStore.UpsertBatchJob(p.ctx, job); err != nil {
-		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.BatchID, err)
+	if err := p.batchStore.UpsertProviderJob(p.ctx, job); err != nil {
+		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.JobID, err)
 	}
 }
 
@@ -542,14 +542,15 @@ func addBatchDetailToLog(entry *logstore.Log, batchID string, status string, cou
 	entry.BatchDebugParsed = debug
 }
 
-func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableBatchJob {
-	job := &tables.TableBatchJob{
+func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableProviderJob {
+	job := &tables.TableProviderJob{
+		Kind:             tables.ProviderJobKindBatch,
 		Provider:         entry.Provider,
-		BatchID:          batchID,
+		JobID:            batchID,
 		Model:            model,
 		Endpoint:         endpoint,
 		ProviderStatus:   status,
-		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    entry.SelectedKeyID,
 		VirtualKeyID:     entry.VirtualKeyID,
 		UserID:           entry.UserID,
@@ -562,8 +563,8 @@ func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoi
 		sourceLogID := entry.ID
 		job.SourceLogID = &sourceLogID
 	}
-	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
-		job.ID = tables.BatchJobID(job.Provider, job.BatchID)
+	if job.ID == "" && job.Provider != "" && job.JobID != "" {
+		job.ID = tables.ProviderJobID(tables.ProviderJobKindBatch, job.Provider, job.JobID)
 	}
 	return job
 }

@@ -31,8 +31,8 @@ const defaultProviderPollTimeout = 5 * time.Minute
 const unpriceableReasonTerminalWithoutResults = "terminal_without_results"
 
 type BatchResultFetcher interface {
-	RetrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error)
-	FetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error)
+	RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error)
+	FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error)
 }
 
 // BatchPayload is the batch kind's settlement input, carried opaquely by the
@@ -106,19 +106,20 @@ func AccountBatchResults(ctx context.Context, stateStore JobStore, logStore Aggr
 
 	job := req.Job
 	if job == nil {
-		job = &cstables.TableBatchJob{
+		job = &cstables.TableProviderJob{
+			Kind:             cstables.ProviderJobKindBatch,
 			Provider:         string(req.Provider),
-			BatchID:          req.ProviderJobID,
+			JobID:            req.ProviderJobID,
 			Model:            req.FallbackModel,
 			Endpoint:         string(load.Endpoint),
-			AccountingStatus: cstables.BatchJobAccountingStatusPending,
+			AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		}
 	}
 	if job.Endpoint == "" && load.Endpoint != "" {
 		job.Endpoint = string(load.Endpoint)
 	}
 	if job.ID == "" {
-		job.ID = cstables.BatchJobID(string(req.Provider), req.ProviderJobID)
+		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(req.Provider), req.ProviderJobID)
 	}
 	req.Job = job
 
@@ -178,7 +179,7 @@ func (s *BatchSettler) Backoff(attempts int, interval time.Duration) time.Durati
 	return delay
 }
 
-func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableBatchJob) (*PollResult, error) {
+func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableProviderJob) (*PollResult, error) {
 	if s.fetcher == nil {
 		return nil, fmt.Errorf("batch result fetcher is nil")
 	}
@@ -189,7 +190,7 @@ func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableBatchJob) (*
 	if retrieved == nil {
 		return nil, fmt.Errorf("batch retrieve returned nil response for job %s", job.ID)
 	}
-	if retrieved.ID != "" && retrieved.ID != job.BatchID {
+	if retrieved.ID != "" && retrieved.ID != job.JobID {
 		return nil, fmt.Errorf("batch retrieve returned mismatched batch id for job %s", job.ID)
 	}
 
@@ -223,7 +224,7 @@ func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableBatchJob) (*
 	return settleablePoll(latest, retrieved, results), nil
 }
 
-func settleablePoll(job *cstables.TableBatchJob, retrieved *schemas.BifrostBatchRetrieveResponse, results *schemas.BifrostBatchResultsResponse) *PollResult {
+func settleablePoll(job *cstables.TableProviderJob, retrieved *schemas.BifrostBatchRetrieveResponse, results *schemas.BifrostBatchResultsResponse) *PollResult {
 	endpoint := schemas.BatchEndpoint(job.Endpoint)
 	if results.Endpoint != "" {
 		endpoint = results.Endpoint
@@ -245,13 +246,13 @@ func settleablePoll(job *cstables.TableBatchJob, retrieved *schemas.BifrostBatch
 // The sweep is serial and the sweeper's own context is long-lived with no deadline,
 // so an unbounded provider call would stall every remaining due job. The timeout is
 // derived from the parent, so shutdown cancellation still propagates.
-func (s *BatchSettler) retrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (s *BatchSettler) retrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
 	defer cancel()
 	return s.fetcher.RetrieveBatch(callCtx, job)
 }
 
-func (s *BatchSettler) fetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (s *BatchSettler) fetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
 	defer cancel()
 	return s.fetcher.FetchBatchResults(callCtx, job)
@@ -260,12 +261,12 @@ func (s *BatchSettler) fetchBatchResults(ctx context.Context, job *cstables.Tabl
 // fetchResultsForSettlement returns the batch's results, or ok=false when they
 // could not be obtained. What that means is the caller's to decide: a live batch
 // retries later, a terminal one gives up.
-func (s *BatchSettler) fetchResultsForSettlement(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, bool) {
+func (s *BatchSettler) fetchResultsForSettlement(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, bool) {
 	results, err := s.fetchBatchResults(ctx, job)
 	if err != nil || results == nil {
 		return nil, false
 	}
-	if results.BatchID != "" && results.BatchID != job.BatchID {
+	if results.BatchID != "" && results.BatchID != job.JobID {
 		return nil, false
 	}
 	return results, true
@@ -388,7 +389,7 @@ func (s *BatchSettler) HydrateFromLog(entry *logstore.Log, out *Outcome) {
 	}
 }
 
-func batchJobFromRetrieve(existing *cstables.TableBatchJob, retrieved *schemas.BifrostBatchRetrieveResponse) *cstables.TableBatchJob {
+func batchJobFromRetrieve(existing *cstables.TableProviderJob, retrieved *schemas.BifrostBatchRetrieveResponse) *cstables.TableProviderJob {
 	job := *existing
 	job.ProviderStatus = string(retrieved.Status)
 	if retrieved.Endpoint != "" {
@@ -423,7 +424,7 @@ func isTerminalStatus(status schemas.BatchStatus) bool {
 // completed rows worth fetching. Expired and cancelled batches keep the rows that
 // finished; a failed batch only has an output file when the provider says so; a
 // deleted batch has nothing left to read.
-func terminalMayHaveResults(status schemas.BatchStatus, job *cstables.TableBatchJob) bool {
+func terminalMayHaveResults(status schemas.BatchStatus, job *cstables.TableProviderJob) bool {
 	switch status {
 	case schemas.BatchStatusExpired, schemas.BatchStatusCancelled:
 		return true
