@@ -1884,9 +1884,14 @@ func TestSelectProviderFunder_TwoPermitsFundTheSameProvider(t *testing.T) {
 	permitB := store.permitForVirtualKey(context.Background(), vkB)
 	permits := []schemas.Permit{permitA, permitB}
 
+	selectOpenAIFunder := func(ctx *schemas.BifrostContext, candidates []schemas.Permit) (schemas.Permit, []schemas.Limit, []schemas.Limit) {
+		return selectFunder(ctx, store, candidates, providerFundingCursorKey(candidates, schemas.OpenAI),
+			func(p schemas.Permit) ([]schemas.Limit, []schemas.Limit) { return store.ProviderLimits(ctx, p, schemas.OpenAI) })
+	}
+
 	t.Run("a single permit skips rotation entirely", func(t *testing.T) {
 		ctx := emptyCtx()
-		funder, budgets, _ := selectProviderFunder(ctx, store, permits[:1], schemas.OpenAI)
+		funder, budgets, _ := selectOpenAIFunder(ctx, permits[:1])
 		assert.Same(t, permitA, funder)
 		assert.Equal(t, []string{"b-vk-a-openai"}, limitIDsOf(budgets))
 	})
@@ -1895,7 +1900,7 @@ func TestSelectProviderFunder_TwoPermitsFundTheSameProvider(t *testing.T) {
 		ctx := emptyCtx()
 		var seen []string
 		for i := 0; i < 4; i++ {
-			funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+			funder, budgets, _ := selectOpenAIFunder(ctx, permits)
 			require.NotNil(t, funder)
 			seen = append(seen, limitIDsOf(budgets)[0])
 		}
@@ -1907,7 +1912,7 @@ func TestSelectProviderFunder_TwoPermitsFundTheSameProvider(t *testing.T) {
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
 
 		for i := 0; i < 3; i++ {
-			funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+			funder, budgets, _ := selectOpenAIFunder(ctx, permits)
 			assert.Same(t, permitB, funder, "the exhausted candidate must never be the one selected while the other has room")
 			assert.Equal(t, []string{"b-vk-b-openai"}, limitIDsOf(budgets),
 				"the exhausted candidate must never be the one returned while the other has room")
@@ -1919,7 +1924,7 @@ func TestSelectProviderFunder_TwoPermitsFundTheSameProvider(t *testing.T) {
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
 		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-b-openai", openaiBudgetB.MaxLimit))
 
-		funder, budgets, _ := selectProviderFunder(ctx, store, permits, schemas.OpenAI)
+		funder, budgets, _ := selectOpenAIFunder(ctx, permits)
 		require.NotNil(t, funder, "a candidate must still be named even when exhausted")
 		require.NotEmpty(t, budgets, "an empty list would read downstream as nothing to check")
 		decision, err := store.CheckBudgets(ctx, budgets, nil)
@@ -1962,6 +1967,55 @@ func TestGatherLimits_DisjointProvidersNeverChargeEachOther(t *testing.T) {
 	assert.Contains(t, ids, "b-vk-openai-holder", "the OpenAI-granting permit's own budget must be charged")
 	assert.NotContains(t, ids, "b-vk-anthropic-holder",
 		"a permit that only grants Anthropic must not be touched by an OpenAI request")
+}
+
+// TestGatherLimits_NoProviderStillSelectsExactlyOneFunder covers the case with no provider to narrow
+// by: two permits the caller holds, neither preferred over the other by anything provider-shaped.
+// Even here, exactly one of them must fund the attempt — never both at once — so a caller holding
+// two permits never has both permits' holder-level budgets moved by a single request.
+func TestGatherLimits_NoProviderStillSelectsExactlyOneFunder(t *testing.T) {
+	logger := NewMockLogger()
+
+	budgetA := buildBudget("b-vk-noprovider-a", 1000, "1d")
+	budgetB := buildBudget("b-vk-noprovider-b", 1000, "1d")
+
+	vkA := buildVirtualKeyWithBudget("vk-np-a", "sk-bf-noprovider-a", "No-provider VK A", budgetA)
+	vkB := buildVirtualKeyWithBudget("vk-np-b", "sk-bf-noprovider-b", "No-provider VK B", budgetB)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkA, *vkB},
+		Budgets:     []configstoreTables.TableBudget{*budgetA, *budgetB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	permitA := store.permitForVirtualKey(context.Background(), vkA)
+	permitB := store.permitForVirtualKey(context.Background(), vkB)
+	access := grant.NewAccess([]schemas.Permit{permitA, permitB}, nil, "", nil)
+
+	var fundedBy []string
+	for i := 0; i < 4; i++ {
+		ctx := emptyCtx()
+		budgets, _ := gatherLimits(ctx, store, access, "", "")
+		ids := limitIDsOf(budgets)
+		hasA, hasB := containsStr(ids, "b-vk-noprovider-a"), containsStr(ids, "b-vk-noprovider-b")
+		require.True(t, hasA != hasB, "attempt %d must be funded by exactly one permit, got %v", i, ids)
+		if hasA {
+			fundedBy = append(fundedBy, "b-vk-noprovider-a")
+		} else {
+			fundedBy = append(fundedBy, "b-vk-noprovider-b")
+		}
+	}
+	assert.Equal(t, []string{"b-vk-noprovider-a", "b-vk-noprovider-b", "b-vk-noprovider-a", "b-vk-noprovider-b"}, fundedBy,
+		"attempts with no provider to narrow by still alternate which permit funds them")
+}
+
+func containsStr(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Routing asks for this before a request's limits have been settled onto its grant, so the status cannot
