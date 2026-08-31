@@ -473,3 +473,87 @@ func TestPreMCPHookGatesTheToolOnAccess(t *testing.T) {
 		assert.Equal(t, string(DecisionAccessNotFound), *shortCircuit.Error.Type)
 	})
 }
+
+// ============================================================================
+// The four inputs together: a client allowed by default, an explicit VK config for another,
+// and both caller headers.
+// ============================================================================
+
+// newPluginForMCPStampingWithDefaults is newPluginForMCPStamping with the given clients allowed
+// by default, keyed by client id.
+func newPluginForMCPStampingWithDefaults(t *testing.T, vk *configstoreTables.TableVirtualKey, allowedByDefault map[string]string) *GovernancePlugin {
+	t.Helper()
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{allowedByDefaultClients: allowedByDefault})
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{
+		IsVkMandatory:         boolPtr(false),
+		DisableAutoToolInject: boolPtr(false),
+	}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
+// A client allowed by default joins the stamped grant after the key's own configs, as a whole-client
+// wildcard. An include-clients header does not change what is stamped: the grant is the tool-level
+// ceiling, and the client-level narrowing is applied downstream where the header intersects it.
+func TestPreRequestHookMCP_AllowedByDefault_JoinsTheGrantAfterExplicitConfigs(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	defaults := map[string]string{"client-2": "youtube"}
+
+	t.Run("no filters", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, []string{"sentry-read_file", "youtube-*"}, stampedIncludeTools(t, p, newPreRequestCtx(nil, nil), newChatRequest()))
+	})
+
+	t.Run("include-clients only", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, []string{"sentry-read_file", "youtube-*"}, stampedIncludeTools(t, p, newPreRequestCtx(nil, []string{"youtube"}), newChatRequest()))
+	})
+}
+
+// A caller include-tools list is narrowed to the grant across both kinds of client at once: a
+// specific tool of the default-allowed client survives, a wildcard for it survives as a wildcard, a
+// wildcard for the explicitly configured client is replaced by that config's tools, and an entry
+// the key does not grant is dropped. An include-clients header alongside changes none of this.
+func TestPreRequestHookMCP_AllowedByDefault_IncludeToolsNarrowsAcrossBothKinds(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	defaults := map[string]string{"client-2": "youtube"}
+	requested := []string{"youtube-search", "youtube-*", "sentry-*", "sentry-write_file", "github-*"}
+	want := []string{"youtube-search", "youtube-*", "sentry-read_file"}
+
+	t.Run("include-tools only", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, want, stampedIncludeTools(t, p, newPreRequestCtx(requested, nil), newChatRequest()))
+	})
+
+	t.Run("both headers", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, want, stampedIncludeTools(t, p, newPreRequestCtx(requested, []string{"youtube"}), newChatRequest()))
+	})
+}
+
+// An explicit deny-all config for a client allowed by default is the key's decision and is never
+// reopened by the default, whether the grant is stamped whole or a caller asks for the client.
+func TestPreRequestHookMCP_ExplicitEmptyConfigBeatsAllowedByDefault(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.MCPConfigs = []configstoreTables.TableVirtualKeyMCPConfig{{
+		MCPClient:      configstoreTables.TableMCPClient{ClientID: "client-2", Name: "youtube"},
+		ToolsToExecute: []string{},
+	}}
+	defaults := map[string]string{"client-2": "youtube"}
+
+	t.Run("no filters stamps deny-all", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, []string{}, stampedIncludeTools(t, p, newPreRequestCtx(nil, nil), newChatRequest()))
+	})
+
+	t.Run("a caller wildcard for the client prunes to deny-all", func(t *testing.T) {
+		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
+		assert.Equal(t, []string{}, stampedIncludeTools(t, p, newPreRequestCtx([]string{"youtube-*"}, []string{"youtube"}), newChatRequest()))
+	})
+}
