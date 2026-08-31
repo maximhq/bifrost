@@ -740,6 +740,12 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
 	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
+	// This probe never carries the caller's identity, whether it is the periodic connection
+	// checker's per-call branch or an admin's interactive test login: gateCtx is always built fresh,
+	// never derived from ctx's own grant. Marking it lets a governance-style hook tell that apart
+	// from a real request that lost its grant, the way markAsCheck does for the live-connection
+	// ping/list-tools path.
+	gateCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 	var tempClient *client.Client
 	defer func() {
@@ -903,6 +909,12 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
 	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
+	// This probe never carries the caller's identity, whether it is the periodic connection
+	// checker's per-call branch or an admin's interactive test login: gateCtx is always built fresh,
+	// never derived from ctx's own grant. Marking it lets a governance-style hook tell that apart
+	// from a real request that lost its grant, the way markAsCheck does for the live-connection
+	// ping/list-tools path.
+	gateCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 	var tempClient *client.Client
 	defer func() {
