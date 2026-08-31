@@ -240,12 +240,13 @@ type MCPPermit struct {
 }
 
 // ProviderCandidate is one way a request could be served: a provider, with the weight and keys it
-// would operate under. One per provider permit, so a request holding two for the same provider has
-// two candidates that may carry different weights and keys.
+// would operate under, and the permit that offered it. One per provider permit, so a request
+// holding two for the same provider has two candidates that may carry different weights and keys.
 //
-// Which permit offered the candidate is not restated here: a candidate is offered only by a permit
-// that permits the model on its provider, and every such permit pays for the pair, so what the
-// candidate costs is gathered against Access.PermitsForModel, given its provider and the model.
+// Permit is who is checked and charged for this specific candidate: a consumer isolating one
+// candidate's cost from its siblings (e.g. choosing between several permits that each fund the same
+// provider) reads it directly rather than gathering against every permit that pays for the pair via
+// Access.PermitsForModel.
 type ProviderCandidate struct {
 	Provider string
 	Weight   *float64 // nil means the candidate has no weight assigned
@@ -253,6 +254,7 @@ type ProviderCandidate struct {
 	//                   one provider can carry different keys. Consumers stamping a key restriction
 	//                   for the request use Access.KeysForModel instead: it answers for the request, not
 	//                   per candidate.
+	Permit Permit // the permit that offered this candidate
 }
 
 // Limit is one budget or one rate limit a request answers to: what to load when enforcing it, and

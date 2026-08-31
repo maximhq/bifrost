@@ -281,6 +281,7 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 			Provider: provider,
 			Weight:   selectedWeight,
 			KeyIDs:   slices.Clone(selectedKeyIDs),
+			Permit:   owner,
 		})
 		return true
 	})

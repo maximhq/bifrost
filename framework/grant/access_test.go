@@ -1592,6 +1592,7 @@ func TestAccess_CandidatesAreOfferedByPermitsForModel(t *testing.T) {
 			require.Len(t, candidates, len(offers), "%s / %s", name, model)
 			for i, candidate := range candidates {
 				assert.Equal(t, offers[i].provider, candidate.Provider, "%s / %s / candidate %d", name, model, i)
+				assert.Same(t, offers[i].owner, candidate.Permit, "%s / %s / candidate %d: Permit is the offering permit", name, model, i)
 				permits := access.PermitsForModel(candidate.Provider, model)
 				assert.True(t, containsPermit(permits, offers[i].owner),
 					"%s / %s / %s: the offering permit is among those the request answers to", name, model, candidate.Provider)
