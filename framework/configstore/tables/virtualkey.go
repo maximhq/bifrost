@@ -36,12 +36,24 @@ type TableVirtualKeyProviderConfig struct {
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`              // Multiple budgets with different reset intervals
-	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means all keys allowed for this provider
+	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means no keys allowed for this provider unless AllowAllKeys is set
 
 	// ModelBudgets carries per-model budgets/rate-limits under this provider for serialization
 	// only. They live in VK-scoped model configs (the source of truth), not this table; the
 	// handler hydrates this field when returning a VK so the sheet can render/edit them.
 	ModelBudgets []VKProviderModelBudget `gorm:"-" json:"model_budgets,omitempty"`
+}
+
+// KeyIDs returns the list of key IDs for this provider config, or ["*"] if AllowAllKeys is true.
+func (pc *TableVirtualKeyProviderConfig) KeyIDs() []string {
+	if pc.AllowAllKeys {
+		return []string{"*"}
+	}
+	keyIDs := make([]string, len(pc.Keys))
+	for i, key := range pc.Keys {
+		keyIDs[i] = key.KeyID
+	}
+	return keyIDs
 }
 
 // VKProviderModelBudget is one per-model budget/rate-limit group under a VK provider config,

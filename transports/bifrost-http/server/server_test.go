@@ -109,7 +109,7 @@ func TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+			baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 			if err != nil {
 				t.Fatalf("create governance store: %v", err)
 			}

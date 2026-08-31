@@ -26,7 +26,7 @@ func TestUsageTracker_FailedRequestWithUsage_IsBilled(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -71,7 +71,7 @@ func TestUsageTracker_FailedRequestNoUsage_IsSkipped(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -106,7 +106,7 @@ func TestUsageTracker_FailedRequestNoUsage_IsSkipped(t *testing.T) {
 func TestUsageTracker_UpdateUsage_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -140,7 +140,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -213,7 +213,7 @@ func TestUsageTracker_Idempotency_SameAttemptBilledOnce(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -259,7 +259,7 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -294,7 +294,7 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 // TestUsageTracker_Cleanup tests cleanup of the usage tracker
 func TestUsageTracker_Cleanup(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
