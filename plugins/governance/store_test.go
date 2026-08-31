@@ -2000,3 +2000,41 @@ func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
 		assert.Equal(t, 90.0, status.BudgetPercentUsed)
 	})
 }
+
+// TestModelConfigScopesForSkipsEmptyKindExtraScopes covers a registered
+// ExtraScopedIDsResolver returning a ScopedID with an empty Kind — a
+// legitimate value for a batch-only caller (see ScopedID's doc comment), but
+// modelConfigScopesFor is the request-time path: propagating it would let a
+// refusal name an empty holder kind.
+func TestModelConfigScopesForSkipsEmptyKindExtraScopes(t *testing.T) {
+	extraScopedIDsResolversMu.Lock()
+	saved := extraScopedIDsResolvers
+	extraScopedIDsResolvers = nil
+	extraScopedIDsResolversMu.Unlock()
+	t.Cleanup(func() {
+		extraScopedIDsResolversMu.Lock()
+		extraScopedIDsResolvers = saved
+		extraScopedIDsResolversMu.Unlock()
+	})
+
+	RegisterExtraScopedIDsResolver(func(_ context.Context, _, _ string) []ScopedID {
+		return []ScopedID{
+			{Scope: "batch_only", ScopeID: "b-1"}, // Kind deliberately empty
+			{Scope: "with_kind", ScopeID: "w-1", Kind: grant.LimitHolderModelConfig},
+		}
+	})
+
+	scopes := modelConfigScopesFor(nil)
+
+	for _, s := range scopes {
+		assert.NotEqual(t, "batch_only", s.name, "an empty-Kind extra scope must not reach request-time enforcement")
+	}
+	found := false
+	for _, s := range scopes {
+		if s.name == "with_kind" {
+			found = true
+			assert.Equal(t, grant.LimitHolderModelConfig, s.kind)
+		}
+	}
+	assert.True(t, found, "an extra scope with a Kind must still pass through")
+}

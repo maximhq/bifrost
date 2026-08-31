@@ -406,6 +406,12 @@ VirtualKey:
       type: string
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs still apply as
+        optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection);
+        a provider without a config gets all models, all keys, and no per-provider limits.
     team:
       $ref: '#/Team'
     customer:
@@ -441,7 +447,7 @@ CreateVirtualKeyRequest:
       type: string
     provider_configs:
       type: array
-      description: Provider configurations (empty means no providers allowed, deny-by-default)
+      description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
       items:
         type: object
         properties:
@@ -497,6 +503,12 @@ CreateVirtualKeyRequest:
     calendar_aligned:
       type: boolean
       default: false
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs remain optional
+        per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.
     expires_at:
       type: string
       format: date-time
@@ -569,6 +581,11 @@ UpdateVirtualKeyRequest:
       type: boolean
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs remain optional
+        per-provider overrides. Omit to leave the current setting unchanged.
     reset_budget_usage:
       type: boolean
       description: >

@@ -1876,6 +1876,39 @@ func TestMigrationBackfillEmptyVirtualKeyConfigs(t *testing.T) {
 	assert.NotEmpty(t, vkHash, "VK config_hash should be recomputed after backfill")
 }
 
+func TestMigrationBackfillVirtualKeyAllowAllProvidersHash(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Clear the migration tracking so the backfill runs against our seeded row.
+	db.Exec(`DELETE FROM migrations WHERE id = 'backfill_vk_allow_all_providers_hash'`)
+
+	// Existing VK with allow_all_providers=false and a stale config_hash from before the field
+	// joined GenerateVirtualKeyHash.
+	err := db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, allow_all_providers, config_hash, encryption_status, created_at, updated_at)
+		VALUES ('vk-aap-hash-1', 'aap-vk', 'vk-value', true, false, 'stale_hash', 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = migrationBackfillVirtualKeyAllowAllProvidersHash(ctx, db, testMigrationLogger)
+	require.NoError(t, err)
+
+	var vkHash string
+	err = db.Table("governance_virtual_keys").Select("config_hash").
+		Where("id = ?", "vk-aap-hash-1").Scan(&vkHash).Error
+	require.NoError(t, err)
+	assert.NotEqual(t, "stale_hash", vkHash, "config_hash should be recomputed, not the stale value")
+
+	// The recomputed hash must match GenerateVirtualKeyHash for the row as read back.
+	var vk tables.TableVirtualKey
+	err = db.Preload("ProviderConfigs").Preload("ProviderConfigs.Keys").Preload("MCPConfigs").
+		Where("id = ?", "vk-aap-hash-1").First(&vk).Error
+	require.NoError(t, err)
+	expected, err := GenerateVirtualKeyHash(vk)
+	require.NoError(t, err)
+	assert.Equal(t, expected, vkHash, "config_hash should match GenerateVirtualKeyHash output")
+}
+
 func TestTriggerMigrationsAddsVKProviderConfigBlacklistColumnBeforeBackfill(t *testing.T) {
 	_, db := setupFullMigrationDB(t)
 	ctx := context.Background()
