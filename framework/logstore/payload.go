@@ -612,6 +612,16 @@ func stripChatMessageAttachments(msg *schemas.ChatMessage) schemas.ChatMessage {
 			audioCopy.Data = attachmentStrippedPlaceholder
 			blocks[i].InputAudio = &audioCopy
 		}
+		if video := blocks[i].InputVideo; video != nil && (video.Data != nil || video.URL != nil) {
+			videoCopy := *video
+			if videoCopy.Data != nil {
+				videoCopy.Data = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if videoCopy.URL != nil {
+				videoCopy.URL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].InputVideo = &videoCopy
+		}
 		if file := blocks[i].File; file != nil && (file.FileData != nil || file.FileURL != nil) {
 			fileCopy := *file
 			if fileCopy.FileData != nil {
@@ -658,6 +668,16 @@ func stripResponsesMessageAttachments(msg *schemas.ResponsesMessage) schemas.Res
 			audioCopy := *audio
 			audioCopy.Data = attachmentStrippedPlaceholder
 			blocks[i].Audio = &audioCopy
+		}
+		if video := blocks[i].Video; video != nil && (video.Data != nil || video.URL != nil) {
+			videoCopy := *video
+			if videoCopy.Data != nil {
+				videoCopy.Data = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if videoCopy.URL != nil {
+				videoCopy.URL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].Video = &videoCopy
 		}
 	}
 	content := *msg.Content

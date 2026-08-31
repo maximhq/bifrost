@@ -889,6 +889,23 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.InputAudio = &copyAudio
 	}
 
+	if original.InputVideo != nil {
+		copyVideo := ChatInputVideo{}
+		if original.InputVideo.Data != nil {
+			copyData := *original.InputVideo.Data
+			copyVideo.Data = &copyData
+		}
+		if original.InputVideo.URL != nil {
+			copyURL := *original.InputVideo.URL
+			copyVideo.URL = &copyURL
+		}
+		if original.InputVideo.Format != nil {
+			copyFormat := *original.InputVideo.Format
+			copyVideo.Format = &copyFormat
+		}
+		copy.InputVideo = &copyVideo
+	}
+
 	if original.File != nil {
 		copyFile := ChatInputFile{}
 		if original.File.FileData != nil {
@@ -1572,6 +1589,24 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 			Data:   original.Audio.Data,
 		}
 		copy.Audio = copyAudio
+	}
+
+	// Deep copy Video
+	if original.Video != nil {
+		copyVideo := &ResponsesInputMessageContentBlockVideo{}
+		if original.Video.Data != nil {
+			copyData := *original.Video.Data
+			copyVideo.Data = &copyData
+		}
+		if original.Video.URL != nil {
+			copyURL := *original.Video.URL
+			copyVideo.URL = &copyURL
+		}
+		if original.Video.Format != nil {
+			copyFormat := *original.Video.Format
+			copyVideo.Format = &copyFormat
+		}
+		copy.Video = copyVideo
 	}
 
 	// Deep copy ResponsesOutputMessageContentText
