@@ -194,6 +194,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.Databricks,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -492,6 +493,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Databricks:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.DATABRICKS_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
+				},
 			},
 		}, nil
 	case schemas.Gemini:
@@ -873,6 +885,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Wafer:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Databricks:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
