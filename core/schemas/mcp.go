@@ -504,7 +504,13 @@ type MCPClientConfig struct {
 	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
 	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
 	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys  bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
+	// AllowByDefault opens the client to every caller that has not been assigned it explicitly: all
+	// of its tools, with no per-caller configuration. An explicit assignment for a caller decides for
+	// that caller instead, including one that grants no tool at all.
+	//
+	// The wire name used to be allow_on_all_virtual_keys. That key is still read (UnmarshalJSON) and
+	// still written (MarshalJSON), so configuration and clients written against it keep working.
+	AllowByDefault bool `json:"allow_by_default"`
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
@@ -531,11 +537,16 @@ type MCPClientConfig struct {
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
 // tool_execution_timeout. Numeric values are treated as raw nanoseconds for tool_sync_interval
 // and as seconds for tool_execution_timeout (matching tool_manager_config behaviour).
+//
+// It also reads allow_by_default under its earlier name, allow_on_all_virtual_keys; see
+// ResolveAllowByDefault for which one decides when both are present.
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	type alias MCPClientConfig
 	aux := &struct {
-		ToolSyncInterval     *json.Number     `json:"tool_sync_interval,omitempty"`
-		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		ToolSyncInterval      *json.Number     `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout  *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		AllowByDefault        *bool            `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool            `json:"allow_on_all_virtual_keys,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 
@@ -559,6 +570,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 			}
 			c.ToolExecutionTimeout = dur
 		}
+		c.AllowByDefault = ResolveAllowByDefault(aux.AllowByDefault, aux.AllowOnAllVirtualKeys)
 		return nil
 	}
 
@@ -566,8 +578,10 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	// ToolExecutionTimeout uses *json.RawMessage (not *string) so that integer
 	// values like 60 remain valid even when tool_sync_interval is a string.
 	auxStr := &struct {
-		ToolSyncInterval     *string          `json:"tool_sync_interval,omitempty"`
-		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		ToolSyncInterval      *string          `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout  *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		AllowByDefault        *bool            `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool            `json:"allow_on_all_virtual_keys,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, auxStr); err != nil {
@@ -587,7 +601,25 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		}
 		c.ToolExecutionTimeout = dur
 	}
+	c.AllowByDefault = ResolveAllowByDefault(auxStr.AllowByDefault, auxStr.AllowOnAllVirtualKeys)
 	return nil
+}
+
+// ResolveAllowByDefault settles the flag from the two keys the wire accepts for it: allow_by_default,
+// and the earlier allow_on_all_virtual_keys. The current key decides whenever it is present; the
+// earlier one is read only in its absence, so a caller that sends both is taken at its current word.
+// Neither present is the default, which is off.
+//
+// Exported because every surface that reads the flag from JSON applies the same rule: the client
+// configuration here, and the create and update requests of the HTTP API.
+func ResolveAllowByDefault(allowByDefault, allowOnAllVirtualKeys *bool) bool {
+	if allowByDefault != nil {
+		return *allowByDefault
+	}
+	if allowOnAllVirtualKeys != nil {
+		return *allowOnAllVirtualKeys
+	}
+	return false
 }
 
 // parseToolExecutionTimeoutField parses a tool_execution_timeout JSON value.
@@ -625,13 +657,17 @@ func parseToolExecutionTimeoutField(raw json.RawMessage) (time.Duration, error) 
 // MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
 // correctly — default time.Duration marshaling emits nanoseconds, but UnmarshalJSON
 // treats bare integers as seconds.
+//
+// It also writes allow_by_default under its earlier name, allow_on_all_virtual_keys, with the same
+// value, so a reader that still knows only that key sees the same answer.
 func (c MCPClientConfig) MarshalJSON() ([]byte, error) {
 	type alias MCPClientConfig
 	type shadow struct {
-		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
+		ToolExecutionTimeout  string `json:"tool_execution_timeout,omitempty"`
+		AllowOnAllVirtualKeys bool   `json:"allow_on_all_virtual_keys"`
 		*alias
 	}
-	s := shadow{alias: (*alias)(&c)}
+	s := shadow{alias: (*alias)(&c), AllowOnAllVirtualKeys: c.AllowByDefault}
 	if c.ToolExecutionTimeout > 0 {
 		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
 	}

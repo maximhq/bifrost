@@ -15,19 +15,19 @@ Make sure you have at least one MCP client set up. Read more about it [here](../
 The filtering logic is determined by the Virtual Key's configuration:
 
 1.  **No MCP Configuration on Virtual Key (Default)**
-    - If a Virtual Key has no specific MCP configurations, **no MCP tools are available** (deny-by-default).
-    - You must explicitly add MCP client configurations to allow tools.
+    - If a Virtual Key has no specific MCP configurations, **no MCP tools are available** (deny-by-default), except from clients marked **Allow by Default** in their MCP client settings.
+    - You must explicitly add MCP client configurations to allow other tools.
 
 2.  **With MCP Configuration on Virtual Key**
     - When you configure MCP clients on a Virtual Key, its settings take full precedence.
     - Bifrost automatically generates an `x-bf-mcp-include-tools` header based on your VK configuration (unless `disable_auto_tool_inject` is enabled or the caller already sent the header). This acts as a strict allow-list for the request.
-    - If the caller already includes an `x-bf-mcp-include-tools` header, auto-injection is skipped - but the VK allow-list is enforced at inference time and still enforced again at MCP tool execution time.
+    - If the caller already includes an `x-bf-mcp-include-tools` header, auto-injection is skipped and the header is narrowed to the VK allow-list instead: entries the key does not allow are dropped, so the header can only narrow, never widen. The allow-list is enforced again at MCP tool execution time.
 
 For each MCP client associated with a Virtual Key, you can specify the allowed tools:
 - **Select specific tools**: Only the chosen tools from that client will be available.
 - **Use `*` wildcard**: All available tools from that client will be permitted.
 - **Leave tool list empty**: All tools from that client will be **blocked**.
-- **Do not configure a client**: All tools from that client will be **blocked** (if other clients are configured).
+- **Do not configure a client**: All tools from that client will be **blocked**, unless the client is marked **Allow by Default**, in which case all of its tools are permitted to every key that does not configure it.
 
 <Note>
 Inactive or [expired](./virtual-keys#key-expiry) Virtual Keys are rejected at MCP tool execution time with a `403`, regardless of their tool configuration.
@@ -92,7 +92,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 **Behavior:**
 - The virtual key can only access the `check-status` tool from `billing-client`.
 - It can access all tools from `support-client`.
-- Any other MCP client is implicitly blocked for this key.
+- Any other MCP client is implicitly blocked for this key, unless it is marked **Allow by Default**, in which case all of its tools are reachable too, since neither `billing-client` nor `support-client` configures it.
 
 </Tab>
 
@@ -144,18 +144,19 @@ A request with this Virtual Key can access all four tools: `create-invoice`, `ch
 <Tab title="VK with Partial Access">
 **Configuration:**
 - `billing-client` -> Allowed Tools: `[check-status]`
-- `support-client` -> Not configured
+- `support-client` -> Not configured, and not marked **Allow by Default**
 
 **Result:**
-A request with this Virtual Key can only access the `check-status` tool. All other tools are blocked.
+A request with this Virtual Key can only access the `check-status` tool. All other tools are blocked. If `support-client` were marked **Allow by Default** instead, both `create-ticket` and `get-faq` would also be reachable, but only while `support-client` stays unconfigured on this key: an explicit configuration for it, even one that omits `get-faq`, would take precedence and keep that tool blocked regardless of the Allow by Default setting.
 
 </Tab>
 <Tab title="VK with No Tools">
 **Configuration:**
 - `billing-client` -> Allowed Tools: `[]` (empty list)
+- `support-client` -> Not configured, and not marked **Allow by Default**
 
 **Result:**
-A request with this Virtual Key cannot access any tools. All tools from all clients are blocked.
+A request with this Virtual Key cannot access any tools. All tools from all clients are blocked. If `support-client` were marked **Allow by Default** instead, its tools would still be reachable despite `billing-client`'s empty list: Allow by Default is decided per client and does not depend on what other clients on the same key are configured with.
 </Tab>
 </Tabs>
 

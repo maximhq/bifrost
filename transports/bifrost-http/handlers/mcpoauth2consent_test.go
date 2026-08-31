@@ -21,8 +21,6 @@ type fakeResolver struct {
 	resolveErr        error
 	vkBoundUserID     string
 	vkBindErr         error
-	userVKID          string
-	userVKErr         error
 	userInactive      bool // when true, IsUserActive reports the user as gone
 	userActiveErr     error
 }
@@ -33,9 +31,6 @@ func (f *fakeResolver) ResolveUserIdentity(_ *fasthttp.RequestCtx) (string, stri
 }
 func (f *fakeResolver) ResolveVKUserUpgrade(_ context.Context, _ string) (string, error) {
 	return f.vkBoundUserID, f.vkBindErr
-}
-func (f *fakeResolver) ResolveUserVirtualKey(_ context.Context, _ string) (string, error) {
-	return f.userVKID, f.userVKErr
 }
 func (f *fakeResolver) IsUserActive(_ context.Context, _ string) (bool, error) {
 	return !f.userInactive, f.userActiveErr

@@ -1336,6 +1336,337 @@ func TestUpdateVirtualKey(t *testing.T) {
 	assert.False(t, result.IsActiveValue())
 }
 
+func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grace",
+		Name:     "Grace Key",
+		Value:    *schemas.NewSecretVar("vk-old-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// Rotation: RotatedAt set makes the grace-period fields authoritative.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.Value = *schemas.NewSecretVar("vk-new-value")
+	vk.PreviousValue = *schemas.NewSecretVar("vk-old-value")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+
+	stored, err := store.GetVirtualKey(ctx, "vk-grace")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-new-value", stored.Value.GetValue())
+	assert.Equal(t, "vk-old-value", stored.PreviousValue.GetValue())
+	assert.NotEmpty(t, stored.PreviousValueHash)
+	require.NotNil(t, stored.PreviousValueExpiresAt)
+	require.NotNil(t, stored.RotatedAt)
+	assert.True(t, stored.HasActivePreviousValue(now))
+
+	// Plain update (RotatedAt nil) must not wipe the in-flight grace window.
+	plain := &tables.TableVirtualKey{
+		ID:       "vk-grace",
+		Name:     "Grace Key Renamed",
+		Value:    *schemas.NewSecretVar("vk-new-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.UpdateVirtualKey(ctx, plain))
+
+	stored, err = store.GetVirtualKey(ctx, "vk-grace")
+	require.NoError(t, err)
+	assert.Equal(t, "Grace Key Renamed", stored.Name)
+	assert.Equal(t, "vk-old-value", stored.PreviousValue.GetValue())
+	require.NotNil(t, stored.PreviousValueExpiresAt)
+	require.NotNil(t, stored.RotatedAt)
+}
+
+func TestUpdateVirtualKey_RotationWithoutCooldownClearsPreviousValue(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-nograce",
+		Name:     "No Grace Key",
+		Value:    *schemas.NewSecretVar("vk-first-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// First rotation with a grace window.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.Value = *schemas.NewSecretVar("vk-second-value")
+	vk.PreviousValue = *schemas.NewSecretVar("vk-first-value")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+
+	// Second rotation with cooldown disabled clears the grace state.
+	later := now.Add(time.Minute)
+	second := &tables.TableVirtualKey{
+		ID:        "vk-nograce",
+		Name:      "No Grace Key",
+		Value:     *schemas.NewSecretVar("vk-third-value"),
+		IsActive:  schemas.Ptr(true),
+		RotatedAt: &later,
+	}
+	second.ClearPreviousValue()
+	require.NoError(t, store.UpdateVirtualKey(ctx, second))
+
+	stored, err := store.GetVirtualKey(ctx, "vk-nograce")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-third-value", stored.Value.GetValue())
+	assert.False(t, stored.PreviousValue.IsSet())
+	assert.Empty(t, stored.PreviousValueHash)
+	assert.Nil(t, stored.PreviousValueExpiresAt)
+	assert.False(t, stored.HasActivePreviousValue(later))
+}
+
+func TestUpdateVirtualKey_UnresolvablePreviousValueRejected(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-badprev",
+		Name:     "Bad Prev Key",
+		Value:    *schemas.NewSecretVar("vk-current-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// A set-but-unresolvable PreviousValue must fail the save, mirroring the
+	// Value validation: persisting it would leave an empty hash that
+	// grace-period authentication can never match.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.Value = *schemas.NewSecretVar("vk-rotated-value")
+	vk.PreviousValue = *schemas.NewSecretVar("env.BIFROST_TEST_UNSET_PREVIOUS_VALUE")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+	err := store.UpdateVirtualKey(ctx, vk)
+	require.Error(t, err, "unresolvable previous value must not persist")
+	assert.Contains(t, err.Error(), "could not be resolved")
+}
+
+func TestVirtualKeyHasActivePreviousValue(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Minute)
+
+	vk := &tables.TableVirtualKey{}
+	assert.False(t, vk.HasActivePreviousValue(now), "no previous value")
+
+	vk.PreviousValue = *schemas.NewSecretVar("vk-prev")
+	assert.False(t, vk.HasActivePreviousValue(now), "no expiry set")
+
+	vk.PreviousValueExpiresAt = &future
+	assert.True(t, vk.HasActivePreviousValue(now), "inside grace window")
+	assert.False(t, vk.HasActivePreviousValue(future), "now == expiry is expired")
+
+	vk.PreviousValueExpiresAt = &past
+	assert.False(t, vk.HasActivePreviousValue(now), "past expiry")
+}
+
+// rotateTestVirtualKey simulates a value rotation with a grace window the way
+// rotateVirtualKeyByID does: new current value, old value retired with an expiry.
+// oldValue must be the plaintext the key was created with: the struct's Value is
+// encrypted in place by BeforeSave, so it cannot be read back after create.
+func rotateTestVirtualKey(t *testing.T, store *RDBConfigStore, vk *tables.TableVirtualKey, oldValue, newValue string, expiresAt time.Time) {
+	t.Helper()
+	now := time.Now().UTC()
+	vk.Value = *schemas.NewSecretVar(newValue)
+	vk.PreviousValue = *schemas.NewSecretVar(oldValue)
+	vk.PreviousValueExpiresAt = &expiresAt
+	vk.RotatedAt = &now
+	require.NoError(t, store.UpdateVirtualKey(context.Background(), vk))
+}
+
+func TestGetVirtualKeyByValue_GraceValueWithinWindow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grace-lookup",
+		Name:     "Grace Lookup Key",
+		Value:    *schemas.NewSecretVar("vk-grace-old-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	rotateTestVirtualKey(t, store, vk, "vk-grace-old-value", "vk-grace-new-value", time.Now().UTC().Add(5*time.Minute))
+
+	byOld, err := store.GetVirtualKeyByValue(ctx, "vk-grace-old-value")
+	require.NoError(t, err, "grace value inside the window must resolve")
+	assert.Equal(t, "vk-grace-lookup", byOld.ID)
+
+	byNew, err := store.GetVirtualKeyByValue(ctx, "vk-grace-new-value")
+	require.NoError(t, err, "current value must keep resolving")
+	assert.Equal(t, "vk-grace-lookup", byNew.ID)
+}
+
+func TestGetVirtualKeyByValue_GraceValueExpired(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grace-expired",
+		Name:     "Expired Grace Key",
+		Value:    *schemas.NewSecretVar("vk-expired-old-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	rotateTestVirtualKey(t, store, vk, "vk-expired-old-value", "vk-expired-new-value", time.Now().UTC().Add(-time.Minute))
+
+	_, err := store.GetVirtualKeyByValue(ctx, "vk-expired-old-value")
+	require.ErrorIs(t, err, ErrNotFound, "expired grace value must not resolve")
+
+	byNew, err := store.GetVirtualKeyByValue(ctx, "vk-expired-new-value")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-grace-expired", byNew.ID)
+}
+
+func TestGetVirtualKeyByValue_UnknownValueStillNotFound(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-known",
+		Name:     "Known Key",
+		Value:    *schemas.NewSecretVar("vk-known-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	_, err := store.GetVirtualKeyByValue(ctx, "vk-never-issued")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestGetVirtualKeyByValue_CurrentValueWinsOverOtherVKsGraceValue(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// VK-A rotates away from the shared value; the value stays alive in A's
+	// grace window.
+	vkA := &tables.TableVirtualKey{
+		ID:       "vk-shared-a",
+		Name:     "Shared A",
+		Value:    *schemas.NewSecretVar("vk-shared-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vkA))
+	rotateTestVirtualKey(t, store, vkA, "vk-shared-value", "vk-shared-a-new", time.Now().UTC().Add(5*time.Minute))
+
+	// VK-B claims the same value as its current value (the previous-value hash
+	// index is intentionally non-unique, so this is legal).
+	vkB := &tables.TableVirtualKey{
+		ID:       "vk-shared-b",
+		Name:     "Shared B",
+		Value:    *schemas.NewSecretVar("vk-shared-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vkB))
+
+	got, err := store.GetVirtualKeyByValue(ctx, "vk-shared-value")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-shared-b", got.ID, "a live current value must beat another VK's grace value")
+}
+
+// TestGetVirtualKeyByValue_ZeroCooldownRotationRevokesActiveGraceValue covers
+// the revocation path: a VK carrying a live grace value is rotated again while
+// the cooldown is disabled, so both retired values must stop resolving at once.
+// Without the clear, the stale previous_value_hash row would keep authenticating
+// until its original expiry.
+func TestGetVirtualKeyByValue_ZeroCooldownRotationRevokesActiveGraceValue(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-revoke-now",
+		Name:     "Revoke Now Key",
+		Value:    *schemas.NewSecretVar("vk-revoke-first"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// First rotation with a long cooldown: the first value is live in its window.
+	rotateTestVirtualKey(t, store, vk, "vk-revoke-first", "vk-revoke-second", time.Now().UTC().Add(30*time.Minute))
+	found, err := store.GetVirtualKeyByValue(ctx, "vk-revoke-first")
+	require.NoError(t, err, "grace value must resolve before the zero-cooldown rotation")
+	assert.Equal(t, "vk-revoke-now", found.ID)
+
+	// Second rotation with the cooldown disabled: mirrors rotateVirtualKeyByID's
+	// else-branch, which calls ClearPreviousValue instead of retiring the value.
+	now := time.Now().UTC()
+	second := &tables.TableVirtualKey{
+		ID:        "vk-revoke-now",
+		Name:      "Revoke Now Key",
+		Value:     *schemas.NewSecretVar("vk-revoke-third"),
+		IsActive:  schemas.Ptr(true),
+		RotatedAt: &now,
+	}
+	second.ClearPreviousValue()
+	require.NoError(t, store.UpdateVirtualKey(ctx, second))
+
+	_, err = store.GetVirtualKeyByValue(ctx, "vk-revoke-first")
+	require.ErrorIs(t, err, ErrNotFound, "the older retired value must be revoked immediately")
+	_, err = store.GetVirtualKeyByValue(ctx, "vk-revoke-second")
+	require.ErrorIs(t, err, ErrNotFound, "the just-retired value must be revoked immediately")
+
+	current, err := store.GetVirtualKeyByValue(ctx, "vk-revoke-third")
+	require.NoError(t, err, "the current value must keep working")
+	assert.Equal(t, "vk-revoke-now", current.ID)
+
+	stored, err := store.GetVirtualKey(ctx, "vk-revoke-now")
+	require.NoError(t, err)
+	assert.Empty(t, stored.PreviousValueHash, "the retired hash must not linger in the row")
+	assert.Nil(t, stored.PreviousValueExpiresAt)
+}
+
+func TestGetVirtualKeyQuotaByValue_GraceValueWithinWindow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-quota-grace",
+		Name:     "Quota Grace Key",
+		Value:    *schemas.NewSecretVar("vk-quota-old-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+		ID:            "budget-quota-grace",
+		MaxLimit:      10,
+		ResetDuration: "1h",
+		VirtualKeyID:  schemas.Ptr("vk-quota-grace"),
+	}))
+	rotateTestVirtualKey(t, store, vk, "vk-quota-old-value", "vk-quota-new-value", time.Now().UTC().Add(5*time.Minute))
+
+	got, err := store.GetVirtualKeyQuotaByValue(ctx, "vk-quota-old-value")
+	require.NoError(t, err, "grace value inside the window must resolve quota")
+	assert.Equal(t, "vk-quota-grace", got.ID)
+	require.Len(t, got.Budgets, 1, "budgets must be preloaded for grace lookups")
+	assert.Equal(t, "budget-quota-grace", got.Budgets[0].ID)
+}
+
+func TestGetVirtualKeyQuotaByValue_GraceValueExpired(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-quota-expired",
+		Name:     "Quota Expired Key",
+		Value:    *schemas.NewSecretVar("vk-quota-exp-old"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	rotateTestVirtualKey(t, store, vk, "vk-quota-exp-old", "vk-quota-exp-new", time.Now().UTC().Add(-time.Minute))
+
+	_, err := store.GetVirtualKeyQuotaByValue(ctx, "vk-quota-exp-old")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestDeleteVirtualKey(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -1940,6 +2271,57 @@ func TestUpdateClientConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.EnableLogging != nil && *result.EnableLogging)
 	assert.Equal(t, 100, result.InitialPoolSize)
+}
+
+func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		VKRotationCooldown:   schemas.Duration(5 * time.Minute),
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
+}
+
+func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// Zero cooldown must not change the hash: existing deployments see no
+	// config drift after upgrade.
+	zero := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VKRotationCooldown: 0}
+	zeroHash, err := zero.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, zeroHash)
+
+	// A non-zero cooldown is a meaningful config change.
+	withCooldown := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VKRotationCooldown: schemas.Duration(5 * time.Minute)}
+	cooldownHash, err := withCooldown.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, cooldownHash)
+}
+
+func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
+	var cfg ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": "5m"}`), &cfg))
+	assert.Equal(t, 5*time.Minute, cfg.VKRotationCooldown.D())
+
+	var cfgInt ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": 300000000000}`), &cfgInt))
+	assert.Equal(t, 5*time.Minute, cfgInt.VKRotationCooldown.D())
+
+	var cfgAbsent ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{}`), &cfgAbsent))
+	assert.Equal(t, time.Duration(0), cfgAbsent.VKRotationCooldown.D())
 }
 
 func TestUpdateClientMetadata(t *testing.T) {
@@ -3780,4 +4162,49 @@ func TestUpsertModelPricesBatch_SizeQualityImageColumnsSurviveResync(t *testing.
 	assert.InDelta(t, 0.013, *updated.OutputCostPerImageAbove1024x1536PixelsStandardQuality, 1e-9)
 	require.NotNil(t, updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, "OutputCostPerImageAbove1536x1024PixelsStandardQuality was dropped by the ON CONFLICT update (missing from pricingSyncUpdateColumns)")
 	assert.InDelta(t, 0.014, *updated.OutputCostPerImageAbove1536x1024PixelsStandardQuality, 1e-9)
+}
+
+// TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate guards created_at against GORM's Save,
+// which selects every column: rules arriving from a config.json reload carry no created_at, so
+// without an explicit carry-forward the original insert timestamp is overwritten with the zero
+// time. Both the batch (SyncRoutingRules) and single (UpdateRoutingRule) paths are covered.
+func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	assertCreatedAt := func(t *testing.T, store *RDBConfigStore, id string, want time.Time) {
+		t.Helper()
+		got, err := store.GetRoutingRule(ctx, id)
+		require.NoError(t, err)
+		require.False(t, got.CreatedAt.IsZero(), "created_at must not be zeroed by an update")
+		require.Equal(t, want, got.CreatedAt, "created_at must be preserved")
+	}
+
+	t.Run("SyncRoutingRules preserves created_at", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+		created, err := store.GetRoutingRule(ctx, "rule-a")
+		require.NoError(t, err)
+		require.False(t, created.CreatedAt.IsZero())
+
+		// Shape of a config-file rule: no created_at, changed payload.
+		fileRule := routingRuleFixture("rule-a", 3, "anthropic")
+		fileRule.Description = "edited in config.json"
+		require.NoError(t, store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*fileRule}))
+
+		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
+	})
+
+	t.Run("UpdateRoutingRule preserves created_at", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+		created, err := store.GetRoutingRule(ctx, "rule-a")
+		require.NoError(t, err)
+		require.False(t, created.CreatedAt.IsZero())
+
+		partial := routingRuleFixture("rule-a", 3, "anthropic")
+		partial.Description = "updated without reading the row first"
+		require.NoError(t, store.UpdateRoutingRule(ctx, partial))
+
+		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
+	})
 }

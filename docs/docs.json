@@ -107,7 +107,13 @@
             "icon": "arrow-up-right-dots",
             "pages": [
               "migration-guides/v2.0.0",
-              "migration-guides/v1.5.0",
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
+            "group":"Migrate from other Gateway",
+            "icon":"arrow-up",
+            "pages":[
               "migration-guides/litellm"
             ]
           },
@@ -1330,9 +1336,11 @@
                   "GET /api/governance/virtual-keys",
                   "POST /api/governance/virtual-keys",
                   "GET /api/governance/virtual-keys/quota",
+                  "POST /api/governance/virtual-keys/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}",
                   "PUT /api/governance/virtual-keys/{vk_id}",
                   "DELETE /api/governance/virtual-keys/{vk_id}",
+                  "POST /api/governance/virtual-keys/{vk_id}/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}/users",
                   "POST /api/governance/virtual-keys/{vk_id}/users",
                   "DELETE /api/governance/virtual-keys/{vk_id}/users/{user_id}",

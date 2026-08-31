@@ -927,7 +927,7 @@ export default function MCPClientsTable({
 								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
 								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
 								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
+								<TableHead className="w-[150px] font-semibold">Access</TableHead>
 								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
 								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
 								<TableHead className="w-[140px] font-semibold">
@@ -1017,8 +1017,8 @@ export default function MCPClientsTable({
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
-												{c.config.allow_on_all_virtual_keys
-													? "All"
+												{c.config.allow_by_default
+													? "Allowed by default"
 													: c.vk_configs?.length
 														? `${c.vk_configs.length} ${c.vk_configs.length === 1 ? "VK" : "VKs"}`
 														: "None"}
