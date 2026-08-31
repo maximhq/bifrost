@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"maps"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -12,7 +13,8 @@ import (
 
 // mockInMemoryStore is a test double for InMemoryStore.
 type mockInMemoryStore struct {
-	allowAllClients     map[string]string // clientID → clientName
+	allowAllClients     map[string]string // clientID → clientName, the clients open to every virtual key
+	clientNames         map[string]string // clientID → clientName, configured clients that are not
 	configuredProviders map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
@@ -22,6 +24,15 @@ func (m *mockInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]c
 
 func (m *mockInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[string]string {
 	return m.allowAllClients
+}
+
+// GetMCPClientNames answers as the production store does: every configured client, of which the ones
+// open to every virtual key are a subset.
+func (m *mockInMemoryStore) GetMCPClientNames() map[string]string {
+	names := make(map[string]string, len(m.clientNames)+len(m.allowAllClients))
+	maps.Copy(names, m.clientNames)
+	maps.Copy(names, m.allowAllClients)
+	return names
 }
 
 // accessFor builds the access a key carries on its own, with the given clients open to every
@@ -143,4 +154,21 @@ func TestToolChecks_StoreWithoutOpenClients_Blocked(t *testing.T) {
 
 	assert.False(t, access.IsMCPToolAllowed("youtube-search"),
 		"no open clients means no permit for the client, so no tool is allowed")
+}
+
+// The mock has to keep the two questions apart the way the production store does: a client that is
+// configured but not open to every key is still resolvable by name.
+func TestMockInMemoryStore_ClientNamesCoverEveryConfiguredClient(t *testing.T) {
+	store := &mockInMemoryStore{
+		allowAllClients: map[string]string{"open-id": "open"},
+		clientNames:     map[string]string{"private-id": "private"},
+	}
+
+	names := store.GetMCPClientNames()
+	if names["open-id"] != "open" || names["private-id"] != "private" || len(names) != 2 {
+		t.Fatalf("GetMCPClientNames should name every configured client, got %v", names)
+	}
+	if allowAll := store.GetMCPClientsAllowingAllVirtualKeys(); len(allowAll) != 1 || allowAll["open-id"] != "open" {
+		t.Fatalf("GetMCPClientsAllowingAllVirtualKeys should stay the allow-all subset, got %v", allowAll)
+	}
 }
