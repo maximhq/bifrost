@@ -1855,6 +1855,74 @@ func TestResolveLimits(t *testing.T) {
 	})
 }
 
+// TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider covers the case a single-permit
+// caller never exercises: two permits that each grant the same provider on their own, rather than
+// jointly. Round robin spreads attempts across them, and one being exhausted falls over to the
+// other rather than refusing because not every co-payer has room.
+func TestSelectProviderScopedLimits_TwoPermitsFundTheSameProvider(t *testing.T) {
+	logger := NewMockLogger()
+
+	openaiBudgetA := buildBudget("b-vk-a-openai", 1000, "1d")
+	openaiBudgetB := buildBudget("b-vk-b-openai", 1000, "1d")
+
+	vkA := buildVirtualKey("vk-a", "sk-bf-scope-a", "Scoped VK A", true)
+	vkA.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfigWithBudgets("openai", []string{"*"}, []configstoreTables.TableBudget{*openaiBudgetA}),
+	}
+	vkB := buildVirtualKey("vk-b", "sk-bf-scope-b", "Scoped VK B", true)
+	vkB.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfigWithBudgets("openai", []string{"*"}, []configstoreTables.TableBudget{*openaiBudgetB}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkA, *vkB},
+		Budgets:     []configstoreTables.TableBudget{*openaiBudgetA, *openaiBudgetB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	permitA := store.permitForVirtualKey(context.Background(), vkA)
+	permitB := store.permitForVirtualKey(context.Background(), vkB)
+	permits := []schemas.Permit{permitA, permitB}
+
+	t.Run("a single permit skips rotation entirely", func(t *testing.T) {
+		ctx := emptyCtx()
+		budgets, _ := selectProviderScopedLimits(ctx, store, permits[:1], schemas.OpenAI)
+		assert.Equal(t, []string{"b-vk-a-openai"}, limitIDsOf(budgets))
+	})
+
+	t.Run("round robin alternates across repeated calls", func(t *testing.T) {
+		ctx := emptyCtx()
+		var seen []string
+		for i := 0; i < 4; i++ {
+			budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+			seen = append(seen, limitIDsOf(budgets)[0])
+		}
+		assert.Equal(t, []string{"b-vk-a-openai", "b-vk-b-openai", "b-vk-a-openai", "b-vk-b-openai"}, seen)
+	})
+
+	t.Run("an exhausted candidate falls over to the other", func(t *testing.T) {
+		ctx := emptyCtx()
+		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
+
+		for i := 0; i < 3; i++ {
+			budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+			assert.Equal(t, []string{"b-vk-b-openai"}, limitIDsOf(budgets),
+				"the exhausted candidate must never be the one returned while the other has room")
+		}
+	})
+
+	t.Run("both exhausted still returns a real, checkable candidate rather than nothing", func(t *testing.T) {
+		ctx := emptyCtx()
+		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-a-openai", openaiBudgetA.MaxLimit))
+		require.NoError(t, store.BumpBudgetUsage(context.Background(), "b-vk-b-openai", openaiBudgetB.MaxLimit))
+
+		budgets, _ := selectProviderScopedLimits(ctx, store, permits, schemas.OpenAI)
+		require.NotEmpty(t, budgets, "an empty list would read downstream as nothing to check")
+		decision, err := store.CheckBudgets(ctx, budgets, nil)
+		assert.True(t, err != nil || isBudgetViolation(decision), "the returned candidate must actually fail the check")
+	})
+}
+
 // Routing asks for this before a request's limits have been settled onto its grant, so the status cannot
 // read the settled set: gatherLimits assembles from the store and the access each time. Every source a
 // request can answer to has to be reachable that way, or routing prefers a provider that is out of money.

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -46,6 +47,12 @@ type LocalGovernanceStore struct {
 	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
 	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+
+	// roundRobinCursors is a fairness heuristic only, not a correctness mechanism: which candidate a
+	// cursor lands on is still checked for room before it is used. Node-local and reset on restart is
+	// fine for that reason — spreading load across candidates roughly evenly does not require the
+	// nodes of a cluster to agree on the same rotation.
+	roundRobinCursors sync.Map // string -> *atomic.Uint64
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -185,6 +192,12 @@ type GovernanceStore interface {
 	// about virtual keys looks at what the presented key funds; a store that funds candidates from
 	// something else answers for that too, and load balancing does not need to know the difference.
 	CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error)
+	// NextRoundRobinOffset returns a monotonically-advancing offset for the given key, used to pick a
+	// rotating starting point over a same-sized candidate set on repeated calls with that key. It is a
+	// fairness heuristic, not a correctness guarantee: callers still check whichever candidate the
+	// offset lands on before using it, so an implementation answering 0 every time (no rotation) is a
+	// legal, merely less even, implementation. Concurrency-safe.
+	NextRoundRobinOffset(ctx context.Context, key string) uint64
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -1298,10 +1311,10 @@ func recordVirtualKeyIdentity(ctx *schemas.BifrostContext, virtualKey *configsto
 // So load balancing routes around a provider that is out of room, and being out of money overall is
 // left to the funnel, which is the only place that can say so.
 //
-// The model is what says which permits pay for the candidate: every permit that permits the model on
-// the candidate's provider is funded on it, and a candidate is affordable only when all of them have
-// room. A limit scoped to the model itself applies to every candidate serving it and is not asked
-// about here, since it cannot discriminate.
+// What funds the candidate is the permit that offered it, not every permit that happens to pay for
+// the pair: a sibling permit offering the same provider is a different candidate, checked on its own
+// call, and its limits are not this one's to answer for. A limit scoped to the model itself applies
+// to every candidate serving it and is not asked about here, since it cannot discriminate.
 func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error) {
 	if spendingChecksSkipped(ctx) {
 		return DecisionAllow, nil
@@ -1309,12 +1322,10 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 
 	provider := schemas.ModelProvider(candidate.Provider)
 	budgets, rateLimits := gs.GlobalProviderLimits(ctx, provider)
-	if access != nil {
-		for _, permit := range access.PermitsForModel(candidate.Provider, model) {
-			permitBudgets, permitRateLimits := gs.ProviderLimits(ctx, permit, provider)
-			budgets = append(budgets, permitBudgets...)
-			rateLimits = append(rateLimits, permitRateLimits...)
-		}
+	if candidate.Permit != nil {
+		permitBudgets, permitRateLimits := gs.ProviderLimits(ctx, candidate.Permit, provider)
+		budgets = append(budgets, permitBudgets...)
+		rateLimits = append(rateLimits, permitRateLimits...)
 	}
 
 	if decision, err := gs.CheckRateLimits(ctx, rateLimits, nil, nil); err != nil || isRateLimitViolation(decision) {
@@ -1324,6 +1335,13 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 		return decision, err
 	}
 	return DecisionAllow, nil
+}
+
+// NextRoundRobinOffset implements GovernanceStore: a node-local, concurrency-safe counter per key,
+// advancing by one on each call. See the interface doc for why node-local is sufficient here.
+func (gs *LocalGovernanceStore) NextRoundRobinOffset(ctx context.Context, key string) uint64 {
+	cursor, _ := gs.roundRobinCursors.LoadOrStore(key, new(atomic.Uint64))
+	return cursor.(*atomic.Uint64).Add(1) - 1
 }
 
 // permitForVirtualKey builds the permit a virtual key confers: one provider permit per configured

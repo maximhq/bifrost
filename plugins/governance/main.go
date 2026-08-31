@@ -949,13 +949,68 @@ func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access sch
 		rateLimits = append(rateLimits, modelRateLimits...)
 	}
 	if provider != "" {
-		for _, permit := range access.PermitsForModel(string(provider), model) {
-			providerBudgets, providerRateLimits := store.ProviderLimits(ctx, permit, provider)
-			budgets = append(budgets, providerBudgets...)
-			rateLimits = append(rateLimits, providerRateLimits...)
+		providerBudgets, providerRateLimits := selectProviderScopedLimits(ctx, store, access.PermitsForModel(string(provider), model), provider)
+		budgets = append(budgets, providerBudgets...)
+		rateLimits = append(rateLimits, providerRateLimits...)
+	}
+	return budgets, rateLimits
+}
+
+// selectProviderScopedLimits decides what funds this attempt's use of the provider, out of every
+// permit that pays for the pair.
+//
+// One permit is the ordinary case and is answered exactly as before: its own limits, no rotation.
+// More than one means several permits each fund the same provider on their own (e.g. two access
+// profiles that both grant it) rather than needing to agree together, so this rotates across them
+// instead of requiring every one to have room at once: round robin picks a starting candidate, and
+// if it cannot afford the pair right now, the next is tried, wrapping once through the whole set.
+//
+// When every candidate is exhausted, the last one tried is still returned rather than nothing: an
+// empty list reads downstream as nothing to check, which is affordable by default, and a request
+// every candidate has run out of room for is the opposite of that.
+func selectProviderScopedLimits(ctx *schemas.BifrostContext, store GovernanceStore, permits []schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if len(permits) == 0 {
+		return nil, nil
+	}
+	if len(permits) == 1 {
+		return store.ProviderLimits(ctx, permits[0], provider)
+	}
+
+	start := int(store.NextRoundRobinOffset(ctx, providerFundingCursorKey(permits, provider)) % uint64(len(permits)))
+	for i := 0; i < len(permits); i++ {
+		idx := (start + i) % len(permits)
+		budgets, rateLimits = store.ProviderLimits(ctx, permits[idx], provider)
+		if providerScopedLimitsAffordable(ctx, store, budgets, rateLimits) {
+			return budgets, rateLimits
 		}
 	}
 	return budgets, rateLimits
+}
+
+// providerScopedLimitsAffordable peeks at whether a candidate's own limits currently have room,
+// without charging anything. The same question resolveLimits' caller asks for real once an attempt
+// settles on one candidate, so a peek here that says yes may still be answered no there under
+// concurrent pressure — that race is what the baseline-aware checks these calls run through are for.
+func providerScopedLimitsAffordable(ctx *schemas.BifrostContext, store GovernanceStore, budgets, rateLimits []schemas.Limit) bool {
+	if decision, err := store.CheckRateLimits(ctx, rateLimits, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return false
+	}
+	if decision, err := store.CheckBudgets(ctx, budgets, nil); err != nil || isBudgetViolation(decision) {
+		return false
+	}
+	return true
+}
+
+// providerFundingCursorKey names the rotating candidate set a round-robin offset is drawn for: the
+// provider plus which permits are funding it, order-independent, so the same set of candidates
+// shares one cursor however PermitsForModel happens to have ordered them for a given call.
+func providerFundingCursorKey(permits []schemas.Permit, provider schemas.ModelProvider) string {
+	ids := make([]string, len(permits))
+	for i, permit := range permits {
+		ids[i] = permit.ID()
+	}
+	sort.Strings(ids)
+	return string(provider) + "|" + strings.Join(ids, ",")
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
