@@ -14,6 +14,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -332,11 +333,70 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return true
 	}
 
+	// Retrieve tracer and traceID up front: they drive both chunk accumulation and
+	// the llm.call span this path is responsible for. Without an llm.call span,
+	// span-based observability connectors export the turn unattributed (issue #6265).
+	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+
+	// llm.call span for this realtime turn. Started lazily once the native path is
+	// committed (first upstream event, or a terminal error), so a fallback to the
+	// HTTP bridge does not leave a dangling span alongside the one core starts.
+	var (
+		llmSpanHandle  schemas.SpanHandle
+		llmSpanStarted bool
+		llmSpanEnded   bool
+	)
+	startLLMSpan := func() {
+		if llmSpanStarted || tracer == nil || traceID == "" {
+			return
+		}
+		llmSpanStarted = true
+		otelOp := schemas.OTelOperationName(schemas.WebSocketResponsesRequest)
+		spanID, handle := tracer.StartSpanID(ctx, otelOp+" "+req.Model, schemas.SpanKindLLMCall)
+		llmSpanHandle = handle
+		if span := tracer.SpanFromHandle(handle); span != nil {
+			span.SetAttribute(schemas.AttrProviderName, schemas.OTelProviderName(req.Provider))
+			span.SetAttribute(schemas.AttrBifrostProviderName, string(req.Provider))
+			span.SetAttribute(schemas.AttrRequestModel, req.Model)
+			span.SetAttribute(schemas.AttrOperationName, otelOp)
+			span.SetAttribute(schemas.AttrLegacyRequestType, string(schemas.WebSocketResponsesRequest))
+		}
+		tracer.PopulateLLMRequestAttributes(handle, bifrostReq)
+		// Nest per-chunk post-hook spans under the llm.call span.
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+		}
+	}
+	// endLLMSpan populates response attributes and ends the span. It must run
+	// before the terminal post-hook flush so the exported trace carries the span.
+	endLLMSpan := func(resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+		if !llmSpanStarted || llmSpanEnded || tracer == nil {
+			return
+		}
+		llmSpanEnded = true
+		tracer.PopulateLLMResponseAttributes(ctx, llmSpanHandle, resp, bifrostErr)
+		if bifrostErr != nil {
+			if bifrostErr.Error != nil {
+				tracer.SetAttribute(llmSpanHandle, "error", bifrostErr.Error.Message)
+			}
+			if bifrostErr.StatusCode != nil {
+				tracer.SetAttribute(llmSpanHandle, "status_code", *bifrostErr.StatusCode)
+			}
+			tracer.EndSpan(llmSpanHandle, schemas.SpanStatusError, "request failed")
+			return
+		}
+		tracer.EndSpan(llmSpanHandle, schemas.SpanStatusOk, "")
+	}
+
 	finalizeTerminalPostHooks := func(bifrostErr *schemas.BifrostError) {
 		if bifrostErr == nil {
 			return
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		// Attribute the errored turn to an llm.call span, then end it before the flush.
+		startLLMSpan()
+		endLLMSpan(nil, bifrostErr)
 		if _, postErr := hooks.PostHookRunner(ctx, nil, bifrostErr); postErr != nil {
 			logger.Warn("failed to finalize WS post-hooks for %s: %v", req.Provider, postErr)
 		}
@@ -349,9 +409,6 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return false
 	}
 
-	// Retrieve tracer and traceID for chunk accumulation
-	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
-	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	streamIdleTimeout := resolveWSStreamIdleTimeout(h.config, req.Provider)
 
 	// Read response events from upstream and relay to client, running post-hooks per chunk
@@ -398,17 +455,28 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		}
 
 		if streamResp != nil {
+			// Commit to the native path: start the llm.call span on the first event.
+			startLLMSpan()
+
 			resp := &schemas.BifrostResponse{ResponsesStreamResponse: streamResp}
 
 			if tracer != nil && traceID != "" {
 				tracer.AddStreamingChunk(traceID, resp)
 			}
 
-			_, postErr := hooks.PostHookRunner(ctx, resp, nil)
-			if postErr != nil {
-				closeUpstream()
-				writeWSBifrostError(session, postErr)
-				return true
+			// End the llm.call span before the terminal post-hook flush so the
+			// exported trace carries provider/model/usage for this turn. Failed
+			// terminal events (response.failed/error/incomplete) end the span with
+			// error status carrying the provider's error, not as a success.
+			var terminalErr *schemas.BifrostError
+			if isTerminal {
+				terminalErr = buildWSTurnSpanError(streamResp)
+				endLLMSpan(buildWSTurnSpanResponse(streamResp, req), terminalErr)
+			}
+
+			_, postErr := hooks.PostHookRunner(ctx, resp, terminalErr)
+			if postErr != nil && terminalErr == nil {
+				logger.Warn("WS post-hook returned an error for %s: %v", req.Provider, postErr)
 			}
 		}
 
@@ -527,6 +595,70 @@ func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model str
 	// output text, token usage, and cost data from the logs.
 	streamResp.ExtraFields.ChunkIndex = streamResp.SequenceNumber
 	return &streamResp
+}
+
+// buildWSTurnSpanResponse builds the response used to populate the llm.call span's
+// usage/model/cost attributes from a terminal upstream event. The response.completed
+// event carries the final usage on streamResp.Response. Returns nil if the terminal
+// event has no response payload, in which case the span keeps only its request attributes.
+func buildWSTurnSpanResponse(streamResp *schemas.BifrostResponsesStreamResponse, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponse {
+	if streamResp == nil || streamResp.Response == nil {
+		return nil
+	}
+	resp := &schemas.BifrostResponse{ResponsesResponse: streamResp.Response}
+	// Populate ExtraFields so cost calculation and alias resolution have provider/model.
+	resp.PopulateExtraFields(schemas.WebSocketResponsesRequest, req.Provider, req.Model, req.Model)
+	return resp
+}
+
+// isFailedTerminalStreamType returns true if a terminal event signals failure
+// rather than a normal completion.
+func isFailedTerminalStreamType(t schemas.ResponsesStreamResponseType) bool {
+	switch t {
+	case schemas.ResponsesStreamResponseTypeFailed,
+		schemas.ResponsesStreamResponseTypeIncomplete,
+		schemas.ResponsesStreamResponseTypeError:
+		return true
+	}
+	return false
+}
+
+// buildWSTurnSpanError returns a BifrostError describing a failed terminal event
+// (response.failed / response.error / response.incomplete), or nil for a normal
+// completion. It lets the llm.call span end with error status carrying the
+// provider's error code and message. Error details are read from the response.error
+// object, the top-level error event, or incomplete_details.reason, in that order.
+func buildWSTurnSpanError(streamResp *schemas.BifrostResponsesStreamResponse) *schemas.BifrostError {
+	if streamResp == nil || !isFailedTerminalStreamType(streamResp.Type) {
+		return nil
+	}
+	code := "upstream_error"
+	message := "upstream websocket response failed"
+	switch {
+	case streamResp.Response != nil && streamResp.Response.Error != nil:
+		if streamResp.Response.Error.Code != "" {
+			code = streamResp.Response.Error.Code
+		}
+		if streamResp.Response.Error.Message != "" {
+			message = streamResp.Response.Error.Message
+		}
+	case streamResp.Error != nil:
+		if streamResp.Error.Code != "" {
+			code = streamResp.Error.Code
+		}
+		if streamResp.Error.Message != "" {
+			message = streamResp.Error.Message
+		}
+	case streamResp.Message != nil && *streamResp.Message != "":
+		message = *streamResp.Message
+		if streamResp.Code != nil && *streamResp.Code != "" {
+			code = *streamResp.Code
+		}
+	case streamResp.Response != nil && streamResp.Response.IncompleteDetails != nil && streamResp.Response.IncompleteDetails.Reason != "":
+		code = "incomplete"
+		message = streamResp.Response.IncompleteDetails.Reason
+	}
+	return newBifrostError(502, code, message)
 }
 
 // isTerminalStreamType returns true if the event type signals the end of a response stream.
@@ -675,6 +807,10 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
+	}
+	// The headers captured at upgrade are all this connection will ever present.
+	if virtualKey, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); virtualKey != "" {
+		lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, virtualKey))
 	}
 
 	// Forward x-bf-* headers

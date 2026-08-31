@@ -254,7 +254,7 @@ export const vllmKeyConfigSchema = z
 	});
 
 export const replicateKeyConfigSchema = z.object({
-	use_deployments_endpoint: z.boolean(),
+	use_deployments_endpoint: z.boolean().optional(),
 });
 
 // Ollama key config schema
@@ -366,8 +366,7 @@ export const modelProviderKeySchema = z
 	})
 	.refine(
 		(data) => {
-			// Providers with dedicated config that never need a top-level API key
-			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
@@ -1122,7 +1121,7 @@ export const mcpClientUpdateSchema = z
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
-		allow_on_all_virtual_keys: z.boolean().optional(),
+		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		name: z
 			.string()

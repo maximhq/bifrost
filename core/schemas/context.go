@@ -84,6 +84,7 @@ type BifrostContext struct {
 	userValues            map[any]any
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
+	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
 
 	// Plugin scoping fields
 	pluginScope   *string                        // Non-nil when this is a scoped plugin context
@@ -192,6 +193,80 @@ func (bc *BifrostContext) Root() *BifrostContext {
 		bc = bc.valueDelegate
 	}
 	return bc
+}
+
+// SetGrant installs what this request has been granted, so that Grant hands it out for the life of
+// the request. Whoever builds the request context installs it, because core declares the shape of
+// a Grant and never constructs one. Installing nothing is refused, and reported.
+func (bc *BifrostContext) SetGrant(g Grant) bool {
+	if bc == nil || g == nil {
+		return false
+	}
+	bc.Root().grant.Store(&g)
+	return true
+}
+
+// Grant returns what this request has been granted: who it is made by, what it may reach, and what
+// pays for it. There is one per request, reached from every context of that request: a
+// plugin-scoped context answers with its root's, and a context derived from another request's
+// context shares that request's. Nil when nothing was installed on this request or any it derives
+// from, which is what a request nothing governs sees.
+//
+// It is handed out as installed, with no guard on writes. A plugin that needs to change what a
+// request is attributed to, may reach, or answers to does so through the same sections everything
+// else reads, and a deployment that wants a section left alone says so in the plugin order it
+// chooses.
+func (bc *BifrostContext) Grant() Grant {
+	if bc == nil {
+		return nil
+	}
+	root := bc.Root()
+	if g := root.grant.Load(); g != nil {
+		return *g
+	}
+	ancestor := root.inheritedGrant()
+	if ancestor == nil {
+		return nil
+	}
+	// Remembered here so the next read does not walk the chain again. Shared, not copied: a
+	// request and the contexts derived from it are one request, with one answer.
+	root.grant.CompareAndSwap(nil, &ancestor)
+	if g := root.grant.Load(); g != nil {
+		return *g
+	}
+	return nil
+}
+
+// bifrostContextSelfKey is a private sentinel Value answers with the BifrostContext itself.
+// inheritedGrant reads it to find the nearest BifrostContext ancestor through a foreign wrapper -
+// a library between the transport and this code inserting its own context.WithValue, for
+// instance, as mcp-go's HandleMessage does on every request it dispatches to a registered tool.
+// Value delegates through any wrapper per the context.Context contract; a type assertion on the
+// concrete parent does not, so the direct walk below falls back to this when the immediate parent
+// is not itself a *BifrostContext.
+type bifrostContextSelfKey struct{}
+
+// inheritedGrant finds the grant of the nearest ancestor request context that has one. A
+// BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
+// giving up, since a foreign context with nothing to offer still answers nil for that key the
+// same as for any other.
+func (bc *BifrostContext) inheritedGrant() Grant {
+	parent := bc.parent
+	for parent != nil {
+		ancestor, ok := parent.(*BifrostContext)
+		if !ok {
+			ancestor, ok = parent.Value(bifrostContextSelfKey{}).(*BifrostContext)
+			if !ok {
+				return nil
+			}
+		}
+		ancestor = ancestor.Root()
+		if g := ancestor.grant.Load(); g != nil {
+			return *g
+		}
+		parent = ancestor.parent
+	}
+	return nil
 }
 
 // BlockRestrictedWrites returns true if restricted writes are blocked.
@@ -311,6 +386,11 @@ func (bc *BifrostContext) Err() error {
 func (bc *BifrostContext) Value(key any) any {
 	if bc.valueDelegate != nil {
 		return bc.valueDelegate.Value(key)
+	}
+	// A scoped context never reaches this line - it returned via its delegate above - so bc is
+	// already the root here. See bifrostContextSelfKey and inheritedGrant.
+	if _, ok := key.(bifrostContextSelfKey); ok {
+		return bc
 	}
 	bc.valuesMu.RLock()
 	if val, ok := bc.userValues[key]; ok {

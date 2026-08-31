@@ -257,6 +257,13 @@
           "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
+        "vk_rotation_cooldown": {
+          "type": ["string", "integer"],
+          "minimum": 0,
+          "maximum": 2592000000000000,
+          "description": "Cooldown after virtual key rotation: grace period during which the previous key value still authenticates. Accepts a Go duration string (e.g. \"5m\", \"1h\"); integer values are nanoseconds (Go duration JSON encoding), so prefer strings. 0 or an empty string disables the grace period (the old value stops working immediately). Maximum 30 days (2592000000000000 ns); string durations are bounds-checked at runtime.",
+          "default": 0
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
@@ -5321,9 +5328,15 @@
             "minimum": 0
           }
         },
+        "allow_by_default": {
+          "type": "boolean",
+          "description": "When true, this MCP server is available to every caller that has not been assigned it explicitly, with all tools allowed. An explicit assignment for a caller takes precedence over this setting for that caller.",
+          "default": false
+        },
         "allow_on_all_virtual_keys": {
           "type": "boolean",
-          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
+          "deprecated": true,
+          "description": "Deprecated: use allow_by_default. Read only when allow_by_default is absent.",
           "default": false
         },
         "disabled": {

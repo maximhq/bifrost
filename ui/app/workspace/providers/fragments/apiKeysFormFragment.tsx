@@ -1,8 +1,8 @@
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -449,9 +449,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem data-testid="apikey-deployments-field">
 								<FormLabel>Deployments (Optional)</FormLabel>
 								<FormDescription>
-									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint ID,
-									etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
-									cost/pricing logs and family-based routing.
+									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
+									canonical name, model family, and provider overrides - these drive cost logs and family-based routing.
+									{isReplicate && (
+										<>
+											{" "}
+											Replicate deployments are listed only while &quot;Use Deployments Endpoint&quot; is on - otherwise type the owner/name
+											and press Enter.
+										</>
+									)}
 								</FormDescription>
 								<FormControl>
 									<div data-testid="apikey-deployments-table">
@@ -786,8 +792,11 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<div className="space-y-1.5">
 									<FormLabel>Use Deployments Endpoint</FormLabel>
 									<FormDescription>
-										Route requests through the Replicate deployments endpoint instead of the models endpoint.
+										Sends <strong>every</strong> model on this key to /v1/deployments/&#123;owner&#125;/&#123;name&#125;/predictions, so
+										plain model names stop working. To switch just one model, leave this off and set &quot;Use deployments endpoint&quot; on
+										its row above.
 									</FormDescription>
+									<FormMessage />
 								</div>
 								<FormControl>
 									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
