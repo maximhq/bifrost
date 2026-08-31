@@ -176,6 +176,10 @@ type ServerCallbacks interface {
 	// client-level mutation that invalidates its credential rows as a set
 	// (needs_update schema flip, access reconciliation, client deletion).
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant,
+	// for the listing routes that run outside the request pipeline and so cannot wait for a hook
+	// to resolve it.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
 }
 
 // GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
@@ -1346,6 +1350,21 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, pricing)
 }
 
+// ResolveAccess answers what the request may reach, so a route that never enters the request
+// pipeline decides from the same answer the pipeline would have used: resolved once, onto the
+// request's grant.
+//
+// Without governance there is nothing to resolve and nothing to restrict, which is why a
+// missing plugin returns nil rather than access permitting nothing.
+func (s *BifrostHTTPServer) ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		logger.Warn("governance plugin not found: %v", err)
+		return nil, nil
+	}
+	return governancePlugin.ResolveAccess(ctx)
+}
+
 // backgroundCtx returns the server-lifetime context background workers should
 // hang off. Falls back to context.Background() before Bootstrap has set s.Ctx.
 func (s *BifrostHTTPServer) backgroundCtx() context.Context {
@@ -2045,7 +2064,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
-	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
+	inferenceHandler := handlers.NewInferenceHandler(s, s.Client, s.Config)
 	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
