@@ -175,12 +175,70 @@ def test_legacy_aliases_mount_legacy_fragments():
     )
 
 
+def test_vk_rotation_cooldown_bounds_match_config_schema():
+    """The client-config contract lives in transports/config.schema.json; every copy of
+    the vk_rotation_cooldown property in the OpenAPI sources and bundle must carry the
+    same minimum/maximum, or generated clients silently drop the 30-day bound."""
+    import json
+
+    contract = json.loads(
+        (HERE.parent.parent / "transports" / "config.schema.json").read_text(encoding="utf-8")
+    )
+    client_config = contract["properties"]["client"]["properties"]["vk_rotation_cooldown"]
+    want = {"minimum": client_config["minimum"], "maximum": client_config["maximum"]}
+
+    def collect(node, where, out):
+        if isinstance(node, dict):
+            prop = node.get("vk_rotation_cooldown")
+            if isinstance(prop, dict) and "type" in prop:
+                out.append((where, prop))
+            for value in node.values():
+                collect(value, where, out)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value, where, out)
+
+    copies = []
+    collect(load(HERE / "schemas" / "management" / "config.yaml"), "schemas/management/config.yaml", copies)
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), "openapi.json", copies)
+    assert copies, "no vk_rotation_cooldown property found in the OpenAPI sources"
+    drifted = [
+        f"{where}: has minimum={prop.get('minimum')} maximum={prop.get('maximum')}, want {want}"
+        for where, prop in copies
+        if {"minimum": prop.get("minimum"), "maximum": prop.get("maximum")} != want
+    ]
+    assert not drifted, "vk_rotation_cooldown bounds drift from config.schema.json:\n    " + "\n    ".join(drifted)
+
+
+def test_bulk_rotate_ids_requires_min_items():
+    """The bulk rotate handler 400s on an empty ids array; the schema must say so via
+    minItems in both the YAML source and the bundle, or generated clients allow []."""
+    import json
+
+    source = load(PATHS_DIR / "governance.yaml")
+    source_ids = source["virtual-keys-rotate"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]["properties"]["ids"]
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle_ids = bundle["paths"]["/api/governance/virtual-keys/rotate"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]["properties"]["ids"]
+    drifted = [
+        f"{where}: ids minItems={ids.get('minItems')}, want 1"
+        for where, ids in (("paths/management/governance.yaml", source_ids), ("openapi.json", bundle_ids))
+        if ids.get("minItems") != 1
+    ]
+    assert not drifted, "bulk rotate ids schema permits []:\n    " + "\n    ".join(drifted)
+
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
 check("no fragment is defined but never used", test_no_orphaned_fragments)
 check("no operationId is claimed by two mounted operations", test_duplicate_operation_ids)
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
+check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
+check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

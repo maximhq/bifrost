@@ -799,6 +799,44 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 	})
 }
 
+func TestSchemaVKRotationCooldownBounds(t *testing.T) {
+	compiled := compileSchema(t)
+
+	cooldownConfig := func(value string) string {
+		return fmt.Sprintf(`{"client": {"vk_rotation_cooldown": %s}}`, value)
+	}
+
+	t.Run("valid duration string accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`"5m"`)); err != nil {
+			t.Errorf("duration string cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("zero accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`0`)); err != nil {
+			t.Errorf("zero cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("30 days in nanoseconds accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`2592000000000000`)); err != nil {
+			t.Errorf("30-day cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("negative integer rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`-1`)); err == nil {
+			t.Error("negative cooldown must be rejected by the schema")
+		}
+	})
+
+	t.Run("integer above 30 days rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`2592000000000001`)); err == nil {
+			t.Error("cooldown above 30 days must be rejected by the schema")
+		}
+	})
+}
+
 func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 	schema := loadSchema(t)
 

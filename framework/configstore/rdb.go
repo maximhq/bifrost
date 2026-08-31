@@ -294,6 +294,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       config.AllowDirectKeys,
+		VKRotationCooldownNS:                  int64(config.VKRotationCooldown),
 		MCPServerAuthMode:                     config.MCPServerAuthMode,
 		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
 		WebhookConfig:                         config.WebhookConfig,
@@ -578,6 +579,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
 		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
+		VKRotationCooldown:                    schemas.Duration(dbConfig.VKRotationCooldownNS),
 		MCPServerAuthMode:                     dbConfig.MCPServerAuthMode,
 		OAuth2ServerConfig:                    dbConfig.OAuth2ServerConfig,
 		WebhookConfig:                         dbConfig.WebhookConfig,
@@ -3684,59 +3686,65 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 	return &virtualKey, nil
 }
 
-// GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
-func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+// findVirtualKeyByValue resolves a virtual key from a presented value: the
+// current value hash first, then a rotation-grace previous value hash that is
+// still inside its window, then the plaintext fallback for rows not yet
+// migrated to hashed lookups.
+func (s *RDBConfigStore) findVirtualKeyByValue(baseQuery *gorm.DB, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	query := preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx))
-	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
-	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if schemas.IsSecretRef(value) {
-				return nil, ErrNotFound
-			}
-			// Fallback: try plaintext lookup for rows not yet migrated
-			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, ErrNotFound
-				}
-				return nil, err
-			}
-		} else {
-			return nil, err
+	err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error
+	if err == nil {
+		return &virtualKey, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	// Rotation grace period: a retired value keeps resolving until its expiry.
+	// Querying current hashes first guarantees a live value always beats
+	// another key's retired value. The window check stays in Go so the
+	// exclusive boundary has a single definition (HasActivePreviousValue)
+	// across SQL dialects and the in-memory governance store.
+	var graceKey tables.TableVirtualKey
+	graceErr := baseQuery.Session(&gorm.Session{}).
+		Where("previous_value_hash = ?", valueHash).
+		Order("previous_value_expires_at DESC").
+		First(&graceKey).Error
+	if graceErr == nil {
+		if graceKey.HasActivePreviousValue(time.Now().UTC()) {
+			return &graceKey, nil
 		}
+	} else if !errors.Is(graceErr, gorm.ErrRecordNotFound) {
+		return nil, graceErr
+	}
+	if schemas.IsSecretRef(value) {
+		return nil, ErrNotFound
+	}
+	// Fallback: try plaintext lookup for rows not yet migrated
+	if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
 	}
 	return &virtualKey, nil
+}
+
+// GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
+func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	return s.findVirtualKeyByValue(preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx)), value)
 }
 
 // GetVirtualKeyQuotaByValue retrieves budget, rate limit, and provider-level limit data for a virtual key.
 // This is a lean query that avoids loading Team, Customer, MCPConfigs, and provider Keys.
 func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
-	valueHash := encrypt.HashSHA256(value)
-	var virtualKey tables.TableVirtualKey
 	baseQuery := s.DB().WithContext(ctx).
 		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
 		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit")
-	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if schemas.IsSecretRef(value) {
-				return nil, ErrNotFound
-			}
-			// Fallback: try plaintext lookup for rows not yet migrated
-			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, ErrNotFound
-				}
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
-	}
-	return &virtualKey, nil
+	return s.findVirtualKeyByValue(baseQuery, value)
 }
 
 // CreateVirtualKey creates a new virtual key in the database.
@@ -3779,8 +3787,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		}
 	} else {
 		virtualKey.ID = existing.ID
+		// Rotation grace-period state travels with the row: unless the caller is
+		// itself performing a rotation (RotatedAt set), preserve the stored
+		// previous-value fields so a plain update cannot wipe an in-flight grace
+		// window (the Select below writes zero values).
+		if virtualKey.RotatedAt == nil {
+			virtualKey.PreviousValue = existing.PreviousValue
+			virtualKey.PreviousValueHash = existing.PreviousValueHash
+			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
+			virtualKey.RotatedAt = existing.RotatedAt
+		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash").
+			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
@@ -5214,7 +5232,11 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
-	q := s.DB().WithContext(ctx).
+	// ScopedDB, not DB: routing-rule reads must honor any row-visibility
+	// QueryScope stashed on ctx (the enterprise DAC wrapper attaches one for
+	// request-driven reads). Background callers (engine bootstrap, cache
+	// reloads on context.Background) carry no scope and stay unfiltered.
+	q := s.ScopedDB(ctx).
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
 			return db.Order("weight DESC").
 				Order("COALESCE(provider, '') ASC").
@@ -5427,6 +5449,9 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 
 		targets := rule.Targets
 		rule.Targets = nil
+		// created_at is immutable: Save writes every column, so a caller passing a rule it
+		// didn't read from the DB would otherwise zero it out. Always keep the persisted value.
+		rule.CreatedAt = existing.CreatedAt
 		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 			return err
 		}
@@ -5520,6 +5545,10 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 			}
 			targets := rule.Targets
 			rule.Targets = nil
+			// Rules in toUpdate come from config.json, which carries no created_at; GORM's Save
+			// selects every column, so an unset CreatedAt would overwrite the original insert
+			// timestamp with the zero time. Carry the persisted value forward.
+			rule.CreatedAt = existing.CreatedAt
 			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 				return err
 			}

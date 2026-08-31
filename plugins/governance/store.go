@@ -24,6 +24,11 @@ type (
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
+	// virtualKeys is keyed by VK value; during the rotation grace period a VK is
+	// registered under two keys (current + previous value) pointing at the same
+	// object. GetVirtualKey validates which key matched and lazily removes
+	// expired/stale value keys (a plain Delete on the value key only - the ID
+	// index must survive such cleanup).
 	virtualKeys sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
 	// virtualKeysByID is a secondary index over virtualKeys keyed by VK row ID,
 	// giving O(1) by-ID lookups (e.g. the /mcp JWT auth path) without an O(n)
@@ -1092,7 +1097,9 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 	}
 }
 
-// GetVirtualKey retrieves a virtual key by its value (lock-free) with all relationships preloaded
+// GetVirtualKey retrieves a virtual key by its value (lock-free) with all relationships preloaded.
+// A VK can be reachable under two keys: its current value and, during the
+// rotation grace period, its previous value. The matched key decides validity.
 func (gs *LocalGovernanceStore) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
 	value, exists := gs.virtualKeys.Load(vkValue)
 	if !exists || value == nil {
@@ -1102,7 +1109,26 @@ func (gs *LocalGovernanceStore) GetVirtualKey(ctx context.Context, vkValue strin
 	if !ok || vk == nil {
 		return nil, false
 	}
-	return vk, true
+	switch vkValue {
+	case vk.Value.GetValue():
+		return vk, true
+	case vk.PreviousValue.GetValue():
+		if vk.HasActivePreviousValue(time.Now()) {
+			gs.logger.Debug("virtual key %s authenticated via rotation grace-period value", vk.ID)
+			return vk, true
+		}
+		// Grace window over: lazily drop only this value-keyed entry. Never use
+		// deleteVirtualKeyByValue here - it would also remove the ID index entry
+		// that the live current-value entry still needs. Compare against the
+		// entry we just read so a key that claimed this value in the meantime
+		// keeps its registration.
+		gs.virtualKeys.CompareAndDelete(vkValue, value)
+		return nil, false
+	default:
+		// Stale entry left behind by an earlier value change; same lazy cleanup.
+		gs.virtualKeys.CompareAndDelete(vkValue, value)
+		return nil, false
+	}
 }
 
 // GetVirtualKeyByID retrieves a virtual key by its row ID (lock-free) with all
@@ -1127,6 +1153,13 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTables.TableVirtualKey) {
 	if value == "" {
 		if vk != nil {
+			// Fail closed: an unresolvable VK must be unavailable on BOTH
+			// lookup paths. Callers that delete value keys directly rely on
+			// this to also retire the ID index entry, otherwise
+			// GetVirtualKeyByID would keep serving the stale object.
+			if vk.ID != "" {
+				gs.virtualKeysByID.Delete(vk.ID)
+			}
 			gs.logger.Warn("skipping virtual key %s with unresolvable value (env/vault ref could not be resolved)", vk.ID)
 		}
 		return
@@ -1135,17 +1168,64 @@ func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTab
 	if vk != nil && vk.ID != "" {
 		gs.virtualKeysByID.Store(vk.ID, vk)
 	}
+	// Register an active grace-period previous value as a second key onto the
+	// same object, so a rotated-out value keeps authenticating until expiry.
+	if vk != nil && vk.HasActivePreviousValue(time.Now()) {
+		if prev := vk.PreviousValue.GetValue(); prev != "" && prev != value {
+			// Never displace the key that owns this value as its CURRENT
+			// credential. The previous-value hash index is deliberately
+			// non-unique, so a retired value can equal another key's live
+			// value; handing the alias the entry would authenticate that
+			// key's holder as this VK. Current ownership wins, matching the
+			// database lookup order (current hash first, grace hash second).
+			// LoadOrStore claims the slot atomically when it is free.
+			if existing, loaded := gs.virtualKeys.LoadOrStore(prev, vk); loaded {
+				owner, ok := existing.(*configstoreTables.TableVirtualKey)
+				// Only a DIFFERENT key that still holds this value as its
+				// current credential keeps the entry. Our own pre-rotation
+				// entry looks like that too, so it must be replaced by the
+				// rotated object, otherwise the retired value would keep
+				// resolving as a current value and never expire.
+				if !ok || owner == nil || owner.ID == vk.ID || owner.Value.GetValue() != prev {
+					gs.virtualKeys.Store(prev, vk)
+				}
+			}
+		}
+	}
 }
 
 // deleteVirtualKeyByValue removes the VK stored under value from both the
 // primary map and the ID-keyed secondary index.
 func (gs *LocalGovernanceStore) deleteVirtualKeyByValue(value string) {
-	if existing, ok := gs.virtualKeys.Load(value); ok {
-		if vk, ok := existing.(*configstoreTables.TableVirtualKey); ok && vk != nil && vk.ID != "" {
-			gs.virtualKeysByID.Delete(vk.ID)
-		}
+	existing, ok := gs.virtualKeys.Load(value)
+	if !ok {
+		return
 	}
-	gs.virtualKeys.Delete(value)
+	if vk, isVK := existing.(*configstoreTables.TableVirtualKey); isVK && vk != nil && vk.ID != "" {
+		gs.virtualKeysByID.Delete(vk.ID)
+	}
+	// Compare-and-delete so a concurrent writer that has already replaced this
+	// entry keeps its own registration.
+	gs.virtualKeys.CompareAndDelete(value, existing)
+}
+
+// deleteVirtualKeyAlias drops a value-keyed entry only while it still belongs to
+// vkID. The previous-value hash index is deliberately non-unique, so a value one
+// key is retiring may already be another key's current credential; deleting it
+// blindly would deauthenticate that live key. CompareAndDelete then makes the
+// removal atomic against a writer claiming the value in between.
+func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string) {
+	if value == "" {
+		return
+	}
+	existing, ok := gs.virtualKeys.Load(value)
+	if !ok {
+		return
+	}
+	if owner, isVK := existing.(*configstoreTables.TableVirtualKey); isVK && owner != nil && owner.ID != vkID {
+		return
+	}
+	gs.virtualKeys.CompareAndDelete(value, existing)
 }
 
 // CheckRateLimit checks rate limits for tokens and requests across categories
@@ -3729,10 +3809,28 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 		}
-		if existingVKKey != "" && existingVKKey != vk.Value.GetValue() {
-			gs.deleteVirtualKeyByValue(existingVKKey)
+		// Reconcile value keys: keep the new current value plus an active
+		// grace-period previous value; drop every other key that pointed at this
+		// VK (the old current value on a plain value change, and a stale previous
+		// value after repeated rotation). Direct deletes keep the ID index intact;
+		// storeVirtualKey refreshes it below.
+		newValue := clone.Value.GetValue()
+		keep := make(map[string]bool)
+		if newValue != "" {
+			// An unresolvable current value keeps keep empty so every alias —
+			// including an active grace-period previous value — is dropped:
+			// fail closed on all lookup paths, matching storeVirtualKey.
+			keep[newValue] = true
+			if clone.HasActivePreviousValue(time.Now()) {
+				keep[clone.PreviousValue.GetValue()] = true
+			}
 		}
-		gs.storeVirtualKey(vk.Value.GetValue(), &clone)
+		for _, oldKey := range []string{existingVKKey, existingVK.Value.GetValue(), existingVK.PreviousValue.GetValue()} {
+			if oldKey != "" && !keep[oldKey] {
+				gs.deleteVirtualKeyAlias(oldKey, clone.ID)
+			}
+		}
+		gs.storeVirtualKey(newValue, &clone)
 	} else {
 		gs.CreateVirtualKeyInMemory(ctx, vk)
 	}
@@ -3776,6 +3874,15 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 			}
 
 			gs.deleteVirtualKeyByValue(key.(string))
+			// The VK can be registered under a second key (current or
+			// grace-period previous value); remove both so neither
+			// authenticates after deletion.
+			if prev := vk.PreviousValue.GetValue(); prev != "" && prev != key.(string) {
+				gs.deleteVirtualKeyAlias(prev, vkID)
+			}
+			if cur := vk.Value.GetValue(); cur != "" && cur != key.(string) {
+				gs.deleteVirtualKeyAlias(cur, vkID)
+			}
 			return false // stop iteration
 		}
 		return true // continue iteration

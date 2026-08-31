@@ -61,6 +61,7 @@ import {
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetMyVKCreationPolicyQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
@@ -302,7 +303,14 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	const isManagedByProfile = isEditing && isManagedByProfileHook;
+	// On create, check whether the user's access profile will govern the new VK. If so,
+	// lock the governance fields up front — the server applies the profile regardless.
+	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+		skip: isEditing,
+		refetchOnMountOrArgChange: true,
+	});
+	const willBeGovernedOnCreate = !isEditing && !!vkCreationPolicy?.governed;
+	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
 	// A VK can have at most one user (enforced by a unique index server-side).
@@ -840,8 +848,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return;
 		}
 		try {
-			await rotateVirtualKey(virtualKey.id).unwrap();
-			toast.success("Virtual key rotated successfully");
+			const result = await rotateVirtualKey(virtualKey.id).unwrap();
+			const graceUntil = result.virtual_key?.previous_value_expires_at;
+			toast.success(
+				graceUntil
+					? `Virtual key rotated successfully. The previous key remains valid until ${new Date(graceUntil).toLocaleString()}.`
+					: "Virtual key rotated successfully",
+			);
 			setShowRotateWarning(false);
 			onSave();
 		} catch (error) {
@@ -1073,11 +1086,27 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<Alert variant="info">
 										<Lock className="h-4 w-4" />
 										<AlertDescription>
-											This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
-											rate limits, and MCP access are controlled by the profile.
+											{isEditing ? (
+												<>
+													This virtual key is managed by an access profile. Only the name and description can be modified; providers,
+													budgets, rate limits, and MCP access are controlled by the profile.
+												</>
+											) : (
+												<>
+													This virtual key will be managed by your access profile
+													{vkCreationPolicy?.profile_name ? (
+														<>
+															{" "}
+															<span className="font-medium">{vkCreationPolicy.profile_name}</span>
+														</>
+													) : null}
+													. Set a name and description; providers, budgets, rate limits, and MCP access are applied from the profile on
+													creation.
+												</>
+											)}
 										</AlertDescription>
 									</Alert>
-									<ManagedVirtualKeyActions managingProfile={managingProfile} />
+									{isEditing && <ManagedVirtualKeyActions managingProfile={managingProfile} />}
 								</>
 							)}
 
@@ -1870,7 +1899,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<AlertDialogDescription>
 										This will replace the secret value for &quot;
 										{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider permissions, MCP access, and assignments stay the
-										same. The previous key value will stop working immediately.
+										same. The previous key value stops working immediately unless a rotation cooldown is configured, in which case it
+										remains valid until the cooldown ends.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>
