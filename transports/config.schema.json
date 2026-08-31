@@ -946,6 +946,11 @@
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
                 "default": false
               },
+              "allow_all_providers": {
+                "type": "boolean",
+                "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider that also has a config row still has that config's model allow/blacklist, budgets, rate limits, and key selection applied; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
+                "default": false
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id)"

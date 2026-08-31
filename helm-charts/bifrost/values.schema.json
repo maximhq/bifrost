@@ -1917,6 +1917,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider with a config row keeps its model allow/blacklist, budgets, rate limits, and key selection; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
                   "provider_configs": {
                     "type": "array",
                     "items": {
