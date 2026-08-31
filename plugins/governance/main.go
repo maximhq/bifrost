@@ -28,6 +28,12 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
+
+	// governanceAdmissionMaxAttempts bounds retries when a hot governance reload
+	// races the admission-plus-attribution critical section. In practice one retry
+	// succeeds once the reload releases its write lock; the bound protects against
+	// pathological update churn.
+	governanceAdmissionMaxAttempts = 4
 )
 
 // Config is the configuration for the governance plugin
@@ -1035,6 +1041,12 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// Governance attribution is admission-scoped. Always shadow values inherited
+	// from an earlier fallback/turn (including the empty result) before doing
+	// any validation, so a rejected attempt cannot be logged against stale IDs.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, []string{})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, []string{})
+
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
@@ -1052,31 +1064,70 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:      model,
 		UserID:     userID,
 	}
-	// A batch create fans out to many completions, each naming its own model, so
-	// every model it will run is evaluated before the request itself. Every check
-	// reached from here is read-only, so the extra passes cannot double-count usage.
-	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+	// Snapshot the applicable governance entities immediately after admission. Logging
+	// consumes these IDs only when it builds a terminal log row, but collecting
+	// them here has three important properties:
+	//   - ordinary stream chunks do no repeated hierarchy traversal or allocation;
+	//   - attribution reflects the policy snapshot used for admission, even if
+	//     governance configuration is hot-reloaded while a stream is in flight;
+	//   - PostLLMHook ordering does not determine whether logging can see the IDs.
+	// PreLLMHook runs again for fallbacks, and the empty values written above make
+	// an attempt with no applicable IDs replace (rather than inherit) the prior one.
+	effectiveVK := virtualKeyValue
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
+		effectiveVK = ""
+	}
+	// Admission and attribution must observe the same governance configuration.
+	// A hot reload that lands between evaluation and ID collection could otherwise
+	// admit under one policy and charge another. The store exposes this as a
+	// generation-guarded view: evaluation and collection run together, and a
+	// concurrent config update forces the complete admission sequence to retry.
+	for attempt := 0; attempt < governanceAdmissionMaxAttempts; attempt++ {
+		generation := p.store.BeginGovernanceConfigView()
+
+		// A batch create fans out to many completions, each naming its own model.
+		// Recheck every item model inside the guarded view so a reload cannot make
+		// the top-level retry skip the newly rejected policy. These checks are
+		// read-only and cannot double-count usage.
+		bifrostError := (*schemas.BifrostError)(nil)
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
-			_, bifrostError := p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
+			_, bifrostError = p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
 			if bifrostError != nil {
-				return req, &schemas.LLMPluginShortCircuit{
-					Error: bifrostError,
-				}, nil
+				break
 			}
 		}
-	}
-	// Evaluate governance using common function
-	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
-	// Convert BifrostError to LLMPluginShortCircuit if needed
-	if bifrostError != nil {
-		return req, &schemas.LLMPluginShortCircuit{
-			Error: bifrostError,
-		}, nil
+
+		if bifrostError != nil {
+			if !p.store.EndGovernanceConfigView(generation) {
+				continue
+			}
+			return req, &schemas.LLMPluginShortCircuit{Error: bifrostError}, nil
+		}
+
+		// Batch-create requests commonly omit a top-level model because each
+		// input-file row carries its own model; the store still returns
+		// provider/VK hierarchy IDs when model is empty.
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, model)
+		if !p.store.EndGovernanceConfigView(generation) {
+			continue
+		}
+
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+		return req, nil, nil
 	}
 
-	return req, nil, nil
+	return req, &schemas.LLMPluginShortCircuit{
+		Error: &schemas.BifrostError{
+			Type:       new("governance_configuration_changed"),
+			StatusCode: new(503),
+			Error: &schemas.ErrorField{
+				Message: "governance configuration changed during admission; retry the request",
+			},
+		},
+	}, nil
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
@@ -1132,6 +1183,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	// The governance worker only settles terminal usage. Ordinary intermediate
+	// chunks have no work to do here; returning before context extraction,
+	// pricing-scope construction, and goroutine creation keeps the per-chunk path
+	// allocation-free. This also covers stream errors whose provider path omitted
+	// the stream-end indicator: usage tracking already ignores those calls, while
+	// the next plugin in the post chain (logging) still observes the attribution
+	// snapshot created in PreLLMHook. Realtime is deliberately excluded because
+	// its PostLLMHook runs once per complete turn rather than per transport delta.
+	if bifrost.IsStreamRequestType(requestType) &&
+		requestType != schemas.RealtimeRequest &&
+		!isFinalChunk {
+		return result, err, nil
+	}
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
@@ -1143,8 +1209,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// filter models which are not supported on this virtual key
 		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
 	}
-
-	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
@@ -1158,18 +1222,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
-	// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
-	// lookups) and attach them to the context. Batch-create requests commonly omit
-	// a top-level model because each input-file row carries its own model; the
-	// store still returns provider/VK hierarchy IDs when requestedModel is empty.
-	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
-	if len(budgetIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
-	}
-	if len(rateLimitIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
-	}
-
 	if requestedModel != "" {
 		// Attempt number distinguishes physical provider calls within one
 		// logical request so each token-consuming attempt bills exactly once.
@@ -1611,6 +1663,13 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
+// ResolveModelUsageGovernanceIDs snapshots the model-scoped targets that apply to
+// a settled model. The virtual key and user are read from the batch attribution
+// record; provider and model are discovered from the batch results.
+func (p *GovernancePlugin) ResolveModelUsageGovernanceIDs(ctx context.Context, provider schemas.ModelProvider, model string, usage batchaccounting.BatchModelUsage) ([]string, []string) {
+	return p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, provider, model)
+}
+
 func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
@@ -1625,7 +1684,18 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batc
 
 	var errs []error
 	for _, modelUsage := range usage.ModelUsage {
-		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+		budgetIDs, rateLimitIDs := modelUsage.BudgetIDs, modelUsage.RateLimitIDs
+		// Nil means a legacy aggregate row predates snapshots. Keep the fallback so
+		// existing batches remain settleable; an explicitly empty snapshot must not.
+		if budgetIDs == nil || rateLimitIDs == nil {
+			resolvedBudgetIDs, resolvedRateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
+			if budgetIDs == nil {
+				budgetIDs = resolvedBudgetIDs
+			}
+			if rateLimitIDs == nil {
+				rateLimitIDs = resolvedRateLimitIDs
+			}
+		}
 		if modelUsage.Cost > 0 {
 			for _, budgetID := range budgetIDs {
 				if alreadyCharged["budget:"+budgetID] {

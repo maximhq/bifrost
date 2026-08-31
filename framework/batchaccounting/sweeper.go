@@ -55,11 +55,11 @@ type Sweeper struct {
 	pricing       PricingManager
 	fetcher       BatchResultFetcher
 	emitter       AggregateLogEmitter
-	usageReporter UsageReporter
+	usageReporter BatchUsageReporter
 	config        SweeperConfig
 }
 
-func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingManager, fetcher BatchResultFetcher, emitter AggregateLogEmitter, usageReporter UsageReporter, config SweeperConfig) *Sweeper {
+func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingManager, fetcher BatchResultFetcher, emitter AggregateLogEmitter, usageReporter BatchUsageReporter, config SweeperConfig) *Sweeper {
 	if config.Interval <= 0 {
 		config.Interval = defaultSweepInterval
 	}
@@ -253,19 +253,20 @@ func (s *Sweeper) settle(ctx context.Context, latest *cstables.TableBatchJob, re
 		endpoint = results.Endpoint
 	}
 	if _, err := AccountBatchResults(ctx, s.store, s.logStore, s.pricing, Request{
-		Provider:      schemas.ModelProvider(latest.Provider),
-		BatchID:       latest.BatchID,
-		FallbackModel: latest.Model,
-		Endpoint:      endpoint,
-		Results:       results.Results,
-		ParseErrors:   results.ExtraFields.ParseErrors,
-		RequestCounts: &retrieved.RequestCounts,
-		BatchJob:      latest,
-		Emitter:       s.emitter,
-		UsageReporter: s.usageReporter,
-		ClaimedBy:     s.config.ClaimedBy,
-		Scopes:        s.config.Scopes,
-		Now:           now,
+		Provider:           schemas.ModelProvider(latest.Provider),
+		BatchID:            latest.BatchID,
+		FallbackModel:      latest.Model,
+		Endpoint:           endpoint,
+		Results:            results.Results,
+		ParseErrors:        results.ExtraFields.ParseErrors,
+		RequestCounts:      &retrieved.RequestCounts,
+		BatchJob:           latest,
+		Emitter:            s.emitter,
+		UsageReporter:      s.usageReporter,
+		ModelUsageResolver: s.usageReporter,
+		ClaimedBy:          s.config.ClaimedBy,
+		Scopes:             s.config.Scopes,
+		Now:                now,
 	}); err != nil {
 		s.warn("batch accounting sweeper accounting failed provider=%s batch_id=%s job_id=%s: %v", latest.Provider, latest.BatchID, latest.ID, err)
 		// Settlement failures were the one retry path with no budget: next_check_at

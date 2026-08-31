@@ -128,6 +128,12 @@ type BatchModelBreakdown struct {
 	RequestCount int             `json:"request_count"`
 	Usage        BifrostLLMUsage `json:"usage"`
 	Cost         *float64        `json:"cost,omitempty"`
+	// BudgetIDs and RateLimitIDs are the model-scoped governance targets resolved
+	// when this breakdown was first written. They are settlement metadata, not
+	// display data: ReportBatchUsage reuses them so retries charge the same
+	// policies even if governance is hot-reloaded between attempts.
+	BudgetIDs    []string `json:"budget_ids"`
+	RateLimitIDs []string `json:"rate_limit_ids"`
 }
 
 // BatchErrors represents errors encountered during batch processing.

@@ -87,31 +87,54 @@ type BatchUsageReport struct {
 
 // BatchModelUsage is one model's share of a settled batch.
 type BatchModelUsage struct {
-	Model      string
-	Cost       float64
-	TokensUsed int64
+	Model        string
+	Cost         float64
+	TokensUsed   int64
+	UserID       string
+	VirtualKeyID string
+	BudgetIDs    []string
+	RateLimitIDs []string
 }
 
 type PricingManager interface {
 	CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails
 }
 
+// ModelUsageResolver resolves model-scoped governance targets while the aggregate
+// batch row is being created. The IDs are persisted as a settlement-time snapshot;
+// retries must consume that snapshot instead of resolving against current state.
+type ModelUsageResolver interface {
+	ResolveModelUsageGovernanceIDs(ctx context.Context, provider schemas.ModelProvider, model string, usage BatchModelUsage) (budgetIDs []string, rateLimitIDs []string)
+}
+
+// BatchUsageReporter both reports settled batch usage and resolves the
+// settlement-time governance snapshot for its models. Keeping the composite
+// interface lets logging persist the snapshot and report usage through one
+// dependency, while AccountBatchResults can still be used independently.
+type BatchUsageReporter interface {
+	UsageReporter
+	ModelUsageResolver
+}
+
 type Request struct {
-	Provider      schemas.ModelProvider
-	BatchID       string
-	FallbackModel string
-	Endpoint      schemas.BatchEndpoint
-	Results       []schemas.BatchResultItem
-	ParseErrors   []schemas.BatchError
-	RequestCounts *schemas.BatchRequestCounts
-	BatchJob      *cstables.TableBatchJob
-	BaseLog       *logstore.Log
-	SourceLog     *logstore.Log
-	Emitter       AggregateLogEmitter
-	UsageReporter UsageReporter
-	ClaimedBy     string
-	Scopes        *modelcatalog.PricingLookupScopes
-	Now           time.Time
+	Provider           schemas.ModelProvider
+	BatchID            string
+	FallbackModel      string
+	Endpoint           schemas.BatchEndpoint
+	Results            []schemas.BatchResultItem
+	ParseErrors        []schemas.BatchError
+	RequestCounts      *schemas.BatchRequestCounts
+	BatchJob           *cstables.TableBatchJob
+	BaseLog            *logstore.Log
+	SourceLog          *logstore.Log
+	Emitter            AggregateLogEmitter
+	UsageReporter      UsageReporter
+	ModelUsageResolver ModelUsageResolver
+	UserID             string
+	VirtualKeyID       string
+	ClaimedBy          string
+	Scopes             *modelcatalog.PricingLookupScopes
+	Now                time.Time
 }
 
 type Summary struct {
@@ -288,6 +311,13 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 			summary.UnpricedCount = computed.UnpricedCount
 			summary.FailedCount = computed.FailedCount
 		}
+		// Snapshot before either aggregate-log write path. Unpriceable rows still
+		// contain usage-bearing model breakdowns; later re-drives must consume their
+		// original governance targets rather than resolving against reloaded state.
+		if req.ModelUsageResolver != nil && len(summary.ModelBreakdowns) > 0 && job.AggregateLogWrittenAt == nil {
+			ensureBatchAttribution(&req, job, req.BaseLog, req.SourceLog)
+			resolveModelUsageGovernanceIDs(ctx, req, summary)
+		}
 		// The batch ran and consumed tokens we simply could not price (typically the
 		// catalog has no batch rates for the model yet). Log the row with an unknown
 		// cost rather than dropping it: this mirrors the synchronous path, which
@@ -336,6 +366,10 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 	summary.FailedCount = computed.FailedCount
 	summary.Complete = computed.Complete
 
+	if req.ModelUsageResolver != nil && len(summary.ModelBreakdowns) > 0 && job.AggregateLogWrittenAt == nil {
+		ensureBatchAttribution(&req, job, req.BaseLog, req.SourceLog)
+		resolveModelUsageGovernanceIDs(ctx, req, summary)
+	}
 	entry := buildAggregateLog(req, summary, now, userAgentFromContext(ctx))
 	if !summary.Complete {
 		// Some usage priced and some did not. summary.Cost is therefore only the known
@@ -378,7 +412,20 @@ func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore
 		return summary, nil
 	}
 	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
-		if err := req.UsageReporter.ReportBatchUsage(ctx, batchUsageReportFromLog(req.Provider, entry)); err != nil {
+		// Reporting always consumes the durable aggregate row, not the entry just
+		// rebuilt in this process. That keeps a retry after a failed report on the
+		// original snapshot even if governance has since been reloaded.
+		persistedEntry, err := logStore.FindByID(ctx, summary.LogID)
+		if err != nil {
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+			return nil, err
+		}
+		if persistedEntry == nil {
+			err := fmt.Errorf("batch aggregate log %s not found before governance report", summary.LogID)
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
+			return nil, err
+		}
+		if err := req.UsageReporter.ReportBatchUsage(ctx, batchUsageReportFromLog(req.Provider, persistedEntry)); err != nil {
 			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
@@ -450,6 +497,53 @@ func mergeBatchJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob
 	dst.SourceLogID = src.SourceLogID
 }
 
+// ensureBatchAttribution fills the identity resolver input from the same source
+// buildAggregateLog will use for billing attribution: the batch job when it has
+// create-time attribution, otherwise the request log.
+func ensureBatchAttribution(req *Request, job *cstables.TableBatchJob, baseLog, sourceLog *logstore.Log) {
+	if job != nil && hasBatchJobAttribution(job) {
+		req.UserID = dereferenceString(job.UserID)
+		req.VirtualKeyID = dereferenceString(job.VirtualKeyID)
+		return
+	}
+	if baseLog != nil {
+		req.UserID = dereferenceString(baseLog.UserID)
+		req.VirtualKeyID = dereferenceString(baseLog.VirtualKeyID)
+		return
+	}
+	if sourceLog != nil {
+		req.UserID = dereferenceString(sourceLog.UserID)
+		req.VirtualKeyID = dereferenceString(sourceLog.VirtualKeyID)
+	}
+}
+
+// resolveModelUsageGovernanceIDs stores the first durable settlement-time view of
+// model-scoped governance targets on each breakdown. It is only called before the
+// aggregate row is created; retries hydrate the persisted fields instead.
+func resolveModelUsageGovernanceIDs(ctx context.Context, req Request, summary *Summary) {
+	for model, breakdown := range summary.ModelBreakdowns {
+		budgetIDs, rateLimitIDs := req.ModelUsageResolver.ResolveModelUsageGovernanceIDs(ctx, req.Provider, model, BatchModelUsage{
+			Model:        model,
+			Cost:         dereferenceFloat(breakdown.Cost),
+			TokensUsed:   int64(breakdown.Usage.TotalTokens),
+			UserID:       req.UserID,
+			VirtualKeyID: req.VirtualKeyID,
+		})
+		// Non-nil empty slices are meaningful: they mean settlement confirmed
+		// that this model had no scoped targets. Persisting nil would make a
+		// retry treat the row as legacy and resolve against current state.
+		if budgetIDs == nil {
+			budgetIDs = []string{}
+		}
+		if rateLimitIDs == nil {
+			rateLimitIDs = []string{}
+		}
+		breakdown.BudgetIDs = budgetIDs
+		breakdown.RateLimitIDs = rateLimitIDs
+		summary.ModelBreakdowns[model] = breakdown
+	}
+}
+
 func pricingScopesForBatchJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *cstables.TableBatchJob) *modelcatalog.PricingLookupScopes {
 	if scopes == nil {
 		scopes = &modelcatalog.PricingLookupScopes{}
@@ -512,7 +606,13 @@ func modelUsageFromLog(entry *logstore.Log) []BatchModelUsage {
 		if breakdown.Cost != nil {
 			cost = *breakdown.Cost
 		}
-		usage = append(usage, BatchModelUsage{Model: model, Cost: cost, TokensUsed: int64(breakdown.Usage.TotalTokens)})
+		usage = append(usage, BatchModelUsage{
+			Model:        model,
+			Cost:         cost,
+			TokensUsed:   int64(breakdown.Usage.TotalTokens),
+			BudgetIDs:    breakdown.BudgetIDs,
+			RateLimitIDs: breakdown.RateLimitIDs,
+		})
 	}
 	// These become billing keys, so order must be stable across retries.
 	sort.Slice(usage, func(i, j int) bool { return usage[i].Model < usage[j].Model })
@@ -936,6 +1036,20 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		}
 	}
 	return out, nil
+}
+
+func dereferenceString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func dereferenceFloat(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func firstNonZero(values ...int) int {
