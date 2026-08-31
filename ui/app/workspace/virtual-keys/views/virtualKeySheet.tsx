@@ -848,8 +848,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return;
 		}
 		try {
-			await rotateVirtualKey(virtualKey.id).unwrap();
-			toast.success("Virtual key rotated successfully");
+			const result = await rotateVirtualKey(virtualKey.id).unwrap();
+			const graceUntil = result.virtual_key?.previous_value_expires_at;
+			toast.success(
+				graceUntil
+					? `Virtual key rotated successfully. The previous key remains valid until ${new Date(graceUntil).toLocaleString()}.`
+					: "Virtual key rotated successfully",
+			);
 			setShowRotateWarning(false);
 			onSave();
 		} catch (error) {
@@ -1894,7 +1899,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<AlertDialogDescription>
 										This will replace the secret value for &quot;
 										{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider permissions, MCP access, and assignments stay the
-										same. The previous key value will stop working immediately.
+										same. The previous key value stops working immediately unless a rotation cooldown is configured, in which case it
+										remains valid until the cooldown ends.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>

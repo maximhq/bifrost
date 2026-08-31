@@ -687,6 +687,338 @@ func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t
 	assert.Equal(t, 25.0, newVK.Budgets[0].CurrentUsage)
 }
 
+func TestGovernanceStore_UpdateVirtualKeyInMemory_GracePeriodKeepsPreviousValue(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	// Rotation with cooldown: previous value stays valid until expiry.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	rotated.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotated, nil, nil, nil)
+
+	newVK, found := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, found)
+	assert.Equal(t, "vk1", newVK.ID)
+
+	oldVK, found := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	require.True(t, found, "previous value must authenticate during the grace period")
+	assert.Equal(t, "vk1", oldVK.ID)
+
+	byID, found := store.GetVirtualKeyByID(context.Background(), "vk1")
+	require.True(t, found)
+	assert.Equal(t, "sk-bf-new", byID.Value.GetValue())
+}
+
+// TestGovernanceStore_StoreVirtualKey_GraceAliasDoesNotDisplaceCurrentOwner pins
+// credential ownership when two keys claim the same value. PreviousValueHash is
+// deliberately non-unique, so a rotated-out value can equal another virtual
+// key's live current value. Registering the grace alias must never take that
+// value away from the key that owns it as its current credential, otherwise a
+// legitimate request authenticates as the wrong identity and is charged against
+// the wrong budgets. Mirrors the database lookup order, which resolves the
+// current value hash before the grace hash.
+func TestGovernanceStore_StoreVirtualKey_GraceAliasDoesNotDisplaceCurrentOwner(t *testing.T) {
+	logger := NewMockLogger()
+	const shared = "sk-bf-shared"
+
+	vkA := buildVirtualKey("vk-a", shared, "Rotating VK", true)
+	vkB := buildVirtualKey("vk-b", "sk-bf-b-original", "Owner VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkA, *vkB},
+	}, nil)
+	require.NoError(t, err)
+
+	// VK-A rotates away from the shared value into a live grace window.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotatedA := *vkA
+	rotatedA.Value = *schemas.NewSecretVar("sk-bf-a-new")
+	rotatedA.PreviousValue = *schemas.NewSecretVar(shared)
+	rotatedA.PreviousValueExpiresAt = &exp
+	rotatedA.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotatedA, nil, nil, nil)
+
+	graceOwner, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found, "grace value authenticates while no one else claims it")
+	require.Equal(t, "vk-a", graceOwner.ID)
+
+	// VK-B now takes the same value as its CURRENT credential, which the schema
+	// permits because the previous-value hash index is non-unique.
+	claimedB := *vkB
+	claimedB.Value = *schemas.NewSecretVar(shared)
+	store.UpdateVirtualKeyInMemory(context.Background(), &claimedB, nil, nil, nil)
+
+	currentOwner, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found)
+	require.Equal(t, "vk-b", currentOwner.ID, "the key owning the value as its current credential must win")
+
+	// Any later touch of VK-A re-registers its grace alias (a config reload, a
+	// rename, an unrelated budget edit). That must not steal the value back.
+	renamedA := rotatedA
+	renamedA.Name = "Rotating VK renamed"
+	store.UpdateVirtualKeyInMemory(context.Background(), &renamedA, nil, nil, nil)
+
+	afterTouch, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found, "the current owner must still authenticate")
+	assert.Equal(t, "vk-b", afterTouch.ID, "re-registering a grace alias must not displace the current owner")
+
+	// VK-A itself keeps working under its own current value.
+	stillA, found := store.GetVirtualKey(context.Background(), "sk-bf-a-new")
+	require.True(t, found)
+	assert.Equal(t, "vk-a", stillA.ID)
+}
+
+// sharedValueStore builds two keys where VK-A has rotated away from a value
+// that VK-B then claimed as its own current credential - the collision the
+// non-unique previous-value hash index allows. Returns the store with VK-B
+// owning the shared value.
+func sharedValueStore(t *testing.T, shared string) *LocalGovernanceStore {
+	t.Helper()
+	logger := NewMockLogger()
+	vkA := buildVirtualKey("vk-a", shared, "Rotating VK", true)
+	vkB := buildVirtualKey("vk-b", "sk-bf-b-original", "Owner VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkA, *vkB},
+	}, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotatedA := *vkA
+	rotatedA.Value = *schemas.NewSecretVar("sk-bf-a-new")
+	rotatedA.PreviousValue = *schemas.NewSecretVar(shared)
+	rotatedA.PreviousValueExpiresAt = &exp
+	rotatedA.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotatedA, nil, nil, nil)
+
+	claimedB := *vkB
+	claimedB.Value = *schemas.NewSecretVar(shared)
+	store.UpdateVirtualKeyInMemory(context.Background(), &claimedB, nil, nil, nil)
+
+	owner, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found)
+	require.Equal(t, "vk-b", owner.ID, "VK-B must own the shared value before the cleanup under test")
+	return store
+}
+
+// TestGovernanceStore_ReRotationDoesNotEvictAnotherKeysCurrentValue covers the
+// delete side of credential ownership. When VK-A rotates again, its reconcile
+// loop drops the aliases it used to own - but the retired value now belongs to
+// VK-B as a current credential, so removing it would silently deauthenticate a
+// live key.
+func TestGovernanceStore_ReRotationDoesNotEvictAnotherKeysCurrentValue(t *testing.T) {
+	const shared = "sk-bf-shared-rerotate"
+	store := sharedValueStore(t, shared)
+
+	// VK-A rotates again with the cooldown disabled, so every alias it held
+	// falls out of the keep set.
+	later := time.Now().UTC().Add(time.Minute)
+	rerotatedA := *buildVirtualKey("vk-a", "sk-bf-a-newest", "Rotating VK", true)
+	rerotatedA.RotatedAt = &later
+	rerotatedA.ClearPreviousValue()
+	store.UpdateVirtualKeyInMemory(context.Background(), &rerotatedA, nil, nil, nil)
+
+	afterRotate, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found, "re-rotating VK-A must not evict the value VK-B owns")
+	assert.Equal(t, "vk-b", afterRotate.ID)
+
+	stillA, found := store.GetVirtualKey(context.Background(), "sk-bf-a-newest")
+	require.True(t, found)
+	assert.Equal(t, "vk-a", stillA.ID)
+}
+
+// TestGovernanceStore_DeletionDoesNotEvictAnotherKeysCurrentValue covers the
+// same ownership rule on the deletion path, which clears the deleted key's
+// current and grace-period aliases.
+func TestGovernanceStore_DeletionDoesNotEvictAnotherKeysCurrentValue(t *testing.T) {
+	const shared = "sk-bf-shared-delete"
+	store := sharedValueStore(t, shared)
+
+	// VK-A still carries the shared value as its grace-period previous value.
+	store.DeleteVirtualKeyInMemory(context.Background(), "vk-a")
+
+	afterDelete, found := store.GetVirtualKey(context.Background(), shared)
+	require.True(t, found, "deleting VK-A must not evict the value VK-B owns")
+	assert.Equal(t, "vk-b", afterDelete.ID)
+
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-a-new")
+	assert.False(t, found, "the deleted key's own value must stop authenticating")
+}
+
+func TestGovernanceStore_GetVirtualKey_ExpiredPreviousValueRejectedAndCleaned(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	// Rotation with an active grace window (storeVirtualKey registers only
+	// ACTIVE previous values), aged deterministically below via the stored
+	// object: expiry is evaluated lazily at lookup time, so no sleep is needed.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	rotated.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotated, nil, nil, nil)
+
+	_, found := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	require.True(t, found, "grace value must work before expiry")
+
+	storedVK, found := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, found)
+	past := now.Add(-time.Millisecond)
+	storedVK.PreviousValueExpiresAt = &past
+
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, found, "grace value must stop working after expiry")
+
+	// Lazy cleanup must not touch the current value or the ID index.
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-new")
+	assert.True(t, found)
+	_, found = store.GetVirtualKeyByID(context.Background(), "vk1")
+	assert.True(t, found)
+
+	// The expired entry itself is gone from the map.
+	_, stale := store.virtualKeys.Load("sk-bf-old")
+	assert.False(t, stale, "expired previous-value entry must be lazily deleted")
+}
+
+func TestGovernanceStore_UpdateVirtualKeyInMemory_UnresolvableValueRemovesIDIndex(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-live", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	_, found := store.GetVirtualKeyByID(context.Background(), "vk1")
+	require.True(t, found)
+
+	// Update to a value that cannot resolve (unset env ref). Fail closed: the
+	// VK must become unavailable on BOTH lookup paths, not just the value map.
+	updated := *vk
+	updated.Value = *schemas.NewSecretVar("env.BIFROST_TEST_UNSET_VK_VALUE")
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-live")
+	assert.False(t, found, "old value key must not authenticate after update")
+	_, found = store.GetVirtualKeyByID(context.Background(), "vk1")
+	assert.False(t, found, "ID index must fail closed when the new value cannot resolve")
+}
+
+func TestGovernanceStore_UpdateVirtualKeyInMemory_UnresolvableValueRemovesGraceKey(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	// Rotate with an active grace window so the previous value is registered.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	rotated.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotated, nil, nil, nil)
+
+	_, found := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	require.True(t, found, "grace value must authenticate before the broken update")
+
+	// Update to a current value that cannot resolve (unset env ref) while the
+	// grace window is still active. Fail closed: the VK must become unavailable
+	// on EVERY lookup path, including the grace-period previous value.
+	broken := rotated
+	broken.Value = *schemas.NewSecretVar("env.BIFROST_TEST_UNSET_VK_VALUE")
+	store.UpdateVirtualKeyInMemory(context.Background(), &broken, nil, nil, nil)
+
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-new")
+	assert.False(t, found, "old current value must not authenticate after the broken update")
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, found, "grace value must fail closed when the new value cannot resolve")
+	_, found = store.GetVirtualKeyByID(context.Background(), "vk1")
+	assert.False(t, found, "ID index must fail closed when the new value cannot resolve")
+	_, stale := store.virtualKeys.Load("sk-bf-old")
+	assert.False(t, stale, "previous-value entry must be removed from the map")
+}
+
+func TestGovernanceStore_UpdateVirtualKeyInMemory_RepeatedRotationDropsStalePrevious(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-v1", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+
+	first := *vk
+	first.Value = *schemas.NewSecretVar("sk-bf-v2")
+	first.PreviousValue = *schemas.NewSecretVar("sk-bf-v1")
+	first.PreviousValueExpiresAt = &exp
+	first.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &first, nil, nil, nil)
+
+	// Second rotation inside the grace window: v2 becomes the grace value and v1
+	// dies immediately (only one grace value at a time).
+	second := first
+	second.Value = *schemas.NewSecretVar("sk-bf-v3")
+	second.PreviousValue = *schemas.NewSecretVar("sk-bf-v2")
+	store.UpdateVirtualKeyInMemory(context.Background(), &second, nil, nil, nil)
+
+	_, found := store.GetVirtualKey(context.Background(), "sk-bf-v3")
+	assert.True(t, found)
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-v2")
+	assert.True(t, found, "newest previous value must authenticate")
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-v1")
+	assert.False(t, found, "second-oldest value must die on repeated rotation")
+	_, stale := store.virtualKeys.Load("sk-bf-v1")
+	assert.False(t, stale, "stale previous key must be removed from the map")
+}
+
+func TestGovernanceStore_DeleteVirtualKeyInMemory_RemovesGraceKey(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	rotated.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(context.Background(), &rotated, nil, nil, nil)
+
+	store.DeleteVirtualKeyInMemory(context.Background(), "vk1")
+
+	_, found := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	assert.False(t, found, "current value must not authenticate after delete")
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, found, "grace value must not authenticate after delete")
+	_, found = store.GetVirtualKeyByID(context.Background(), "vk1")
+	assert.False(t, found)
+}
+
 // TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests tests atomic rate limit usage updates
 func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	logger := NewMockLogger()

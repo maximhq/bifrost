@@ -35,6 +35,47 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 	assertVirtualKeyFound(t, result)
 }
 
+// TestBudgetResolver_EvaluateRequest_GracePeriodValue tests that a rotated-out
+// value authenticates during the rotation grace period and is rejected after.
+func TestBudgetResolver_EvaluateRequest_GracePeriodValue(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-current", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.PreviousValue = *schemas.NewSecretVar("sk-bf-rotated-out")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-rotated-out", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionAllow, result)
+	assertVirtualKeyFound(t, result)
+
+	// Deterministically expire the grace window: expiry is evaluated lazily at
+	// lookup time on the stored object, so aging the shared pointer replaces
+	// the previous short-sleep pattern without any timing dependence.
+	stored, found := store.GetVirtualKey(context.Background(), "sk-bf-current")
+	require.True(t, found)
+	past := now.Add(-time.Millisecond)
+	stored.PreviousValueExpiresAt = &past
+
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-rotated-out", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionVirtualKeyNotFound, result)
+
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-current", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionAllow, result)
+}
+
 // TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound tests missing VK
 func TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()

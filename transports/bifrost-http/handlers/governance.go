@@ -2426,6 +2426,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// vkRotationCooldown reads the effective rotation grace period from the stored
+// client config. Errors degrade to 0 (immediate flip), never block a rotation.
+func (h *GovernanceHandler) vkRotationCooldown(ctx context.Context) time.Duration {
+	clientConfig, err := h.configStore.GetClientConfig(ctx)
+	if err != nil || clientConfig == nil {
+		return 0
+	}
+	return clientConfig.VKRotationCooldown.D()
+}
+
 func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
@@ -2435,6 +2445,20 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
+	}
+	// RotatedAt marks this update as a rotation, making the grace-period fields
+	// authoritative in UpdateVirtualKey (a plain update carries them over
+	// instead). With a cooldown the retired value keeps authenticating until
+	// the expiry; repeated rotation overwrites the previous value, so only one
+	// grace value exists at a time and the second-oldest dies immediately.
+	now := time.Now().UTC()
+	vk.RotatedAt = &now
+	if cooldown := h.vkRotationCooldown(ctx); cooldown > 0 {
+		vk.PreviousValue = *schemas.NewSecretVar(oldValue)
+		expiresAt := now.Add(cooldown)
+		vk.PreviousValueExpiresAt = &expiresAt
+	} else {
+		vk.ClearPreviousValue()
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
 		return nil, err
@@ -4877,6 +4901,16 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
+	// An expired key is spent: it cannot make requests, so it has no business
+	// reading its own governance data either. Matches the inference path's
+	// expiry rejection (resolver.go). Inactive keys are deliberately still
+	// served - the response carries is_active so a dashboard can explain that
+	// state, and reactivation is a live option.
+	if vk.IsExpiredAt(time.Now().UTC()) {
+		SendError(ctx, 403, "Virtual key has expired")
 		return
 	}
 

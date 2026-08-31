@@ -68,6 +68,7 @@ import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
+import { latestGraceDeadline } from "./virtualKeysTable.utils";
 
 // Registers the enterprise user picker as a side effect; a no-op in OSS builds,
 // where the user filter stays hidden because no picker is registered.
@@ -481,10 +482,12 @@ export default function VirtualKeysTable({
 			setShowBulkRotateDialog(false);
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			const graceUntil = latestGraceDeadline(result.virtual_keys);
+			const graceNote = graceUntil ? ` Previous keys remain valid until ${new Date(graceUntil).toLocaleString()}.` : "";
 			if (failureCount > 0) {
-				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
+				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.${graceNote}`);
 			} else {
-				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+				toast.success(`Rotated ${result.virtual_keys.length} virtual keys.${graceNote}`);
 			}
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -789,8 +792,8 @@ export default function VirtualKeysTable({
 						<AlertDialogTitle>Rotate selected virtual keys?</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
-							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values will stop working
-							immediately.
+							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values stop working immediately
+							unless a rotation cooldown is configured, in which case they remain valid until the cooldown ends.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

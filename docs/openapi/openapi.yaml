@@ -853,6 +853,10 @@ paths:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-users"
   /api/governance/virtual-keys/{vk_id}/users/{user_id}:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
+  /api/governance/virtual-keys/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id-rotate"
 
   # Governance - Teams
   /api/governance/teams:
