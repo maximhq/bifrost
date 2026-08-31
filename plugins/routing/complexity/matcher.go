@@ -46,6 +46,9 @@ type compiledKeyword struct {
 	text      string
 	mask      compiledKeywordMask
 	matchMode keywordMatchMode
+	// unsegmented marks a keyword holding a letter from a script that does not
+	// separate words with spaces, which never appears in the word presence set.
+	unsegmented bool
 }
 
 type compiledStemmedKeyword struct {
@@ -92,10 +95,11 @@ func newCompiledKeywordMatcher(keywords KeywordConfig) *compiledKeywordMatcher {
 			entry, ok := entries[text]
 			if !ok {
 				entry = compiledKeyword{
-					id:        len(entries),
-					text:      text,
-					mask:      mask,
-					matchMode: keywordMatchModeFor(text),
+					id:          len(entries),
+					text:        text,
+					mask:        mask,
+					matchMode:   keywordMatchModeFor(text),
+					unsegmented: containsUnsegmentedLetter(text),
 				}
 			} else {
 				entry.mask |= mask
@@ -192,6 +196,14 @@ func (m *compiledKeywordMatcher) analyzeText(text string, scanMask compiledKeywo
 		wordPresence := buildWordPresenceSet(lowerText, signals.wordCount)
 		for _, keyword := range m.wholeWordKeywords {
 			if keyword.mask&scanMask == 0 {
+				continue
+			}
+			if keyword.unsegmented {
+				// Absent from the presence set by construction. Scoping the
+				// scan to these keeps everything else on the tokenized path.
+				if containsWord(lowerText, keyword.text) {
+					recordMatch(keyword)
+				}
 				continue
 			}
 			if _, ok := wordPresence[keyword.text]; ok {
@@ -291,12 +303,13 @@ func (s *textSignalCounts) addMask(mask compiledKeywordMask) {
 }
 
 // buildWordPresenceSet tokenizes large inputs once so whole-word matches become
-// set lookups instead of repeated boundary-aware scans.
+// set lookups instead of repeated boundary-aware scans. Unsegmented letters end
+// a token, so "api" in "このapiを直して" is a token of its own.
 func buildWordPresenceSet(text string, capacityHint int) map[string]struct{} {
 	words := make(map[string]struct{}, capacityHint)
 	start := -1
 	for i, r := range text {
-		if isWordChar(r) {
+		if isWordChar(r) && !isUnsegmentedLetter(r) {
 			if start == -1 {
 				start = i
 			}
@@ -386,12 +399,13 @@ func tokenizeStemEligibleText(text string) ([]string, bool) {
 }
 
 // tokenizeWordText extracts the request tokens used for stem matching. The
-// capacity hint is the word count already computed for scoring.
+// capacity hint is the word count already computed for scoring. Tokens end at
+// unsegmented letters, as they do in buildWordPresenceSet.
 func tokenizeWordText(text string, capacityHint int) []string {
 	tokens := make([]string, 0, capacityHint)
 	start := -1
 	for i, r := range text {
-		if isWordChar(r) {
+		if isWordChar(r) && !isUnsegmentedLetter(r) {
 			if start == -1 {
 				start = i
 			}
