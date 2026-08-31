@@ -47043,7 +47043,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\nDuring an active rotation grace window (client vk_rotation_cooldown), the\nprevious key value also authenticates until previous_value_expires_at.\nAn expired virtual key is rejected with 403; an inactive one still returns\nits quota with is_active false.\n",
         "tags": [
           "Governance"
         ],
@@ -47071,6 +47071,21 @@
           },
           "401": {
             "description": "Missing or invalid virtual key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Virtual key has expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -93157,7 +93172,7 @@
                 "minimum": 0,
                 "maximum": 2592000000000000,
                 "default": 0,
-                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 disables the grace period. Maximum 30 days."
+                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
               },
               "enforce_governance_header": {
                 "type": "boolean",
@@ -93498,7 +93513,7 @@
                 "minimum": 0,
                 "maximum": 2592000000000000,
                 "default": 0,
-                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 disables the grace period. Maximum 30 days."
+                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
               },
               "enforce_governance_header": {
                 "type": "boolean",

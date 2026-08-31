@@ -142,7 +142,7 @@ function SheetHeader({
 	return (
 		<div
 			data-slot="sheet-header"
-			className={cn("flex items-center gap-1 w-full pr-0", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
+			className={cn("flex items-center gap-1 w-full pr-2", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
 			{...props}
 		>
 			{sheetContext?.expandable && sheetContext?.side === "right" && (
