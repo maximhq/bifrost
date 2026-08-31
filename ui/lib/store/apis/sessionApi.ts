@@ -37,7 +37,7 @@ export const sessionApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: credentials,
 			}),
-			invalidatesTags: ["Sessions"],
+			invalidatesTags: ["Sessions", "Config"],
 		}),
 
 		// Logout endpoint
