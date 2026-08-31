@@ -21,12 +21,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
 // defaultSource is the canonical location of the Line_Break property file in
 // the Unicode Character Database.
 const defaultSource = "https://www.unicode.org/Public/UCD/latest/ucd/LineBreak.txt"
+
+// fetchTimeout bounds how long a -source download may take.
+const fetchTimeout = 30 * time.Second
+
+// maxSourceBytes caps the downloaded LineBreak.txt size; the live file is
+// about 257KB, so this leaves ample headroom without allowing unbounded reads.
+const maxSourceBytes = 8 * 1024 * 1024
 
 // unsegmentedLineBreakClasses are the Line_Break classes UAX #29 §4 identifies
 // as marking scripts whose word boundaries are not determined by spaces.
@@ -90,7 +98,8 @@ func readSource(source string) (string, error) {
 		return string(data), nil
 	}
 
-	resp, err := http.Get(source)
+	client := &http.Client{Timeout: fetchTimeout}
+	resp, err := client.Get(source)
 	if err != nil {
 		return "", err
 	}
@@ -98,9 +107,14 @@ func readSource(source string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected status %s", resp.Status)
 	}
-	data, err := io.ReadAll(resp.Body)
+	// Read one byte past the limit so an oversized body is detected instead
+	// of silently truncated.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(data) > maxSourceBytes {
+		return "", fmt.Errorf("response exceeds %d bytes", maxSourceBytes)
 	}
 	return string(data), nil
 }
