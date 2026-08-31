@@ -563,6 +563,28 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.DatabricksKeyConfig != nil {
+		var workspaceURL, clientID, clientSecret *schemas.SecretVar
+		if oldRawKey.DatabricksKeyConfig != nil {
+			workspaceURL = &oldRawKey.DatabricksKeyConfig.WorkspaceURL
+			clientID = oldRawKey.DatabricksKeyConfig.ClientID
+			clientSecret = oldRawKey.DatabricksKeyConfig.ClientSecret
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.DatabricksKeyConfig.WorkspaceURL, workspaceURL, "databricks_key_config.workspace_url"},
+			{mergedKey.DatabricksKeyConfig.ClientID, clientID, "databricks_key_config.client_id"},
+			{mergedKey.DatabricksKeyConfig.ClientSecret, clientSecret, "databricks_key_config.client_secret"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
@@ -629,6 +651,25 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		}
 		if key.VLLMKeyConfig.ModelName == "" {
 			return fmt.Errorf("vllm_key_config.model_name is required for VLLM keys")
+		}
+	case schemas.Databricks:
+		if key.DatabricksKeyConfig == nil || !key.DatabricksKeyConfig.WorkspaceURL.IsSet() {
+			return fmt.Errorf("databricks_key_config.workspace_url is required for Databricks keys")
+		}
+		switch key.DatabricksKeyConfig.APIFormat {
+		case "", schemas.DatabricksAPIFormatAuto, schemas.DatabricksAPIFormatModelServing, schemas.DatabricksAPIFormatAIGateway:
+		default:
+			return fmt.Errorf("databricks_key_config.api_format must be one of auto, model_serving, ai_gateway")
+		}
+		// Either a personal access token (the key value) or a full OAuth M2M service
+		// principal pair is required; a half-configured service principal cannot authenticate.
+		hasClientID := key.DatabricksKeyConfig.ClientID != nil && key.DatabricksKeyConfig.ClientID.IsSet()
+		hasClientSecret := key.DatabricksKeyConfig.ClientSecret != nil && key.DatabricksKeyConfig.ClientSecret.IsSet()
+		if !key.Value.IsSet() && !(hasClientID && hasClientSecret) {
+			return fmt.Errorf("databricks keys require either a personal access token as the key value, or both databricks_key_config.client_id and databricks_key_config.client_secret for OAuth M2M")
+		}
+		if hasClientID != hasClientSecret {
+			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
 		}
 	}
 	return nil
