@@ -173,7 +173,7 @@ bifrost:
         is_active: true
         budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
-        # No provider_configs → all providers allowed
+        allow_all_providers: true  # access to every provider, including ones added later
 
       # 2. OpenAI only - restricted to two models
       - id: "vk-openai-prod"
