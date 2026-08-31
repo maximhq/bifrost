@@ -791,7 +791,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Old value inference returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -1983,7 +1983,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Oldest VK C value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -2038,7 +2038,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('Latest retired VK C value: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -2140,7 +2140,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('Old VK A value: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -2196,7 +2196,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('New VK A value: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -2415,7 +2415,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Expired VK A grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -2516,7 +2516,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('New VK A value post-expiry: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -2687,7 +2687,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Expired VK B grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -2788,7 +2788,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('New VK B value post-expiry: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -3007,7 +3007,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Old VK D value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -3108,7 +3108,7 @@
                   "// The provider call itself may fail in some environments; this test only",
                   "// guards that governance does not reject the presented value as unknown.",
                   "pm.test('New VK D value: response carries no virtual-key rejection', function() {",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }
@@ -3464,7 +3464,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Previously-live VK E grace value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
@@ -3563,7 +3563,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Just-retired VK E value returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
-                  "pm.test('Rejection is virtual_key_not_found', function() { pm.expect(pm.response.text()).to.include('virtual_key_not_found'); });"
+                  "pm.test('Rejection is access_not_found', function() { pm.expect(pm.response.text()).to.include('access_not_found'); });"
                 ]
               }
             }
