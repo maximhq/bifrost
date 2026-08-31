@@ -139463,6 +139463,366 @@
           }
         }
       ]
+    },
+    {
+      "name": "66. Databricks Model Serving and Unity AI Gateway surfaces",
+      "description": "Databricks serves foundation models on two surfaces under one workspace host, and the databricks provider\npicks between them per request:\n\n  /serving-endpoints          Foundation Model APIs - pay-per-token and provisioned-throughput endpoints,\n                              addressed by endpoint name (databricks-claude-sonnet-4-5). Also serves the\n                              OpenAI Responses API at /serving-endpoints/responses.\n  /ai-gateway/mlflow/v1       Unity AI Gateway model services, addressed by Unity Catalog name\n                              (system.ai.claude-sonnet-4-5, or <catalog>.<schema>.<service>).\n\nProduction path: POST /v1/chat/completions -> core/providers/databricks/inference.go -> prepareRequest ->\nbuildURL (databricks.go) -> openai.HandleOpenAI*Request. resolveAPIFormat is what chooses the base path:\nan explicit api_format on the key wins, otherwise a dotted model name selects the AI Gateway and anything\nelse selects Model Serving.\n\nBoth surfaces are plain OpenAI wire format, so there are no Databricks-specific converters - which is\nexactly why the routing needs pinning here. A regression in resolveAPIFormat or basePathFor does not fail\na converter unit test; it sends a valid request to the wrong base path and comes back 404 from a surface\nthat has never heard of the model. Cases 1 and 2 are that pair: the same workspace, the same credentials,\ntwo model names that must land on different paths.\n\nFIXTURE CONSTRAINT - the model names carry the routing signal. system.ai.claude-sonnet-4-5 must keep its\ndots (they are what selects the AI Gateway) and databricks-claude-sonnet-4-5 must stay dot-free. Renaming\neither to a 'cleaner' id silently stops testing the routing rule.",
+      "item": [
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions model serving surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('a bare endpoint name reaches Model Serving and answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.usage, 'usage missing; Databricks returns the OpenAI usage object').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/system.ai.claude-sonnet-4-5 /v1/chat/completions unity ai gateway surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('a dotted Unity Catalog name reaches the AI Gateway and answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'routed to /serving-endpoints; the dotted name must select the AI Gateway').to.not.include('RESOURCE_DOES_NOT_EXIST');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/system.ai.claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/system.ai.claude-sonnet-4-5 strips context_management on streaming chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('unsupported Anthropic context management is stripped before Databricks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected context_management instead of Bifrost stripping it').to.not.include('context_management: Extra inputs are not permitted');",
+                  "  pm.expect(body, 'Databricks rejected reasoning_effort instead of Bifrost stripping it').to.not.include('reasoning_effort: Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/system.ai.claude-sonnet-4-5\", \"max_completion_tokens\": 32, \"stream_options\": {\"include_usage\": true}, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"hey\"}], \"reasoning_effort\": \"medium\", \"context_management\": {\"edits\": [{\"type\": \"clear_thinking_20251015\", \"keep\": \"all\"}]}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('stream emits OpenAI-shaped SSE chunks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Count to three.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions tool call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('tool calls survive the OpenAI-compatible round trip', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool_calls returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 128, \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Paris? Use the tool.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"get_weather\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gpt-5 /v1/responses native responses on model serving",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Responses API is served natively at /serving-endpoints/responses', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.output, 'no output items returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gpt-5\", \"max_output_tokens\": 64, \"input\": \"What is 2+2? Answer with just the number.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gte-large-en /v1/embeddings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('embeddings return a vector', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'no embedding data returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.data[0].embedding, 'embedding vector is empty').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gte-large-en\", \"input\": \"What is Databricks?\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-does-not-exist /v1/chat/completions unknown endpoint surfaces the upstream error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unknown endpoint is reported as a client error, not a success or a 500', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected a 4xx for an unknown endpoint; got: ' + body).to.be.within(400, 499);",
+                  "  pm.expect(body, 'no error payload returned').to.include('error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-does-not-exist\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
