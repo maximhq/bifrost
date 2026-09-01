@@ -140123,6 +140123,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "68. Anthropic Responses prompt_cache_breakpoint translation",
+      "item": [
+        {
+          "name": "Anthropic Responses breakpoint translation non-streaming [write]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) {",
+                  "  var usage = pm.response.json().usage;",
+                  "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
+                  "  function num(v) { return typeof v === 'number' ? v : 0; }",
+                  "  function writes(d) { return num(d.cached_write_tokens) || num(d.cache_write_tokens); }",
+                  "  function reads(d) { return num(d.cached_tokens) || num(d.cached_read_tokens); }",
+                  "  var d = details(usage);",
+                  "  pm.test('Anthropic Responses breakpoint write: usage present', function () { pm.expect(usage).to.be.an('object'); });",
+                  "  pm.test('Anthropic Responses breakpoint write: cache-write tokens > 0', function () { pm.expect(writes(d), JSON.stringify(d)).to.be.above(0); });",
+                  "  pm.collectionVariables.set('anthropicResponsesBreakpointNonstreamWrite', 'sent-' + pm.collectionVariables.get('pcNonce'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [anthropic responses breakpoint nonstream {{pcNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Responses breakpoint translation non-streaming [read]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __started = Date.now(); while (Date.now() - __started < 1500) { /* cache propagation */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) {",
+                  "  var usage = pm.response.json().usage;",
+                  "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
+                  "  function num(v) { return typeof v === 'number' ? v : 0; }",
+                  "  function writes(d) { return num(d.cached_write_tokens) || num(d.cache_write_tokens); }",
+                  "  function reads(d) { return num(d.cached_tokens) || num(d.cached_read_tokens); }",
+                  "  var d = details(usage);",
+                  "  pm.test('Anthropic Responses breakpoint read: cached tokens > 0', function () { pm.expect(reads(d), JSON.stringify(d)).to.be.above(0); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [anthropic responses breakpoint nonstream {{pcNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses?_chain={{anthropicResponsesBreakpointNonstreamWrite}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{anthropicResponsesBreakpointNonstreamWrite}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Responses breakpoint translation streaming [write]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) {",
+                  "  pm.test('Anthropic Responses breakpoint stream write: SSE content-type', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream'); });",
+                  "  function streamedUsage(text) {",
+                  "    var usage = null;",
+                  "    (text || '').split('\\n').forEach(function (line) {",
+                  "      line = line.trim();",
+                  "      if (line.indexOf('data:') !== 0) return;",
+                  "      var data = line.slice(5).trim();",
+                  "      if (!data || data === '[DONE]') return;",
+                  "      var event; try { event = JSON.parse(data); } catch (e) { return; }",
+                  "      if (event.usage) usage = event.usage;",
+                  "      if (event.response && event.response.usage) usage = event.response.usage;",
+                  "    });",
+                  "    return usage;",
+                  "  }",
+                  "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
+                  "  function num(v) { return typeof v === 'number' ? v : 0; }",
+                  "  function writes(d) { return num(d.cached_write_tokens) || num(d.cache_write_tokens); }",
+                  "  function reads(d) { return num(d.cached_tokens) || num(d.cached_read_tokens); }",
+                  "  var usage = streamedUsage(pm.response.text()); var d = details(usage);",
+                  "  pm.test('Anthropic Responses breakpoint stream write: usage present', function () { pm.expect(usage).to.be.an('object'); });",
+                  "  pm.test('Anthropic Responses breakpoint stream write: cache-write tokens > 0', function () { pm.expect(writes(d), JSON.stringify(d)).to.be.above(0); });",
+                  "  pm.collectionVariables.set('anthropicResponsesBreakpointStreamWrite', 'sent-' + pm.collectionVariables.get('pcNonce'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [anthropic responses breakpoint stream {{pcNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Responses breakpoint translation streaming [read]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __started = Date.now(); while (Date.now() - __started < 1500) { /* cache propagation */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) {",
+                  "  pm.test('Anthropic Responses breakpoint stream read: SSE content-type', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream'); });",
+                  "  function streamedUsage(text) {",
+                  "    var usage = null;",
+                  "    (text || '').split('\\n').forEach(function (line) {",
+                  "      line = line.trim();",
+                  "      if (line.indexOf('data:') !== 0) return;",
+                  "      var data = line.slice(5).trim();",
+                  "      if (!data || data === '[DONE]') return;",
+                  "      var event; try { event = JSON.parse(data); } catch (e) { return; }",
+                  "      if (event.usage) usage = event.usage;",
+                  "      if (event.response && event.response.usage) usage = event.response.usage;",
+                  "    });",
+                  "    return usage;",
+                  "  }",
+                  "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
+                  "  function num(v) { return typeof v === 'number' ? v : 0; }",
+                  "  function writes(d) { return num(d.cached_write_tokens) || num(d.cache_write_tokens); }",
+                  "  function reads(d) { return num(d.cached_tokens) || num(d.cached_read_tokens); }",
+                  "  var usage = streamedUsage(pm.response.text()); var d = details(usage);",
+                  "  pm.test('Anthropic Responses breakpoint stream read: cached tokens > 0', function () { pm.expect(reads(d), JSON.stringify(d)).to.be.above(0); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [anthropic responses breakpoint stream {{pcNonce}}]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses?_chain={{anthropicResponsesBreakpointStreamWrite}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{anthropicResponsesBreakpointStreamWrite}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

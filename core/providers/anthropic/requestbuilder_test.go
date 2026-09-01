@@ -379,6 +379,119 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 }
 
 func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
+	t.Run("typed_path_translates_responses_prompt_cache_breakpoint", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		explicit := "explicit"
+		ttl := "30m"
+		prefix := "stable prefix"
+		question := "question"
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:                  schemas.ResponsesInputMessageContentBlockTypeText,
+						Text:                  &prefix,
+						PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: &explicit},
+					},
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: &question,
+					},
+				}},
+			}},
+			Params: &schemas.ResponsesParameters{
+				PromptCacheOptions: &schemas.PromptCacheOptions{Mode: &explicit, TTL: &ttl},
+			},
+		}
+
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+
+		if got := providerUtils.GetJSONField(result, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("translated cache_control.type = %q, want ephemeral; body=%s", got, result)
+		}
+		if providerUtils.JSONFieldExists(result, "messages.0.content.0.prompt_cache_breakpoint") {
+			t.Fatalf("OpenAI prompt_cache_breakpoint leaked to Anthropic wire body: %s", result)
+		}
+		if providerUtils.JSONFieldExists(result, "prompt_cache_options") {
+			t.Fatalf("OpenAI prompt_cache_options leaked to Anthropic wire body: %s", result)
+		}
+		if providerUtils.JSONFieldExists(result, "messages.0.content.1.cache_control") {
+			t.Fatalf("unmarked content block acquired cache_control: %s", result)
+		}
+		if request.Input[0].Content.ContentBlocks[0].CacheControl != nil {
+			t.Fatal("translation mutated the neutral request's content block")
+		}
+	})
+
+	t.Run("typed_path_preserves_existing_cache_control_over_breakpoint", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		explicit := "explicit"
+		ttl := "1h"
+		text := "stable prefix"
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:                  schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:                  &text,
+					CacheControl:          &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+					PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: &explicit},
+				}}},
+			}},
+		}
+
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+		if got := providerUtils.GetJSONField(result, "messages.0.content.0.cache_control.ttl").String(); got != ttl {
+			t.Fatalf("existing cache_control TTL = %q, want %q; body=%s", got, ttl, result)
+		}
+	})
+
+	t.Run("typed_path_does_not_translate_unknown_breakpoint_mode", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		unknown := "implicit"
+		text := "stable prefix"
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:                  schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:                  &text,
+					PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: &unknown},
+				}}},
+			}},
+		}
+
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+		if providerUtils.JSONFieldExists(result, "messages.0.content.0.cache_control") {
+			t.Fatalf("unknown breakpoint mode synthesized cache_control: %s", result)
+		}
+	})
+
 	t.Run("typed_path_basic_request", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 

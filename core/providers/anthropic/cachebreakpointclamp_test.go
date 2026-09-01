@@ -1,10 +1,43 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestToAnthropicResponsesRequest_TranslatedBreakpointsAreClamped(t *testing.T) {
+	explicit := "explicit"
+	texts := []string{"one", "two", "three", "four", "five"}
+	blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(texts))
+	for i := range texts {
+		blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+			Type:                  schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:                  &texts[i],
+			PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: &explicit},
+		})
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-4-5",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+		}},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	got, err := ToAnthropicResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest() error = %v", err)
+	}
+
+	if gotMarkers, want := markerTexts(got), []string{"two", "three", "four", "five"}; !eq(gotMarkers, want) {
+		t.Fatalf("translated breakpoint markers = %v, want %v", gotMarkers, want)
+	}
+}
 
 // Anthropic, Bedrock, and Vertex all reject a request carrying more than 4 blocks with
 // cache_control ("A maximum of 4 blocks with cache_control may be provided. Found 5."), verified

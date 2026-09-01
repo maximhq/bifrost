@@ -8685,8 +8685,24 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 	return anthropicChoice
 }
 
+// resolveResponsesCacheControl translates the OpenAI Responses explicit cache
+// breakpoint into Anthropic's per-block cache_control representation. An
+// explicitly supplied cache_control remains authoritative.
+func resolveResponsesCacheControl(block schemas.ResponsesMessageContentBlock) *schemas.CacheControl {
+	if block.CacheControl != nil {
+		return block.CacheControl
+	}
+	if block.PromptCacheBreakpoint != nil &&
+		block.PromptCacheBreakpoint.Mode != nil &&
+		*block.PromptCacheBreakpoint.Mode == "explicit" {
+		return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	}
+	return nil
+}
+
 // Helper function to convert ContentBlock to AnthropicContentBlock
 func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
+	cacheControl := resolveResponsesCacheControl(block)
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		anthropicBlock := AnthropicContentBlock{}
@@ -8694,7 +8710,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
 				Text:         block.Text,
-				CacheControl: block.CacheControl,
+				CacheControl: cacheControl,
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
 				anthropicBlock.Citations = &AnthropicCitations{
@@ -8714,7 +8730,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 				ImageURLStruct: &schemas.ChatInputImage{
 					URL: *block.ResponsesInputMessageContentBlockImage.ImageURL,
 				},
-				CacheControl: block.CacheControl,
+				CacheControl: cacheControl,
 			}
 			anthropicBlock := ConvertToAnthropicImageBlock(chatBlock)
 			return &anthropicBlock
@@ -8726,7 +8742,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 				Content: &AnthropicContent{
 					ContentStr: &block.ResponsesOutputMessageContentCompaction.Summary,
 				},
-				CacheControl: block.CacheControl,
+				CacheControl: cacheControl,
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeFallback:
@@ -8747,7 +8763,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			anthropicBlock := ConvertResponsesFileBlockToAnthropic(
 				block.ResponsesInputMessageContentBlockFile,
 				block.FileID,
-				block.CacheControl,
+				cacheControl,
 				block.Citations,
 			)
 			return &anthropicBlock
@@ -8757,7 +8773,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			return &AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeContainerUpload,
 				FileID:       block.FileID,
-				CacheControl: block.CacheControl,
+				CacheControl: cacheControl,
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
