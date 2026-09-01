@@ -103,6 +103,11 @@ type ServerCallbacks interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	// Virtual key related callbacks
 	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
+	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
+	ReloadVirtualMCP(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	RemoveVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the governance
 	// store, leaving each reset boundary untouched. owner identifies the entity that
 	// owns them so enterprise can address the cluster broadcast that propagates the
@@ -594,6 +599,64 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return virtualKey, nil
+}
+
+// virtualMCPCache is the governance-store subset the Virtual MCP routes refresh in memory. The store
+// exposes it as a capability (type assertion), not on the shared interface, so a wrapper that has not
+// adopted it no-ops here; its cache still rebuilds at startup.
+type virtualMCPCache interface {
+	UpdateVirtualMCPInMemory(*tables.TableVirtualMCP)
+	DeleteVirtualMCPInMemory(uint)
+	AttachVirtualMCPInMemory(string, uint)
+	DetachVirtualMCPInMemory(string, uint)
+}
+
+func (s *BifrostHTTPServer) governanceVirtualMCPCache() virtualMCPCache {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil
+	}
+	cache, _ := governancePlugin.GetGovernanceStore().(virtualMCPCache)
+	return cache
+}
+
+// ReloadVirtualMCP re-reads one definition and refreshes its cache entry, after a create or update.
+func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, nil
+	}
+	def, err := s.Config.ConfigStore.GetVirtualMCPByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cache := s.governanceVirtualMCPCache(); cache != nil {
+		cache.UpdateVirtualMCPInMemory(def)
+	}
+	return def, nil
+}
+
+// RemoveVirtualMCP drops a definition from the cache after a delete.
+func (s *BifrostHTTPServer) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	if cache := s.governanceVirtualMCPCache(); cache != nil {
+		cache.DeleteVirtualMCPInMemory(id)
+	}
+	return nil
+}
+
+// AttachVirtualMCPToVirtualKeyInMemory records a VK -> Virtual MCP assignment in the cache.
+func (s *BifrostHTTPServer) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	if cache := s.governanceVirtualMCPCache(); cache != nil {
+		cache.AttachVirtualMCPInMemory(vkID, id)
+	}
+	return nil
+}
+
+// DetachVirtualMCPFromVirtualKeyInMemory removes a VK -> Virtual MCP assignment from the cache.
+func (s *BifrostHTTPServer) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	if cache := s.governanceVirtualMCPCache(); cache != nil {
+		cache.DetachVirtualMCPInMemory(vkID, id)
+	}
+	return nil
 }
 
 // ResetBudgetUsageInMemory clears usage for the given budgets in the governance
@@ -2267,6 +2330,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler, callbacks)
+	// Virtual MCP routes read the config store on every call; skip them when persistence is disabled
+	// (nil ConfigStore) rather than nil-deref, like routingHandler below.
+	var virtualMCPHandler *handlers.VirtualMCPHandler
+	if s.Config.ConfigStore != nil {
+		virtualMCPHandler = handlers.NewVirtualMCPHandler(s.Config, s.Client, callbacks, logger)
+	}
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
 	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
@@ -2288,6 +2357,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
+	if virtualMCPHandler != nil {
+		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)

@@ -30,9 +30,11 @@ type TableVirtualMCP struct {
 	ParsedTools []MCPToolSpec `gorm:"-" json:"tools"`     // decoded tool specs
 	ConfigHash  string        `gorm:"type:varchar(255);null" json:"config_hash,omitempty"`
 
-	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
-	// created_by_user_id is enterprise DAC only; enterprise adds and reads it separately.
+	// CreatedByUserID records the creator, like TableVirtualKey. It is populated in enterprise (where
+	// DAC scopes rows by it) and left null in pure OSS; the DAC scoping logic lives in enterprise.
+	CreatedByUserID *string   `gorm:"column:created_by_user_id;type:varchar(255);index:idx_mcp_tool_groups_created_by_user_id" json:"created_by_user_id,omitempty"`
+	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName retains the original physical name so existing rows are reused.
