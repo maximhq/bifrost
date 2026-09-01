@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -55,7 +56,7 @@ func chatReqWithText(text string) *schemas.BifrostChatRequest {
 func TestPromptCacheResponsesRequest_InjectsWhenEnabled(t *testing.T) {
 	req := responsesReqWithText("stable prefix")
 
-	out := promptCacheResponsesRequest(promptCacheOn(), schemas.Anthropic, req)
+	out := promptCacheResponsesRequest(nil, promptCacheOn(), schemas.Anthropic, req)
 
 	require.NotNil(t, out)
 	require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl, "expected a breakpoint on the first cacheable block")
@@ -71,7 +72,7 @@ func TestPromptCacheResponsesRequest_DoesNotMutateSharedRequest(t *testing.T) {
 	req := responsesReqWithText("stable prefix")
 	sharedContent := req.Input[0].Content
 
-	out := promptCacheResponsesRequest(promptCacheOn(), schemas.Anthropic, req)
+	out := promptCacheResponsesRequest(nil, promptCacheOn(), schemas.Anthropic, req)
 
 	require.NotSame(t, req, out, "an injecting attempt must dispatch a copy, not the shared request")
 	assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl,
@@ -88,11 +89,11 @@ func TestPromptCacheResponsesRequest_DoesNotMutateSharedRequest(t *testing.T) {
 func TestPromptCacheResponsesRequest_FallbackDoesNotInherit(t *testing.T) {
 	req := responsesReqWithText("stable prefix")
 
-	first := promptCacheResponsesRequest(promptCacheOn(), schemas.Anthropic, req)
+	first := promptCacheResponsesRequest(nil, promptCacheOn(), schemas.Anthropic, req)
 	require.NotNil(t, first.Input[0].Content.ContentBlocks[0].CacheControl, "sanity: attempt 1 injected")
 
 	// Attempt 2: a provider whose config has no prompt_cache at all.
-	second := promptCacheResponsesRequest(&schemas.ProviderConfig{}, schemas.Anthropic, req)
+	second := promptCacheResponsesRequest(nil, &schemas.ProviderConfig{}, schemas.Anthropic, req)
 
 	assert.Same(t, req, second, "a non-injecting attempt should dispatch the request unchanged")
 	assert.Nil(t, second.Input[0].Content.ContentBlocks[0].CacheControl,
@@ -120,7 +121,7 @@ func TestPromptCacheResponsesRequest_PassesThroughWhenNotApplicable(t *testing.T
 			req := responsesReqWithText("stable prefix")
 			req.Provider, req.Model = tc.provider, tc.model
 
-			out := promptCacheResponsesRequest(tc.config, tc.provider, req)
+			out := promptCacheResponsesRequest(nil, tc.config, tc.provider, req)
 
 			assert.Same(t, req, out, "expected the request to pass through untouched")
 			assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
@@ -129,13 +130,13 @@ func TestPromptCacheResponsesRequest_PassesThroughWhenNotApplicable(t *testing.T
 }
 
 func TestPromptCacheResponsesRequest_NilRequest(t *testing.T) {
-	assert.Nil(t, promptCacheResponsesRequest(promptCacheOn(), schemas.Anthropic, nil))
+	assert.Nil(t, promptCacheResponsesRequest(nil, promptCacheOn(), schemas.Anthropic, nil))
 }
 
 func TestPromptCacheChatRequest_InjectsAndIsolates(t *testing.T) {
 	req := chatReqWithText("stable prefix")
 
-	out := promptCacheChatRequest(promptCacheOn(), schemas.Anthropic, req)
+	out := promptCacheChatRequest(nil, promptCacheOn(), schemas.Anthropic, req)
 
 	require.NotSame(t, req, out)
 	require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl, "expected a breakpoint")
@@ -145,8 +146,8 @@ func TestPromptCacheChatRequest_InjectsAndIsolates(t *testing.T) {
 
 func TestPromptCacheChatRequest_PassesThroughWhenDisabled(t *testing.T) {
 	req := chatReqWithText("stable prefix")
-	assert.Same(t, req, promptCacheChatRequest(&schemas.ProviderConfig{}, schemas.Anthropic, req))
-	assert.Nil(t, promptCacheChatRequest(promptCacheOn(), schemas.Anthropic, nil))
+	assert.Same(t, req, promptCacheChatRequest(nil, &schemas.ProviderConfig{}, schemas.Anthropic, req))
+	assert.Nil(t, promptCacheChatRequest(nil, promptCacheOn(), schemas.Anthropic, nil))
 }
 
 // TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged proves the two guarantees
@@ -161,9 +162,50 @@ func TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged(t *testing.T) {
 			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
 		})
 
-	out := promptCacheResponsesRequest(promptCacheOn(), schemas.Anthropic, req)
+	out := promptCacheResponsesRequest(nil, promptCacheOn(), schemas.Anthropic, req)
 
 	blocks := out.Input[0].Content.ContentBlocks
 	assert.Nil(t, blocks[0].CacheControl, "no marker may be added when the caller already set one")
 	require.NotNil(t, blocks[1].CacheControl, "the caller's own marker must survive")
+}
+
+// TestPromptCacheDispatch_HonoursPerRequestOverride checks the override reaches the
+// dispatch helpers, and that turning it on for one request still does not write back
+// onto the shared request or the shared provider config.
+func TestPromptCacheDispatch_HonoursPerRequestOverride(t *testing.T) {
+	ctxWith := func(v bool) *schemas.BifrostContext {
+		c := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		c.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, v)
+		return c
+	}
+
+	t.Run("header turns a configured-off provider on", func(t *testing.T) {
+		config := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: false}}
+		req := responsesReqWithText("stable prefix")
+
+		out := promptCacheResponsesRequest(ctxWith(true), config, schemas.Anthropic, req)
+
+		require.NotSame(t, req, out)
+		assert.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl, "override should have enabled injection")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+		assert.False(t, config.PromptCache.AutoInject, "the shared provider config was written through")
+	})
+
+	t.Run("header opts a request out of an enabled provider", func(t *testing.T) {
+		req := responsesReqWithText("stable prefix")
+
+		out := promptCacheResponsesRequest(ctxWith(false), promptCacheOn(), schemas.Anthropic, req)
+
+		assert.Same(t, req, out, "an opted-out request should dispatch unchanged")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+	})
+
+	t.Run("header cannot enable an unconfigured provider", func(t *testing.T) {
+		req := responsesReqWithText("stable prefix")
+
+		out := promptCacheResponsesRequest(ctxWith(true), &schemas.ProviderConfig{}, schemas.Anthropic, req)
+
+		assert.Same(t, req, out, "a header must not manufacture operator opt-in")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+	})
 }
