@@ -1137,6 +1137,12 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 		}
 	}
 
+	// BedrockMessage.Content has no `omitempty`, so a nil/empty slice here would
+	// serialize as content:null and Bedrock rejects that outright (#2765).
+	if len(contentBlocks) == 0 {
+		contentBlocks = []BedrockContentBlock{{Text: schemas.Ptr(bedrockDocumentPlaceholderText)}}
+	}
+
 	bedrockMsg.Content = contentBlocks
 	return bedrockMsg, nil
 }
