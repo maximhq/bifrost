@@ -1,8 +1,8 @@
 import { groupDeliveries } from "@/app/workspace/webhooks/views/deliveries.utils";
 import { WebhookDeliveriesFilterSidebar } from "@/components/filters/webhookDeliveriesFilterSidebar";
+import PageTitle from "@/components/pageTitle";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
 	getErrorMessage,
@@ -15,7 +15,7 @@ import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import type { WebhookDeliveryFilters, WebhookDeliveryOutcome, WebhookDeliveryStatusClass, WebhookEvent } from "@/lib/types/webhooks";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertCircle, ArrowLeft } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -236,20 +236,13 @@ export default function WebhookDeliveriesPage() {
 
 	return (
 		<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
+			{/* The trail replaces the old in-page back button: navigating up is the
+			    topbar's job, and it frees the header row for the filters. */}
+			<PageTitle breadcrumbs={[{ label: "Webhooks", to: "/workspace/webhooks" }, { label: "Deliveries" }]} />
 			<WebhookDeliveriesFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 				<div className="flex items-center gap-2 p-4 pb-0">
-					<Button
-						variant="ghost"
-						size="sm"
-						className="h-7.5 shrink-0"
-						onClick={() => navigate({ to: "/workspace/webhooks" })}
-						data-testid="webhook-deliveries-back-btn"
-					>
-						<ArrowLeft className="size-4" />
-						Webhooks
-					</Button>
 					<DeliveriesHeaderView
 						filters={filters}
 						onFiltersChange={setFilters}
