@@ -1357,36 +1357,40 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 // row ID, and per-user auth types (per_user_oauth, per_user_headers) key
 // their stored credentials by it.
 //
-// The hook is intentionally narrow: it decides nothing. Resolving the access records the identity
-// context keys (row ID, name, team / customer fan-out) and stops there. Policy checks (budget, rate
-// limit, tool allow-list) stay on PreMCPHook for the actual CallTool: Connect is transport setup, not
-// the gated operation.
+// The hook is intentionally narrow: it ONLY populates the identity context
+// keys (VK row ID, name, team / customer fan-out). Policy checks (budget,
+// rate limit, tool allow-list) stay on PreMCPHook for the actual CallTool —
+// Connect is transport setup, not the gated operation.
 //
 // No short-circuit returned even when the VK isn't recognized: bad-VK
 // rejection belongs on the tool-call path so the caller gets a stable
 // error format. An unknown VK here simply leaves the row ID empty, and the
 // resolver will surface the "requires an identity" error itself.
 func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
-	// Resolving the request's access is what completes its identity and stamps its scope on ctx, so
-	// the row ID the credential resolver needs arrives as a side effect of asking the same question
-	// every other path asks. Doing it here rather than reading the key directly is what keeps one
-	// answer to "whose request is this".
-	//
-	// A credential that resolves to nothing leaves the identity incomplete, as before: the resolver
-	// surfaces the error on the per-user auth path, and shared-connection auth types never read it. A
-	// context with no grant is reported the same way: the connect path is transport setup, and the
-	// tool call that follows is where a wiring fault is refused.
-	//
-	// A context carrying BifrostContextKeyMCPHealthCheckRequest is Bifrost's own connection check,
-	// not a caller's request — the periodic checker and the admin verification probe both build a
-	// fresh context with no grant by design, since there is no caller to have one. Warning on that
-	// every tick is not a wiring fault surfaced, it is log volume with nothing to act on.
-	if _, err := p.ResolveAccess(ctx); err != nil {
-		if isHealthCheck, _ := ctx.Value(schemas.BifrostContextKeyMCPHealthCheckRequest).(bool); isHealthCheck {
-			p.logger.Debug("governance: %v", err)
-		} else {
-			p.logger.Warn("governance: %v", err)
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if virtualKeyValue == "" {
+		return req, nil, nil
+	}
+	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || vk == nil {
+		// Unknown VK — leave identity unset; the resolver will surface the
+		// appropriate error on the per-user auth path. For shared-connection
+		// auth types this is a no-op (they don't read these keys).
+		return req, nil, nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
 		}
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
 	}
 	return req, nil, nil
 }
