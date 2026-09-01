@@ -1451,7 +1451,7 @@ func TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel(t *testing.T) {
 	// Settled the way the funnel settles it: the grant carries the attempt's limits, and the
 	// accounted set is read from there.
 	ctx := resolverCtx(store, vkValue)
-	limits := resolveLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
+	limits := settleAttemptLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
 	require.NotNil(t, limits)
 	budgetIDs := limitIDsOf(limits.Budgets())
 
@@ -1704,7 +1704,7 @@ func TestSettledLimitsAreWhatIsAccounted(t *testing.T) {
 	// afterwards reads them from there rather than working out a second answer.
 	settle := func(t *testing.T, provider schemas.ModelProvider, model string) schemas.Limits {
 		t.Helper()
-		limits := resolveLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
+		limits := settleAttemptLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
 		require.NotNil(t, limits)
 		return limits
 	}
@@ -1801,7 +1801,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("after it runs, the grant carries exactly what this pair answers to", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t,
@@ -1814,7 +1814,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("the settled limits are what everything downstream reads", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		assert.Same(t, settled, ctx.Grant().Limits(),
 			"recorded, or the check and the charge would each resolve their own")
@@ -1826,8 +1826,8 @@ func TestResolveLimits(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 		access := ctx.Grant().Access()
 
-		first := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
-		second := resolveLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
+		first := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		second := settleAttemptLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
 
 		assert.Same(t, access, ctx.Grant().Access(), "what the request may reach is unchanged")
 		assert.NotSame(t, first, second)
@@ -1841,7 +1841,7 @@ func TestResolveLimits(t *testing.T) {
 		// all the same, and they are settled on its grant like anyone else's.
 		ctx := emptyCtx()
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, limitIDsOf(settled.Budgets()))
@@ -1853,14 +1853,14 @@ func TestResolveLimits(t *testing.T) {
 		// and nothing here papers over it.
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-		assert.Nil(t, resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
+		assert.Nil(t, settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
 		assert.Nil(t, ctx.Grant())
 	})
 
 	t.Run("a modelless attempt still answers to its provider", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "")
 
 		ids := limitIDsOf(settled.Budgets())
 		assert.Contains(t, ids, "b-provider")
