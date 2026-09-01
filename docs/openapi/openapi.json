@@ -70052,6 +70052,14 @@
             }
           },
           {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Number of logs to return (default 50, max 1000)",
@@ -70630,6 +70638,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -70905,6 +70921,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -71132,6 +71156,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -71356,6 +71388,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -71588,6 +71628,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -71834,6 +71882,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -72065,6 +72121,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -72293,6 +72357,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -72536,6 +72608,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -72803,6 +72883,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -73059,6 +73147,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -73329,6 +73425,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -73777,6 +73881,14 @@
             }
           },
           {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
@@ -74135,6 +74247,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }

@@ -307,7 +307,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
-	} else if filters.RootsOnly {
+	} else if filters.RootsOnly && filters.RequestID == "" {
+		// An explicit ID lookup targets exactly one row; collapsing it as a
+		// non-root would hide the very row that was pasted.
 		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
@@ -398,11 +400,18 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 	}
-	if filters.StartTime != nil {
-		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
-	}
-	if filters.EndTime != nil {
-		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+	if filters.RequestID != "" {
+		// The log primary key is the request ID, so this is an exact PK lookup. A
+		// unique ID must not be hidden by the selected window, so the time-range
+		// clauses are skipped for it.
+		baseQuery = baseQuery.Where("id = ?", filters.RequestID)
+	} else {
+		if filters.StartTime != nil {
+			baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+		}
+		if filters.EndTime != nil {
+			baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+		}
 	}
 	if filters.MinLatency != nil {
 		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)

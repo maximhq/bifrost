@@ -99,6 +99,11 @@ logs:
         description: Search in request/response content
         schema:
           type: string
+      - name: request_id
+        in: query
+        description: 'Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.'
+        schema:
+          type: string
       - name: limit
         in: query
         description: Number of logs to return (default 50, max 1000)
@@ -266,6 +271,11 @@ logs-stats:
         description: Search in request/response content
         schema:
           type: string
+      - name: request_id
+        in: query
+        description: 'Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.'
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
     responses:
@@ -385,6 +395,7 @@ logs-histogram:
       - $ref: '#/_histogram-parameters/parent_request_id'
       - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -425,6 +436,7 @@ logs-histogram-tokens:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -465,6 +477,7 @@ logs-histogram-cost:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -505,6 +518,7 @@ logs-histogram-models:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -545,6 +559,7 @@ logs-histogram-latency:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -585,6 +600,7 @@ logs-histogram-cost-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -625,6 +641,7 @@ logs-histogram-tokens-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -665,6 +682,7 @@ logs-histogram-latency-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -849,6 +867,12 @@ _histogram-parameters:
     name: content_search
     in: query
     description: Search in request/response content
+    schema:
+      type: string
+  request_id:
+    name: request_id
+    in: query
+    description: 'Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.'
     schema:
       type: string
 
@@ -1323,6 +1347,7 @@ logs-rankings:
       - $ref: '#/_histogram-parameters/parent_request_id'
       - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
       - $ref: '#/_ranking-parameters/limit'
       - $ref: '#/_ranking-parameters/all'
     security:
@@ -1387,6 +1412,7 @@ logs-dashboard:
       - $ref: '#/_histogram-parameters/parent_request_id'
       - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
       - name: tool_names
         in: query
         description: Comma-separated list of MCP tool names to filter the MCP section by
@@ -1448,6 +1474,7 @@ logs-histogram-cost-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -1496,6 +1523,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -1544,6 +1572,7 @@ logs-histogram-latency-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_histogram-parameters/request_id'
     security:
       - ManagementBearerAuth: []
     responses:
