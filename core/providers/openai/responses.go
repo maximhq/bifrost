@@ -84,6 +84,118 @@ func hoistAdditionalTools(message schemas.ResponsesMessage) []schemas.ResponsesT
 	return tools
 }
 
+// PromptCacheBreakpointModeExplicit is the only mode a prompt_cache_breakpoint
+// accepts. OpenAI defined the field for gpt-5.6+; OpenRouter reuses it as the
+// Responses-shaped spelling of an Anthropic cache breakpoint.
+const PromptCacheBreakpointModeExplicit = "explicit"
+
+// openRouterMaxCacheBreakpoints mirrors the ceiling the Anthropic Messages API
+// enforces on blocks carrying cache_control. Exceeding it is a hard rejection
+// rather than a degradation ("A maximum of 4 blocks with cache_control may be
+// provided. Found 5."), and it binds here because OpenRouter converts every
+// prompt_cache_breakpoint it receives back into an Anthropic breakpoint before
+// dispatching to Claude. Kept local rather than imported from the anthropic
+// provider so this package takes on no provider-to-provider dependency; see
+// AnthropicMaxCacheBreakpoints in core/providers/anthropic/utils.go for the
+// live verification behind the number.
+const openRouterMaxCacheBreakpoints = 4
+
+// applyOpenRouterCacheBreakpoints rewrites Anthropic-style per-block
+// cache_control markers into the representation OpenRouter's Responses endpoint
+// actually accepts.
+//
+// OpenRouter does not expose per-block cache_control through /v1/responses. The
+// documented equivalent is prompt_cache_breakpoint on an individual input_text
+// block, which OpenRouter converts back into a default Anthropic breakpoint when
+// the request routes to Claude:
+// https://openrouter.ai/docs/features/prompt-caching#anthropic-claude
+//
+// Without this, OpenAIResponsesRequestInput.MarshalJSON deletes the marker and
+// puts nothing in its place, so Claude prompt caching never activates on the
+// Responses path (#6290). The Chat path needs no equivalent: OpenRouter accepts
+// cache_control verbatim there, so OpenAIChatRequest.MarshalJSON simply keeps it
+// behind its keepCacheControl branch (#4203).
+//
+// Two deliberate limits, both forced by the wire format rather than chosen:
+//
+//   - Only input_text blocks are marked. The OpenRouter doc places the
+//     breakpoint on a text content block and names input_text as its Responses
+//     spelling. Marking output_text would be an unverified capability claim, and
+//     a rejected field costs more than the miss it would fix.
+//   - Tool definitions and function_call_output blocks are not marked.
+//     schemas.ResponsesTool has no PromptCacheBreakpoint field and OpenRouter
+//     documents no tool-level Responses breakpoint, while a text-only
+//     function_call_output block array is collapsed into a single string by
+//     isFunctionCallOutputBlocksFlattenable before it reaches the wire, which
+//     would discard any breakpoint set on it.
+//
+// messages is this function's own slice, but each element's Content pointer and
+// the block array beneath it still alias bifrostReq.Input, which plugins and the
+// fallback chain reuse. Both are copied before a marker is written.
+func applyOpenRouterCacheBreakpoints(messages []schemas.ResponsesMessage) {
+	// Locate every markable block in render order, and count the breakpoints the
+	// caller already set, before anything is copied.
+	type blockRef struct{ msg, block int }
+	var refs []blockRef
+	existing := 0
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		for j, block := range messages[i].Content.ContentBlocks {
+			if block.PromptCacheBreakpoint != nil {
+				existing++
+				continue
+			}
+			// "ephemeral" is the only cache type Anthropic defines, and nothing
+			// upstream of here validates it. Converting an empty or unknown type
+			// would manufacture a valid breakpoint out of a malformed marker and
+			// spend clamp budget on it, so require the documented value.
+			if block.CacheControl == nil ||
+				block.CacheControl.Type != schemas.CacheControlTypeEphemeral ||
+				block.Text == nil ||
+				block.Type != schemas.ResponsesInputMessageContentBlockTypeText {
+				continue
+			}
+			refs = append(refs, blockRef{msg: i, block: j})
+		}
+	}
+	if len(refs) == 0 {
+		return
+	}
+
+	// Spend only the budget the caller's own breakpoints leave behind. A caller
+	// who sets more than the ceiling by hand owns that request and its upstream
+	// error; Bifrost declines to manufacture one on top.
+	budget := openRouterMaxCacheBreakpoints - existing
+	if budget <= 0 {
+		return
+	}
+	// Caching is cumulative up to each breakpoint, so a marker later in render
+	// order anchors a strictly longer prefix. When over budget, drop the
+	// EARLIEST markers and keep the longest cached prefix, matching the
+	// trade-off clampAnthropicCacheBreakpoints makes for the direct path.
+	if len(refs) > budget {
+		refs = refs[len(refs)-budget:]
+	}
+
+	copiedContent := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		if !copiedContent[ref.msg] {
+			contentCopy := *messages[ref.msg].Content
+			contentCopy.ContentBlocks = append(
+				make([]schemas.ResponsesMessageContentBlock, 0, len(messages[ref.msg].Content.ContentBlocks)),
+				messages[ref.msg].Content.ContentBlocks...,
+			)
+			messages[ref.msg].Content = &contentCopy
+			copiedContent[ref.msg] = true
+		}
+		messages[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+	}
+}
+
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -293,6 +405,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
+	// OpenRouter accepts the caching intent only in its Responses-shaped form.
+	if bifrostReq.Provider == schemas.OpenRouter {
+		applyOpenRouterCacheBreakpoints(messages)
+	}
+
 	// Updating params
 	params := bifrostReq.Params
 	// Create the responses request with properly mapped parameters
