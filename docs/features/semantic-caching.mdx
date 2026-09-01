@@ -4,6 +4,15 @@ description: "Cache AI responses with exact-match hashing and semantic similarit
 icon: "database"
 ---
 
+<Note>
+Not to be confused with [prompt caching](/features/prompt-caching). Semantic caching is
+Bifrost replaying a **response** it has already seen, so the provider is never called.
+Prompt caching is the **provider** reusing the prefix of your request, so the call still
+happens and is still billed: cache reads are cheaper than fresh input, but the turn that
+writes the cache can cost more than fresh input (on Anthropic, 1.25x for a 5m TTL and 2x
+for 1h). They are independent and can both be on.
+</Note>
+
 ## Overview
 
 Bifrost can cache LLM responses and replay them for repeated requests, avoiding a round-trip to the provider. It offers two complementary lookup paths:
