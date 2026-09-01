@@ -1026,6 +1026,14 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		return nil
 	}
 
+	// The request's provider is a fact access resolution needs to apply provider-scoped grants, and it
+	// rides on the request, not the context. Stamp it before resolving so the resolved access reflects
+	// it. The /mcp path carries no request model and never stamps this, so a provider-scoped grant
+	// stays inert there, which is the intended behaviour.
+	if provider, _, _ := req.GetRequestFields(); provider != "" {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRequestProvider, string(provider))
+	}
+
 	// Resolve the request's access and record it before anything derives a decision from the
 	// credential, so every consumer of this request reads the same answer instead of working out its
 	// own, starting with the tool-list pruning just below. Resolving is also what completes this

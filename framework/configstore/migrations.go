@@ -479,6 +479,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
+	{IDs: []string{"add_virtual_mcp_tables"}, run: migrationAddVirtualMCPTables},
 	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
 	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
 	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
@@ -1830,6 +1831,125 @@ func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB, log
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddVirtualMCPTables creates the Virtual MCP tables, reusing the
+// existing enterprise tool-group tables in place when present (no data
+// migration), and adds and backfills the new endpoint_slug column.
+func migrationAddVirtualMCPTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_mcp_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Reuse the table if present (enterprise), else create it (fresh install).
+			if !mg.HasTable(&tables.TableVirtualMCP{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualMCP", migrationName)
+				if err := mg.CreateTable(&tables.TableVirtualMCP{}); err != nil {
+					return err
+				}
+			}
+			if !mg.HasTable(&tables.TableVirtualKeyVirtualMCP{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKeyVirtualMCP", migrationName)
+				if err := mg.CreateTable(&tables.TableVirtualKeyVirtualMCP{}); err != nil {
+					return err
+				}
+			}
+
+			// Add endpoint_slug, backfill unique slugs, then the unique index (which
+			// must come after backfill de-duplicates).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualMCP{}, "endpoint_slug"); err != nil {
+				return fmt.Errorf("failed to add endpoint_slug column: %w", err)
+			}
+			if err := backfillVirtualMCPEndpointSlugs(tx); err != nil {
+				return fmt.Errorf("failed to backfill endpoint slugs: %w", err)
+			}
+			if !mg.HasIndex(&tables.TableVirtualMCP{}, "EndpointSlug") {
+				if err := mg.CreateIndex(&tables.TableVirtualMCP{}, "EndpointSlug"); err != nil {
+					return fmt.Errorf("failed to create endpoint_slug index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// backfillVirtualMCPEndpointSlugs gives every slug-less Virtual MCP a unique
+// slug from its name. No-ops on a fresh table.
+func backfillVirtualMCPEndpointSlugs(tx *gorm.DB) error {
+	var rows []tables.TableVirtualMCP
+	if err := tx.Where("endpoint_slug IS NULL OR endpoint_slug = ?", "").Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	taken := map[string]bool{}
+	var existing []string
+	if err := tx.Model(&tables.TableVirtualMCP{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &existing).Error; err != nil {
+		return err
+	}
+	for _, s := range existing {
+		taken[s] = true
+	}
+
+	for i := range rows {
+		slug := uniqueVirtualMCPSlug(virtualMCPSlugify(rows[i].Name), rows[i].ID, taken)
+		taken[slug] = true
+		if err := tx.Model(&tables.TableVirtualMCP{}).
+			Where("id = ?", rows[i].ID).
+			Update("endpoint_slug", slug).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// virtualMCPSlugify lowercases a name and collapses non-alphanumeric runs to
+// single hyphens, trimmed at the ends.
+func virtualMCPSlugify(name string) string {
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevHyphen = false
+			continue
+		}
+		if !prevHyphen {
+			b.WriteRune('-')
+			prevHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// uniqueVirtualMCPSlug returns base, a numbered variant if taken, or an
+// id-based slug if base is empty.
+func uniqueVirtualMCPSlug(base string, id uint, taken map[string]bool) string {
+	if base == "" {
+		base = fmt.Sprintf("vmcp-%d", id)
+	}
+	if !taken[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		cand := fmt.Sprintf("%s-%d", base, n)
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 // migrationAddProviderConfigBudgetRateLimit adds budget_id and rate_limit_id columns with proper foreign key constraints
