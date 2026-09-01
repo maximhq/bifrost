@@ -7,6 +7,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Wildcard marks an unrestricted list: every value is allowed, or every value is blocked, depending
+// on which kind of list carries it.
+//
+// The lists a permit carries are schemas.WhiteList and schemas.BlackList, so what a list means
+// travels on its type: a list holding only the wildcard is unrestricted, an empty list holds
+// nothing, and membership ignores case. Key IDs are the one exception: they are identifiers, so
+// whoever matches them does so exactly rather than through the type's membership methods (see
+// composeKeyIDs), and only their wildcard is read off the type.
+const Wildcard = "*"
+
 // PermitType identifies what kind of source a permit's access comes from. These are the values a
 // schemas.Permit reports from Type. An open string: kinds are declared by whoever resolves permits
 // of that kind, so this package needs no list of them.
@@ -192,7 +202,7 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 		return false
 	}
 	for _, pp := range p.ProviderPermits() {
-		if pp.Provider == provider && listBlocks(pp.BlacklistedModels, model) {
+		if pp.Provider == provider && pp.BlacklistedModels.IsBlocked(model) {
 			return true
 		}
 	}
@@ -230,10 +240,10 @@ func allowsTool(p schemas.Permit, toolPattern string) bool {
 		if toolPattern == clientName+"-"+Wildcard {
 			return len(mp.Tools) > 0
 		}
-		if listIsUnrestricted(mp.Tools) {
+		if mp.Tools.IsUnrestricted() {
 			return true
 		}
-		return listContains(mp.Tools, strings.TrimPrefix(toolPattern, clientName+"-"))
+		return mp.Tools.Contains(strings.TrimPrefix(toolPattern, clientName+"-"))
 	}
 	return false
 }
@@ -272,7 +282,7 @@ func providerPermitAllowsModel(pp *schemas.ProviderPermit, model string) bool {
 	if model == "" {
 		return true
 	}
-	return listAllows(pp.AllowedModels, model) && !listBlocks(pp.BlacklistedModels, model)
+	return pp.AllowedModels.IsAllowed(model) && !pp.BlacklistedModels.IsBlocked(model)
 }
 
 // weightedProviderPermitFor returns the permit's first provider permit for provider that sets a
@@ -350,7 +360,7 @@ func mcpEntries(p schemas.Permit) []string {
 		if len(mp.Tools) == 0 {
 			continue
 		}
-		if listIsUnrestricted(mp.Tools) {
+		if mp.Tools.IsUnrestricted() {
 			entries.add(mp.ClientName + "-" + Wildcard)
 			continue
 		}
