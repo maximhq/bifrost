@@ -22,6 +22,7 @@ import {
 } from "../../views/mcpClientFormFields";
 import { MCPHeadersAuthorizer } from "../../views/mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "../../views/oauth2Authorizer";
+import { shouldSeedHeaders } from "./mcpLibraryInstallSheet.utils";
 import { authLabel, MCP_ICON_FALLBACK, transportIcon, transportLabel } from "./mcpLibraryServerCard";
 
 interface MCPLibraryInstallSheetProps {
@@ -56,7 +57,7 @@ export function sanitizeServerName(name: string): string {
 function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	const authType = (server.auth_type || "none") as MCPAuthType;
 	const isStdio = server.connection_type === "stdio";
-	// A "headers" entry declares which header names it needs; prefill them as
+	// A header-auth entry declares which header names it needs; prefill them as
 	// empty rows so the installer only has to fill in values.
 	const declaredHeaders = server.required_header_keys?.length
 		? Object.fromEntries(server.required_header_keys.map((key) => [key, { ...emptySecretVar }]))
@@ -74,7 +75,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 		// not validate auth_type against connection_type, so an entry can still
 		// declare one; ignore it rather than seeding state nothing can edit.
 		auth_type: isStdio ? "none" : authType,
-		headers: !isStdio && authType === "headers" ? declaredHeaders : undefined,
+		headers: shouldSeedHeaders(authType, isStdio) ? declaredHeaders : undefined,
 	};
 }
 
