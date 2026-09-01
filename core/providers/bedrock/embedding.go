@@ -36,22 +36,27 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
 
-	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
-		return nil, fmt.Errorf("no input text provided for embedding")
+	if len(bifrostReq.Input) == 0 {
+		return nil, fmt.Errorf("no input provided for Titan embedding")
 	}
 
-	titanReq := &BedrockTitanEmbeddingRequest{}
+	if len(bifrostReq.Input) != 1 {
+		return nil, fmt.Errorf("amazon Titan embedding models support exactly one content item per request; got %d", len(bifrostReq.Input))
+	}
 
-	// Set input text
-	if bifrostReq.Input.Text != nil {
-		titanReq.InputText = *bifrostReq.Input.Text
-	} else if len(bifrostReq.Input.Texts) > 0 {
-		var embeddingText string
-		for _, text := range bifrostReq.Input.Texts {
-			embeddingText += text + " \n"
+	var sb strings.Builder
+	for _, part := range bifrostReq.Input[0] {
+		if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
+			return nil, fmt.Errorf("amazon Titan embedding models only support text input")
 		}
-		titanReq.InputText = embeddingText
+		if sb.Len() > 0 {
+			sb.WriteString(" \n")
+		}
+		sb.WriteString(*part.Text)
+	}
+
+	titanReq := &BedrockTitanEmbeddingRequest{
+		InputText: sb.String(),
 	}
 
 	if bifrostReq.Params != nil {
@@ -142,22 +147,60 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 }
 
 // ToBedrockCohereEmbeddingRequest converts a Bifrost embedding request to Bedrock Cohere format.
-// Unlike the direct Cohere API, Bedrock does not accept a "model" field in the request body.
+// Bedrock's invoke body omits the model field the direct Cohere API carries.
 func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*BedrockCohereEmbeddingRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
-	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
-		return nil, fmt.Errorf("no input provided for embedding")
+
+	if len(bifrostReq.Input) == 0 {
+		return nil, fmt.Errorf("no input provided for Cohere embedding")
 	}
 
 	req := &BedrockCohereEmbeddingRequest{}
 
-	// Map texts
-	if bifrostReq.Input.Text != nil {
-		req.Texts = []string{*bifrostReq.Input.Text}
-	} else if len(bifrostReq.Input.Texts) > 0 {
-		req.Texts = bifrostReq.Input.Texts
+	// Text-only batches use texts[]; anything carrying media uses the mixed inputs[] shape.
+	texts := make([]string, 0, len(bifrostReq.Input))
+	allSingleText := true
+	for _, content := range bifrostReq.Input {
+		if len(content) == 1 && content[0].Type == schemas.EmbeddingContentPartTypeText && content[0].Text != nil {
+			texts = append(texts, *content[0].Text)
+			continue
+		}
+		allSingleText = false
+		break
+	}
+
+	if allSingleText {
+		req.Texts = texts
+	} else {
+		inputs := make([]BedrockCohereEmbeddingInput, 0, len(bifrostReq.Input))
+		for _, content := range bifrostReq.Input {
+			blocks := make([]BedrockCohereEmbeddingContentBlock, 0, len(content))
+			for _, part := range content {
+				if err := part.Validate(); err != nil {
+					return nil, err
+				}
+				switch part.Type {
+				case schemas.EmbeddingContentPartTypeText:
+					text := *part.Text
+					blocks = append(blocks, BedrockCohereEmbeddingContentBlock{Type: "text", Text: &text})
+				case schemas.EmbeddingContentPartTypeImage:
+					url := part.Image.URL
+					if url == nil {
+						url = part.Image.Data
+					}
+					blocks = append(blocks, BedrockCohereEmbeddingContentBlock{
+						Type:     "image_url",
+						ImageURL: &BedrockCohereEmbeddingImageURL{URL: *url},
+					})
+				default:
+					return nil, fmt.Errorf("bedrock cohere embeddings support only text and image parts, got %q", part.Type)
+				}
+			}
+			inputs = append(inputs, BedrockCohereEmbeddingInput{Content: blocks})
+		}
+		req.Inputs = inputs
 	}
 
 	if bifrostReq.Params != nil {
@@ -182,18 +225,6 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 			if ss, ok := schemas.SafeExtractStringSlice(v); ok {
 				req.EmbeddingTypes = ss
 				delete(extra, "embedding_types")
-			}
-		}
-		if v, ok := extra["images"]; ok {
-			if ss, ok := v.([]string); ok {
-				req.Images = ss
-				delete(extra, "images")
-			}
-		}
-		if v, ok := extra["inputs"]; ok {
-			if inputs, ok := v.([]BedrockCohereEmbeddingInput); ok {
-				req.Inputs = inputs
-				delete(extra, "inputs")
 			}
 		}
 		if v, ok := extra["max_tokens"]; ok {

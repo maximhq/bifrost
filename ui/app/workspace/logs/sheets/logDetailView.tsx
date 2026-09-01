@@ -42,7 +42,15 @@ import {
 	Status,
 } from "@/lib/constants/logs";
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
-import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchEmbeddingItem,
+	BatchRequestCounts,
+	ContentBlock,
+	EmbeddingContent,
+	LogEntry,
+	OverheadBucket,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -947,6 +955,64 @@ function MessageRow({ role, meta, children, last = false }: { role: MessageRole;
 			</div>
 		</div>
 	);
+}
+
+function EmbeddingInputView({ contents }: { contents: EmbeddingContent[] }) {
+  const label =
+    contents.length === 1 ? "Input" : `Input (${contents.length} documents)`;
+  const json = JSON.stringify(
+    contents.length === 1 ? contents[0] : contents,
+    null,
+    2,
+  );
+
+  return (
+    <>
+      <div className="mt-4 w-full text-left text-sm font-medium">{label}</div>
+      <CollapsibleBox title="" onCopy={() => json} collapsedHeight={150}>
+        <CodeEditor
+          className="z-0 w-full"
+          shouldAdjustInitialHeight
+          maxHeight={450}
+          wrap
+          code={json}
+          lang="json"
+          readonly
+          options={{
+            scrollBeyondLastLine: false,
+            lineNumbers: "off",
+            alwaysConsumeMouseWheel: false,
+          }}
+        />
+      </CollapsibleBox>
+    </>
+  );
+}
+
+function BatchEmbeddingInputView({ items }: { items: BatchEmbeddingItem[] }) {
+  const label = `Items (${items.length})`;
+  const json = JSON.stringify(items, null, 2);
+  return (
+    <>
+      <div className="mt-4 w-full text-left text-sm font-medium">{label}</div>
+      <CollapsibleBox title="" onCopy={() => json} collapsedHeight={150}>
+        <CodeEditor
+          className="z-0 w-full"
+          shouldAdjustInitialHeight
+          maxHeight={450}
+          wrap
+          code={json}
+          lang="json"
+          readonly
+          options={{
+            scrollBeyondLastLine: false,
+            lineNumbers: "off",
+            alwaysConsumeMouseWheel: false,
+          }}
+        />
+      </CollapsibleBox>
+    </>
+  );
 }
 
 interface LogDetailViewProps {
@@ -3146,7 +3212,11 @@ export function LogDetailView({
 						);
 					})()}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
+					{log.is_large_payload_request &&
+						!log.input_history?.length &&
+						!log.responses_input_history?.length &&
+						!log.embedding_input?.length &&
+						!log.batch_embedding_input?.length && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 							Large payload request: input content was streamed directly to the provider and is not available for display.
 							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
@@ -3172,6 +3242,16 @@ export function LogDetailView({
 									),
 								}}
 							/>
+						</div>
+					)}
+					{log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0 && (
+						<div className="bg-card rounded-sm border p-5">
+							<EmbeddingInputView contents={log.embedding_input} />
+						</div>
+					)}
+					{log.object === "batch_embedding" && log.batch_embedding_input && log.batch_embedding_input.length > 0 && (
+						<div className="bg-card rounded-sm border p-5">
+							<BatchEmbeddingInputView items={log.batch_embedding_input} />
 						</div>
 					)}
 					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
@@ -3457,7 +3537,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding" || log.object === "batch_embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3521,7 +3601,12 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
+		} else if (log.object === "batch_embedding" && log.batch_embedding_input && log.batch_embedding_input.length > 0) {
+			requestBody.input = log.batch_embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

@@ -172,6 +172,11 @@ func (provider *SarvamProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
+// BatchEmbedding is not supported by the Sarvam provider.
+func (provider *SarvamProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
+}
+
 // Rerank is not supported by the Sarvam provider.
 func (provider *SarvamProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())

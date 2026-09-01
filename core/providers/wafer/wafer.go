@@ -204,6 +204,11 @@ func (provider *WaferProvider) Embedding(ctx *schemas.BifrostContext, key schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
+// BatchEmbedding is not supported by the Wafer provider.
+func (provider *WaferProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
+}
+
 // Speech is not supported by the Wafer provider.
 func (provider *WaferProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())

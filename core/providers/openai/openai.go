@@ -2087,6 +2087,10 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	)
 }
 
+func (provider *OpenAIProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
+}
+
 // HandleOpenAIEmbeddingRequest handles embedding requests for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same embedding request format.
 func HandleOpenAIEmbeddingRequest(
@@ -2151,7 +2155,7 @@ func HandleOpenAIEmbeddingRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIEmbeddingRequest(request), nil
+			return ToOpenAIEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

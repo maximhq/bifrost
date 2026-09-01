@@ -299,6 +299,10 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 	)
 }
 
+func (provider *VLLMProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
+}
+
 // Responses performs a responses request to vLLM's API.
 func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	baseURL, bifrostErr := provider.baseURLOrError(key)
