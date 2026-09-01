@@ -1876,7 +1876,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
-func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitProviderLimits(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (within limits)
 	providerBudget := buildBudget("provider-budget1", 200.0, "1h")
@@ -2705,9 +2705,9 @@ func TestStore_ScopedAndGlobalModelBudgetsBothApply(t *testing.T) {
 	require.NoError(t, err)
 
 	// The holder has no model config of its own, so only the deployment's applies, and it refuses.
-	holderBudgets, _ := store.ProviderAndModelLimits(context.Background(), grant.NewPermit(grant.PermitVirtualKey, vk.ID, "", true, false, nil, nil), schemas.OpenAI, "gpt-4")
+	holderBudgets, _ := store.PermitModelLimits(context.Background(), grant.NewPermit(grant.PermitVirtualKey, vk.ID, "", true, false, nil, nil), schemas.OpenAI, "gpt-4")
 	require.Empty(t, holderBudgets, "nothing of the holder's")
-	budgets, _ := store.ProviderAndModelLimits(context.Background(), nil, schemas.OpenAI, "gpt-4")
+	budgets, _ := store.GlobalModelLimits(context.Background(), schemas.OpenAI, "gpt-4")
 	require.Len(t, budgets, 1, "the deployment's model budget")
 	assert.Equal(t, string(grant.LimitHolderModelConfig), budgets[0].HolderKind)
 
