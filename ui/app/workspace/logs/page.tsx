@@ -95,6 +95,7 @@ export default function LogsPage() {
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
+			request_id: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
@@ -144,6 +145,7 @@ export default function LogsPage() {
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
+			request_id: urlState.request_id,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
@@ -182,6 +184,7 @@ export default function LogsPage() {
 			urlState.customer_ids,
 			urlState.business_unit_ids,
 			urlState.content_search,
+			urlState.request_id,
 			urlState.parent_request_id,
 			urlState.missing_cost_only,
 			urlState.cache_hit_types,
@@ -241,6 +244,7 @@ export default function LogsPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				content_search: newFilters.content_search || "",
+				request_id: newFilters.request_id || "",
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
