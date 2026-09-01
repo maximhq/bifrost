@@ -776,6 +776,15 @@ export interface LogStats {
 	semantic_cache_hits?: number | null;
 }
 
+// LogStatsResponse is the GET /api/logs/stats payload. The current period's
+// fields stay at the top level, so this is a superset of LogStats: `previous` and
+// `has_previous_period` are only populated when the caller passes
+// compare_to_previous and the window is bounded.
+export interface LogStatsResponse extends LogStats {
+	previous?: LogStats;
+	has_previous_period?: boolean;
+}
+
 export interface LogSessionDetailResponse {
 	session_id: string;
 	logs: LogEntry[];
