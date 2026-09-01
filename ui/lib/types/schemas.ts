@@ -625,6 +625,25 @@ export const openaiConfigFormSchema = z.object({
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
+// Prompt cache tab
+export const cacheControlInjectionPointSchema = z
+	.object({
+		location: z.literal("message"),
+		role: z.enum(["system", "developer", "user", "assistant"]).optional(),
+		index: z.number().int().optional(),
+	})
+	.refine((p) => p.role !== undefined || p.index !== undefined, {
+		message: "Set a role, an index, or both - a point with neither matches nothing",
+	});
+
+export const promptCacheFormSchema = z.object({
+	auto_inject: z.boolean(),
+	ttl: z.string().optional(),
+	cache_control_injection_points: z.array(cacheControlInjectionPointSchema).optional(),
+});
+
+export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -751,6 +770,7 @@ export const addProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -764,6 +784,7 @@ export const updateProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Cache config schema

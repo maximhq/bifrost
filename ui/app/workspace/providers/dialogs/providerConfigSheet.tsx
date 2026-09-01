@@ -12,6 +12,7 @@ import {
 	ProxyFormFragment,
 } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
+import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 
@@ -55,6 +56,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 			label: "Beta Headers",
 		});
 	}
+	tabs.push({
+		id: "prompt-cache",
+		label: "Prompt Caching",
+	});
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
@@ -146,6 +151,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="beta-headers">
 								<BetaHeadersFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="prompt-cache">
+								<PromptCacheFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />

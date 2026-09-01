@@ -481,6 +481,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -501,6 +502,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -738,6 +740,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PromptCache
+	if p.PromptCache != nil {
+		data, err := sonic.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}
