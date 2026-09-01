@@ -7,6 +7,10 @@
 - feat: parse the `x-bf-request-timeout` header (duration string or seconds integer) into `BifrostContextKeyRequestTimeout`, clamped to 30m, mirroring the existing `x-bf-session-ttl` / `x-bf-stream-idle-timeout` (#4805) parsing shape [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 - feat: parse `x-bf-stream-idle-timeout` header for a per-request stream idle timeout override [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 
+## 🐞 Fixed
+
+- fix: clamp the seconds form of `x-bf-request-timeout` and `x-bf-stream-idle-timeout` before converting to `time.Duration`, so a seconds value large enough to overflow int64 can no longer wrap into a small duration that bypasses the 30m ceiling [@public-aanp-tanium](https://github.com/public-aanp-tanium)
+
 ## 🔧 Maintenance
 
 - **Dependency Upgrades** - Bumped core to v1.13.1 and framework to v1.10.1 across all modules
