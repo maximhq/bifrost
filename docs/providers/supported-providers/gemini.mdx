@@ -458,6 +458,16 @@ Audio is sent as inline data with auto-detected MIME type:
 }
 ```
 
+<Note>
+Gemini caching works differently from the rest of Bifrost's providers, so the
+`prompt_cache.auto_inject` setting does **not** apply here. Anthropic-style providers
+mark a content block and the cached prefix follows from where the marker sits. Gemini
+instead caches through a server-side `cachedContent` **resource** that you create,
+name, and pass by ID, with its own TTL and billing. There is no per-block marker for
+Bifrost to add, so injecting one would do nothing. Create the resource and pass
+`cachedContent` yourself.
+</Note>
+
 ### Extra Parameters
 
 Safety settings and caching can be configured:

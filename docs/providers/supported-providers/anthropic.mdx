@@ -179,6 +179,63 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 
 Anthropic also accepts a top-level `"cache_control": {"type": "ephemeral"}` object on `/anthropic/v1/messages` requests to enable automatic prompt caching, and Bifrost now forwards that directive through unchanged.
 
+
+### Auto-inject cache breakpoints
+
+Agentic clients send no cache markers at all - Codex is the clearest case
+([openai/codex#37674](https://github.com/openai/codex/issues/37674)) - so nothing gets
+cached and every turn pays full price for a prompt that barely changed. Bifrost can
+add the marker for them.
+
+Enable it per provider, from the Prompt Caching tab in the provider settings or in
+`config.json`:
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    }
+  }
+}
+```
+
+Bifrost then marks the **first cacheable content block**. That block is the prefix an
+agent loop replays verbatim every turn, so the cached region stays put and the second
+turn onward is a cache read. Marking the last block instead would move the boundary
+each turn and bill a cache write every time.
+
+To target specific messages instead, set `cache_control_injection_points`. Each point
+matches by `role`, by `index` (negative counts from the end), or both, and marks the
+last cacheable block of every match. Points **replace** the first-block strategy rather
+than adding to it:
+
+```json
+{
+  "prompt_cache": {
+    "auto_inject": true,
+    "cache_control_injection_points": [{ "location": "message", "role": "system" }]
+  }
+}
+```
+
+<Note>
+Injection never overrides a caller. A request that already carries its own
+`cache_control` or `prompt_cache_breakpoint` is forwarded untouched, and at most four
+markers are ever injected - Anthropic rejects a fifth outright.
+</Note>
+
+Use `x-bf-prompt-cache-auto-inject: true` (or `false`) to flip the setting for a single
+request. The header only works once the provider has a `prompt_cache` block: it can
+change an operator's setting, not create one, because spending a cache checkpoint
+changes the billing profile.
+
+Verify it worked by reading `cached_tokens` in the response usage. A `200` on its own
+tells you nothing about caching.
+
 ### Cache Control
 
 Cache directives can be added to system messages, user messages, and tool definitions to enable prompt caching:
