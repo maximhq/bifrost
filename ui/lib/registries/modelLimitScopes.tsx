@@ -39,6 +39,12 @@ export interface ModelLimitScopeEntry {
 	PickerComponent?: ComponentType<ScopePickerProps>;
 	// Optional. Scopes without a navigable target omit this.
 	buildDeepLink?: (scopeId: string) => ScopeDeepLink;
+	// When true, this scope is system-generated only: never offered as a choice
+	// when creating a limit, and the Model Limit sheet renders it as a pure
+	// read-only summary (no editable fields, no save, no delete) instead of the
+	// normal form — e.g. enterprise's "access_profile" scope, whose rows must
+	// only be changed by editing the owning access profile.
+	readOnly?: boolean;
 }
 
 const registry = new Map<string, ModelLimitScopeEntry>();
