@@ -381,14 +381,29 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 }
 
 func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.ModelCatalog {
+	return modelCatalogForDetailsJSON(t, pricingJSON, []byte(`{}`))
+}
+
+func modelCatalogForDetailsJSON(t *testing.T, pricingJSON, modelParametersJSON []byte) *modelcatalog.ModelCatalog {
 	t.Helper()
-	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	testdataDir := t.TempDir()
+	pricingPath := filepath.Join(testdataDir, "pricing.json")
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	modelParametersPath := filepath.Join(testdataDir, "model-parameters.json")
+	if err := os.WriteFile(modelParametersPath, modelParametersJSON, 0o600); err != nil {
+		t.Fatalf("write model parameters testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{
+		URL:                "file://" + pricingPath,
+		ModelParametersURL: "file://" + modelParametersPath,
+	})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
+	}
+	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load model parameters testdata: %v", err)
 	}
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
@@ -1029,6 +1044,59 @@ func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
 				t.Fatalf("expected cache read cost %g, got %#v", test.cacheCost, model.CacheReadCost)
 			}
 		})
+	}
+}
+
+func TestListModelDetails_IncludesAliasResolvedSupportedRequestTypes(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	canonicalModel := "FW-GLM-5.2"
+	alias := schemas.AliasConfig{ModelID: "glm-deployment", ModelName: &canonicalModel}
+	key := schemas.Key{
+		ID:      "key-a",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"glm-5-2": alias},
+	}
+	catalog := modelCatalogForDetailsJSON(t, []byte(`{
+		"azure/FW-GLM-5.2": {"provider":"azure","mode":"chat"},
+		"azure/unknown": {"provider":"azure","mode":"chat"}
+	}`), []byte(`{
+		"FW-GLM-5.2": {
+			"provider":"openai",
+			"supported_endpoints":["/responses"]
+		},
+		"azure/FW-GLM-5.2": {
+			"provider":"azure",
+			"mode":"completion",
+			"supported_endpoints":["/responses","/chat/completions"]
+		}
+	}`))
+	catalog.SetKeyConfigForProvider(schemas.Azure, []schemas.Key{key})
+	h := providerHandlerForTest(
+		schemas.Azure,
+		[]schemas.Key{key},
+		[]string{"glm-5-2", "unknown"},
+		[]string{"glm-5-2", "unknown"},
+	)
+	h.inMemoryStore.ModelCatalog = catalog
+
+	resp, body := listModelDetailsForTest(t, h, "/api/models/details?provider=azure&limit=100")
+	if resp.Total != 2 || len(resp.Models) != 2 {
+		t.Fatalf("expected two models, got %#v", resp.Models)
+	}
+	want := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+	if !slices.Equal(resp.Models[0].SupportedRequestTypes, want) {
+		t.Fatalf("alias request types = %v, want %v", resp.Models[0].SupportedRequestTypes, want)
+	}
+	if resp.Models[1].SupportedRequestTypes != nil {
+		t.Fatalf("unknown request types = %v, want nil", resp.Models[1].SupportedRequestTypes)
+	}
+	if count := strings.Count(body, `"supported_request_types"`); count != 1 {
+		t.Fatalf("supported_request_types appeared %d times, want once in %s", count, body)
 	}
 }
 

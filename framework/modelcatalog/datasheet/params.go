@@ -162,6 +162,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 
 // applyModelParameters parses the raw model-parameters JSON and updates:
 //   - supportedResponseTypes (per-model normalized output types)
+//   - modelParameterProviders (the provider declared by each model row)
 //   - supportedParams (per-model accepted request parameter names)
 //   - the provider-utils model capability cache
 //
@@ -172,6 +173,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // "DB had usable rows".
 func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int {
 	newResponseTypes := make(map[string][]string, len(paramsData))
+	newProviders := make(map[string]schemas.ModelProvider, len(paramsData))
 	newParamsIndex := make(map[string][]string, len(paramsData))
 	applied := 0
 
@@ -191,6 +193,9 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 		// feed of empty rows clear the capability cache with nothing to refill it.
 		if !IsEmptyModelCapabilities(&caps) {
 			applied++
+		}
+		if provider := gjson.GetBytes(rawData, "provider"); provider.Exists() {
+			newProviders[model] = schemas.ModelProvider(normalizeProvider(provider.String()))
 		}
 
 		outputs := make([]string, 0, len(caps.SupportedEndpoints))
@@ -246,6 +251,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 
 	s.mu.Lock()
 	s.supportedResponseTypes = newResponseTypes
+	s.modelParameterProviders = newProviders
 	s.supportedParams = newParamsIndex
 	s.mu.Unlock()
 
@@ -373,14 +379,23 @@ func (s *Store) modelParameterCandidates(model string) []string {
 	add(s.BaseModelName(model))
 
 	suffix := "/" + bare
-	var qualified []string
+	qualifiedSet := make(map[string]struct{})
 	s.mu.RLock()
 	for key := range s.supportedParams {
 		if strings.HasSuffix(key, suffix) {
-			qualified = append(qualified, key)
+			qualifiedSet[key] = struct{}{}
+		}
+	}
+	for key := range s.supportedResponseTypes {
+		if strings.HasSuffix(key, suffix) {
+			qualifiedSet[key] = struct{}{}
 		}
 	}
 	s.mu.RUnlock()
+	qualified := make([]string, 0, len(qualifiedSet))
+	for key := range qualifiedSet {
+		qualified = append(qualified, key)
+	}
 	// Fewest path segments first, so the plain "azure/gpt-5.1-chat" is preferred
 	// over regional and vendor-path variants like "azure/eu/gpt-5.1-chat" — a
 	// caller naming the bare model means the plain row. Ties break
