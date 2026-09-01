@@ -1432,7 +1432,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
 	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
 	vmcpIDs := gs.assignedVirtualMCPIDs(vk.ID)
-	acc := newMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
+	acc := NewMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
 	for i := range vk.MCPConfigs {
 		acc.addMCPConfig(&vk.MCPConfigs[i])
 	}
@@ -1441,11 +1441,12 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		if def == nil || !def.Enabled {
 			continue
 		}
-		acc.addVirtualMCP(def)
+		acc.AddVirtualMCP(def)
+		// A key's direct assignment makes the vMCP addressable at /mcp/<slug>.
 		RecordGrantedVirtualMCP(ctx, def)
 	}
-	mcpPermits := gs.mcpPermitsFromAccumulator(acc, vk.Name)
-	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.configuredClients(), allowedByDefaultClients)
+	mcpPermits := MCPPermitsFromAccumulator(acc, "virtual key", vk.Name, gs.mcpClientNames(), gs.logger)
+	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.ConfiguredClients(), allowedByDefaultClients)
 
 	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
 }
