@@ -352,21 +352,23 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		assert.Equal(t, schemas.MCPPermit{Client: "jira-id", ClientName: "jira", Tools: []string{"*"}}, permit.MCPPermits()[0])
 	})
 
-	t.Run("an explicit config owns its client, and is never widened", func(t *testing.T) {
+	t.Run("a config with no tools owns its client: dropped, and not reopened by the default", func(t *testing.T) {
 		vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
 		vk.MCPConfigs = []configstoreTables.TableVirtualKeyMCPConfig{
 			vkMCPConfig("github-id", "github", "read_file"),
-			// Configured with no tool at all: the client is still the key's to decide.
+			// Configured with no tool: no permit, but still the key's to decide, so the default must not reopen it.
 			vkMCPConfig("jira-id", "jira"),
 		}
 		open := map[string]string{"github-id": "github", "jira-id": "jira", "slack-id": "slack"}
 
 		permit := vkPermit(vk, open)
 
-		require.Len(t, permit.MCPPermits(), 3)
+		require.Len(t, permit.MCPPermits(), 2)
 		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
-		assert.Empty(t, permit.MCPPermits()[1].Tools, "an empty config stays empty")
-		assert.Equal(t, "slack-id", permit.MCPPermits()[2].Client, "only the unconfigured client is added")
+		assert.Equal(t, "slack-id", permit.MCPPermits()[1].Client, "only the unconfigured client is added")
+		for _, mp := range permit.MCPPermits() {
+			assert.NotEqual(t, "jira-id", mp.Client, "a client configured with no tools is dropped, not reopened by the default")
+		}
 	})
 
 	t.Run("open clients are ordered, so the permit is stable", func(t *testing.T) {
