@@ -1021,31 +1021,35 @@ type OpenAIListModelsResponse struct {
 	Data   []OpenAIModel `json:"data"`
 }
 
-type openAICompatibleModel struct {
-	OpenAIModel
-	Organization  string `json:"organization"`
-	ContextLength *int   `json:"context_length,omitempty"`
-}
-
-type openAICompatibleListModelsResponse struct {
-	Object string                  `json:"object"`
-	Data   []openAICompatibleModel `json:"data"`
-}
-
-func (response *openAICompatibleListModelsResponse) UnmarshalJSON(data []byte) error {
-	type envelope openAICompatibleListModelsResponse
+// UnmarshalJSON accepts both OpenAI envelopes and compatible top-level model arrays.
+func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
+	type envelope OpenAIListModelsResponse
 
 	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		var models []openAICompatibleModel
-		if err := sonic.Unmarshal(trimmed, &models); err != nil {
-			return err
-		}
-		*response = openAICompatibleListModelsResponse{Data: models}
-		return nil
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return sonic.Unmarshal(trimmed, (*envelope)(response))
 	}
 
-	return sonic.Unmarshal(trimmed, (*envelope)(response))
+	var models []struct {
+		OpenAIModel
+		Organization  string `json:"organization"`
+		ContextLength *int   `json:"context_length,omitempty"`
+	}
+	if err := sonic.Unmarshal(trimmed, &models); err != nil {
+		return err
+	}
+
+	response.Data = make([]OpenAIModel, len(models))
+	for i, model := range models {
+		response.Data[i] = model.OpenAIModel
+		if response.Data[i].OwnedBy == "" {
+			response.Data[i].OwnedBy = model.Organization
+		}
+		if response.Data[i].ContextWindow == nil {
+			response.Data[i].ContextWindow = model.ContextLength
+		}
+	}
+	return nil
 }
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.

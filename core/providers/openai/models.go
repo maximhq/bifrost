@@ -7,31 +7,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (model openAICompatibleModel) toOpenAIModel() OpenAIModel {
-	normalized := model.OpenAIModel
-	if normalized.OwnedBy == "" {
-		normalized.OwnedBy = model.Organization
-	}
-	if normalized.ContextWindow == nil {
-		normalized.ContextWindow = model.ContextLength
-	}
-	return normalized
-}
-
-func (response *openAICompatibleListModelsResponse) toOpenAIListModelsResponse() *OpenAIListModelsResponse {
-	var models []OpenAIModel
-	if response.Data != nil {
-		models = make([]OpenAIModel, len(response.Data))
-		for i, model := range response.Data {
-			models[i] = model.toOpenAIModel()
-		}
-	}
-	return &OpenAIListModelsResponse{
-		Object: response.Object,
-		Data:   models,
-	}
-}
-
 // ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
 func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
