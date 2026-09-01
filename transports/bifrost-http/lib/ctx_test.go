@@ -55,6 +55,15 @@ func TestConvertToBifrostContext_RequestTimeoutOverride(t *testing.T) {
 		{"clamped above max", "9000s", requestTimeoutOverrideMax, true}, // 9000s > 30m -> clamped
 		{"zero ignored", "0", 0, false},
 		{"garbage ignored", "soon", 0, false},
+		// Seconds large enough that seconds*time.Second overflows int64 must
+		// still clamp, not wrap into a small positive duration: 18446744074s
+		// wraps to 290.448384ms, which slips past both the >0 check and the
+		// max comparison if the clamp is applied after the multiplication.
+		{"overflowing seconds clamped", "18446744074", requestTimeoutOverrideMax, true},
+		// Wraps to a negative duration, so it is not merely under-clamped but
+		// dropped entirely unless the clamp precedes the multiplication.
+		{"seconds wrapping negative clamped", "9223372037", requestTimeoutOverrideMax, true},
+		{"max boundary exact", "1800", requestTimeoutOverrideMax, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +117,12 @@ func TestConvertToBifrostContext_StreamIdleTimeoutOverride(t *testing.T) {
 		{"clamped above max", "9000s", streamIdleTimeoutOverrideMax, true}, // 9000s > 30m -> clamped
 		{"zero ignored", "0", 0, false},
 		{"garbage ignored", "soon", 0, false},
+		// Same overflow shape as the request-timeout header: clamping after the
+		// multiplication lets 18446744074s wrap to 290.448384ms and disable the
+		// idle-detection ceiling this clamp exists to enforce.
+		{"overflowing seconds clamped", "18446744074", streamIdleTimeoutOverrideMax, true},
+		{"seconds wrapping negative clamped", "9223372037", streamIdleTimeoutOverrideMax, true},
+		{"max boundary exact", "1800", streamIdleTimeoutOverrideMax, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

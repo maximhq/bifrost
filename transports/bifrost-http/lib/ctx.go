@@ -599,6 +599,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			var err error
 			if reqDuration, err = time.ParseDuration(valueStr); err != nil {
 				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					// Clamp in seconds, before converting: seconds*time.Second
+					// overflows int64 past ~292 years and wraps, so a large
+					// value can land back on a small positive duration (or a
+					// negative one) that the clamp below would accept as-is.
+					if maxSeconds := int(requestTimeoutOverrideMax / time.Second); seconds > maxSeconds {
+						seconds = maxSeconds
+					}
 					reqDuration = time.Duration(seconds) * time.Second
 					err = nil
 				}
@@ -626,6 +633,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			var err error
 			if idleDuration, err = time.ParseDuration(valueStr); err != nil {
 				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					// Clamp in seconds, before converting -- see the identical
+					// overflow note on x-bf-request-timeout above.
+					if maxSeconds := int(streamIdleTimeoutOverrideMax / time.Second); seconds > maxSeconds {
+						seconds = maxSeconds
+					}
 					idleDuration = time.Duration(seconds) * time.Second
 					err = nil
 				}

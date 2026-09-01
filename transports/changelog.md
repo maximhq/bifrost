@@ -7,3 +7,4 @@
 ## 🐞 Fixed
 
 - **Bedrock Null Content on Empty Assistant Messages** - An assistant message with no text and no tool calls no longer serializes as `content:null`, which Converse rejected outright (#2765)
+- fix: clamp the seconds form of `x-bf-request-timeout` and `x-bf-stream-idle-timeout` before converting to `time.Duration`, so a seconds value large enough to overflow int64 can no longer wrap into a small duration that bypasses the 30m ceiling [@public-aanp-tanium](https://github.com/public-aanp-tanium)
