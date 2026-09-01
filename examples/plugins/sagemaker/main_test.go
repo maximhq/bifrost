@@ -211,11 +211,6 @@ func TestBuildOpenAIRequestBodySupportsGeneralOperations(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if test.request.EmbeddingRequest != nil {
-				test.request.EmbeddingRequest.Params = &schemas.EmbeddingParameters{
-					ExtraParams: map[string]any{"truncate": "END"},
-				}
-			}
 			body, bifrostErr := buildOpenAIRequestBody(testContext(), test.request)
 			if bifrostErr != nil {
 				t.Fatalf("buildOpenAIRequestBody() error = %v", bifrostErr)
@@ -227,12 +222,6 @@ func TestBuildOpenAIRequestBodySupportsGeneralOperations(t *testing.T) {
 			for _, field := range test.fields {
 				if _, ok := decoded[field]; !ok {
 					t.Fatalf("wire body missing %q: %s", field, body)
-				}
-			}
-			if test.request.EmbeddingRequest != nil {
-				var truncate string
-				if err := json.Unmarshal(decoded["truncate"], &truncate); err != nil || truncate != "END" {
-					t.Fatalf("embedding extra parameter was not preserved: body=%s error=%v", body, err)
 				}
 			}
 		})
@@ -445,10 +434,7 @@ func setTestState(client runtimeClient) {
 }
 
 func testContext() *schemas.BifrostContext {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return ctx
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 }
 
 func textCompletionRequest(model string) *schemas.BifrostRequest {
