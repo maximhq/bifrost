@@ -4483,10 +4483,7 @@ func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
 	case string(grant.PermitProject):
 		return grant.LimitHolderProjectModelConfig
 	default:
-		// An access-profile permit's own per-model limits are the same money as the profile's own —
-		// see the LimitHolderUserAccessProfile doc comment — so they share its kind rather than a
-		// distinct per-model one.
-		return grant.LimitHolderUserAccessProfile
+		return grant.LimitHolderUserAccessProfileModelConfig
 	}
 }
 

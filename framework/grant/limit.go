@@ -34,13 +34,9 @@ const (
 	// Held by an access profile attached to a user. Named for the user rather than generically,
 	// because a profile is currently only attachable to a user; if it becomes attachable to other
 	// kinds of holder, each will need its own kind so a refusal can say whose profile it was.
-	//
-	// There is deliberately no third, per-model-config kind alongside these two: a profile's
-	// per-model limits are not a distinct pool with its own lifecycle, they are the same money as
-	// the profile's own, so they are attributed to LimitHolderUserAccessProfile rather than
-	// splitting into a kind of their own.
 	LimitHolderUserAccessProfile               LimitHolderKind = "user_access_profile"
 	LimitHolderUserAccessProfileProviderConfig LimitHolderKind = "user_access_profile_provider_config"
+	LimitHolderUserAccessProfileModelConfig    LimitHolderKind = "user_access_profile_model_config"
 
 	// Held by the organization above the caller. Spent by every request made under anything they
 	// contain.
