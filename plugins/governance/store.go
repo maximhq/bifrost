@@ -125,6 +125,7 @@ type BudgetAndRateLimitStatus struct {
 //     DB-backed) and prevents retry loops on policy violations.
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
+	GetGovernanceUsageData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
 	GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool)
 	// ResolvePermits reports the permits a request carries: the ones its caller holds, the permit
@@ -841,6 +842,33 @@ func (gs *LocalGovernanceStore) RebaseRateLimit(ctx context.Context, rateLimitID
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return &clone, true
 		}
+	}
+}
+
+// GetGovernanceUsageData returns a snapshot containing only budgets and rate limits.
+// Use this when callers do not require the complete governance state.
+func (gs *LocalGovernanceStore) GetGovernanceUsageData(_ context.Context) *GovernanceData {
+	budgets := make(map[string]*configstoreTables.TableBudget)
+	gs.budgets.Range(func(key, value interface{}) bool {
+		budget, ok := value.(*configstoreTables.TableBudget)
+		if ok && budget != nil {
+			budgets[key.(string)] = budget
+		}
+		return true
+	})
+
+	rateLimits := make(map[string]*configstoreTables.TableRateLimit)
+	gs.rateLimits.Range(func(key, value interface{}) bool {
+		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
+		if ok && rateLimit != nil {
+			rateLimits[key.(string)] = rateLimit
+		}
+		return true
+	})
+
+	return &GovernanceData{
+		Budgets:    budgets,
+		RateLimits: rateLimits,
 	}
 }
 
