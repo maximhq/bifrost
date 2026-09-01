@@ -89,9 +89,12 @@ func TestGetSupportedRequestTypes(t *testing.T) {
 			"provider":"together_ai",
 			"supported_endpoints":["/chat/completions"]
 		}`),
+		"providerless": json.RawMessage(`{
+			"supported_endpoints":["/responses"]
+		}`),
 	})
-	if applied != 5 {
-		t.Fatalf("applied = %d, want 5", applied)
+	if applied != 6 {
+		t.Fatalf("applied = %d, want 6", applied)
 	}
 
 	wantOpenAI := []schemas.RequestType{
@@ -132,6 +135,9 @@ func TestGetSupportedRequestTypes(t *testing.T) {
 	}
 	if got := s.GetSupportedRequestTypes(schemas.ModelProvider("together"), "together-model"); !slices.Equal(got, wantAzure) {
 		t.Fatalf("normalized provider request types = %v, want %v", got, wantAzure)
+	}
+	if got := s.GetSupportedRequestTypes(schemas.OpenAI, "providerless"); got != nil {
+		t.Fatalf("providerless request types = %v, want nil", got)
 	}
 }
 
