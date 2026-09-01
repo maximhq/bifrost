@@ -909,7 +909,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 			CompletionTokens: 45,
 			TotalTokens:      165,
 		},
-		CacheDebugParsed: &schemas.BifrostCacheDebug{CacheHit: true},
+		CacheDebugParsed: &schemas.BifrostCacheMetadata{CacheHit: true},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))

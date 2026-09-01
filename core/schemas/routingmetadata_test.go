@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestRoutingDebugContextReturnsOwnedInitialAttemptSnapshot(t *testing.T) {
+func TestRoutingMetadataContextReturnsOwnedInitialAttemptSnapshot(t *testing.T) {
 	ctx := NewBifrostContext(context.Background(), NoDeadline)
 	provider, model, tokens, outputTokens := "openai", "gpt-4o-mini", 17, 3
 	requireAppend := AppendRoutingCallOnContext(ctx, BifrostRoutingCall{
@@ -19,23 +19,23 @@ func TestRoutingDebugContextReturnsOwnedInitialAttemptSnapshot(t *testing.T) {
 		t.Fatal("AppendRoutingCallOnContext() = false")
 	}
 
-	first, ok := InitialAttemptRoutingDebugFromContext(ctx)
+	first, ok := InitialAttemptRoutingMetadataFromContext(ctx)
 	if !ok || len(first.Calls) != 1 {
-		t.Fatalf("InitialAttemptRoutingDebugFromContext() = %v, %v", first, ok)
+		t.Fatalf("InitialAttemptRoutingMetadataFromContext() = %v, %v", first, ok)
 	}
 	*first.Calls[0].InputTokens = 99
 	*first.Calls[0].OutputTokens = 99
-	second, ok := InitialAttemptRoutingDebugFromContext(ctx)
+	second, ok := InitialAttemptRoutingMetadataFromContext(ctx)
 	if !ok || len(second.Calls) != 1 || *second.Calls[0].InputTokens != 17 || *second.Calls[0].OutputTokens != 3 {
 		t.Fatalf("owned snapshot = %v, want input=17 output=3", second)
 	}
 }
 
-// TestRoutingDebugAppendsBothSemanticAndLLMCalls pins the fix for the bug
+// TestRoutingMetadataAppendsBothSemanticAndLLMCalls pins the fix for the bug
 // where a request that classifies via semantic and then falls back to the llm
 // classifier lost the embedding's usage: a second call must add to the first
 // rather than replacing it.
-func TestRoutingDebugAppendsBothSemanticAndLLMCalls(t *testing.T) {
+func TestRoutingMetadataAppendsBothSemanticAndLLMCalls(t *testing.T) {
 	ctx := NewBifrostContext(context.Background(), NoDeadline)
 	embedProvider, embedModel, embedTokens := "openai", "text-embedding-3-small", 12
 	if !AppendRoutingCallOnContext(ctx, BifrostRoutingCall{
@@ -56,19 +56,19 @@ func TestRoutingDebugAppendsBothSemanticAndLLMCalls(t *testing.T) {
 		t.Fatal("AppendRoutingCallOnContext(llm) = false")
 	}
 
-	debug, ok := RoutingDebugFromContext(ctx)
-	if !ok || len(debug.Calls) != 2 {
-		t.Fatalf("RoutingDebugFromContext() = %v, %v; want 2 calls", debug, ok)
+	metadata, ok := RoutingMetadataFromContext(ctx)
+	if !ok || len(metadata.Calls) != 2 {
+		t.Fatalf("RoutingMetadataFromContext() = %v, %v; want 2 calls", metadata, ok)
 	}
-	if *debug.Calls[0].ProviderUsed != embedProvider || debug.Calls[0].OutputTokens != nil {
-		t.Fatalf("Calls[0] = %+v, want the embed call with no OutputTokens", debug.Calls[0])
+	if *metadata.Calls[0].ProviderUsed != embedProvider || metadata.Calls[0].OutputTokens != nil {
+		t.Fatalf("Calls[0] = %+v, want the embed call with no OutputTokens", metadata.Calls[0])
 	}
-	if *debug.Calls[1].ProviderUsed != llmProvider || *debug.Calls[1].OutputTokens != llmOutput {
-		t.Fatalf("Calls[1] = %+v, want the llm call with OutputTokens=%d", debug.Calls[1], llmOutput)
+	if *metadata.Calls[1].ProviderUsed != llmProvider || *metadata.Calls[1].OutputTokens != llmOutput {
+		t.Fatalf("Calls[1] = %+v, want the llm call with OutputTokens=%d", metadata.Calls[1], llmOutput)
 	}
 }
 
-func TestInitialAttemptRoutingDebugRejectsRetriesAndFallbacks(t *testing.T) {
+func TestInitialAttemptRoutingMetadataRejectsRetriesAndFallbacks(t *testing.T) {
 	provider, model, tokens := "openai", "text-embedding-3-small", 17
 	for _, test := range []struct {
 		name          string
@@ -87,10 +87,28 @@ func TestInitialAttemptRoutingDebugRejectsRetriesAndFallbacks(t *testing.T) {
 				ModelUsed:    &model,
 				InputTokens:  &tokens,
 			})
-			if _, ok := InitialAttemptRoutingDebugFromContext(ctx); ok {
-				t.Fatal("InitialAttemptRoutingDebugFromContext() = true")
+			if _, ok := InitialAttemptRoutingMetadataFromContext(ctx); ok {
+				t.Fatal("InitialAttemptRoutingMetadataFromContext() = true")
 			}
 		})
+	}
+}
+
+func TestRoutingMetadataInitialAttemptAPI(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	provider, model, tokens := "openai", "text-embedding-3-small", 1
+	requireAppend := AppendRoutingCallOnContext(ctx, BifrostRoutingCall{
+		ProviderUsed: &provider,
+		ModelUsed:    &model,
+		InputTokens:  &tokens,
+	})
+	if !requireAppend {
+		t.Fatal("AppendRoutingCallOnContext() = false")
+	}
+
+	metadata, ok := InitialAttemptRoutingMetadataFromContext(ctx)
+	if !ok || len(metadata.Calls) != 1 {
+		t.Fatalf("InitialAttemptRoutingMetadataFromContext() = %v, %v", metadata, ok)
 	}
 }
 

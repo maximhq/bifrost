@@ -119,7 +119,7 @@ type parityLogSpec struct {
 	mechanism                  *string
 	tierScore                  *float64
 	metadata                   *string
-	cacheDebug                 string
+	cacheMetadata              string
 	content                    string
 	parentID                   *string
 	nodeID                     *string
@@ -162,7 +162,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		ComplexityMechanism:   s.mechanism,
 		ComplexityScore:       s.tierScore,
 		Metadata:              s.metadata,
-		CacheDebug:            s.cacheDebug,
+		CacheDebug:            s.cacheMetadata,
 		ContentSummary:        s.content,
 		ParentRequestID:       s.parentID,
 		ClusterNodeID:         s.nodeID,
@@ -180,13 +180,13 @@ func paritySpecs() []parityLogSpec {
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
 			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
 			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55),
-			cacheDebug: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
+			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u2"),
 			cost: f64PtrP(1.25), latency: f64PtrP(250), tokens: [3]int{200, 100, 300}, stopReason: strPtrP("length"),
 			routing: strPtrP("governance"), metadata: strPtrP(`{"env":"dev"}`),
 			tier: strPtrP("SIMPLE"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.08),
-			cacheDebug: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
+			cacheMetadata: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
 		{id: "p3", offsetSec: 80, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "error",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u2"),
 			latency: f64PtrP(50), content: "echo error", parentID: strPtrP("sess1"),

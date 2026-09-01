@@ -2044,7 +2044,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					HitType:  &hitType,
 				},
@@ -2079,7 +2079,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     true,
 					HitType:      &hitType,
 					ProviderUsed: &embProvider,
@@ -2117,7 +2117,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
 					ModelUsed:    &embModel,
@@ -2140,7 +2140,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					// No ProviderUsed, ModelUsed, InputTokens
 				},
@@ -2178,7 +2178,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitIsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2221,7 +2221,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2266,7 +2266,7 @@ func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
 				ExtraFields: schemas.BifrostResponseExtraFields{
 					RequestType: schemas.ChatCompletionRequest,
 					RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-					RoutingDebug: &schemas.BifrostRoutingDebug{
+					RoutingMetadata: &schemas.BifrostRoutingMetadata{
 						Calls: []schemas.BifrostRoutingCall{embedRoutingCall(500, countTowardBudgets)},
 					},
 				},
@@ -2327,7 +2327,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge(t *testing.
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2370,7 +2370,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsRequestSurcharge(t *testing
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2407,7 +2407,7 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 		CompletionTokens: 50,
 		TotalTokens:      150,
 	})
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.Anthropic,
 			JudgeModel:       "claude-judge",
@@ -2444,7 +2444,7 @@ func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 		makeKey("gpt-judge", "openai", "chat"): pricing,
 	})
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.OpenAI,
 			JudgeModel:    "gpt-judge",
@@ -2470,8 +2470,8 @@ func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
 	})
 	hitType := "direct"
 	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
-	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o-mini",
@@ -2525,7 +2525,7 @@ func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *test
 		},
 	}))
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.Anthropic,
 			JudgeModel:    "claude-judge",
@@ -5488,7 +5488,7 @@ func TestRoutingCallCost_IgnoresParentSelectedKey(t *testing.T) {
 
 // TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag pins the
 // regression this whole redesign fixes: CalculateCost's routing branch must
-// price and sum every call in RoutingDebug, and each call's own
+// price and sum every routing metadata call, and each call's own
 // CountTowardBudgets flag — not one flag for the whole stamp — decides
 // whether that call's cost folds into the request's total.
 func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *testing.T) {
@@ -5496,14 +5496,14 @@ func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *test
 	embedCost := 200 * 0.00000002
 	llmCost := 30*0.000001 + 8*0.000005
 
-	baseResp := func(routingDebug *schemas.BifrostRoutingDebug) *schemas.BifrostResponse {
+	baseResp := func(routingMetadata *schemas.BifrostRoutingMetadata) *schemas.BifrostResponse {
 		return &schemas.BifrostResponse{
 			ChatResponse: &schemas.BifrostChatResponse{
 				Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType:  schemas.ChatCompletionRequest,
-					RoutingInfo:  routingInfoFor(schemas.OpenAI, "gpt-4o-mini"),
-					RoutingDebug: routingDebug,
+					RequestType:     schemas.ChatCompletionRequest,
+					RoutingInfo:     routingInfoFor(schemas.OpenAI, "gpt-4o-mini"),
+					RoutingMetadata: routingMetadata,
 				},
 			},
 		}
@@ -5514,7 +5514,7 @@ func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *test
 	}
 
 	t.Run("both calls opted in", func(t *testing.T) {
-		resp := baseResp(&schemas.BifrostRoutingDebug{Calls: []schemas.BifrostRoutingCall{
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
 			embedRoutingCall(200, true),
 			llmRoutingCall(30, 8, true),
 		}})
@@ -5522,10 +5522,10 @@ func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *test
 	})
 
 	t.Run("only the embed call opted in — the fix for the overwrite bug", func(t *testing.T) {
-		// Before the fix, a single-slot RoutingDebug meant the llm call (written
+		// Before the fix, a single-slot routing metadata record meant the llm call (written
 		// second) silently replaced the embed call's usage; the embed's cost was
 		// unrecoverable even though it explicitly opted into budget attribution.
-		resp := baseResp(&schemas.BifrostRoutingDebug{Calls: []schemas.BifrostRoutingCall{
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
 			embedRoutingCall(200, true),
 			llmRoutingCall(30, 8, false),
 		}})
@@ -5533,7 +5533,7 @@ func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *test
 	})
 
 	t.Run("only the llm call opted in", func(t *testing.T) {
-		resp := baseResp(&schemas.BifrostRoutingDebug{Calls: []schemas.BifrostRoutingCall{
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
 			embedRoutingCall(200, false),
 			llmRoutingCall(30, 8, true),
 		}})
@@ -5541,7 +5541,7 @@ func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *test
 	})
 
 	t.Run("neither opted in", func(t *testing.T) {
-		resp := baseResp(&schemas.BifrostRoutingDebug{Calls: []schemas.BifrostRoutingCall{
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
 			embedRoutingCall(200, false),
 			llmRoutingCall(30, 8, false),
 		}})

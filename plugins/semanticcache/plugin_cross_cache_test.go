@@ -145,7 +145,7 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 	}
 
 	// Should find semantic match from step 1's cached entry (which has embeddings).
-	// Hit is similarity-dependent; CacheDebug must be stamped either way.
+	// Hit is similarity-dependent; cache metadata must be stamped either way.
 	if response3.ExtraFields.CacheDebug == nil {
 		t.Fatal("expected CacheDebug to be stamped on the response")
 	}
@@ -168,7 +168,7 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 		t.Fatalf("Fourth request failed: %v", err4)
 	}
 
-	// Should try direct first (miss), then semantic (might hit). CacheDebug
+	// Should try direct first (miss), then semantic (might hit). Cache metadata
 	// must be stamped either way.
 	if response4.ExtraFields.CacheDebug == nil {
 		t.Fatal("expected CacheDebug to be stamped on the response")

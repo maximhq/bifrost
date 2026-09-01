@@ -53,7 +53,7 @@ type SearchFilters struct {
 	StopReasons          []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	Objects              []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string            `json:"parent_request_id,omitempty"`
-	RequestID         string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
@@ -261,14 +261,15 @@ type Log struct {
 	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
-	RoutingDebug            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostRoutingDebug
-	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
-	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
-	OverheadBreakdown       string    `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Debug spelling is retained for the persisted cache and guardrail columns.
+	CacheDebug        string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheMetadata
+	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
+	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
+	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
+	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
 	// Denormalized cost split for per-category quota aggregation. input + output +
 	// additional reconcile to the cost column. Additional holds internal sidecar
 	// costs with no input/output token category (guardrail, MCP).
@@ -374,11 +375,12 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	// Debug spelling is retained for the established cache and guardrail Go/JSON contracts.
+	CacheDebugParsed            *schemas.BifrostCacheMetadata           `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
-	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
-	RoutingDebugParsed          *schemas.BifrostRoutingDebug            `gorm:"-" json:"routing_debug,omitempty"`
+	GuardrailDebugParsed        *schemas.BifrostGuardrailMetadata       `gorm:"-" json:"guardrail_debug,omitempty"`
+	RoutingMetadataParsed       *schemas.BifrostRoutingMetadata         `gorm:"-" json:"routing_metadata,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
@@ -758,11 +760,11 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
-	if l.RoutingDebugParsed != nil {
-		if data, err := sonic.Marshal(l.RoutingDebugParsed); err != nil {
+	if l.RoutingMetadataParsed != nil {
+		if data, err := sonic.Marshal(l.RoutingMetadataParsed); err != nil {
 			return err
 		} else {
-			l.RoutingDebug = string(data)
+			l.RoutingMetadata = string(data)
 		}
 	}
 
@@ -1115,10 +1117,10 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
-	if l.RoutingDebug != "" {
-		if err := sonic.Unmarshal([]byte(l.RoutingDebug), &l.RoutingDebugParsed); err != nil {
+	if l.RoutingMetadata != "" {
+		if err := sonic.Unmarshal([]byte(l.RoutingMetadata), &l.RoutingMetadataParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
-			l.RoutingDebugParsed = nil
+			l.RoutingMetadataParsed = nil
 		}
 	}
 

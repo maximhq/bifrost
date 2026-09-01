@@ -355,7 +355,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 				i, originalIndex, cachedIndex)
 		}
 
-		// Only verify cache hit on the last chunk (where CacheDebug is set)
+		// Only verify cache hit on the last chunk (where cache metadata is set)
 		if i == len(cachedChunks)-1 {
 			AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: &cachedChunks[i]}, string(CacheTypeDirect))
 		}

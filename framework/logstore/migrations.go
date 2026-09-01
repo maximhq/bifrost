@@ -310,7 +310,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_complexity_routing_columns"}, run: migrationAddComplexityRoutingColumns},
-	{IDs: []string{"logs_add_routing_debug_column"}, run: migrationAddRoutingDebugColumn},
+	{IDs: []string{"logs_add_routing_metadata_column"}, run: migrationAddRoutingMetadataColumn},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
@@ -723,12 +723,12 @@ func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
-// migrationAddRoutingDebugColumn adds the routing_debug column to the logs
+// migrationAddRoutingMetadataColumn adds the routing_metadata column to the logs
 // table, so the semantic classification embed and llm classification calls
 // the routing plugin made for a request are visible in the log detail view,
 // mirroring how guardrail_debug already surfaces guardrail judge calls.
-func migrationAddRoutingDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "logs_add_routing_debug_column"
+func migrationAddRoutingMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_routing_metadata_column"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
 	opts := *migrator.DefaultOptions
@@ -740,18 +740,18 @@ func migrationAddRoutingDebugColumn(ctx context.Context, db *gorm.DB, logger sch
 			if err := boundDDLLockWait(tx); err != nil {
 				return err
 			}
-			return addColumnIfNotExists(tx, logger, &Log{}, "routing_debug")
+			return addColumnIfNotExists(tx, logger, &Log{}, "routing_metadata")
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if err := boundDDLLockWait(tx); err != nil {
 				return err
 			}
-			return dropColumnIfExists(tx, logger, &Log{}, "routing_debug")
+			return dropColumnIfExists(tx, logger, &Log{}, "routing_metadata")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while adding routing_debug column: %s", err.Error())
+		return fmt.Errorf("error while adding routing_metadata column: %s", err.Error())
 	}
 	return nil
 }

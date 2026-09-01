@@ -629,12 +629,12 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	embeddingProvider := "openai"
 	embeddingModel := "text-embedding-3-small"
 	embeddingTokens := 12
-	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+	if !schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{
 		ProviderUsed: &embeddingProvider,
 		ModelUsed:    &embeddingModel,
 		InputTokens:  &embeddingTokens,
 	}) {
-		t.Fatal("expected semantic cache debug to be stored on context")
+		t.Fatal("expected semantic cache metadata to be stored on context")
 	}
 	routingEmbeddingTokens := 13
 	if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
@@ -643,7 +643,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		InputTokens:        &routingEmbeddingTokens,
 		CountTowardBudgets: true,
 	}) {
-		t.Fatal("expected routing debug to be stored on context")
+		t.Fatal("expected routing metadata to be stored on context")
 	}
 	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider:    schemas.OpenAI,
@@ -720,10 +720,10 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	// The routing classification call must survive the full write/read round
 	// trip through the DB — this is what makes it visible in the log detail
 	// view, not just correctly billed.
-	if entry.RoutingDebugParsed == nil || len(entry.RoutingDebugParsed.Calls) != 1 {
-		t.Fatalf("expected one routing call to round-trip through the DB, got %+v", entry.RoutingDebugParsed)
+	if entry.RoutingMetadataParsed == nil || len(entry.RoutingMetadataParsed.Calls) != 1 {
+		t.Fatalf("expected one routing call to round-trip through the DB, got %+v", entry.RoutingMetadataParsed)
 	}
-	if call := entry.RoutingDebugParsed.Calls[0]; call.ProviderUsed == nil || *call.ProviderUsed != embeddingProvider ||
+	if call := entry.RoutingMetadataParsed.Calls[0]; call.ProviderUsed == nil || *call.ProviderUsed != embeddingProvider ||
 		call.InputTokens == nil || *call.InputTokens != routingEmbeddingTokens {
 		t.Fatalf("routing call round-tripped incorrectly: %+v", call)
 	}
@@ -1106,7 +1106,7 @@ func TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional(t *testing.T) 
 	}
 
 	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
-	guardrail := &schemas.BifrostGuardrailDebug{
+	guardrail := &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o",
@@ -2787,8 +2787,8 @@ func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
 	})
 }
 
-// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
-func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+// TestGuardrailMetadataForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	requireCall := schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider: schemas.OpenAI,
@@ -2799,12 +2799,12 @@ func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
 		t.Fatal("failed to append guardrail judge call")
 	}
 
-	debug := guardrailDebugForLog(ctx, nil)
-	if debug == nil || len(debug.JudgeCalls) != 1 {
-		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	metadata := guardrailMetadataForLog(ctx, nil)
+	if metadata == nil || len(metadata.JudgeCalls) != 1 {
+		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if debug.JudgeCalls[0] != requireCall {
-		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
+	if metadata.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }
 

@@ -360,9 +360,9 @@ const (
 	BifrostContextKeyRoutingAllowedProviders             BifrostContextKey = "bifrost-routing-allowed-providers"                // []ModelProvider; when set, downstream routing layers (enterprise LB, model-catalog-resolver) must intersect their candidate providers with this set. Plugins set this when they have an opinion about which providers are valid for the request — even if they couldn't pick one themselves. Empty slice means "no provider is permitted" (fail-closed).
 	BifrostContextKeyAllowPerRequestStorageOverride      BifrostContextKey = "bifrost-allow-per-request-storage-override"       // bool (set by transport from config — gates whether x-bf-disable-content-logging and x-bf-store-raw-request-response per-request overrides are honored)
 	BifrostContextKeyAllowPerRequestRawOverride          BifrostContextKey = "bifrost-allow-per-request-raw-override"           // bool (set by transport from config — gates whether x-bf-send-back-raw-request and x-bf-send-back-raw-response per-request overrides are honored)
-	BifrostContextKeyGuardrailDebug                      BifrostContextKey = "bifrost-guardrail-debug"                          // *BifrostGuardrailDebug (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyCacheDebug                          BifrostContextKey = "bifrost-cache-debug"                              // *BifrostCacheDebug (set by semantic cache plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyRoutingDebug                        BifrostContextKey = "bifrost-routing-debug"                            // *BifrostRoutingDebug (set by routing plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGuardrailMetadata                   BifrostContextKey = "bifrost-guardrail-debug"                          // *BifrostGuardrailMetadata (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyCacheMetadata                       BifrostContextKey = "bifrost-cache-debug"                              // *BifrostCacheMetadata (set by semantic cache plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyRoutingMetadata                     BifrostContextKey = "bifrost-routing-metadata"                         // *BifrostRoutingMetadata (set by routing plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyRedactionData                       BifrostContextKey = "bifrost-redaction-data"                           // RedactionData (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true. When retain_content_in_object_storage is on, disabled content is still offloaded to object storage as hidden instead of dropped)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
@@ -440,6 +440,13 @@ const (
 const (
 	HeaderGovernanceProjectID   = "x-bf-project-id"
 	HeaderGovernanceProjectName = "x-bf-project-name"
+)
+
+const (
+	// Deprecated: use BifrostContextKeyGuardrailMetadata.
+	BifrostContextKeyGuardrailDebug = BifrostContextKeyGuardrailMetadata
+	// Deprecated: use BifrostContextKeyCacheMetadata.
+	BifrostContextKeyCacheDebug = BifrostContextKeyCacheMetadata
 )
 
 const (
@@ -1770,16 +1777,17 @@ type BifrostResponseExtraFields struct {
 	// serializing this response is itself overhead. The authoritative value is
 	// stamped on the trace and logged at completion; this is only the untraced
 	// fallback. Nil means unknown.
-	OverheadLatency           *int64                 `json:"-"`
-	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawRequest                interface{}            `json:"raw_request,omitempty"`
-	RawResponse               interface{}            `json:"raw_response,omitempty"`
-	CacheDebug                *BifrostCacheDebug     `json:"cache_debug,omitempty"`
-	RoutingDebug              *BifrostRoutingDebug   `json:"routing_debug,omitempty"`
-	GuardrailDebug            *BifrostGuardrailDebug `json:"guardrail_debug,omitempty"`
-	ParseErrors               []BatchError           `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
-	ConvertedRequestType      RequestType            `json:"converted_request_type,omitempty"`
-	DroppedCompatPluginParams []string               `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
+	OverheadLatency *int64      `json:"-"`
+	ChunkIndex      int         `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest      interface{} `json:"raw_request,omitempty"`
+	RawResponse     interface{} `json:"raw_response,omitempty"`
+	// Debug spelling is retained for the cache and guardrail Go/JSON contracts.
+	CacheDebug                *BifrostCacheMetadata     `json:"cache_debug,omitempty"`
+	RoutingMetadata           *BifrostRoutingMetadata   `json:"routing_metadata,omitempty"`
+	GuardrailDebug            *BifrostGuardrailMetadata `json:"guardrail_debug,omitempty"`
+	ParseErrors               []BatchError              `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+	ConvertedRequestType      RequestType               `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string                  `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
 	// DroppedUnsupportedTools lists tool type strings silently stripped from the
 	// request because the target provider/model doesn't support them (e.g.
 	// web_search requested against a non-Nova Bedrock model). Currently populated
@@ -1829,8 +1837,8 @@ type BifrostMCPResponseExtraFields struct {
 	Latency        int64          `json:"latency"`   // in milliseconds
 }
 
-// BifrostCacheDebug represents debug information about the cache.
-type BifrostCacheDebug struct {
+// BifrostCacheMetadata represents cache execution metadata.
+type BifrostCacheMetadata struct {
 	CacheHit bool `json:"cache_hit"`
 
 	CacheID *string `json:"cache_id,omitempty"`
@@ -1853,11 +1861,14 @@ type BifrostCacheDebug struct {
 	CacheHitLatency *int64 `json:"cache_hit_latency,omitempty"`
 }
 
-// BifrostRoutingDebug records billable internal calls made by the routing
+// Deprecated: use BifrostCacheMetadata.
+type BifrostCacheDebug = BifrostCacheMetadata
+
+// BifrostRoutingMetadata records billable internal calls made by the routing
 // plugin during complexity classification. It is not general routing-decision
 // metadata; tier, mechanism, selected rule, provider, and model are exposed
 // through their dedicated routing fields.
-type BifrostRoutingDebug struct {
+type BifrostRoutingMetadata struct {
 	// Calls holds one entry per billable internal call this request made. A
 	// request makes at most two: a semantic classification embed, and, only
 	// when semantic classification produced no tier, an llm classifier chat

@@ -1,7 +1,7 @@
 package schemas
 
-// Clone returns an owned snapshot of cache debug data.
-func (d *BifrostCacheDebug) Clone() *BifrostCacheDebug {
+// Clone returns an owned snapshot of cache metadata.
+func (d *BifrostCacheMetadata) Clone() *BifrostCacheMetadata {
 	if d == nil {
 		return nil
 	}
@@ -19,25 +19,35 @@ func (d *BifrostCacheDebug) Clone() *BifrostCacheDebug {
 	return &clone
 }
 
-// CacheDebugFromContext returns typed cache debug data stored on ctx.
-func CacheDebugFromContext(ctx *BifrostContext) (*BifrostCacheDebug, bool) {
+// CacheMetadataFromContext returns typed cache metadata stored on ctx.
+func CacheMetadataFromContext(ctx *BifrostContext) (*BifrostCacheMetadata, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	debug, ok := ctx.Value(BifrostContextKeyCacheDebug).(*BifrostCacheDebug)
-	if !ok || debug == nil || debug.ProviderUsed == nil || debug.ModelUsed == nil || debug.InputTokens == nil {
+	metadata, ok := ctx.Value(BifrostContextKeyCacheMetadata).(*BifrostCacheMetadata)
+	if !ok || metadata == nil || metadata.ProviderUsed == nil || metadata.ModelUsed == nil || metadata.InputTokens == nil {
 		return nil, false
 	}
-	return debug.Clone(), true
+	return metadata.Clone(), true
 }
 
-// SetCacheDebugOnContext stores semantic cache debug data on ctx.
-func SetCacheDebugOnContext(ctx *BifrostContext, debug *BifrostCacheDebug) bool {
-	if ctx == nil || debug == nil || debug.ProviderUsed == nil || debug.ModelUsed == nil || debug.InputTokens == nil {
+// SetCacheMetadataOnContext stores semantic cache metadata on ctx.
+func SetCacheMetadataOnContext(ctx *BifrostContext, metadata *BifrostCacheMetadata) bool {
+	if ctx == nil || metadata == nil || metadata.ProviderUsed == nil || metadata.ModelUsed == nil || metadata.InputTokens == nil {
 		return false
 	}
-	ctx.SetValue(BifrostContextKeyCacheDebug, debug.Clone())
+	ctx.SetValue(BifrostContextKeyCacheMetadata, metadata.Clone())
 	return true
+}
+
+// Deprecated: use CacheMetadataFromContext.
+func CacheDebugFromContext(ctx *BifrostContext) (*BifrostCacheMetadata, bool) {
+	return CacheMetadataFromContext(ctx)
+}
+
+// Deprecated: use SetCacheMetadataOnContext.
+func SetCacheDebugOnContext(ctx *BifrostContext, metadata *BifrostCacheMetadata) bool {
+	return SetCacheMetadataOnContext(ctx, metadata)
 }
 
 // cloneString returns an owned copy of value.

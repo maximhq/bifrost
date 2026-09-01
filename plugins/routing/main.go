@@ -464,7 +464,7 @@ func (p *RoutingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bifro
 func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if ctx != nil && resp != nil {
 		if extraFields := resp.GetExtraFields(); extraFields != nil {
-			stampRoutingDebug(ctx, resp, extraFields.RequestType, bifrost.IsFinalChunk(ctx))
+			stampRoutingMetadata(ctx, resp, extraFields.RequestType, bifrost.IsFinalChunk(ctx))
 		}
 	}
 	return resp, bifrostErr, nil

@@ -66,12 +66,12 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 
 	state.Embeddings = embedding
 	state.EmbeddingsInputTokens = inputTokens
-	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+	if !schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{
 		ProviderUsed: bifrost.Ptr(string(plugin.config.Provider)),
 		ModelUsed:    bifrost.Ptr(plugin.config.EmbeddingModel),
 		InputTokens:  bifrost.Ptr(inputTokens),
 	}) {
-		plugin.logger.Warn("Failed to store semantic cache debug data on request context")
+		plugin.logger.Warn("Failed to store semantic cache metadata on request context")
 	}
 
 	cacheThreshold := plugin.config.Threshold
@@ -340,7 +340,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
-	plugin.stampCacheDebugForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
 }
@@ -375,8 +375,8 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			}
 
 			if i == len(streamArray)-1 {
-				// stampCacheDebugForHit marks this chunk as the cache-hit final
-				// chunk; cache.PostLLMHook keys off CacheDebug.CacheHit=true to
+				// stampCacheMetadataForHit marks this chunk as the cache-hit final
+				// chunk; cache.PostLLMHook keys off the compatibility field's CacheHit=true to
 				// set BifrostContextKeyStreamEndIndicator on the root ctx
 				// synchronously (same goroutine as logging.PostLLMHook).
 				//
@@ -386,7 +386,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				// write the indicator) while the receiver is still running
 				// PostLLMHooks for chunk N-1, poisoning that chunk's
 				// IsFinalChunk read and causing duplicate "final" events.
-				plugin.stampCacheDebugForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+				plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 			}
 
 			chunk := &schemas.BifrostStreamChunk{
@@ -410,13 +410,13 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	return &schemas.LLMPluginShortCircuit{Stream: streamChan}, nil
 }
 
-// stampCacheDebugForHit stamps the cache-hit telemetry on the response. For
+// stampCacheMetadataForHit stamps cache-hit metadata on the response. For
 // CacheTypeDirect, the embedding-related fields are explicitly cleared so
 // stale carry-over from semantic hits never leaks through. CacheHitLatency
 // is computed from state.CreatedAt (set at PreLLMHook entry) so consumers
 // can distinguish cache-serve time from the original provider latency
 // preserved in the cached response.
-func (plugin *Plugin) stampCacheDebugForHit(
+func (plugin *Plugin) stampCacheMetadataForHit(
 	state *cacheState,
 	extraFields *schemas.BifrostResponseExtraFields,
 	cacheID string,
@@ -429,31 +429,31 @@ func (plugin *Plugin) stampCacheDebugForHit(
 ) {
 	// GetExtraFields() can return nil for older/corrupted cache entries that
 	// were written without ExtraFields populated. Bail rather than panic —
-	// the chunk will still be delivered, just without CacheDebug telemetry.
+	// the chunk will still be delivered, just without cache metadata.
 	if extraFields == nil {
 		return
 	}
 	if extraFields.CacheDebug == nil {
-		extraFields.CacheDebug = &schemas.BifrostCacheDebug{}
+		extraFields.CacheDebug = &schemas.BifrostCacheMetadata{}
 	}
-	cd := extraFields.CacheDebug
-	cd.CacheHit = true
-	cd.HitType = bifrost.Ptr(string(cacheType))
-	cd.CacheID = bifrost.Ptr(cacheID)
-	cd.RequestedProvider = bifrost.Ptr(string(requestedProvider))
-	cd.RequestedModel = bifrost.Ptr(requestedModel)
-	cd.CacheHitLatency = bifrost.Ptr(time.Since(state.CreatedAt).Milliseconds())
+	cacheMetadata := extraFields.CacheDebug
+	cacheMetadata.CacheHit = true
+	cacheMetadata.HitType = bifrost.Ptr(string(cacheType))
+	cacheMetadata.CacheID = bifrost.Ptr(cacheID)
+	cacheMetadata.RequestedProvider = bifrost.Ptr(string(requestedProvider))
+	cacheMetadata.RequestedModel = bifrost.Ptr(requestedModel)
+	cacheMetadata.CacheHitLatency = bifrost.Ptr(time.Since(state.CreatedAt).Milliseconds())
 	if cacheType == CacheTypeSemantic {
-		cd.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
-		cd.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
-		cd.Threshold = threshold
-		cd.Similarity = similarity
-		cd.InputTokens = inputTokens
+		cacheMetadata.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
+		cacheMetadata.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
+		cacheMetadata.Threshold = threshold
+		cacheMetadata.Similarity = similarity
+		cacheMetadata.InputTokens = inputTokens
 	} else {
-		cd.ProviderUsed = nil
-		cd.ModelUsed = nil
-		cd.Threshold = nil
-		cd.Similarity = nil
-		cd.InputTokens = nil
+		cacheMetadata.ProviderUsed = nil
+		cacheMetadata.ModelUsed = nil
+		cacheMetadata.Threshold = nil
+		cacheMetadata.Similarity = nil
+		cacheMetadata.InputTokens = nil
 	}
 }

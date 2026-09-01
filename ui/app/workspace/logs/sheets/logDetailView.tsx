@@ -2121,7 +2121,7 @@ export function LogDetailView({
 											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
 										/>
 									)}
-									{/* Additional cost (guardrail / semantic cache / MCP) on its own row below. */}
+									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full md:col-start-1"
@@ -2148,6 +2148,13 @@ export function LogDetailView({
 											className="w-full"
 											label="MCP Cost"
 											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Routing Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.routing_cost)}
 										/>
 									)}
 									{isRealtimeTurn && (
@@ -2475,13 +2482,13 @@ export function LogDetailView({
 							</div>
 						</>
 					)}
-					{!isContainer && !isPassthrough && log.routing_debug?.calls && log.routing_debug.calls.length > 0 && (
+					{!isContainer && !isPassthrough && log.routing_metadata?.calls && log.routing_metadata.calls.length > 0 && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
 								<BlockHeader title="Routing Classification Details" />
 								<div className="space-y-4">
-									{log.routing_debug.calls.map((call, index) => (
+									{log.routing_metadata.calls.map((call, index) => (
 										<div
 											key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
 											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}

@@ -239,12 +239,12 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	tokenUsage := dbEntry.TokenUsage
-	cacheDebug := dbEntry.CacheDebug
+	cacheMetadata := dbEntry.CacheDebug
 	tokenUsageParsed := dbEntry.TokenUsageParsed
 	cacheDebugParsed := dbEntry.CacheDebugParsed
 	restorePricingMetadata := func() {
 		dbEntry.TokenUsage = tokenUsage
-		dbEntry.CacheDebug = cacheDebug
+		dbEntry.CacheDebug = cacheMetadata
 		dbEntry.TokenUsageParsed = tokenUsageParsed
 		dbEntry.CacheDebugParsed = cacheDebugParsed
 	}

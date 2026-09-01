@@ -139,10 +139,10 @@ func TestDirect(t *testing.T) {
 
 		req := simpleChat(cfg.OpenAIModel, "Tell me a one-line joke about teapots.")
 		respA := postChat(t, lc, 2, req, cacheHeaders{})
-		assertNoCacheDebug(t, lc, 3, respA)
+		assertNoCacheMetadata(t, lc, 3, respA)
 
 		respB := postChat(t, lc, 4, req, cacheHeaders{})
-		assertNoCacheDebug(t, lc, 5, respB)
+		assertNoCacheMetadata(t, lc, 5, respB)
 	})
 
 	// 1.5 cache_by_model_default_true — model in cache key by default, so two
@@ -284,10 +284,10 @@ func TestDirect(t *testing.T) {
 		req := chatRequest{Model: cfg.OpenAIModel, Messages: msgs}
 
 		respA := postChat(t, lc, 1, req, cacheHeaders{Key: key})
-		assertNoCacheDebug(t, lc, 2, respA)
+		assertNoCacheMetadata(t, lc, 2, respA)
 
 		respB := postChat(t, lc, 3, req, cacheHeaders{Key: key})
-		assertNoCacheDebug(t, lc, 4, respB)
+		assertNoCacheMetadata(t, lc, 4, respB)
 	})
 
 	// 1.12 conversation_threshold_boundary — len(messages) == threshold (3)
@@ -450,10 +450,10 @@ func TestDirect(t *testing.T) {
 		key := "phase1-k19"
 
 		respA := postChat(t, lc, 1, req, cacheHeaders{Key: key, Type: "semantic"})
-		assertNoCacheDebug(t, lc, 2, respA)
+		assertNoCacheMetadata(t, lc, 2, respA)
 
 		respB := postChat(t, lc, 3, req, cacheHeaders{Key: key, Type: "semantic"})
-		assertNoCacheDebug(t, lc, 4, respB)
+		assertNoCacheMetadata(t, lc, 4, respB)
 	})
 
 	// 1.41 threshold_header_ignored_direct_only — x-bf-cache-threshold has no
@@ -671,8 +671,8 @@ func TestDirect(t *testing.T) {
 	})
 
 	// 1.47 streaming_non_final_chunks_have_no_cache_debug — only the final
-	// data chunk carries the cache_debug stamp (stampCacheDebugForMiss /
-	// stampCacheDebugForHit skip non-final chunks). All earlier chunks must
+	// data chunk carries the cache_debug stamp (stampCacheMetadataForMiss /
+	// stampCacheMetadataForHit skip non-final chunks). All earlier chunks must
 	// have cache_debug absent on both A (miss) and B (hit).
 	t.Run("1.47_streaming_non_final_chunks_no_cache_debug", func(t *testing.T) {
 		t.Parallel()
@@ -686,11 +686,11 @@ func TestDirect(t *testing.T) {
 				t.Fatalf("[%s] no data chunks received", stage)
 			}
 			for i := 0; i < len(data)-1; i++ {
-				if cd := data[i].cacheDebug(); cd != nil {
+				if cd := data[i].cacheMetadata(); cd != nil {
 					t.Fatalf("[%s] non-final chunk %d had cache_debug stamped: %+v", stage, i, cd)
 				}
 			}
-			finalCD := data[len(data)-1].cacheDebug()
+			finalCD := data[len(data)-1].cacheMetadata()
 			if finalCD == nil {
 				t.Fatalf("[%s] final chunk missing cache_debug stamp", stage)
 			}
@@ -919,7 +919,7 @@ func TestDirect(t *testing.T) {
 		assertSameCacheID(t, lc, 6, idB, idA)
 		// cache_hit_latency is stamped at hit time — assert it's at least set.
 		// (Sanity check; provider latency would be much higher.)
-		if cd := respB.cacheDebug(); cd == nil || cd.CacheHitLatency == nil {
+		if cd := respB.cacheMetadata(); cd == nil || cd.CacheHitLatency == nil {
 			t.Fatalf("expected cache_hit_latency stamped on large_prompt hit")
 		}
 	})
@@ -1360,22 +1360,22 @@ func TestDirect(t *testing.T) {
 		_ = assertMiss(t, lc, 2, postChat(t, lc, 1, req, cacheHeaders{Key: key}))
 		waitForCacheWrite(t, lc, 3)
 		respB := postChat(t, lc, 4, req, cacheHeaders{Key: key})
-		respCD := assertHitAndReturnCacheDebug(t, lc, 5, respB, "direct")
+		respCD := assertHitAndReturnCacheMetadata(t, lc, 5, respB, "direct")
 
-		entry := findLogByCacheDebug(t, lc, 6, respCD)
-		assertLogMatchesResponseCacheDebug(t, lc, 7, respCD, entry.CacheDebug)
+		entry := findLogByCacheMetadata(t, lc, 6, respCD)
+		assertLogMatchesResponseCacheMetadata(t, lc, 7, respCD, entry.CacheMetadata)
 	})
 
 	logf(t, newLogCtx("direct", "teardown").at(99), "TEARDOWN", "phase_end", nil)
 }
 
-// assertHitAndReturnCacheDebug is the same as assertHit but also returns the
-// full cacheDebug struct (the regular helper returns just the cache_id string).
+// assertHitAndReturnCacheMetadata is the same as assertHit but also returns the
+// full cacheMetadata struct (the regular helper returns just the cache_id string).
 // Used by the /api/logs cross-check cases that need to compare all fields.
-func assertHitAndReturnCacheDebug(t *testing.T, lc logCtx, step int, resp cacheDebugged, wantType string) *cacheDebug {
+func assertHitAndReturnCacheMetadata(t *testing.T, lc logCtx, step int, resp cacheMetadataCarrier, wantType string) *cacheMetadata {
 	t.Helper()
 	_ = assertHit(t, lc, step, resp, wantType)
-	return resp.cacheDebug()
+	return resp.cacheMetadata()
 }
 
 // restoreDirectBaseline PUTs the canonical direct-only config so cases that

@@ -13,7 +13,7 @@ import (
 // to bill, only the platform-level budgets on the embedding provider/model.
 // Called by the routing plugin only when count_toward_budgets is enabled;
 // hot-path classification embeds are attributed through the triggering
-// request's RoutingDebug stamp instead.
+// request's routing metadata stamp instead.
 func (p *GovernancePlugin) AttributeRoutingEmbeddingCost(provider schemas.ModelProvider, model string, inputTokens int) {
 	if p.modelCatalog == nil || p.store == nil {
 		return
