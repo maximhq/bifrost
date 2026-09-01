@@ -7,13 +7,16 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { getErrorMessage, useGetWebhookDeliveriesQuery, useRedeliverWebhookDeliveryMutation } from "@/lib/store";
 import { WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEvent } from "@/lib/types/webhooks";
-import { attemptSequence, groupDeliveries, outcomeBadge } from "./deliveries.utils";
+import { useNavigate } from "@tanstack/react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { ChevronDown, ChevronLeft, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { ArrowRight, ChevronDown, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { attemptSequence, groupDeliveries, outcomeBadge } from "./deliveries.utils";
 
-const PAGE_SIZE = 25;
+// The sheet shows only a preview; the dedicated deliveries page owns the
+// full, filterable, paginated history.
+const PREVIEW_SIZE = 5;
 
 const DetailEntry = ({ label, value }: { label: string; value: React.ReactNode }) => (
 	<div>
@@ -23,6 +26,15 @@ const DetailEntry = ({ label, value }: { label: string; value: React.ReactNode }
 );
 
 const relativeTime = (timestamp?: string) => (timestamp ? formatDistanceToNow(new Date(timestamp), { addSuffix: true }) : "never");
+
+// Why the redeliver control is (or is not) available. Ordered by precedence:
+// an in-flight replay first, then the reasons the button is disabled.
+const redeliverHint = (outcome: string, endpointDisabled?: boolean, redelivering?: boolean) => {
+	if (redelivering) return "Redelivering...";
+	if (endpointDisabled) return "Enable this webhook to redeliver";
+	if (outcome === "retryable_failure") return "Still retrying automatically - redelivery is available once it settles";
+	return "Redeliver";
+};
 
 interface WebhookDetailsSheetProps {
 	endpoint: WebhookEndpoint | null;
@@ -38,17 +50,13 @@ interface WebhookDetailsSheetProps {
 
 export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, onClose }: WebhookDetailsSheetProps) {
 	const open = !!endpoint;
-	const [offset, setOffset] = useState(0);
 	const [redeliverWebhookDelivery] = useRedeliverWebhookDeliveryMutation();
 	const [redeliveringIds, setRedeliveringIds] = useState<Set<string>>(new Set());
 	const { copy } = useCopyToClipboard();
-
-	useEffect(() => {
-		setOffset(0);
-	}, [endpoint?.id]);
+	const navigate = useNavigate();
 
 	const { data, isLoading, isError } = useGetWebhookDeliveriesQuery(
-		{ endpointId: endpoint?.id ?? "", limit: PAGE_SIZE, offset },
+		{ endpointId: endpoint?.id ?? "", limit: PREVIEW_SIZE, offset: 0 },
 		{ skip: !open, pollingInterval: 5000 },
 	);
 	const totalCount = data?.pagination.total_count ?? 0;
@@ -138,7 +146,22 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 				</div>
 
 				<div className="mt-4 flex items-center justify-between">
-					<h3 className="font-semibold">Delivery History</h3>
+					<div className="flex items-center gap-2">
+						<h3 className="font-semibold">Recent Deliveries</h3>
+						<Button
+							variant="link"
+							size="sm"
+							className="h-auto p-0 text-xs"
+							onClick={() => {
+								onClose();
+								navigate({ to: "/workspace/webhooks/deliveries", search: { webhook_id: [endpoint?.id ?? ""] } as never });
+							}}
+							data-testid="webhook-view-delivery-history-btn"
+						>
+							{totalCount > PREVIEW_SIZE ? `View all ${totalCount.toLocaleString()}` : "View delivery history"}
+							<ArrowRight className="size-3" />
+						</Button>
+					</div>
 					{canManage && (
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
@@ -307,20 +330,33 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 												<TableCell>{attemptSequence(headlineSend.attempts)}</TableCell>
 												<TableCell className="text-right">
 													{canManage && (
-														<Button
-															variant="ghost"
-															size="sm"
-															onClick={() => handleRedeliver(latest.id)}
-															disabled={redeliveringIds.has(latest.id) || latest.outcome === "retryable_failure" || endpoint?.disabled}
-															data-testid={`webhook-redeliver-btn-${webhookId}`}
-															aria-label="Redeliver"
-														>
-															{redeliveringIds.has(latest.id) ? (
-																<Loader2 className="h-4 w-4 animate-spin" />
-															) : (
-																<RefreshCcw className="h-4 w-4" />
-															)}
-														</Button>
+														<Tooltip>
+															{/* A disabled button emits no pointer events, so the trigger wraps it —
+																	    otherwise the tooltip vanishes exactly when it explains the most. */}
+															<TooltipTrigger asChild>
+																<span className="inline-flex">
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		onClick={() => handleRedeliver(latest.id)}
+																		disabled={
+																			redeliveringIds.has(latest.id) || latest.outcome === "retryable_failure" || endpoint?.disabled
+																		}
+																		data-testid={`webhook-redeliver-btn-${webhookId}`}
+																		aria-label="Redeliver"
+																	>
+																		{redeliveringIds.has(latest.id) ? (
+																			<Loader2 className="h-4 w-4 animate-spin" />
+																		) : (
+																			<RefreshCcw className="h-4 w-4" />
+																		)}
+																	</Button>
+																</span>
+															</TooltipTrigger>
+															<TooltipContent>
+																{redeliverHint(latest.outcome, endpoint?.disabled, redeliveringIds.has(latest.id))}
+															</TooltipContent>
+														</Tooltip>
 													)}
 												</TableCell>
 											</TableRow>
@@ -356,40 +392,6 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 						</TableBody>
 					</Table>
 				</div>
-
-				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="webhook-delivery-pagination">
-						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							deliveries
-						</div>
-						<div className="flex items-center gap-2">
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-								disabled={offset === 0}
-								aria-label="Previous page"
-							>
-								<ChevronLeft className="size-3" />
-							</Button>
-							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-								<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
-							</div>
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(offset + PAGE_SIZE)}
-								disabled={offset + PAGE_SIZE >= totalCount}
-								aria-label="Next page"
-							>
-								<ChevronRight className="size-3" />
-							</Button>
-						</div>
-					</div>
-				)}
 			</SheetContent>
 		</Sheet>
 	);
