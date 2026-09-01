@@ -15,6 +15,7 @@
 
 import type { ComponentType } from "react";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import type { ModelConfig } from "@/lib/types/governance";
 
 export interface ScopePickerProps {
 	value: string;
@@ -45,6 +46,17 @@ export interface ModelLimitScopeEntry {
 	// normal form — e.g. enterprise's "access_profile" scope, whose rows must
 	// only be changed by editing the owning access profile.
 	readOnly?: boolean;
+	// Optional. Overrides the label shown in the Scope column/field for rows of
+	// this scope, while `label` above still names the scope itself (e.g. in the
+	// filter dropdown). Lets a scope whose rows apply to a user — but aren't the
+	// literal "user" scope value — still read as "User" wherever a single row is
+	// displayed, without colliding with "user" as a distinct filterable option.
+	displayAsScope?: string;
+	// Optional. Renders additional context next to the Scope Target for a row of
+	// this scope — e.g. enterprise's "Managed by Access Profile: X" note. Passed
+	// the row's own ModelConfig; renders nothing (returns null) itself when there
+	// is nothing to show.
+	ManagedByComponent?: ComponentType<{ modelConfig: ModelConfig }>;
 }
 
 const registry = new Map<string, ModelLimitScopeEntry>();

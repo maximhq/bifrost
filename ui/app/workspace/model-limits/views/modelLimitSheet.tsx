@@ -313,16 +313,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					<div className="grow space-y-4 px-4 md:px-8">
 						<Alert variant="info">
 							<Lock className="h-4 w-4" />
-							<AlertDescription>
-								This limit is managed by <span className="font-medium">{scopeEntry?.label}</span>
-								{modelConfig.scope_name ? (
-									<>
-										{" "}
-										(<span className="font-medium">{modelConfig.scope_name}</span>)
-									</>
-								) : null}
-								. It must be changed there — this page is read-only for this limit.
-							</AlertDescription>
+							<AlertDescription>This limit is read-only here — it's managed elsewhere and must be changed there.</AlertDescription>
 						</Alert>
 
 						<div className="space-y-1">
@@ -337,12 +328,18 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 						<div className="space-y-1">
 							<Label className="text-muted-foreground text-xs font-normal">Scope</Label>
-							<p className="text-sm">{scopeEntry?.label}</p>
+							<p className="text-sm">{scopeEntry?.displayAsScope ?? scopeEntry?.label}</p>
 						</div>
 						{modelConfig.scope_name ? (
 							<div className="space-y-1">
 								<Label className="text-muted-foreground text-xs font-normal">Target</Label>
 								<p className="text-sm">{modelConfig.scope_name}</p>
+							</div>
+						) : null}
+						{scopeEntry?.ManagedByComponent ? (
+							<div className="space-y-1">
+								<Label className="text-muted-foreground text-xs font-normal">Managed By</Label>
+								<scopeEntry.ManagedByComponent modelConfig={modelConfig} />
 							</div>
 						) : null}
 

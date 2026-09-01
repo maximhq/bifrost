@@ -414,16 +414,25 @@ export default function ModelLimitsTable({
 												)}
 											</TableCell>
 											<TableCell>
-												<Badge variant="secondary">{getScopeLabel(config.scope ?? "global")}</Badge>
+												<Badge variant="secondary">
+													{(() => {
+														const entry = getModelLimitScope(config.scope ?? "global");
+														return entry?.displayAsScope ?? getScopeLabel(config.scope ?? "global");
+													})()}
+												</Badge>
 											</TableCell>
 											<TableCell>
+												<div className="flex flex-col items-start gap-1">
 												{config.scope !== "global" && config.scope_id && config.scope_name ? (
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
 																<Badge
 																	variant="secondary"
-																	className="flex max-w-[160px] cursor-pointer items-center gap-1 hover:opacity-80"
+																	className={cn(
+																		"flex max-w-[160px] items-center gap-1",
+																		getModelLimitScope(config.scope ?? "global")?.buildDeepLink && "cursor-pointer hover:opacity-80",
+																	)}
 																	data-testid={`model-limit-scope-target-${config.scope_id}`}
 																	onClick={() => {
 																		if (!config.scope_id) return;
@@ -432,7 +441,9 @@ export default function ModelLimitsTable({
 																	}}
 																>
 																	<span className="truncate">{config.scope_name}</span>
-																	<ArrowUpRight className="h-3 w-3 shrink-0" />
+																	{getModelLimitScope(config.scope ?? "global")?.buildDeepLink && (
+																		<ArrowUpRight className="h-3 w-3 shrink-0" />
+																	)}
 																</Badge>
 															</TooltipTrigger>
 															<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
@@ -441,6 +452,11 @@ export default function ModelLimitsTable({
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
+												{(() => {
+													const ManagedBy = getModelLimitScope(config.scope ?? "global")?.ManagedByComponent;
+													return ManagedBy ? <ManagedBy modelConfig={config} /> : null;
+												})()}
+												</div>
 											</TableCell>
 											<TableCell className="min-w-[180px]">
 												{budgets.length > 0 ? (
