@@ -570,6 +570,11 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 
 ### Cache Control
 
+Bifrost can also add the marker for clients that send none. Set
+`prompt_cache.auto_inject` on the provider and the first cacheable block is marked
+automatically, which Bedrock receives as a `cachePoint`. See
+[Auto-inject cache breakpoints](/providers/supported-providers/anthropic#auto-inject-cache-breakpoints).
+
 Prompt caching is supported via cache control directives:
 
 <Tabs>
