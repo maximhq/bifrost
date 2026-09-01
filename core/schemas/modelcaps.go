@@ -194,6 +194,21 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCaching reports whether the model supports explicit prompt caching
+// at all. It is the base feature that SupportsPromptCachingScope and
+// SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a
+// model that answers false must never be sent a marker it did not ask for.
+//
+// The datasheet field existed before this accessor did, so callers must pass a
+// meaningful fallback (see ModelSupportsPromptCaching) rather than relying on
+// datasheet coverage.
+func (c ModelCaps) SupportsPromptCaching(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCaching != nil {
+		return *c.record.SupportsPromptCaching
+	}
+	return fallback
+}
+
 // SupportsPromptCachingScope reports whether the model accepts
 // cache_control.scope (Anthropic's prompt-caching-scope beta). Distinct from
 // SupportsExtendedCacheTTL, which gates the cache TTL rather than its scope.
