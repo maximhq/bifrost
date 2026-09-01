@@ -176,14 +176,15 @@ func ListModelsByKey(
 	// Copy response body before releasing
 	responseBody := append([]byte(nil), resp.Body()...)
 
-	openaiResponse := &OpenAIListModelsResponse{}
+	compatibleResponse := &openAICompatibleListModelsResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, compatibleResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
+	openaiResponse := compatibleResponse.toOpenAIListModelsResponse()
 	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1018,6 +1019,33 @@ type OpenAIModel struct {
 type OpenAIListModelsResponse struct {
 	Object string        `json:"object"`
 	Data   []OpenAIModel `json:"data"`
+}
+
+type openAICompatibleModel struct {
+	OpenAIModel
+	Organization  string `json:"organization"`
+	ContextLength *int   `json:"context_length,omitempty"`
+}
+
+type openAICompatibleListModelsResponse struct {
+	Object string                  `json:"object"`
+	Data   []openAICompatibleModel `json:"data"`
+}
+
+func (response *openAICompatibleListModelsResponse) UnmarshalJSON(data []byte) error {
+	type envelope openAICompatibleListModelsResponse
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var models []openAICompatibleModel
+		if err := sonic.Unmarshal(trimmed, &models); err != nil {
+			return err
+		}
+		*response = openAICompatibleListModelsResponse{Data: models}
+		return nil
+	}
+
+	return sonic.Unmarshal(trimmed, (*envelope)(response))
 }
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
