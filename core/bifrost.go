@@ -5204,15 +5204,17 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking. Derive a request-scoped
-	// context rather than aliasing bifrost.ctx directly: bifrost.ctx is the
-	// single long-lived root every nil-ctx caller falls back to, and
-	// armRequestTimeout below calls ctx.Cancel() when its timer fires --
-	// doing that on the shared root would cancel every other nil-ctx request
-	// in flight (and any future one), not just this one. Deriving still lets
-	// cancellation of bifrost.ctx itself (e.g. on Shutdown) propagate down.
-	if ctx == nil {
-		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+	// Handle nil context early to prevent blocking. When a deadline is
+	// declared, this hands back a request-scoped context instead of
+	// bifrost.ctx itself, so armRequestTimeout's ctx.Cancel() on expiry
+	// cannot cancel every other nil-ctx request sharing that root. See
+	// resolveRequestContext for why the derivation is conditional.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		// handleRequest is synchronous, so returning means the request is
+		// done and the derived context (and its watchCancellation goroutine)
+		// can be released on every return path.
+		defer ownedCtx.Cancel()
 	}
 
 	// Arms once for the whole call, including every fallback attempt below --
@@ -5367,10 +5369,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	provider, model, fallbacks := req.GetRequestFields()
 
 	// Handle nil context early to prevent blocking. See the identical
-	// derivation (and why) in handleRequest.
-	if ctx == nil {
-		ctx = schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
-	}
+	// resolution (and why) in handleRequest.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
 
 	// Arms once for the whole call, including every fallback attempt below.
 	// See the identical comment in handleRequest, and armRequestTimeout's doc
@@ -5379,6 +5379,21 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// (success: stop only once the caller has fully drained the stream) or
 	// calls stopRequestTimeout directly (error: nothing to wrap).
 	stopRequestTimeout, requestTimeoutArmed := armRequestTimeout(ctx)
+	if ownedCtx != nil {
+		// Unlike handleRequest, this returns while the caller is still
+		// draining the stream, so the derived context cannot be released on
+		// return -- it is released wherever the timer is stopped, which every
+		// return path below already reaches exactly once. requestTimeoutArmed
+		// is necessarily true here (resolveRequestContext only derives when
+		// root declares a deadline, which is the same value armRequestTimeout
+		// reads through this context), so the wrapped-stream path that runs
+		// stop after drain is guaranteed to be the one taken on success.
+		stopTimer := stopRequestTimeout
+		stopRequestTimeout = func() {
+			stopTimer()
+			ownedCtx.Cancel()
+		}
+	}
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()

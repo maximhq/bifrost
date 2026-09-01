@@ -6,6 +6,33 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// resolveRequestContext resolves the context handleRequest/handleStreamRequest
+// runs on when the caller passed nil, and reports which context (if any) this
+// call owns and must therefore release once the request completes. A
+// caller-supplied context is never owned and must never be cancelled here.
+//
+// A child is derived only when root actually declares a request timeout. The
+// derivation exists solely so armRequestTimeout's ctx.Cancel() on expiry cannot
+// reach root -- the single long-lived context every nil-ctx caller shares --
+// and there is nothing to isolate when no timer will ever fire.
+//
+// Deriving unconditionally instead would leak a goroutine per nil-ctx request:
+// NewBifrostContext starts watchCancellation whenever the parent is
+// cancellable, and for a child with no deadline of its own that goroutine
+// blocks on parent.Done() (root, cancelled only at Shutdown), its own nil
+// timer channel, and its own done channel -- so nothing releases it until the
+// child is cancelled.
+func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostContext) (resolved *schemas.BifrostContext, owned *schemas.BifrostContext) {
+	if ctx != nil {
+		return ctx, nil
+	}
+	if d, _ := root.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); d > 0 {
+		owned = schemas.NewBifrostContext(root, schemas.NoDeadline)
+		return owned, owned
+	}
+	return root, nil
+}
+
 // armRequestTimeout arms a timer for the total request/stream deadline
 // declared via the x-bf-request-timeout header (schemas.BifrostContextKeyRequestTimeout),
 // if any, and returns a stop function that must be called exactly once when
