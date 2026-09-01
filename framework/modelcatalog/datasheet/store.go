@@ -346,7 +346,7 @@ func (s *Store) GetSupportedRequestTypes(provider schemas.ModelProvider, model s
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, candidate := range candidates {
-		if declaredProvider := s.modelParameterProviders[candidate]; declaredProvider != "" && declaredProvider != provider {
+		if declaredProvider := s.modelParameterProviders[candidate]; declaredProvider == "" || declaredProvider != provider {
 			continue
 		}
 		outputs := s.supportedResponseTypes[candidate]
