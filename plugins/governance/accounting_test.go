@@ -214,9 +214,9 @@ func TestAccounting_ZeroCostFailureNotBilled(t *testing.T) {
 	assert.Equal(t, int64(0), f.tokens(), "no-usage failure counts no tokens")
 }
 
-// modelScopedFixture wires a user-scoped per-model budget (how an access profile's
-// model-level limits are stored) alongside a user-scoped all-models wildcard, so a
-// settlement can be checked for charging the first and not double-charging the second.
+// modelScopedFixture wires a virtual-key-scoped per-model budget alongside a
+// virtual-key-scoped all-models wildcard, so a settlement can be checked for
+// charging the first and not double-charging the second.
 type modelScopedFixture struct {
 	store   GovernanceStore
 	tracker *UsageTracker
@@ -226,18 +226,18 @@ func newModelScopedFixture(t *testing.T) *modelScopedFixture {
 	t.Helper()
 	logger := NewMockLogger()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("model-budget", 1_000_000.0, 0.0, "1d")
 	perModelRL := buildRateLimit("model-rl", 1_000_000_000, 1_000_000)
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, perModelRL)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, perModelRL)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("wildcard-budget", 1_000_000.0, 0.0, "1d")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
@@ -264,12 +264,12 @@ func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
 	// What a settled batch looks like: the wildcard budget was collected at create
 	// time (and so is already charged the full total), the per-model budget was not.
 	report := batchaccounting.BatchUsageReport{
-		RequestID:  "batch-cost:openai:batch-models",
-		Provider:   schemas.OpenAI,
-		Cost:       30.0,
-		TokensUsed: 300,
-		BudgetIDs:  []string{"wildcard-budget"},
-		UserID:     "user-alice",
+		RequestID:    "batch-cost:openai:batch-models",
+		Provider:     schemas.OpenAI,
+		Cost:         30.0,
+		TokensUsed:   300,
+		BudgetIDs:    []string{"wildcard-budget"},
+		VirtualKeyID: "vk-alice",
 		ModelUsage: []batchaccounting.BatchModelUsage{
 			{Model: "gpt-5", Cost: 20.0, TokensUsed: 200},
 			{Model: "gpt-4o", Cost: 10.0, TokensUsed: 100},
@@ -290,13 +290,13 @@ func TestReportBatchUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 
 	require.NoError(t, plugin.ReportBatchUsage(context.Background(), batchaccounting.BatchUsageReport{
-		RequestID:  "batch-cost:openai:batch-nomodels",
-		Provider:   schemas.OpenAI,
-		Cost:       12.0,
-		TokensUsed: 100,
-		BudgetIDs:  []string{"wildcard-budget"},
-		UserID:     "user-alice",
-		ModelUsage: []batchaccounting.BatchModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
+		RequestID:    "batch-cost:openai:batch-nomodels",
+		Provider:     schemas.OpenAI,
+		Cost:         12.0,
+		TokensUsed:   100,
+		BudgetIDs:    []string{"wildcard-budget"},
+		VirtualKeyID: "vk-alice",
+		ModelUsage:   []batchaccounting.BatchModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
 	}))
 
 	assert.Equal(t, 0.0, f.budgetUsage("model-budget"), "a model with no config of its own charges nothing extra")

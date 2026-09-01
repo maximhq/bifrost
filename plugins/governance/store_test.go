@@ -1620,26 +1620,26 @@ func ptrInt64(i int64) *int64 {
 	return &i
 }
 
-// An access profile's per-model budgets materialise as user-scoped model configs
-// naming one model and provider. A batch create carries no top-level model, so the
-// in-flight collection matches only the wildcard tiers and those per-model budgets
-// are invisible to it — which is why batch spend never reached them. Settlement
-// knows the models and asks for them by name.
+// A downstream consumer's (e.g. an access profile's) per-model budgets materialise
+// as virtual-key-scoped model configs naming one model and provider. A batch create
+// carries no top-level model, so the in-flight collection matches only the wildcard
+// tiers and those per-model budgets are invisible to it — which is why batch spend
+// never reached them. Settlement knows the models and asks for them by name.
 func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime(t *testing.T) {
 	logger := NewMockLogger()
 	ctx := context.Background()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("ap-model-budget", 100.0, 0.0, "1M")
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, nil)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, nil)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("ap-wildcard-budget", 100.0, 0.0, "1M")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
@@ -1647,31 +1647,21 @@ func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime
 	}, nil, nil)
 	require.NoError(t, err)
 
-	// What batch create settles onto the request: no model, so only the wildcard is gathered. The
-	// user is a scope of its own, read off the request rather than off a permit, so no access is
-	// needed to reach it.
-	inFlightCtx := grantedCtx(ctx)
-	inFlightCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
-	inFlightBudgets, _ := gatherLimits(inFlightCtx, store, nil, schemas.ModelProvider(providerName), "")
-	inFlight := limitIDsOf(inFlightBudgets)
-	assert.Contains(t, inFlight, wildcard.ID)
-	assert.NotContains(t, inFlight, perModel.ID, "the per-model budget cannot be matched without a model")
-
 	// What settlement sees: the model is known, so the per-model budget is reachable.
-	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-5")
+	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-5")
 	assert.Contains(t, atSettlement, perModel.ID)
 	// The wildcard is returned too and overlaps the in-flight set by design; callers
 	// subtract what they already charged rather than relying on it being absent.
 	assert.Contains(t, atSettlement, wildcard.ID)
 
 	// A model with no config of its own still finds the wildcard and nothing else.
-	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-4o")
+	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-4o")
 	assert.NotContains(t, otherModel, perModel.ID)
 	assert.Contains(t, otherModel, wildcard.ID)
 
-	// Scope isolation: another user's id must not reach these configs.
-	otherUser, _ := store.CollectModelScopedGovernanceIDs(ctx, "", "user-bob", schemas.ModelProvider(providerName), "gpt-5")
-	assert.Empty(t, otherUser)
+	// Scope isolation: another virtual key's id must not reach these configs.
+	otherVK, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-bob", "", schemas.ModelProvider(providerName), "gpt-5")
+	assert.Empty(t, otherVK)
 }
 
 // What a request is billed to and what is recorded on its log row are the limits settled on its

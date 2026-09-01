@@ -1556,10 +1556,10 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // They are missing from usage.BudgetIDs by construction: those ids were collected
 // while the request was in flight, and a batch create carries no top-level model
 // (each input-file row names its own), so only the all-models wildcards matched.
-// An access profile's per-model limits materialise as user-scoped configs naming
-// exactly one model and provider, which is why a model-level budget never moved for
-// a batch. Settlement does know the models, so each one is resolved and charged with
-// its own share here.
+// A downstream consumer's per-model limits (e.g. an access profile's, registered via
+// RegisterExtraScopedIDsResolver) materialise as configs naming exactly one model and
+// provider, which is why a model-level budget never moved for a batch. Settlement does
+// know the models, so each one is resolved and charged with its own share here.
 //
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
