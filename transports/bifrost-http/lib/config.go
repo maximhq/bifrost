@@ -7313,6 +7313,53 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	return nil
 }
 
+// PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.
+// It mirrors the enum on prompt_cache.ttl in config.schema.json.
+const PromptCacheTTLExtended = "1h"
+
+// promptCacheInjectionRoles mirrors the role enum on cache_control_injection_point in
+// config.schema.json. TestValidatePromptCachePointEnumsMatchConfigSchema keeps the two
+// in step.
+var promptCacheInjectionRoles = []string{"system", "developer", "user", "assistant"}
+
+// ValidatePromptCache validates the prompt-cache configuration arriving over the
+// management API.
+//
+// The config-file path is checked against config.schema.json, which declares
+// prompt_cache.ttl as an enum. The API path had no equivalent check, so the same field
+// carried two different contracts depending on which door it came through: a TTL the
+// file would reject was stored and then forwarded verbatim as cache_control.ttl,
+// surfacing as a provider 400 at request time rather than a rejected config write.
+// TestValidatePromptCacheMatchesConfigSchemaEnum keeps the two doors in sync.
+//
+// Omitting ttl (nil) is how a caller asks for the provider default. An explicit empty
+// string is not the same request and is rejected rather than silently treated as one.
+func ValidatePromptCache(cfg *schemas.PromptCacheConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.TTL != nil && *cfg.TTL != PromptCacheTTLExtended {
+		return fmt.Errorf("prompt cache validation failed: unsupported ttl %q (supported: %q, or omit ttl for the provider default)", *cfg.TTL, PromptCacheTTLExtended)
+	}
+	for i, point := range cfg.InjectionPoints {
+		// Location is optional in the schema, so only a value that is present and
+		// outside the enum is a violation.
+		if point.Location != "" && point.Location != schemas.CacheControlInjectionLocationMessage {
+			return fmt.Errorf("prompt cache validation failed: injection point %d has unsupported location %q (supported: %q)",
+				i, point.Location, schemas.CacheControlInjectionLocationMessage)
+		}
+		if point.Role != nil && !slices.Contains(promptCacheInjectionRoles, *point.Role) {
+			return fmt.Errorf("prompt cache validation failed: injection point %d has unsupported role %q (supported: %s)",
+				i, *point.Role, strings.Join(promptCacheInjectionRoles, ", "))
+		}
+	}
+	// Deliberately unchecked: the count of injection points, since config.schema.json
+	// declares no maxItems and the injector clamps emitted markers at four on its own;
+	// and a point carrying neither role nor index, which matchMessageIndices documents
+	// as matching nothing on purpose rather than as a misconfiguration to reject.
+	return nil
+}
+
 // ValidateCustomProviderUpdate validates that immutable fields in CustomProviderConfig are not changed during updates
 func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.ProviderConfig, provider schemas.ModelProvider) error {
 	// If neither config has CustomProviderConfig, no validation needed

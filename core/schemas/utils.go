@@ -1695,12 +1695,29 @@ func IsGLMModel(model string) bool {
 //
 // Substring-matched on the full dot-revision, deliberately. Catalog IDs carry region
 // and vendor namespaces ("azure/eu/gpt-5.6", "openai.gpt-5.6-terra"), so a prefix test
-// would miss them; and because the needle includes the revision it cannot over-match
-// gpt-5.5 or an earlier model the way a bare "gpt-5" test would. This mirrors the
-// gating in core/providers/openai/utils.go, restated here because core/schemas cannot
-// import a provider package.
+// would miss them. Including the revision in the needle rules out gpt-5.5 and earlier,
+// but not a longer one: a bare Contains also answers true for gpt-5.60, a different
+// model that never declared support. Hence the trailing boundary - the character after
+// the needle must be absent or non-numeric. This mirrors the gating in
+// core/providers/openai/utils.go, restated here because core/schemas cannot import a
+// provider package.
 func IsGPT56Model(model string) bool {
-	return strings.Contains(strings.ToLower(model), "gpt-5.6")
+	const needle = "gpt-5.6"
+	lower := strings.ToLower(model)
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := start + idx + len(needle)
+		if end == len(lower) || lower[end] < '0' || lower[end] > '9' {
+			return true
+		}
+		// A digit here means a longer dot-revision; keep scanning, since a
+		// namespaced id may carry the real match further along.
+		start = end
+	}
+	return false
 }
 
 // IsAnthropicModel checks if the model is an Anthropic model.

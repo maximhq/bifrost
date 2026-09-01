@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -430,5 +431,59 @@ func TestInjectChat_Basics(t *testing.T) {
 			}
 			return n
 		}(), "no extra marker may be added")
+	})
+}
+
+// TestResolvePromptCacheConfig covers the per-request override, whose most important
+// property is what it CANNOT do: a request header must never enable injection for a
+// provider whose operator never configured it. Spending a cache checkpoint changes the
+// billing profile, and that decision belongs to the operator, not to a caller.
+func TestResolvePromptCacheConfig(t *testing.T) {
+	ctxWith := func(v any) *schemas.BifrostContext {
+		c := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if v != nil {
+			c.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, v)
+		}
+		return c
+	}
+
+	t.Run("no operator config means the header cannot enable", func(t *testing.T) {
+		assert.Nil(t, ResolvePromptCacheConfig(ctxWith(true), nil),
+			"a header must not manufacture opt-in for a provider the operator never configured")
+	})
+
+	t.Run("header turns a configured-off provider on for one request", func(t *testing.T) {
+		cfg := &schemas.PromptCacheConfig{AutoInject: false}
+		got := ResolvePromptCacheConfig(ctxWith(true), cfg)
+		require.NotNil(t, got)
+		assert.True(t, got.AutoInject)
+		assert.False(t, cfg.AutoInject, "the shared provider config was written through")
+		assert.NotSame(t, cfg, got, "an overridden config must be a copy")
+	})
+
+	t.Run("header opts a single request out", func(t *testing.T) {
+		cfg := &schemas.PromptCacheConfig{AutoInject: true}
+		got := ResolvePromptCacheConfig(ctxWith(false), cfg)
+		require.NotNil(t, got)
+		assert.False(t, got.AutoInject)
+		assert.True(t, cfg.AutoInject, "the shared provider config was written through")
+	})
+
+	t.Run("passes through untouched", func(t *testing.T) {
+		cfg := &schemas.PromptCacheConfig{AutoInject: true}
+		assert.Same(t, cfg, ResolvePromptCacheConfig(ctxWith(nil), cfg), "no header set")
+		assert.Same(t, cfg, ResolvePromptCacheConfig(ctxWith(true), cfg), "header agrees with config")
+		assert.Same(t, cfg, ResolvePromptCacheConfig(nil, cfg), "nil context")
+	})
+
+	t.Run("injection points are not overridable", func(t *testing.T) {
+		cfg := &schemas.PromptCacheConfig{
+			InjectionPoints: []schemas.CacheControlInjectionPoint{
+				{Location: schemas.CacheControlInjectionLocationMessage, Role: schemas.Ptr("system")},
+			},
+		}
+		got := ResolvePromptCacheConfig(ctxWith(false), cfg)
+		require.NotNil(t, got)
+		assert.Len(t, got.InjectionPoints, 1, "the header only flips auto_inject; points remain config-level")
 	})
 }

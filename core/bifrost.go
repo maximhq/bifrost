@@ -7319,23 +7319,36 @@ func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schem
 // Injection is per-attempt by design: a fallback re-evaluates against the new
 // provider's own config and capabilities rather than carrying the previous one's
 // decision.
-func promptCacheResponsesRequest(config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
-	if r == nil || config == nil || !providerUtils.PromptCacheInjectionEnabled(config.PromptCache, provider, r.Model) {
+//
+// The capability gate runs against the BASE provider, not the key the provider
+// reports. A custom provider surfaces its own key ("my-anthropic"), which no
+// capability switch knows, so gating on it unresolved would answer false and quietly
+// deny injection to every custom provider wrapping a cache_control backend.
+func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || config == nil {
+		return r
+	}
+	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), r.Model) {
 		return r
 	}
 	cp := *r
-	cp.Input = providerUtils.InjectResponsesCacheBreakpoints(config.PromptCache, r.Input)
+	cp.Input = providerUtils.InjectResponsesCacheBreakpoints(promptCache, r.Input)
 	return &cp
 }
 
 // promptCacheChatRequest is the Chat Completions parallel of
 // promptCacheResponsesRequest, with the same copy-on-write guarantee.
-func promptCacheChatRequest(config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if r == nil || config == nil || !providerUtils.PromptCacheInjectionEnabled(config.PromptCache, provider, r.Model) {
+func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if r == nil || config == nil {
+		return r
+	}
+	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), r.Model) {
 		return r
 	}
 	cp := *r
-	cp.Input = providerUtils.InjectChatCacheBreakpoints(config.PromptCache, r.Input)
+	cp.Input = providerUtils.InjectChatCacheBreakpoints(promptCache, r.Input)
 	return &cp
 }
 
@@ -7354,7 +7367,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				chatRequest = promptCacheChatRequest(config, provider.GetProviderKey(), chatRequest)
+				chatRequest = promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
 				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
@@ -7372,7 +7385,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				responsesRequest = promptCacheResponsesRequest(config, provider.GetProviderKey(), responsesRequest)
+				responsesRequest = promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), responsesRequest)
 				responsesResponse, bifrostError := provider.Responses(req.Context, key, responsesRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
@@ -7381,14 +7394,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				break
 			}
 		}
-		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, promptCacheChatRequest(config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
+		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
-		responsesResponse, bifrostError := provider.Responses(req.Context, key, promptCacheResponsesRequest(config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
+		responsesResponse, bifrostError := provider.Responses(req.Context, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -7738,7 +7751,7 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(config, provider.GetProviderKey(), chatRequest))
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest))
 			}
 		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
@@ -7746,12 +7759,12 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, promptCacheResponsesRequest(config, provider.GetProviderKey(), responsesRequest))
+				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), responsesRequest))
 			}
 		}
-		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
+		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
 	case schemas.ResponsesStreamRequest:
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
+		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
 		if !ok {

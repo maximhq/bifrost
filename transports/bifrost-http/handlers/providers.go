@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -141,6 +142,43 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+}
+
+// applyProviderConfigUpdates copies onto config only the nested config blocks the
+// request actually carried, leaving the rest as they were saved.
+//
+// PUT on this endpoint is a partial update. These blocks were added to the payload one
+// release at a time, so a client written against an earlier shape simply does not send
+// the newer ones; assigning unconditionally erased whichever blocks that client had
+// never heard of, on every unrelated update. Omission means "leave this alone".
+//
+// An explicit null still clears a block, which is why presence is read from the raw
+// body rather than inferred from a nil pointer: both decode to nil, and only one of
+// them is a request to delete anything.
+//
+// Replacement stays wholesale. A supplied block overwrites the saved one entirely
+// rather than merging field by field, so clearing one setting inside a block does not
+// require a separate delete verb.
+//
+// Split out of the update handler so this rule is testable without standing up a
+// router and a store.
+func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *providerUpdatePayload, bodyFields map[string]json.RawMessage) {
+	carried := func(field string) bool {
+		_, ok := bodyFields[field]
+		return ok
+	}
+	if carried("proxy_config") {
+		config.ProxyConfig = payload.ProxyConfig
+	}
+	if carried("custom_provider_config") {
+		config.CustomProviderConfig = payload.CustomProviderConfig
+	}
+	if carried("openai_config") {
+		config.OpenAIConfig = payload.OpenAIConfig
+	}
+	if carried("prompt_cache") {
+		config.PromptCache = payload.PromptCache
+	}
 }
 
 // RegisterRoutes registers all provider management routes
@@ -345,6 +383,13 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
 		return
 	}
+	// The config-file path validates prompt_cache against config.schema.json; this is the
+	// same contract on the API path, so a TTL the file would reject cannot be stored here
+	// and then rejected by the provider at request time instead.
+	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
 	// Add provider to store (env vars will be processed by store)
 	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
@@ -414,6 +459,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Which top-level keys the body actually carried. A nested config block decodes to
+	// nil both when it is omitted and when it is explicitly null, and those are
+	// different requests: omitting means "leave this alone", null means "clear it".
+	// Only a second pass over the raw body can tell them apart.
+	var bodyFields map[string]json.RawMessage
+	if err := sonic.Unmarshal(ctx.PostBody(), &bodyFields); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
@@ -495,6 +550,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
 		return
 	}
+	if err := lib.ValidatePromptCache(payload.PromptCache); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
 
 	nc := payload.NetworkConfig
 
@@ -534,10 +593,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	config.ProxyConfig = payload.ProxyConfig
-	config.CustomProviderConfig = payload.CustomProviderConfig
-	config.OpenAIConfig = payload.OpenAIConfig
-	config.PromptCache = payload.PromptCache
+	applyProviderConfigUpdates(&config, &payload.providerUpdatePayload, bodyFields)
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
