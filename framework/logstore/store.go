@@ -183,7 +183,7 @@ type LogStore interface {
 	// Webhook Delivery methods
 	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
 	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
-	SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
 	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 
