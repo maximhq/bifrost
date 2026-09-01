@@ -28,7 +28,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
-| `logs_store` | object | Request/response log database - SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
+| `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
@@ -209,7 +209,7 @@ Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (o
 | Store | Types |
 |-------|-------|
 | `config_store` | `"sqlite"`, `"postgres"` |
-| `logs_store` | `"sqlite"`, `"postgres"` (+ optional `object_storage` for LLM and MCP logs) |
+| `logs_store` | `"sqlite"`, `"postgres"`, `"clickhouse"` (+ optional `object_storage` for LLM and MCP logs) |
 | `vector_store` | `"weaviate"`, `"redis"`, `"qdrant"`, `"pinecone"` (`"redis"` also covers Valkey-compatible endpoints) |
 
 Full documentation: [Storage](/deployment-guides/config-json/storage).
