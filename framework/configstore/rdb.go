@@ -5832,6 +5832,24 @@ func (s *RDBConfigStore) DeleteModelConfigsForScope(ctx context.Context, txDB *g
 	return s.deleteModelConfigsWhere(ctx, txDB, "scope = ? AND scope_id = ?", scope, scopeID)
 }
 
+// GetModelConfigsForScope loads all model configs (and their Budgets/RateLimit) targeting a given
+// scope owner within txDB. The tx is required, not variadic, for the same reason as
+// DeleteModelConfigsForScope: a caller reading and writing the same scope owner in one transaction
+// (e.g. tearing down and recreating its configs) needs to see its own uncommitted writes, which
+// s.DB() outside the transaction cannot.
+func (s *RDBConfigStore) GetModelConfigsForScope(ctx context.Context, txDB *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error) {
+	if txDB == nil {
+		return nil, fmt.Errorf("GetModelConfigsForScope requires the caller's transaction, got nil tx")
+	}
+	var modelConfigs []tables.TableModelConfig
+	if err := txDB.WithContext(ctx).Preload("Budgets").Preload("RateLimit").
+		Where("scope = ? AND scope_id = ?", scope, scopeID).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
 // CreateModelConfig creates a new model config in the database.
 func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
 	// Locking the scope owner and inserting the config must be atomic, so wrap in a
