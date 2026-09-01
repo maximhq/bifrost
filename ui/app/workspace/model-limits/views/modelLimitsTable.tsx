@@ -65,6 +65,10 @@ function ModelLimitActionsMenu({
 	onDelete: (configId: string) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
+	// A readOnly-registered scope (e.g. enterprise's access_profile) can only be
+	// changed by editing its owner — no delete here, and "Edit" just opens the
+	// sheet's read-only view instead of a form.
+	const isManaged = getModelLimitScope(config.scope ?? "global")?.readOnly === true;
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -82,7 +86,7 @@ function ModelLimitActionsMenu({
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem
 					className="cursor-pointer"
-					disabled={!hasUpdateAccess}
+					disabled={!isManaged && !hasUpdateAccess}
 					data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -91,12 +95,12 @@ function ModelLimitActionsMenu({
 					}}
 				>
 					<Edit className="h-4 w-4" />
-					Edit
+					{isManaged ? "View" : "Edit"}
 				</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
 					className="cursor-pointer"
-					disabled={!hasDeleteAccess}
+					disabled={isManaged || !hasDeleteAccess}
 					data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();

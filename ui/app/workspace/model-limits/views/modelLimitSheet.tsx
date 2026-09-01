@@ -1,3 +1,4 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -9,7 +10,7 @@ import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
 import { budgetSignature } from "@/lib/utils/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
@@ -26,8 +27,10 @@ import {
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
+import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Lock } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -70,6 +73,11 @@ type FormData = z.infer<typeof formSchema>;
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const isEditing = !!modelConfig;
+	// A readOnly-registered scope (e.g. enterprise's access_profile) is
+	// system-generated: no field here is ever user-editable, and it must be
+	// changed by editing its owner instead.
+	const scopeEntry = getModelLimitScope(modelConfig?.scope || "global");
+	const isManagedReadOnly = isEditing && scopeEntry?.readOnly === true;
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
@@ -292,6 +300,119 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}
 	};
 
+	if (isManagedReadOnly && modelConfig) {
+		const budgets = modelConfig.budgets ?? (modelConfig.budget ? [modelConfig.budget] : []);
+		return (
+			<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4" data-testid="model-limit-sheet">
+					<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+						<SheetTitle>View Limit</SheetTitle>
+						<SheetDescription>This limit is managed elsewhere and cannot be edited here.</SheetDescription>
+					</SheetHeader>
+
+					<div className="grow space-y-4 px-4 md:px-8">
+						<Alert variant="info">
+							<Lock className="h-4 w-4" />
+							<AlertDescription>
+								This limit is managed by <span className="font-medium">{scopeEntry?.label}</span>
+								{modelConfig.scope_name ? (
+									<>
+										{" "}
+										(<span className="font-medium">{modelConfig.scope_name}</span>)
+									</>
+								) : null}
+								. It must be changed there — this page is read-only for this limit.
+							</AlertDescription>
+						</Alert>
+
+						<div className="space-y-1">
+							<Label className="text-muted-foreground text-xs font-normal">Provider</Label>
+							<p className="text-sm">
+								{modelConfig.provider ? ProviderLabels[modelConfig.provider as ProviderName] || modelConfig.provider : "All Providers"}
+							</p>
+						</div>
+						<div className="space-y-1">
+							<Label className="text-muted-foreground text-xs font-normal">Model Name</Label>
+							<p className="text-sm">{modelConfig.model_name === "*" ? "All Models" : modelConfig.model_name}</p>
+						</div>
+						<div className="space-y-1">
+							<Label className="text-muted-foreground text-xs font-normal">Scope</Label>
+							<p className="text-sm">{scopeEntry?.label}</p>
+						</div>
+						{modelConfig.scope_name ? (
+							<div className="space-y-1">
+								<Label className="text-muted-foreground text-xs font-normal">Target</Label>
+								<p className="text-sm">{modelConfig.scope_name}</p>
+							</div>
+						) : null}
+
+						<DottedSeparator />
+
+						<div className="space-y-3">
+							<Label className="text-sm font-medium">Budget</Label>
+							{budgets.length > 0 ? (
+								<div className="space-y-2">
+									{budgets.map((b) => (
+										<div key={b.id} className="bg-muted/50 rounded-lg p-3 text-sm">
+											<p className="font-medium">
+												{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+											</p>
+											<p className="text-muted-foreground text-xs">Resets {resetDurationLabels[b.reset_duration] || b.reset_duration}</p>
+										</div>
+									))}
+								</div>
+							) : (
+								<p className="text-muted-foreground text-sm">No budget limits configured.</p>
+							)}
+						</div>
+
+						<DottedSeparator />
+
+						<div className="space-y-3">
+							<Label className="text-sm font-medium">Rate Limits</Label>
+							{modelConfig.rate_limit?.token_max_limit || modelConfig.rate_limit?.request_max_limit ? (
+								<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
+									{modelConfig.rate_limit?.token_max_limit ? (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Tokens</p>
+											<p className="text-sm font-medium">
+												{modelConfig.rate_limit.token_current_usage.toLocaleString()} /{" "}
+												{modelConfig.rate_limit.token_max_limit.toLocaleString()} (
+												{resetDurationLabels[modelConfig.rate_limit.token_reset_duration || "1h"] || modelConfig.rate_limit.token_reset_duration})
+											</p>
+										</div>
+									) : null}
+									{modelConfig.rate_limit?.request_max_limit ? (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Requests</p>
+											<p className="text-sm font-medium">
+												{modelConfig.rate_limit.request_current_usage.toLocaleString()} /{" "}
+												{modelConfig.rate_limit.request_max_limit.toLocaleString()} (
+												{resetDurationLabels[modelConfig.rate_limit.request_reset_duration || "1h"] ||
+													modelConfig.rate_limit.request_reset_duration}
+												)
+											</p>
+										</div>
+									) : null}
+								</div>
+							) : (
+								<p className="text-muted-foreground text-sm">No rate limits configured.</p>
+							)}
+						</div>
+					</div>
+
+					<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
+						<div className="flex items-center justify-end">
+							<Button type="button" variant="outline" onClick={handleClose}>
+								Close
+							</Button>
+						</div>
+					</div>
+				</SheetContent>
+			</Sheet>
+		);
+	}
+
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
@@ -414,11 +535,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												{getModelLimitScopes().map((option) => (
-													<SelectItem key={option.value} value={option.value}>
-														{option.label}
-													</SelectItem>
-												))}
+												{getModelLimitScopes()
+													.filter((option) => !option.readOnly)
+													.map((option) => (
+														<SelectItem key={option.value} value={option.value}>
+															{option.label}
+														</SelectItem>
+													))}
 											</SelectContent>
 										</Select>
 										<FormMessage />
