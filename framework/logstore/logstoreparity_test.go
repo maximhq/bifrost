@@ -580,6 +580,11 @@ func TestLogStoreParity(t *testing.T) {
 		"metadata":        {MetadataFilters: map[string]string{"env": "prod"}},
 		"content_search":  {ContentSearch: "charlie"},
 		"parent_request":  {ParentRequestID: "sess1"},
+		"request_id":      {RequestID: "p4"},
+		// An ID lookup is an exact PK match that deliberately ignores the window,
+		// so p4 must come back even though the range excludes its timestamp.
+		"request_id_outside_window": {RequestID: "p4", StartTime: timePtrP(base.Add(-10 * time.Second)), EndTime: timePtrP(base)},
+		"request_id_unknown":        {RequestID: "no-such-id"},
 	}
 	for name, filters := range searchCases {
 		t.Run("SearchLogs/"+name, func(t *testing.T) {

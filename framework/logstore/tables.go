@@ -53,6 +53,7 @@ type SearchFilters struct {
 	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
+	RequestID         string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
