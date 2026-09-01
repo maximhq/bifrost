@@ -5252,11 +5252,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
-		if primaryErr.Error != nil {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
-		} else {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
-		}
+		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
+		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
+		// payload, which holds the Authorization header, or the ?key=<api-key> query
+		// param on Vertex/Gemini. Debug logs are not a place to put credentials.
+		bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.GetErrorString())
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
@@ -5389,11 +5389,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 	if primaryErr != nil {
-		if primaryErr.Error != nil {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
-		} else {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
-		}
+		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
+		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
+		// payload, which holds the Authorization header, or the ?key=<api-key> query
+		// param on Vertex/Gemini. Debug logs are not a place to put credentials.
+		bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.GetErrorString())
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
