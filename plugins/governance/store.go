@@ -3224,7 +3224,60 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 			addModelConfigIDs(mc)
 		}
 	}
+	// Downstream-registered scopes (e.g. enterprise's per-access-profile per-model
+	// budgets, keyed by a user-access-profile association ID rather than the raw
+	// user/VK ID) — see RegisterExtraScopedIDsResolver.
+	for _, pair := range collectExtraScopedIDs(ctx, virtualKeyID, userID) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr) {
+			addModelConfigIDs(mc)
+		}
+	}
 	return budgetIDs, rateLimitIDs
+}
+
+// ScopedID names a (scope, scope_id) pair for a model-config lookup.
+type ScopedID struct {
+	Scope   string
+	ScopeID string
+}
+
+// ExtraScopedIDsResolver returns additional (scope, scope_id) pairs to check for
+// model-config-based budgets/rate-limits on a request, given its virtual key and
+// user IDs. Lets downstream consumers (e.g. enterprise access profiles) graft
+// extra scopes onto CollectModelScopedGovernanceIDs's built-in global/user/
+// virtual_key set without this package needing to know their scope semantics.
+// Must be fast and non-blocking (in-memory only) — called on every request.
+type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
+
+var (
+	extraScopedIDsResolversMu sync.RWMutex
+	extraScopedIDsResolvers   []ExtraScopedIDsResolver
+)
+
+// RegisterExtraScopedIDsResolver adds fn to the resolvers consulted by
+// CollectModelScopedGovernanceIDs. Intended to be called once at process
+// startup; safe to call concurrently.
+func RegisterExtraScopedIDsResolver(fn ExtraScopedIDsResolver) {
+	if fn == nil {
+		return
+	}
+	extraScopedIDsResolversMu.Lock()
+	extraScopedIDsResolvers = append(extraScopedIDsResolvers, fn)
+	extraScopedIDsResolversMu.Unlock()
+}
+
+func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []ScopedID {
+	extraScopedIDsResolversMu.RLock()
+	resolvers := extraScopedIDsResolvers
+	extraScopedIDsResolversMu.RUnlock()
+	if len(resolvers) == 0 {
+		return nil
+	}
+	var out []ScopedID
+	for _, fn := range resolvers {
+		out = append(out, fn(ctx, virtualKeyID, userID)...)
+	}
+	return out
 }
 
 // PUBLIC API METHODS
@@ -4376,10 +4429,26 @@ func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitSco
 	// The user the request was made as, when there is one. A user is not the permit holder, since a
 	// request can be made as a user through a key, so it is a scope of its own rather than one
 	// derived from the permit.
-	if userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); userID != "" {
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	if userID != "" {
 		scopes = append(scopes, limitScope{
 			name: configstoreTables.ModelConfigScopeUser,
 			id:   userID,
+			kind: grant.LimitHolderUserModelConfig,
+		})
+	}
+	// Downstream-registered scopes that also apply to the user the request was made
+	// as (e.g. enterprise's per-access-profile per-model budgets) — see
+	// RegisterExtraScopedIDsResolver. Attributed the same as the user's own scope:
+	// from the requester's perspective both are "your model limit".
+	vkID := ""
+	if permit != nil && permit.Type() == string(grant.PermitVirtualKey) {
+		vkID = permit.ID()
+	}
+	for _, extra := range collectExtraScopedIDs(ctx, vkID, userID) {
+		scopes = append(scopes, limitScope{
+			name: extra.Scope,
+			id:   extra.ScopeID,
 			kind: grant.LimitHolderUserModelConfig,
 		})
 	}
