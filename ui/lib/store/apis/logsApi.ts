@@ -77,6 +77,7 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 		params.cache_hit_types = filters.cache_hit_types.join(",");
 	}
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.request_id) params.request_id = filters.request_id;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");
 	}
