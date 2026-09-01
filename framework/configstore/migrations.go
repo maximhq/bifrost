@@ -490,6 +490,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -7442,6 +7443,39 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPromptCacheJSONColumn adds the prompt_cache_json column to the provider
+// table, backing ProviderConfig.PromptCache.
+//
+// Provider config is stored as one text column per sub-struct rather than a single
+// JSON blob, so a new config struct needs its own column. Without this the field
+// round-trips through the API and the UI but is dropped at the database boundary.
+func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_cache_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PromptCacheJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "prompt_cache_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
 	}
 	return nil
 }
