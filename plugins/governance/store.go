@@ -3234,10 +3234,14 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 	return budgetIDs, rateLimitIDs
 }
 
-// ScopedID names a (scope, scope_id) pair for a model-config lookup.
+// ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
+// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
+// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
+// budget/rate-limit IDs, since that path never attributes a limit to a holder.
 type ScopedID struct {
 	Scope   string
 	ScopeID string
+	Kind    grant.LimitHolderKind
 }
 
 // ExtraScopedIDsResolver returns additional (scope, scope_id) pairs to check for
@@ -3246,6 +3250,9 @@ type ScopedID struct {
 // extra scopes onto CollectModelScopedGovernanceIDs's built-in global/user/
 // virtual_key set without this package needing to know their scope semantics.
 // Must be fast and non-blocking (in-memory only) — called on every request.
+//
+// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
+// is what a refusal names as the holder of the limit that ran out — see ScopedID.
 type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
 
 var (
@@ -4438,7 +4445,7 @@ func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitSco
 		scopes = append(scopes, limitScope{
 			name: extra.Scope,
 			id:   extra.ScopeID,
-			kind: grant.LimitHolderUserModelConfig,
+			kind: extra.Kind,
 		})
 	}
 	if permit == nil || permit.ID() == "" {
@@ -4476,7 +4483,10 @@ func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
 	case string(grant.PermitProject):
 		return grant.LimitHolderProjectModelConfig
 	default:
-		return grant.LimitHolderUserModelConfig
+		// An access-profile permit's own per-model limits are the same money as the profile's own —
+		// see the LimitHolderUserAccessProfile doc comment — so they share its kind rather than a
+		// distinct per-model one.
+		return grant.LimitHolderUserAccessProfile
 	}
 }
 

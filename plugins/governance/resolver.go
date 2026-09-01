@@ -198,7 +198,7 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 var untrackedHolderKinds = []grant.LimitHolderKind{
 	grant.LimitHolderProvider,
 	grant.LimitHolderModelConfig,
-	grant.LimitHolderUserModelConfig,
+	grant.LimitHolderUserAccessProfile,
 }
 
 // spendingChecksSkipped reports whether this request was told not to be checked against anything it

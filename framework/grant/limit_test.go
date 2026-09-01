@@ -101,11 +101,11 @@ func TestLimitsFrom(t *testing.T) {
 func TestLimitHolderKindsAreDistinct(t *testing.T) {
 	kinds := []LimitHolderKind{
 		LimitHolderVirtualKey, LimitHolderVirtualKeyProviderConfig,
-		LimitHolderAccessProfile, LimitHolderAccessProfileProviderConfig,
+		LimitHolderUserAccessProfile, LimitHolderUserAccessProfileProviderConfig,
 		LimitHolderTeam, LimitHolderBusinessUnit, LimitHolderCustomer,
 		LimitHolderProject, LimitHolderProjectProviderConfig,
 		LimitHolderProvider, LimitHolderModelConfig,
-		LimitHolderVirtualKeyModelConfig, LimitHolderUserModelConfig, LimitHolderProjectModelConfig,
+		LimitHolderVirtualKeyModelConfig, LimitHolderProjectModelConfig,
 	}
 	seen := make(map[LimitHolderKind]bool, len(kinds))
 	for _, k := range kinds {
