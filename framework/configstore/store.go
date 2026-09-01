@@ -99,6 +99,13 @@ type MCPClientsQueryParams struct {
 	VirtualKeyIDs        []string // include clients explicitly assigned to any of these VK IDs
 }
 
+// VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
+type VirtualMCPsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string // matches name (case-insensitive)
+}
+
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
 // parameters for MCP library catalog queries. All fields are optional — an
 // empty struct returns the first default-sized page ordered by name.
@@ -354,6 +361,17 @@ type ConfigStore interface {
 	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
 	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
 	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
+
+	// Virtual MCP CRUD. CreateVirtualMCP fills endpoint_slug from the name when unset and enforces
+	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
+	CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
+	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	DeleteVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error)
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)

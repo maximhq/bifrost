@@ -4500,6 +4500,126 @@ func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[stri
 	return out, nil
 }
 
+// CreateVirtualMCP inserts a Virtual MCP. The endpoint_slug is taken from the caller's slug when set,
+// else derived from the name; a slug collision is reported as ErrVirtualMCPEndpointExists rather than
+// auto-suffixed. Name uniqueness is left to the table's own unique index.
+func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	db := s.DB().WithContext(ctx)
+	base := def.EndpointSlug
+	if base == "" {
+		base = def.Name
+	}
+	def.EndpointSlug = VirtualMCPSlugify(base)
+	if def.EndpointSlug == "" {
+		return errors.New("could not derive an endpoint from the name; provide an endpoint_slug")
+	}
+
+	if taken, err := s.virtualMCPSlugTaken(ctx, def.EndpointSlug, 0); err != nil {
+		return err
+	} else if taken {
+		return ErrVirtualMCPEndpointExists
+	}
+
+	// Capture intent before Create: enabled has a default:true, which gorm applies to a false and
+	// writes back into the struct, so the check must use the pre-insert value.
+	wantEnabled := def.Enabled
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(def).Error; err != nil {
+			if isUniqueConstraintError(err) {
+				if taken, checkErr := s.virtualMCPSlugTaken(ctx, def.EndpointSlug, 0); checkErr == nil && taken {
+					return ErrVirtualMCPEndpointExists
+				}
+			}
+			return err
+		}
+		if !wantEnabled {
+			return tx.Model(def).Update("enabled", false).Error
+		}
+		return nil
+	})
+}
+
+// virtualMCPSlugTaken reports whether another row (excluding excludeID) has the same endpoint_slug.
+func (s *RDBConfigStore) virtualMCPSlugTaken(ctx context.Context, slug string, excludeID uint) (bool, error) {
+	q := s.DB().WithContext(ctx).Model(&tables.TableVirtualMCP{}).Where("endpoint_slug = ?", slug)
+	if excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	var count int64
+	err := q.Count(&count).Error
+	return count > 0, err
+}
+
+func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).First(&def, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
+	q := s.ScopedDB(ctx).Model(&tables.TableVirtualMCP{})
+	if params.Search != "" {
+		q = q.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(params.Search)+"%")
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var defs []tables.TableVirtualMCP
+	// id DESC breaks ties so rows sharing a created_at keep a stable order across offset pages.
+	q = q.Order("created_at DESC").Order("id DESC").Offset(params.Offset)
+	if params.Limit > 0 {
+		q = q.Limit(params.Limit)
+	}
+	if err := q.Find(&defs).Error; err != nil {
+		return nil, 0, err
+	}
+	return defs, total, nil
+}
+
+// UpdateVirtualMCP persists a Virtual MCP, keeping endpoint_slug and created_at immutable. Name
+// uniqueness is enforced by the table's own unique index.
+func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
+}
+
+// DeleteVirtualMCP removes a Virtual MCP and its VK assignments (explicit, so it holds on any DB
+// regardless of FK cascade support).
+func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("tool_group_id = ?", id).Delete(&tables.TableVirtualKeyVirtualMCP{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&tables.TableVirtualMCP{}, id).Error
+	})
+}
+
+// AttachVirtualMCPToVirtualKey links a Virtual MCP to a VK, idempotently.
+func (s *RDBConfigStore) AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	assoc := tables.TableVirtualKeyVirtualMCP{VirtualMCPID: vmcpID, VirtualKeyID: virtualKeyID}
+	return s.DB().WithContext(ctx).Where(assoc).FirstOrCreate(&assoc).Error
+}
+
+func (s *RDBConfigStore) DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return s.DB().WithContext(ctx).
+		Where("tool_group_id = ? AND virtual_key_id = ?", vmcpID, virtualKeyID).
+		Delete(&tables.TableVirtualKeyVirtualMCP{}).Error
+}
+
+func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error) {
+	var ids []string
+	err := s.DB().WithContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
+		Where("tool_group_id = ?", vmcpID).
+		Pluck("virtual_key_id", &ids).Error
+	return ids, err
+}
+
 // GetVirtualKeyMCPConfigsByMCPClientIDs retrieves all VK MCP configs for a set of MCP client IDs in one query.
 func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
 	if len(mcpClientIDs) == 0 {

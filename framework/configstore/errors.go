@@ -9,6 +9,11 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrVirtualMCPEndpointExists is returned by CreateVirtualMCP when the resolved endpoint slug is
+// already taken, so callers can answer with a clear message and a 409. (Name uniqueness is left to
+// the table's own unique index and surfaces as a generic unique-constraint error.)
+var ErrVirtualMCPEndpointExists = errors.New("a virtual MCP with this endpoint already exists")
+
 // ErrConfigUnreadable marks a stored configuration value that could not be
 // decoded or that failed validation — the value is present but this version
 // cannot make sense of it.
