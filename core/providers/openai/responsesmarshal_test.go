@@ -1508,3 +1508,106 @@ func TestToOpenAIResponsesRequest_OpenRouterNonEphemeralDoesNotSpendClampBudget(
 		}
 	}
 }
+
+// TestApplyOpenRouterCacheBreakpoints_OnlyInputTextConverts pins the mechanism behind
+// the OpenRouter carve-out in RunPromptCachingMultipleToolCallsTest.
+//
+// That scenario moves a cache checkpoint each turn, landing it on whichever message
+// the walk stops at: a function_call (marked at MESSAGE level), an assistant turn
+// (output_text), or a user turn (input_text). Only the last of those has a Responses
+// representation here, so the set of surviving breakpoints oscillates between one and
+// two as the conversation grows - and with it the size of the cached prefix.
+//
+// That makes a turn-over-turn "cache_read must not halve" assertion unsound for
+// OpenRouter specifically: a drop is the expected consequence of this conversion rule,
+// not evidence of a cache-prefix mismatch.
+func TestApplyOpenRouterCacheBreakpoints_OnlyInputTextConverts(t *testing.T) {
+	ephemeral := func() *schemas.CacheControl {
+		return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	}
+	countBreakpoints := func(msgs []schemas.ResponsesMessage) int {
+		n := 0
+		for i := range msgs {
+			if msgs[i].Content == nil {
+				continue
+			}
+			for j := range msgs[i].Content.ContentBlocks {
+				if msgs[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	// The system block is marked every turn and always converts, so it is the floor.
+	systemMsg := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:         schemas.Ptr("stable system prefix"),
+					CacheControl: ephemeral(),
+				}},
+			},
+		}
+	}
+
+	cases := []struct {
+		name       string
+		checkpoint schemas.ResponsesMessage
+		want       int // system breakpoint + (1 if the checkpoint converts)
+	}{
+		{
+			name: "checkpoint on a user input_text block converts",
+			checkpoint: schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+						Text:         schemas.Ptr("turn text"),
+						CacheControl: ephemeral(),
+					}},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "checkpoint on an assistant output_text block does not convert",
+			checkpoint: schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:         schemas.ResponsesOutputMessageContentTypeText,
+						Text:         schemas.Ptr("assistant turn"),
+						CacheControl: ephemeral(),
+					}},
+				},
+			},
+			want: 1,
+		},
+		{
+			name: "message-level marker on a function_call does not convert",
+			checkpoint: schemas.ResponsesMessage{
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				CacheControl: ephemeral(),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_1"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"city":"Paris"}`),
+				},
+			},
+			want: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []schemas.ResponsesMessage{systemMsg(), tc.checkpoint}
+			applyOpenRouterCacheBreakpoints(msgs)
+			if got := countBreakpoints(msgs); got != tc.want {
+				t.Errorf("breakpoints = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
