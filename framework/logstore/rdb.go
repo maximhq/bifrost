@@ -1269,6 +1269,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
+		// video_debug tells a settled video's aggregate cost row apart from the
+		// submission it settles; without it the list shows the same video twice.
+		// Not added to billingScalarColumns: video reprices through the generic
+		// object_type path, so pricing never reads this.
+		"video_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",

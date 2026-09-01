@@ -9,6 +9,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -474,4 +475,170 @@ func TestAccountVideoJob_SharesTheSweepersAggregateRow(t *testing.T) {
 	assert.Len(t, store.logs, 1, "one video, one cost row, whichever path got there first")
 	assert.Len(t, reporter.reports, 1)
 	assert.Equal(t, 0, retriever.calls, "an accounted job is no longer due, so the sweeper skips it")
+}
+
+// --- Unreachable jobs (the retry-loop fix) ---
+
+func providerErr(status int, message string) error {
+	return NewProviderCallError(&schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: message},
+	})
+}
+
+// The three status families a provider actually returns for a job it will not
+// serve, taken from real responses: Runway and OpenAI 404, Gemini 403.
+func TestClassifyProviderCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want ProviderCallOutcome
+	}{
+		{"runway 404", providerErr(404, "Could not find Task"), ProviderCallGone},
+		{"openai 404", providerErr(404, "Video with id 'video_x' not found."), ProviderCallGone},
+		{"gone", providerErr(410, "gone"), ProviderCallGone},
+		{"gemini 403", providerErr(403, "You do not have permission to access the Operation"), ProviderCallAccessDenied},
+		{"unauthorized", providerErr(401, "invalid api key"), ProviderCallAccessDenied},
+		{"billing", providerErr(402, "payment required"), ProviderCallAccessDenied},
+		{"bad request", providerErr(400, "malformed id"), ProviderCallRejected},
+		{"unprocessable", providerErr(422, "unprocessable"), ProviderCallRejected},
+		// The two 4xx that mean "ask again", not "no".
+		{"rate limited", providerErr(429, "slow down"), ProviderCallRetry},
+		{"request timeout", providerErr(408, "timeout"), ProviderCallRetry},
+		{"server error", providerErr(503, "unavailable"), ProviderCallRetry},
+		{"anthropic overloaded", providerErr(529, "overloaded"), ProviderCallRetry},
+		// No response at all must never be mistaken for a client error.
+		{"transport failure", errors.New("dial tcp: connection refused"), ProviderCallRetry},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClassifyProviderCall(tc.err))
+		})
+	}
+}
+
+// A provider that has forgotten the job must stop the polling on the first attempt.
+// Rescheduling instead spends the whole 120-attempt budget over hours and then parks
+// the job under max_poll_attempts, which names the wrong cause.
+func TestVideoPoll_UnreachableJobIsTerminalOnTheFirstAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"gone", providerErr(404, "Could not find Task"), UnpriceableReasonVideoGone},
+		{"access denied", providerErr(403, "PERMISSION_DENIED"), UnpriceableReasonVideoAccessDenied},
+		{"rejected", providerErr(400, "malformed id"), UnpriceableReasonVideoRequestRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := videoJob(t, "vid_unreachable", generationDims("sora-2-pro", "1920x1080", 8))
+			poll, err := NewVideoSettler(&fakeVideoRetriever{err: tc.err}).Poll(context.Background(), job)
+
+			require.NoError(t, err, "an unreachable job is an outcome, not a poll failure")
+			require.NotNil(t, poll)
+			assert.True(t, poll.Terminal)
+			assert.False(t, poll.Settleable)
+			assert.Equal(t, tc.reason, poll.UnpriceableReason)
+			assert.Nil(t, poll.Job, "a failed call learned nothing worth persisting")
+		})
+	}
+}
+
+// A transient failure keeps the existing reschedule path.
+func TestVideoPoll_TransientFailureStillRetries(t *testing.T) {
+	job := videoJob(t, "vid_transient", generationDims("sora-2-pro", "1920x1080", 8))
+	for _, err := range []error{providerErr(503, "unavailable"), providerErr(429, "slow down"), errors.New("timeout")} {
+		poll, pollErr := NewVideoSettler(&fakeVideoRetriever{err: err}).Poll(context.Background(), job)
+		require.Error(t, pollErr, "%v must stay a retryable poll failure", err)
+		assert.Nil(t, poll)
+	}
+}
+
+// End to end: the sweeper parks a gone video after exactly one provider call.
+func TestVideoSweeper_GoneJobStopsPollingImmediately(t *testing.T) {
+	store := newFakeAccountingStore()
+	due := time.Now().UTC().Add(-time.Minute)
+	job := videoJob(t, "vid_gone", generationDims("sora-2-pro", "1920x1080", 8))
+	job.NextCheckAt = &due
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+
+	retriever := &fakeVideoRetriever{err: providerErr(404, "Video with id 'vid_gone' not found.")}
+	sweeper := NewVideoSweeper(store, store, fakePricing{}, retriever, nil, nil, SweeperConfig{
+		Provider: schemas.OpenAI,
+		Limit:    10,
+	})
+
+	sweeper.SweepOnce(context.Background())
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, retriever.calls,
+		"a job the provider has forgotten must not be polled again")
+	settled := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(schemas.OpenAI), "vid_gone")]
+	require.NotNil(t, settled)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, settled.AccountingStatus)
+	require.NotNil(t, settled.UnpriceableReason)
+	assert.Equal(t, UnpriceableReasonVideoGone, *settled.UnpriceableReason)
+	assert.Empty(t, store.logs, "an unreachable job bills nothing")
+}
+
+// --- Aggregate row detail ---
+
+// A settled video writes its cost on its own row, minutes after the submission —
+// same object, same model, differing only by a cost. The accounting block is what
+// tells the two apart, so it must be present on the settlement and absent from the
+// submission.
+func TestVideoSettle_AggregateRowCarriesAccountingDetail(t *testing.T) {
+	job := videoJob(t, "vid_debug", generationDims("sora-2-pro", "1920x1080", 8))
+	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+	})
+	require.NotNil(t, settlement.ApplyDebug)
+
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	require.NotNil(t, entry.VideoDebugParsed)
+	assert.Equal(t, "vid_debug", entry.VideoDebugParsed.VideoID)
+	assert.Equal(t, schemas.VideoStatusCompleted, entry.VideoDebugParsed.Status)
+
+	acct := entry.VideoDebugParsed.Accounting
+	require.NotNil(t, acct, "the accounting block is what marks this as the settlement row")
+	require.NotNil(t, acct.Seconds)
+	assert.Equal(t, 8, *acct.Seconds)
+	assert.Equal(t, "1920x1080", acct.Size)
+	assert.Equal(t, 1, acct.OutputCount)
+	assert.False(t, acct.Incomplete)
+}
+
+// An unpriceable row is exactly the one an operator needs the detail on, so it must
+// carry the same block — marked incomplete.
+func TestVideoSettle_UnpriceableRowStillCarriesDetail(t *testing.T) {
+	job := videoJob(t, "vid_norate_debug", generationDims("some-unknown-model", "1920x1080", 8))
+	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+	})
+
+	require.False(t, settlement.Priced)
+	require.NotNil(t, settlement.ApplyDebug)
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	require.NotNil(t, entry.VideoDebugParsed.Accounting)
+	assert.True(t, entry.VideoDebugParsed.Accounting.Incomplete)
+}
+
+// HydrateFromLog is the inverse of the closure: a caller that lost the settlement
+// claim reads the status back off the already-written row.
+func TestVideoHydrateFromLog(t *testing.T) {
+	entry := &logstore.Log{VideoDebugParsed: &schemas.BifrostVideoDebug{
+		VideoID: "vid_x",
+		Status:  schemas.VideoStatusCompleted,
+	}}
+	out := &Outcome{}
+	NewVideoSettler(nil).HydrateFromLog(entry, out)
+	assert.Equal(t, string(schemas.VideoStatusCompleted), out.Status)
+
+	// A row written before video detail existed must not panic or invent a status.
+	bare := &Outcome{}
+	NewVideoSettler(nil).HydrateFromLog(&logstore.Log{}, bare)
+	assert.Empty(t, bare.Status)
 }

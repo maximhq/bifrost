@@ -3,6 +3,7 @@ package jobaccounting
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -765,10 +766,16 @@ type fakeBatchResultFetcher struct {
 	resultsCalls  int
 	retrieveResp  *schemas.BifrostBatchRetrieveResponse
 	resultsResp   *schemas.BifrostBatchResultsResponse
+	// retrieveErr models a provider that refuses the retrieve outright, which is
+	// how a forgotten batch or a revoked key actually presents.
+	retrieveErr error
 }
 
 func (f *fakeBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	f.retrieveCalls++
+	if f.retrieveErr != nil {
+		return nil, f.retrieveErr
+	}
 	return f.retrieveResp, nil
 }
 
@@ -2198,4 +2205,117 @@ func TestAccountJob_RequiresARunnerID(t *testing.T) {
 	assert.Empty(t, store.jobs,
 		"the rejection must land before the coordination row is written, or an unclaimable job is left behind")
 	assert.Empty(t, store.logs)
+}
+
+// --- Provider call errors (shared by every job kind) ---
+
+// The status code is the only thing that distinguishes a job the provider has
+// forgotten from one it could not serve this minute. Flattening a BifrostError to
+// its message throws that away, and every failure then looks alike to the sweeper.
+func TestNewProviderCallError_PreservesStatusCode(t *testing.T) {
+	status := 404
+	err := NewProviderCallError(&schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: "Video with id 'vid_x' not found."},
+	})
+
+	require.Error(t, err)
+	assert.Equal(t, 404, ProviderCallStatus(err))
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// A settler that annotates a poll failure must not lose the code on the way up.
+func TestProviderCallStatus_UnwrapsThroughAnnotation(t *testing.T) {
+	status := 403
+	inner := NewProviderCallError(&schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: "PERMISSION_DENIED"},
+	})
+
+	wrapped := fmt.Errorf("polling job %s: %w", "video-job:gemini:abc", inner)
+	assert.Equal(t, 403, ProviderCallStatus(wrapped))
+}
+
+// A failure with no response at all — a timeout, a dial error — reports 0 rather
+// than a misleading code, so it keeps the ordinary reschedule path.
+func TestProviderCallStatus_ZeroWithoutAProviderResponse(t *testing.T) {
+	assert.Equal(t, 0, ProviderCallStatus(errors.New("context deadline exceeded")))
+	assert.Equal(t, 0, ProviderCallStatus(nil))
+
+	noStatus := NewProviderCallError(&schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: "upstream unreachable"},
+	})
+	assert.Equal(t, 0, ProviderCallStatus(noStatus),
+		"a provider error carrying no status must not be mistaken for a client error")
+}
+
+// Nil in, nil out: call sites pass a provider error through unconditionally.
+func TestNewProviderCallError_NilIsNotAnError(t *testing.T) {
+	assert.NoError(t, NewProviderCallError(nil))
+}
+
+// Batch has the same gap as video: a provider that no longer recognises the batch
+// returned a bare error, so the sweeper rescheduled it to the attempt cap. Output
+// files have finite retention, so this is an ordinary end state, not a failure.
+func TestBatchSweeper_GoneBatchStopsPollingImmediately(t *testing.T) {
+	store := newFakeAccountingStore()
+	due := time.Now().UTC().Add(-time.Minute)
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_gone")
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
+		ID:               jobID,
+		Kind:             cstables.ProviderJobKindBatch,
+		Provider:         string(schemas.OpenAI),
+		JobID:            "batch_gone",
+		Model:            "gpt-4o-mini",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
+		NextCheckAt:      &due,
+	}))
+
+	status := 404
+	fetcher := &fakeBatchResultFetcher{retrieveErr: NewProviderCallError(&schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: "No such batch: batch_gone"},
+	})}
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+
+	sweeper.SweepOnce(context.Background())
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, fetcher.retrieveCalls, "a batch the provider has forgotten must not be polled again")
+	assert.Equal(t, 0, fetcher.resultsCalls, "and its results must not be fetched")
+	settled := store.jobs[jobID]
+	require.NotNil(t, settled)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, settled.AccountingStatus)
+	require.NotNil(t, settled.UnpriceableReason)
+	assert.Equal(t, unpriceableReasonBatchGone, *settled.UnpriceableReason)
+}
+
+// A transient failure keeps today's reschedule behaviour.
+func TestBatchSweeper_TransientRetrieveFailureStillRetries(t *testing.T) {
+	store := newFakeAccountingStore()
+	due := time.Now().UTC().Add(-time.Minute)
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_flaky")
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
+		ID:               jobID,
+		Kind:             cstables.ProviderJobKindBatch,
+		Provider:         string(schemas.OpenAI),
+		JobID:            "batch_flaky",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
+		NextCheckAt:      &due,
+	}))
+
+	status := 503
+	fetcher := &fakeBatchResultFetcher{retrieveErr: NewProviderCallError(&schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: "service unavailable"},
+	})}
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+
+	sweeper.SweepOnce(context.Background())
+
+	settled := store.jobs[jobID]
+	require.NotNil(t, settled)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, settled.AccountingStatus,
+		"a 5xx must stay retryable, not park the batch")
+	assert.Positive(t, settled.PollAttempts, "the attempt must be recorded for backoff")
 }

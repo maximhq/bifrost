@@ -28,7 +28,19 @@ const (
 // download.
 const defaultProviderPollTimeout = 5 * time.Minute
 
-const unpriceableReasonTerminalWithoutResults = "terminal_without_results"
+const (
+	unpriceableReasonTerminalWithoutResults = "terminal_without_results"
+	// unpriceableReasonBatchGone is a batch the provider no longer recognises.
+	// Output files have finite retention, so this is an ordinary end state.
+	unpriceableReasonBatchGone = "batch_gone"
+	// unpriceableReasonBatchAccessDenied is the creating key being refused. Kept
+	// apart from batch_gone because it means a key was revoked or rotated, and
+	// every in-flight batch behind it is failing the same way.
+	unpriceableReasonBatchAccessDenied = "batch_access_denied"
+	// unpriceableReasonBatchRequestRejected is the provider refusing the retrieve
+	// itself — nothing expired, the request is one it will not accept.
+	unpriceableReasonBatchRequestRejected = "batch_request_rejected"
+)
 
 type BatchResultFetcher interface {
 	RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error)
@@ -185,6 +197,9 @@ func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 	}
 	retrieved, err := s.retrieveBatch(ctx, job)
 	if err != nil {
+		if reason := batchUnreachableReason(err); reason != "" {
+			return &PollResult{Terminal: true, UnpriceableReason: reason}, nil
+		}
 		return nil, err
 	}
 	if retrieved == nil {
@@ -409,6 +424,21 @@ func batchJobFromRetrieve(existing *cstables.TableProviderJob, retrieved *schema
 		job.ResultsURL = retrieved.ResultsURL
 	}
 	return &job
+}
+
+// batchUnreachableReason names why a failed retrieve is final, or returns empty
+// when the call is worth retrying.
+func batchUnreachableReason(err error) string {
+	switch ClassifyProviderCall(err) {
+	case ProviderCallGone:
+		return unpriceableReasonBatchGone
+	case ProviderCallAccessDenied:
+		return unpriceableReasonBatchAccessDenied
+	case ProviderCallRejected:
+		return unpriceableReasonBatchRequestRejected
+	default:
+		return ""
+	}
 }
 
 func isTerminalStatus(status schemas.BatchStatus) bool {

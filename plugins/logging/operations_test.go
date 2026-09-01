@@ -3273,3 +3273,38 @@ func TestAccountVideoResults_SkipsAJobWithNoCoordinationRow(t *testing.T) {
 		t.Fatal("inline settlement must not create a job row for a video we never saw submitted")
 	}
 }
+
+// The submission row must name the video it started, so the settlement that lands
+// minutes later is traceable back to it. No accounting block here — that is what
+// distinguishes the settlement's own cost row from this one.
+func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
+	plugin, _ := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-debug",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_marked",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	if entry.VideoDebugParsed == nil {
+		t.Fatal("the submission row must name the video it started")
+	}
+	if entry.VideoDebugParsed.VideoID != "vid_marked" {
+		t.Fatalf("video id = %q, want vid_marked", entry.VideoDebugParsed.VideoID)
+	}
+	if entry.VideoDebugParsed.Status != schemas.VideoStatusQueued {
+		t.Fatalf("status = %q, want queued", entry.VideoDebugParsed.Status)
+	}
+	if entry.VideoDebugParsed.Accounting != nil {
+		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
+	}
+}

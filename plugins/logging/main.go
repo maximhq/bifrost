@@ -637,6 +637,13 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
 	}
 	job.ID = tables.ProviderJobID(tables.ProviderJobKindVideo, job.Provider, job.JobID)
+
+	// Mark the request row with the job it addressed. No Accounting block here —
+	// that is what distinguishes the settlement's aggregate cost row from this one.
+	entry.VideoDebugParsed = &schemas.BifrostVideoDebug{
+		VideoID: resp.ID,
+		Status:  resp.Status,
+	}
 	if entry.ID != "" {
 		sourceLogID := entry.ID
 		job.SourceLogID = &sourceLogID
