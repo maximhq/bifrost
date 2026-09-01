@@ -31,6 +31,37 @@ func PromptCacheInjectionEnabled(cfg *schemas.PromptCacheConfig, provider schema
 	return caps.SupportsPromptCaching(schemas.ModelSupportsPromptCaching(provider, model))
 }
 
+// ResolvePromptCacheConfig applies a per-request override of auto_inject on top of the
+// provider config, mirroring how the raw-capture flags resolve.
+//
+// The override cannot manufacture opt-in. A provider with no prompt_cache config at all
+// is one whose operator has expressed no opinion, and a request header must not spend a
+// cache checkpoint — or change the billing profile — on their behalf. Once the operator
+// has configured prompt_cache, the header flips auto_inject in either direction: on for
+// a single request without a config change, or off for a request that should not be
+// touched.
+//
+// Only auto_inject is overridable. Injection points stay a config-level decision, since
+// a caller that wants specific placement can simply send the markers itself. The model
+// capability gate applies either way, so a header cannot force a marker onto a model
+// that has no use for one.
+//
+// The returned config is a copy whenever the override changes anything: the provider
+// config is shared across every request to that provider and must never be written
+// through.
+func ResolvePromptCacheConfig(ctx *schemas.BifrostContext, cfg *schemas.PromptCacheConfig) *schemas.PromptCacheConfig {
+	if ctx == nil || cfg == nil {
+		return cfg
+	}
+	override, ok := ctx.Value(schemas.BifrostContextKeyPromptCacheAutoInject).(bool)
+	if !ok || cfg.AutoInject == override {
+		return cfg
+	}
+	cp := *cfg
+	cp.AutoInject = override
+	return &cp
+}
+
 // InjectResponsesCacheBreakpoints returns input with cache_control markers added
 // where the config asks for them, or input unchanged when it does not apply.
 //

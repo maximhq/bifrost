@@ -47,8 +47,6 @@ export function PromptCacheFormFragment({ provider }: PromptCacheFormFragmentPro
 		name: "cache_control_injection_points",
 	});
 
-	const autoInject = form.watch("auto_inject");
-
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(form.formState.isDirty));
 	}, [form.formState.isDirty, dispatch]);
@@ -94,10 +92,10 @@ export function PromptCacheFormFragment({ provider }: PromptCacheFormFragmentPro
 									<div className="space-y-0.5">
 										<FormLabel>Auto-inject cache breakpoints</FormLabel>
 										<p className="text-muted-foreground text-xs">
-											Agentic clients such as Codex send no cache markers, so the cached prefix follows the newest message and every
-											turn is billed as a cache write. Turning this on marks the first cacheable block instead, which keeps the cached
-											region stable so turn 2 onward is a cache read. Requests that already carry their own cache markers are never
-											modified, and models without explicit caching are left alone.
+											Agentic clients such as Codex send no cache markers, so the cached prefix follows the newest message and every turn is
+											billed as a cache write. Turning this on marks the first cacheable block instead, which keeps the cached region stable
+											so turn 2 onward is a cache read. Requests that already carry their own cache markers are never modified, and models
+											without explicit caching are left alone.
 										</p>
 									</div>
 									<FormControl>
@@ -118,122 +116,117 @@ export function PromptCacheFormFragment({ provider }: PromptCacheFormFragmentPro
 						)}
 					/>
 
-					{autoInject && (
-						<>
-							<FormField
-								control={form.control}
-								name="ttl"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Cache TTL</FormLabel>
-										<Select value={field.value ?? TTL_DEFAULT} onValueChange={field.onChange} disabled={!hasUpdateProviderAccess}>
+					<FormField
+						control={form.control}
+						name="ttl"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Cache TTL</FormLabel>
+								<Select value={field.value ?? TTL_DEFAULT} onValueChange={field.onChange} disabled={!hasUpdateProviderAccess}>
+									<FormControl>
+										<SelectTrigger data-testid="provider-prompt-cache-ttl-select" className="w-56">
+											<SelectValue />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value={TTL_DEFAULT}>Provider default (5 minutes)</SelectItem>
+										<SelectItem value="1h">1 hour</SelectItem>
+									</SelectContent>
+								</Select>
+								<p className="text-muted-foreground text-xs">
+									A longer TTL costs more per cache write but survives gaps between turns. Providers that cannot carry a TTL ignore this.
+								</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					<div className="space-y-3">
+						<div className="space-y-0.5">
+							<FormLabel>Injection points</FormLabel>
+							<p className="text-muted-foreground text-xs">
+								Optional. Target specific messages instead of the first cacheable block. Adding any point{" "}
+								<span className="font-medium">replaces</span> the default strategy rather than adding to it. Each point needs a role, an
+								index, or both. At most four markers are injected, matching the provider ceiling.
+							</p>
+						</div>
+
+						{fields.map((row, index) => (
+							<div key={row.id} className="flex items-end gap-2" data-testid={`provider-prompt-cache-point-${index}`}>
+								<FormField
+									control={form.control}
+									name={`cache_control_injection_points.${index}.role`}
+									render={({ field }) => (
+										<FormItem className="flex-1">
+											<FormLabel className="text-xs">Role</FormLabel>
+											<Select
+												value={field.value ?? ""}
+												onValueChange={(v) => field.onChange(v === "" ? undefined : v)}
+												disabled={!hasUpdateProviderAccess}
+											>
+												<FormControl>
+													<SelectTrigger>
+														<SelectValue placeholder="Any role" />
+													</SelectTrigger>
+												</FormControl>
+												<SelectContent>
+													{ROLES.map((role) => (
+														<SelectItem key={role} value={role}>
+															{role}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name={`cache_control_injection_points.${index}.index`}
+									render={({ field }) => (
+										<FormItem className="flex-1">
+											<FormLabel className="text-xs">Index</FormLabel>
 											<FormControl>
-												<SelectTrigger data-testid="provider-prompt-cache-ttl-select" className="w-56">
-													<SelectValue />
-												</SelectTrigger>
+												<Input
+													type="number"
+													placeholder="e.g. -1 for last"
+													value={field.value ?? ""}
+													disabled={!hasUpdateProviderAccess}
+													onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+												/>
 											</FormControl>
-											<SelectContent>
-												<SelectItem value={TTL_DEFAULT}>Provider default (5 minutes)</SelectItem>
-												<SelectItem value="1h">1 hour</SelectItem>
-											</SelectContent>
-										</Select>
-										<p className="text-muted-foreground text-xs">
-											A longer TTL costs more per cache write but survives gaps between turns. Providers that cannot carry a TTL ignore
-											this.
-										</p>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-
-							<div className="space-y-3">
-								<div className="space-y-0.5">
-									<FormLabel>Injection points</FormLabel>
-									<p className="text-muted-foreground text-xs">
-										Optional. Target specific messages instead of the first cacheable block. Adding any point{" "}
-										<span className="font-medium">replaces</span> the default strategy rather than adding to it. Each point needs a role,
-										an index, or both. At most four markers are injected, matching the provider ceiling.
-									</p>
-								</div>
-
-								{fields.map((row, index) => (
-									<div key={row.id} className="flex items-end gap-2" data-testid={`provider-prompt-cache-point-${index}`}>
-										<FormField
-											control={form.control}
-											name={`cache_control_injection_points.${index}.role`}
-											render={({ field }) => (
-												<FormItem className="flex-1">
-													<FormLabel className="text-xs">Role</FormLabel>
-													<Select
-														value={field.value ?? ""}
-														onValueChange={(v) => field.onChange(v === "" ? undefined : v)}
-														disabled={!hasUpdateProviderAccess}
-													>
-														<FormControl>
-															<SelectTrigger>
-																<SelectValue placeholder="Any role" />
-															</SelectTrigger>
-														</FormControl>
-														<SelectContent>
-															{ROLES.map((role) => (
-																<SelectItem key={role} value={role}>
-																	{role}
-																</SelectItem>
-															))}
-														</SelectContent>
-													</Select>
-												</FormItem>
-											)}
-										/>
-										<FormField
-											control={form.control}
-											name={`cache_control_injection_points.${index}.index`}
-											render={({ field }) => (
-												<FormItem className="flex-1">
-													<FormLabel className="text-xs">Index</FormLabel>
-													<FormControl>
-														<Input
-															type="number"
-															placeholder="e.g. -1 for last"
-															value={field.value ?? ""}
-															disabled={!hasUpdateProviderAccess}
-															onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-														/>
-													</FormControl>
-												</FormItem>
-											)}
-										/>
-										<Button
-											type="button"
-											variant="outline"
-											size="icon"
-											disabled={!hasUpdateProviderAccess}
-											onClick={() => remove(index)}
-											data-testid={`provider-prompt-cache-point-remove-${index}`}
-										>
-											<Trash2 className="h-4 w-4" />
-										</Button>
-									</div>
-								))}
-
-								{form.formState.errors.cache_control_injection_points && (
-									<p className="text-destructive text-xs">Each point needs a role, an index, or both.</p>
-								)}
-
+										</FormItem>
+									)}
+								/>
 								<Button
 									type="button"
 									variant="outline"
-									size="sm"
+									size="icon"
 									disabled={!hasUpdateProviderAccess}
-									onClick={() => append({ location: "message", role: undefined, index: undefined })}
-									data-testid="provider-prompt-cache-point-add"
+									onClick={() => remove(index)}
+									data-testid={`provider-prompt-cache-point-remove-${index}`}
 								>
-									<Plus className="mr-1 h-4 w-4" />
-									Add injection point
+									<Trash2 className="h-4 w-4" />
 								</Button>
 							</div>
-						</>
-					)}
+						))}
+
+						{form.formState.errors.cache_control_injection_points && (
+							<p className="text-destructive text-xs">Each point needs a role, an index, or both.</p>
+						)}
+
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={!hasUpdateProviderAccess}
+							onClick={() => append({ location: "message", role: undefined, index: undefined })}
+							data-testid="provider-prompt-cache-point-add"
+						>
+							<Plus className="mr-1 h-4 w-4" />
+							Add injection point
+						</Button>
+					</div>
 				</div>
 
 				<div className="flex justify-end space-x-2 pb-6">
