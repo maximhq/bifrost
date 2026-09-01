@@ -10,7 +10,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
@@ -149,13 +148,9 @@ func decodeStoredComplexityTier(value any) (string, error) {
 // key has bounded size and reveals no caller-provided identifier.
 func buildComplexitySessionKey(
 	ctx *schemas.BifrostContext,
-	virtualKey *configstoreTables.TableVirtualKey,
+	virtualKeyID string,
 	sessionID string,
 ) string {
-	virtualKeyID := ""
-	if virtualKey != nil {
-		virtualKeyID = virtualKey.ID
-	}
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	scopeKind := "deployment"
 	switch {

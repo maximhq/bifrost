@@ -535,7 +535,7 @@ func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *
 	}, time.Second, 10*time.Millisecond, "F1 must be reclaimed after its last request releases it")
 }
 
-func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
+func TestSemanticClassifierDeletesPreviousConfiguredChromemGeneration(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
 		Enabled: true,
@@ -573,8 +573,130 @@ func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	v1Markers, err := store.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
+	require.ErrorIs(t, err, vectorstore.ErrNotFound)
+	assert.Empty(t, v1Markers, "configured Chromem is node-local and must reclaim retired generations")
+}
+
+func TestSemanticClassifierDefersConfiguredChromemCleanupUntilGenerationRelease(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+		Enabled: true,
+		Type:    vectorstore.VectorStoreTypeChromem,
+		Config:  vectorstore.ChromemConfig{},
+	}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close(context.Background(), SemanticVectorStoreNamespace))
+	})
+
+	const namespace = "configured-local-in-flight"
+	require.NoError(t, store.CreateNamespace(context.Background(), namespace, testSemanticDimension, semanticVectorStoreProperties))
+	require.NoError(t, store.Add(context.Background(), namespace, "marker", []float32{1, 0}, map[string]interface{}{
+		semanticMetadataKind: semanticMetadataKindMarker,
+	}))
+	generation := &semanticGeneration{store: store, namespace: namespace}
+	classifier := NewSemanticClassifier(context.Background(), logger)
+	classifier.localInFlight = map[*semanticGeneration]int{generation: 1}
+
+	classifier.cleanupLocalGenerationLocked(generation)
+	markers, err := store.GetChunks(context.Background(), namespace, []string{"marker"})
+	require.NoError(t, err)
+	require.Len(t, markers, 1, "a configured Chromem namespace must remain while a request holds its generation")
+
+	classifier.releaseGeneration(generation)
+	_, err = store.GetChunks(context.Background(), namespace, []string{"marker"})
+	require.ErrorIs(t, err, vectorstore.ErrNotFound)
+}
+
+func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	backingStore, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+		Enabled: true,
+		Type:    vectorstore.VectorStoreTypeChromem,
+		Config:  vectorstore.ChromemConfig{},
+	}, logger)
+	require.NoError(t, err)
+	store := &semanticExternalProbeStore{VectorStore: backingStore}
+	t.Cleanup(func() {
+		require.NoError(t, backingStore.Close(context.Background(), SemanticVectorStoreNamespace))
+	})
+
+	classifier := NewSemanticClassifier(context.Background(), logger)
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+	classifier.SetConfiguredStore(store)
+	classifier.SetEmbeddingFunc(testSemanticEmbedding)
+
+	v1 := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
+	v1.Semantic.EmbeddingModel = "model-v1"
+	classifier.Configure(&v1)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond)
+	v1Fingerprint := semanticFingerprint(&v1, semanticExemplars(&v1), testSemanticDimension)
+	v1Namespace := semanticGenerationNamespace(v1Fingerprint)
+	v1MarkerID := semanticMarkerID(v1Fingerprint)
+
+	v2 := v1
+	v2.Semantic = cloneSemanticConfig(v1.Semantic)
+	v2.Semantic.EmbeddingModel = "model-v2"
+	classifier.Configure(&v2)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond)
+
+	v1Markers, err := store.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
 	require.NoError(t, err)
 	require.Len(t, v1Markers, 1, "shared stores retain F1 because another replica may still serve it")
+	assert.False(t, store.deleted)
+}
+
+func TestSemanticClassifierStoreSwitchKeepsActiveSameFingerprintNamespace(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	newStore := func(t *testing.T) vectorstore.VectorStore {
+		t.Helper()
+		store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+			Enabled: true,
+			Type:    vectorstore.VectorStoreTypeChromem,
+			Config:  vectorstore.ChromemConfig{},
+		}, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, store.Close(context.Background(), SemanticVectorStoreNamespace))
+		})
+		return store
+	}
+	firstStore := newStore(t)
+	secondStore := newStore(t)
+
+	classifier := NewSemanticClassifier(context.Background(), logger)
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+	classifier.SetEmbeddingFunc(testSemanticEmbedding)
+	classifier.SetConfiguredStore(firstStore)
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond)
+
+	fingerprint := semanticFingerprint(&config, semanticExemplars(&config), testSemanticDimension)
+	namespace := semanticGenerationNamespace(fingerprint)
+	markerID := semanticMarkerID(fingerprint)
+	classifier.SetConfiguredStore(secondStore)
+	require.Eventually(t, func() bool {
+		classifier.mu.Lock()
+		defer classifier.mu.Unlock()
+		return classifier.status.State == SemanticStatusReady && classifier.active != nil && classifier.active.store == secondStore
+	}, time.Second, 10*time.Millisecond)
+
+	_, err := firstStore.GetChunks(context.Background(), namespace, []string{markerID})
+	require.ErrorIs(t, err, vectorstore.ErrNotFound, "retired namespace must be deleted from its own local store")
+	markers, err := secondStore.GetChunks(context.Background(), namespace, []string{markerID})
+	require.NoError(t, err)
+	require.Len(t, markers, 1, "same-fingerprint activation must not delete the namespace in the new store")
 }
 
 func TestSemanticClassifierReusesEmbeddedNamespaceForScalarOnlyChange(t *testing.T) {
@@ -735,6 +857,19 @@ type semanticLifecycleProbeStore struct {
 	markerIDs         []string
 }
 
+// semanticExternalProbeStore wraps a local test backend so the classifier sees
+// the same opaque interface shape as a shared external store, while reads still
+// reach the backing store and destructive calls remain observable.
+type semanticExternalProbeStore struct {
+	vectorstore.VectorStore
+	deleted bool
+}
+
+func (s *semanticExternalProbeStore) DeleteNamespace(ctx context.Context, namespace string) error {
+	s.deleted = true
+	return s.VectorStore.DeleteNamespace(ctx, namespace)
+}
+
 // GetChunks rejects read-before-create and otherwise returns a missing marker.
 func (s *semanticLifecycleProbeStore) GetChunks(_ context.Context, _ string, ids []string) ([]vectorstore.SearchResult, error) {
 	s.createdBeforeRead = s.created
@@ -801,6 +936,46 @@ func makeSemanticTestPhrases(prefix string, count int) []string {
 		phrases[index] = fmt.Sprintf("%s exemplar %d", prefix, index)
 	}
 	return phrases
+}
+
+type categorizedSemanticWarmupError struct {
+	reason SemanticFailureReason
+}
+
+func (e categorizedSemanticWarmupError) Error() string {
+	return "raw provider detail must stay in logs"
+}
+
+func (e categorizedSemanticWarmupError) SemanticFailureReason() SemanticFailureReason {
+	return e.reason
+}
+
+func TestSemanticWarmupFailureStatusIsSafeAndActionable(t *testing.T) {
+	tests := []struct {
+		reason SemanticFailureReason
+		want   string
+	}{
+		{reason: SemanticFailureAuthentication, want: "Update its API key"},
+		{reason: SemanticFailureModelUnavailable, want: "supported embedding model"},
+		{reason: SemanticFailureRateLimited, want: "Wait for capacity"},
+		{reason: SemanticFailureTimeout, want: "Check provider availability"},
+		{reason: SemanticFailureProviderUnavailable, want: "configuration or API key"},
+		{reason: SemanticFailureVectorStoreUnavailable, want: "connectivity and configuration"},
+		{reason: SemanticFailureInvalidResponse, want: "supports embeddings"},
+		{reason: SemanticFailureUnknown, want: "Review the embedding provider"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			err := fmt.Errorf("warmup wrapper: %w", categorizedSemanticWarmupError{reason: tt.reason})
+			reason := semanticWarmupFailureReason(err)
+			message := semanticWarmupFailureMessage(reason)
+			require.Equal(t, tt.reason, reason)
+			require.Contains(t, message, tt.want)
+			require.NotContains(t, message, "raw provider detail")
+			require.NotContains(t, message, "server logs")
+		})
+	}
 }
 
 // TestSemanticClassifierRearmsForProviderOnlyWhenFailed pins the recovery path

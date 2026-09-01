@@ -10,7 +10,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -177,17 +176,17 @@ func TestBuildComplexitySessionKeyScopesAndHidesIdentity(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
 	sessionID := "caller-session-secret"
 
-	base := buildComplexitySessionKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-1"}, sessionID)
+	base := buildComplexitySessionKey(ctx, "vk-1", sessionID)
 	require.True(t, strings.HasPrefix(base, complexitySessionKeyPrefix))
 	require.NotContains(t, base, sessionID)
 	require.NotContains(t, base, "user-1")
 	require.NotContains(t, base, "vk-1")
-	require.Equal(t, base, buildComplexitySessionKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-1"}, sessionID))
+	require.Equal(t, base, buildComplexitySessionKey(ctx, "vk-1", sessionID))
 
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-2"}, sessionID))
+	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-2", sessionID))
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-2")
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-1"}, sessionID))
-	require.NotEqual(t, base, buildComplexitySessionKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-1"}, "another-session"))
+	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-1", sessionID))
+	require.NotEqual(t, base, buildComplexitySessionKey(ctx, "vk-1", "another-session"))
 }
 
 func TestPublishLocalSessionFallbackPreservesProposalEvidence(t *testing.T) {

@@ -20,6 +20,32 @@ func testEmbeddingSemanticConfig() *complexity.SemanticConfig {
 	}
 }
 
+func TestValidateComplexityAnalyzerConfigRequiresSemanticClassifier(t *testing.T) {
+	plugin := &RoutingPlugin{}
+	config := complexity.DefaultAnalyzerConfig()
+	config.Semantic = testEmbeddingSemanticConfig()
+
+	require.EqualError(t, plugin.ValidateComplexityAnalyzerConfig(&config), "semantic complexity classifier is unavailable")
+
+	config.Semantic = nil
+	require.NoError(t, plugin.ValidateComplexityAnalyzerConfig(&config))
+}
+
+func TestValidateComplexityAnalyzerConfigRequiresEmbeddingExecutor(t *testing.T) {
+	plugin := &RoutingPlugin{
+		semanticClassifier: complexity.NewSemanticClassifier(t.Context(), nil),
+	}
+	config := complexity.DefaultAnalyzerConfig()
+	config.Semantic = testEmbeddingSemanticConfig()
+
+	require.EqualError(t, plugin.ValidateComplexityAnalyzerConfig(&config), "semantic complexity embedding executor is unavailable")
+
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return nil, nil
+	})
+	require.NoError(t, plugin.ValidateComplexityAnalyzerConfig(&config))
+}
+
 func embeddingResponse(data schemas.EmbeddingStruct, totalTokens int) *schemas.BifrostEmbeddingResponse {
 	return &schemas.BifrostEmbeddingResponse{
 		Data:  []schemas.EmbeddingData{{Embedding: data}},
@@ -214,6 +240,29 @@ func TestGenerateEmbeddingDistinguishesTimeoutFromOtherFailures(t *testing.T) {
 			assert.Equal(t, tt.wantTimeout, errors.Is(err, ErrEmbeddingTimeout))
 		})
 	}
+}
+
+func TestEmbeddingProviderFailureReasonUsesStatusCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		want       complexity.SemanticFailureReason
+	}{
+		{name: "unauthorized", statusCode: 401, want: complexity.SemanticFailureAuthentication},
+		{name: "forbidden", statusCode: 403, want: complexity.SemanticFailureAuthentication},
+		{name: "not found", statusCode: 404, want: complexity.SemanticFailureModelUnavailable},
+		{name: "rate limited", statusCode: 429, want: complexity.SemanticFailureRateLimited},
+		{name: "gateway timeout", statusCode: 504, want: complexity.SemanticFailureTimeout},
+		{name: "provider error", statusCode: 500, want: complexity.SemanticFailureProviderUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostErr := &schemas.BifrostError{StatusCode: schemas.Ptr(tt.statusCode)}
+			require.Equal(t, tt.want, embeddingProviderFailureReason(bifrostErr))
+		})
+	}
+	require.Equal(t, complexity.SemanticFailureProviderUnavailable, embeddingProviderFailureReason(&schemas.BifrostError{}))
 }
 
 // TestWarmupEmbedsDoNotInheritTheRequestTimeout is a regression guard: warmup

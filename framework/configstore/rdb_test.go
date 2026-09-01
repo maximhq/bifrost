@@ -196,6 +196,34 @@ func TestRDBConfigStore_GetComplexityAnalyzerConfigMarksUnreadableRows(t *testin
 		_, err := store.GetComplexityAnalyzerConfig(ctx)
 		require.ErrorIs(t, err, ErrConfigUnreadable)
 	})
+
+	t.Run("stored semantic config exceeds phrase limit", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		base := testComplexityAnalyzerConfig()
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, base))
+
+		oversized := *base
+		oversized.Semantic = &ComplexitySemanticConfig{
+			Provider:       "openai",
+			EmbeddingModel: "text-embedding-3-small",
+		}
+		oversized.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases-1)
+		for index := range oversized.Keywords.SimpleKeywords {
+			oversized.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		oversized.Keywords.MediumKeywords = []string{"medium"}
+		oversized.Keywords.ComplexKeywords = []string{"complex"}
+		semanticRaw, err := encodeComplexitySemanticConfigRow(oversized)
+		require.NoError(t, err)
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexitySemanticConfigKey,
+			Value: string(semanticRaw),
+		}))
+
+		_, err = store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+		require.ErrorContains(t, err, "contains 751 phrases")
+	})
 }
 
 func TestRDBConfigStore_GetComplexityAnalyzerConfigMissingReturnsNil(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,17 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
 	emptyKeywords := valid
 	emptyKeywords.Keywords.MediumKeywords = nil
+	tooManyPhrases := valid
+	tooManyPhrases.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	tooManyPhrases.Keywords.SimpleKeywords = make([]string, configstore.MaxComplexitySemanticPhrases-1)
+	for index := range tooManyPhrases.Keywords.SimpleKeywords {
+		tooManyPhrases.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+	}
+	tooManyPhrases.Keywords.MediumKeywords = []string{"medium"}
+	tooManyPhrases.Keywords.ComplexKeywords = []string{"complex"}
 
 	tests := []struct {
 		name string
@@ -208,6 +220,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
+		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
 	}
 
 	for _, tt := range tests {

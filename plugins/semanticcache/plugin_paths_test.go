@@ -645,6 +645,7 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
@@ -674,8 +675,6 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 		schemas.BifrostContextKeyDirectKey,
 		schemas.BifrostContextKeySkipKeySelection,
 		schemas.BifrostContextKeyUseRawRequestBody,
-		schemas.BifrostContextKeySendBackRawRequest,
-		schemas.BifrostContextKeySendBackRawResponse,
 		schemas.BifrostContextKeyPassthroughOverridesPresent,
 		schemas.BifrostContextKeyLargePayloadMode,
 		schemas.BifrostContextKeyLargeResponseMode,
@@ -684,6 +683,18 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	} {
 		if v := captured.Value(key); v != nil {
 			t.Fatalf("expected %q cleared on internal embedding context, got %v", key, v)
+		}
+	}
+
+	// Raw capture is deliberately false, rather than absent: these values
+	// override provider-level raw-capture configuration for internal embeddings.
+	for _, key := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeySendBackRawRequest,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyStoreRawRequestResponse,
+	} {
+		if enabled, _ := captured.Value(key).(bool); enabled {
+			t.Fatalf("expected %q disabled on internal embedding context", key)
 		}
 	}
 

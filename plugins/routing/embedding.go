@@ -27,6 +27,48 @@ var ErrEmbeddingRequestExecutorNotConfigured = errors.New("embedding request exe
 // budget it was given, while every other failure says it is not working at all.
 var ErrEmbeddingTimeout = errors.New("embedding request timed out")
 
+// semanticEmbeddingFailure preserves the detailed internal error for logs while
+// exposing only a bounded failure category to the semantic status endpoint.
+type semanticEmbeddingFailure struct {
+	reason complexity.SemanticFailureReason
+	detail string
+	cause  error
+}
+
+func (e *semanticEmbeddingFailure) Error() string {
+	return e.detail
+}
+
+func (e *semanticEmbeddingFailure) Unwrap() error {
+	return e.cause
+}
+
+func (e *semanticEmbeddingFailure) SemanticFailureReason() complexity.SemanticFailureReason {
+	return e.reason
+}
+
+func newSemanticEmbeddingFailure(reason complexity.SemanticFailureReason, detail string, cause error) error {
+	return &semanticEmbeddingFailure{reason: reason, detail: detail, cause: cause}
+}
+
+func embeddingProviderFailureReason(bifrostErr *schemas.BifrostError) complexity.SemanticFailureReason {
+	if bifrostErr == nil || bifrostErr.StatusCode == nil {
+		return complexity.SemanticFailureProviderUnavailable
+	}
+	switch statusCode := *bifrostErr.StatusCode; {
+	case statusCode == 401 || statusCode == 403:
+		return complexity.SemanticFailureAuthentication
+	case statusCode == 400 || statusCode == 404 || statusCode == 405 || statusCode == 422:
+		return complexity.SemanticFailureModelUnavailable
+	case statusCode == 408 || statusCode == 504:
+		return complexity.SemanticFailureTimeout
+	case statusCode == 429:
+		return complexity.SemanticFailureRateLimited
+	default:
+		return complexity.SemanticFailureProviderUnavailable
+	}
+}
+
 // EmbeddingRequestExecutor invokes the embedding endpoint on the bifrost
 // client. The plugin calls it to embed request text for semantic complexity
 // classification. It mirrors the signature of bifrost.Client.EmbeddingRequest.
@@ -373,12 +415,10 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 	// and may dereference fields on a parent context that has already been
 	// released back to its sync.Pool — see core/schemas.ReleasePluginScope.
 	defer embeddingCtx.Cancel()
-	// The embedding request targets the configured embedding provider/model,
-	// not the caller's. Mark it as an internal sub-request: it skips the
-	// plugin pipeline (so it cannot recurse back through governance) and
-	// sheds the caller's key-routing and body-transport state so it behaves
-	// like a fresh external /v1/embeddings call.
-	bifrost.PrepareContextForInternalRequest(embeddingCtx)
+	// The embedding request is an internal sub-request and must not capture its
+	// raw vector payloads, even when the configured provider captures external
+	// request/response bodies.
+	bifrost.PrepareContextForInternalEmbeddingRequest(embeddingCtx)
 
 	response, bifrostErr := executor(embeddingCtx, embeddingReq)
 	if bifrostErr != nil {
@@ -387,15 +427,27 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 		// provider once the error is rendered into a string. Tag it here, at the
 		// only layer that knows which deadline was set and why.
 		if isEmbeddingTimeout(embeddingCtx, bifrostErr) {
-			return nil, 0, fmt.Errorf("%w after %s", ErrEmbeddingTimeout, timeout)
+			return nil, 0, newSemanticEmbeddingFailure(
+				complexity.SemanticFailureTimeout,
+				fmt.Sprintf("%s after %s", ErrEmbeddingTimeout, timeout),
+				ErrEmbeddingTimeout,
+			)
 		}
-		return nil, 0, fmt.Errorf("failed to generate embedding: %v", bifrostErr)
+		return nil, 0, newSemanticEmbeddingFailure(
+			embeddingProviderFailureReason(bifrostErr),
+			fmt.Sprintf("failed to generate embedding: %v", bifrostErr),
+			nil,
+		)
 	}
 
 	// A nil response means nothing arrived to read usage from, so it keeps the
 	// zero-token contract every pre-response failure above shares.
 	if response == nil {
-		return nil, 0, fmt.Errorf("no embeddings returned from provider")
+		return nil, 0, newSemanticEmbeddingFailure(
+			complexity.SemanticFailureInvalidResponse,
+			"no embeddings returned from provider",
+			nil,
+		)
 	}
 	inputTokens := 0
 	// Provider-reported usage is untrusted input: a negative count would flow
@@ -411,7 +463,11 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 	// left an empty-Data response as the one post-response failure whose tokens
 	// went unobserved and unbilled.
 	if len(response.Data) == 0 {
-		return nil, inputTokens, fmt.Errorf("no embeddings returned from provider")
+		return nil, inputTokens, newSemanticEmbeddingFailure(
+			complexity.SemanticFailureInvalidResponse,
+			"no embeddings returned from provider",
+			nil,
+		)
 	}
 
 	if len(response.Data) != len(texts) {
@@ -423,7 +479,11 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 				len(texts),
 			)
 		}
-		return nil, inputTokens, fmt.Errorf("provider returned %d vectors for one input", len(response.Data))
+		return nil, inputTokens, newSemanticEmbeddingFailure(
+			complexity.SemanticFailureInvalidResponse,
+			fmt.Sprintf("provider returned %d vectors for one input", len(response.Data)),
+			nil,
+		)
 	}
 
 	embeddings := make([][]float32, len(texts))
@@ -445,7 +505,11 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 
 		embedding, err := decodeEmbedding(data.Embedding)
 		if err != nil {
-			return nil, inputTokens, fmt.Errorf("decode embedding %d: %w", inputIndex, err)
+			return nil, inputTokens, newSemanticEmbeddingFailure(
+				complexity.SemanticFailureInvalidResponse,
+				fmt.Sprintf("decode embedding %d: %v", inputIndex, err),
+				err,
+			)
 		}
 		embeddings[inputIndex] = embedding
 		seen[inputIndex] = true

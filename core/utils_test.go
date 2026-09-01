@@ -206,6 +206,28 @@ func TestValidateExternalURL(t *testing.T) {
 	}
 }
 
+// TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture ensures plugin-owned embeddings never inherit provider raw capture.
+func TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	PrepareContextForInternalEmbeddingRequest(ctx)
+
+	applyRawCaptureSignals(ctx, &schemas.ProviderConfig{
+		SendBackRawRequest:      true,
+		SendBackRawResponse:     true,
+		StoreRawRequestResponse: true,
+	})
+
+	for key, name := range map[schemas.BifrostContextKey]string{
+		schemas.BifrostContextKeyCaptureRawRequest:    "capture raw request",
+		schemas.BifrostContextKeyCaptureRawResponse:   "capture raw response",
+		schemas.BifrostContextKeyShouldStoreRawInLogs: "store raw request/response",
+	} {
+		if enabled, _ := ctx.Value(key).(bool); enabled {
+			t.Errorf("%s = true, want false", name)
+		}
+	}
+}
+
 // TestValidateExternalURLBoundsDNSLookup guards against regressing to the package-level
 // net.LookupIP (which has no context/deadline of its own, and previously let a stalled
 // resolver block the caller indefinitely -- see externalURLDNSLookupTimeout's doc). A

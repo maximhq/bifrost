@@ -17,6 +17,8 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
+var errSemanticVectorStoreUnavailable = errors.New("semantic vector store unavailable")
+
 // SemanticVectorStoreNamespace is the prefix for immutable, fingerprinted
 // complexity-routing generations. It isolates routing exemplars from every
 // other VectorStore consumer, including the semantic cache plugin.
@@ -47,14 +49,37 @@ const (
 	SemanticStatusFailed SemanticStatus = "failed"
 )
 
+// SemanticFailureReason is the safe, operator-actionable category for a failed
+// warmup. Provider and backend error bodies stay in server logs; status clients
+// only receive this bounded vocabulary and the corresponding safe message.
+type SemanticFailureReason string
+
+const (
+	SemanticFailureAuthentication         SemanticFailureReason = "authentication"
+	SemanticFailureModelUnavailable       SemanticFailureReason = "model_unavailable"
+	SemanticFailureRateLimited            SemanticFailureReason = "rate_limited"
+	SemanticFailureTimeout                SemanticFailureReason = "timeout"
+	SemanticFailureProviderUnavailable    SemanticFailureReason = "provider_unavailable"
+	SemanticFailureVectorStoreUnavailable SemanticFailureReason = "vector_store_unavailable"
+	SemanticFailureInvalidResponse        SemanticFailureReason = "invalid_response"
+	SemanticFailureUnknown                SemanticFailureReason = "unknown"
+)
+
+// semanticWarmupFailure is implemented by embedding adapters that can safely
+// classify an operational failure without exposing the provider's raw error.
+type semanticWarmupFailure interface {
+	SemanticFailureReason() SemanticFailureReason
+}
+
 // SemanticStatusInfo is the safe runtime state exposed to Governance handlers
 // and UI clients; it never contains prompts, embeddings, or provider secrets.
 type SemanticStatusInfo struct {
-	State           SemanticStatus `json:"state"`
-	Loaded          int            `json:"loaded"`
-	Total           int            `json:"total"`
-	ServingPrevious bool           `json:"serving_previous,omitempty"`
-	Error           string         `json:"error,omitempty"`
+	State           SemanticStatus        `json:"state"`
+	Loaded          int                   `json:"loaded"`
+	Total           int                   `json:"total"`
+	ServingPrevious bool                  `json:"serving_previous,omitempty"`
+	FailureReason   SemanticFailureReason `json:"failure_reason,omitempty"`
+	Error           string                `json:"error,omitempty"`
 	// CachedPhrases is how many phrase vectors are currently held in process for
 	// the configured provider/model. Reuse cannot be inferred from the persisted
 	// config alone: the cache lives only in memory (vectors cannot be read back
@@ -120,22 +145,22 @@ type SemanticClassifier struct {
 	ctx    context.Context
 	logger schemas.Logger
 
-	mu               sync.Mutex
-	configuredStore  vectorstore.VectorStore
-	ownedStore       vectorstore.VectorStore
-	embed            EmbeddingFunc
-	embedBatch       BatchEmbeddingFunc
-	config           *AnalyzerConfig
-	store            vectorstore.VectorStore
-	active           *semanticGeneration
-	status           SemanticStatusInfo
-	revision         uint64
-	warmCancel       context.CancelFunc
-	warming          bool
-	closed           bool
-	embeddedInFlight map[string]int
-	embeddingCache   *semanticEmbeddingCache
-	wg               sync.WaitGroup
+	mu              sync.Mutex
+	configuredStore vectorstore.VectorStore
+	ownedStore      vectorstore.VectorStore
+	embed           EmbeddingFunc
+	embedBatch      BatchEmbeddingFunc
+	config          *AnalyzerConfig
+	store           vectorstore.VectorStore
+	active          *semanticGeneration
+	status          SemanticStatusInfo
+	revision        uint64
+	warmCancel      context.CancelFunc
+	warming         bool
+	closed          bool
+	localInFlight   map[*semanticGeneration]int
+	embeddingCache  *semanticEmbeddingCache
+	wg              sync.WaitGroup
 }
 
 // NewSemanticClassifier creates a disabled classifier. Callers configure it
@@ -164,7 +189,7 @@ func (c *SemanticClassifier) Configure(config *AnalyzerConfig) {
 	c.mu.Unlock()
 }
 
-// SetConfiguredStore supplies Bifrost's configured shared VectorStore.
+// SetConfiguredStore supplies Bifrost's top-level configured VectorStore.
 // "embedded" mode ignores it; "vector_store" mode uses it when present and
 // falls back to the embedded store when it is nil.
 func (c *SemanticClassifier) SetConfiguredStore(store vectorstore.VectorStore) {
@@ -315,15 +340,15 @@ func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput
 	namespace := generation.namespace
 	embed := generation.embed
 	exemplars := generation.exemplars
-	embeddedGeneration := c.isOwnedStoreLocked(store)
-	if embeddedGeneration {
-		if c.embeddedInFlight == nil {
-			c.embeddedInFlight = make(map[string]int)
+	localGeneration := isLocalChromemStore(store)
+	if localGeneration {
+		if c.localInFlight == nil {
+			c.localInFlight = make(map[*semanticGeneration]int)
 		}
-		c.embeddedInFlight[namespace]++
+		c.localInFlight[generation]++
 	}
 	c.mu.Unlock()
-	if embeddedGeneration {
+	if localGeneration {
 		defer c.releaseGeneration(generation)
 	}
 
@@ -407,7 +432,7 @@ func (c *SemanticClassifier) resetForCurrentConfigLocked() {
 		c.active = nil
 		c.status = SemanticStatusInfo{State: SemanticStatusDisabled}
 		if previous != nil {
-			c.cleanupEmbeddedNamespaceLocked(previous.store, previous.namespace)
+			c.cleanupLocalGenerationLocked(previous)
 		}
 		return
 	}
@@ -428,7 +453,8 @@ func (c *SemanticClassifier) resetForCurrentConfigLocked() {
 	store, err := c.resolveStoreLocked(semantic)
 	if err != nil {
 		c.status.State = SemanticStatusFailed
-		c.status.Error = "semantic classifier is unavailable; check server logs"
+		c.status.FailureReason = SemanticFailureVectorStoreUnavailable
+		c.status.Error = semanticWarmupFailureMessage(c.status.FailureReason)
 		c.logWarmupError(err)
 		return
 	}
@@ -453,7 +479,10 @@ func (c *SemanticClassifier) requestWarmupLocked() {
 }
 
 // runWarmupWorker serializes namespace mutation so cancelled generations cannot
-// write vectors into the namespace selected by a newer configuration.
+// write vectors into the namespace selected by a newer configuration. Cleanup
+// on revision mismatch relies on this remaining a single worker: parallel
+// warmers could otherwise mistake a namespace another worker is building for
+// an abandoned generation.
 func (c *SemanticClassifier) runWarmupWorker() {
 	defer c.wg.Done()
 	for {
@@ -482,22 +511,24 @@ func (c *SemanticClassifier) runWarmupWorker() {
 
 		c.mu.Lock()
 		if c.revision != revision {
-			c.cleanupEmbeddedNamespaceLocked(store, namespace)
+			c.cleanupLocalNamespaceLocked(store, namespace)
 			c.mu.Unlock()
 			continue
 		}
 		c.warmCancel = nil
 		c.warming = false
 		if err != nil {
+			failureReason := semanticWarmupFailureReason(err)
 			c.status = SemanticStatusInfo{
 				State:           SemanticStatusFailed,
 				Loaded:          loaded,
 				Total:           len(semanticExemplars(config)),
 				ServingPrevious: c.active != nil,
-				Error:           "semantic warmup failed; check server logs",
+				FailureReason:   failureReason,
+				Error:           semanticWarmupFailureMessage(failureReason),
 			}
 			c.logWarmupError(err)
-			c.cleanupEmbeddedNamespaceLocked(store, namespace)
+			c.cleanupLocalNamespaceLocked(store, namespace)
 		} else {
 			previous := c.active
 			c.active = &semanticGeneration{
@@ -510,7 +541,7 @@ func (c *SemanticClassifier) runWarmupWorker() {
 			}
 			c.status = SemanticStatusInfo{State: SemanticStatusReady, Loaded: loaded, Total: len(semanticExemplars(config))}
 			if previous != nil {
-				c.cleanupEmbeddedNamespaceLocked(previous.store, previous.namespace)
+				c.cleanupLocalGenerationLocked(previous)
 			}
 		}
 		c.mu.Unlock()
@@ -518,46 +549,96 @@ func (c *SemanticClassifier) runWarmupWorker() {
 	}
 }
 
-// releaseGeneration drops the request's hold on an embedded generation. A
-// retired namespace is removed as soon as its final classification finishes.
+func semanticWarmupFailureReason(err error) SemanticFailureReason {
+	var failure semanticWarmupFailure
+	if errors.As(err, &failure) {
+		return failure.SemanticFailureReason()
+	}
+	if errors.Is(err, errSemanticVectorStoreUnavailable) {
+		return SemanticFailureVectorStoreUnavailable
+	}
+	return SemanticFailureUnknown
+}
+
+func semanticWarmupFailureMessage(reason SemanticFailureReason) string {
+	switch reason {
+	case SemanticFailureAuthentication:
+		return "Authentication failed for the selected embedding provider. Update its API key to restart warmup."
+	case SemanticFailureModelUnavailable:
+		return "The selected embedding model could not be used. Choose a supported embedding model and save the configuration again."
+	case SemanticFailureRateLimited:
+		return "The embedding provider's rate limit prevented warmup. Wait for capacity, then save the configuration again."
+	case SemanticFailureTimeout:
+		return "The embedding provider did not respond during warmup. Check provider availability, then save the configuration again."
+	case SemanticFailureProviderUnavailable:
+		return "The embedding provider is unavailable. Updating its configuration or API key restarts warmup."
+	case SemanticFailureVectorStoreUnavailable:
+		return "The vector store could not prepare the classifier index. Check its connectivity and configuration, then save again."
+	case SemanticFailureInvalidResponse:
+		return "The selected model returned an invalid embedding response. Choose a model that supports embeddings and save again."
+	default:
+		return "The classifier could not prepare the reference phrases. Review the embedding provider, model, and vector store settings, then save again."
+	}
+}
+
+// releaseGeneration drops the request's hold on a node-local Chromem
+// generation. A retired namespace is removed as soon as its final
+// classification finishes.
 func (c *SemanticClassifier) releaseGeneration(generation *semanticGeneration) {
 	if generation == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.isOwnedStoreLocked(generation.store) {
+	if !isLocalChromemStore(generation.store) {
 		return
 	}
-	if count := c.embeddedInFlight[generation.namespace]; count > 1 {
-		c.embeddedInFlight[generation.namespace] = count - 1
+	if count := c.localInFlight[generation]; count > 1 {
+		c.localInFlight[generation] = count - 1
 		return
 	}
-	delete(c.embeddedInFlight, generation.namespace)
-	c.cleanupEmbeddedNamespaceLocked(generation.store, generation.namespace)
+	delete(c.localInFlight, generation)
+	c.cleanupLocalGenerationLocked(generation)
 }
 
-// cleanupEmbeddedNamespaceLocked removes a private Chromem generation only
-// when no request can still query it. Shared stores are intentionally retained:
+// cleanupLocalGenerationLocked retires one serving snapshot. Tracking request
+// holds by generation identity keeps two stores with the same fingerprinted
+// namespace independent during a storage-mode switch.
+func (c *SemanticClassifier) cleanupLocalGenerationLocked(generation *semanticGeneration) {
+	if generation == nil || c.localInFlight[generation] > 0 {
+		return
+	}
+	c.cleanupLocalNamespaceLocked(generation.store, generation.namespace)
+}
+
+// cleanupLocalNamespaceLocked removes a node-local Chromem namespace only
+// when no active or in-flight generation can still query that exact store and
+// namespace pair. Shared external stores are intentionally retained because
 // another Bifrost replica may still serve the previous generation.
-func (c *SemanticClassifier) cleanupEmbeddedNamespaceLocked(store vectorstore.VectorStore, namespace string) {
-	if namespace == "" || !c.isOwnedStoreLocked(store) {
+func (c *SemanticClassifier) cleanupLocalNamespaceLocked(store vectorstore.VectorStore, namespace string) {
+	if namespace == "" || !isLocalChromemStore(store) {
 		return
 	}
-	if c.active != nil && c.isOwnedStoreLocked(c.active.store) && c.active.namespace == namespace {
+	if c.active != nil && c.active.store == store && c.active.namespace == namespace {
 		return
 	}
-	if c.embeddedInFlight[namespace] > 0 {
-		return
+	for generation, count := range c.localInFlight {
+		if count > 0 && generation.store == store && generation.namespace == namespace {
+			return
+		}
 	}
-	if err := c.ownedStore.DeleteNamespace(context.Background(), namespace); err != nil && c.logger != nil {
+	if err := store.DeleteNamespace(context.Background(), namespace); err != nil && c.logger != nil {
 		c.logger.Warn("[Governance] Failed to clean retired semantic complexity namespace %s: %v", namespace, err)
 	}
-	delete(c.embeddedInFlight, namespace)
 }
 
-func (c *SemanticClassifier) isOwnedStoreLocked(store vectorstore.VectorStore) bool {
-	return c.ownedStore != nil && store == c.ownedStore
+// isLocalChromemStore follows Chromem's supported deployment contract: the
+// embedded backend belongs to one Bifrost node, whether the classifier created
+// it or it came from the top-level vector_store configuration. A persistent
+// Chromem path must not be shared as one writable database across replicas.
+func isLocalChromemStore(store vectorstore.VectorStore) bool {
+	_, ok := store.(*vectorstore.ChromemStore)
+	return ok
 }
 
 // logWarmupError records provider and backend details without exposing them
@@ -569,7 +650,7 @@ func (c *SemanticClassifier) logWarmupError(err error) {
 }
 
 // resolveStoreLocked selects the backing store without ever taking ownership of
-// Bifrost's configured shared store. The caller must hold c.mu.
+// Bifrost's top-level configured store. The caller must hold c.mu.
 func (c *SemanticClassifier) resolveStoreLocked(semantic *SemanticConfig) (vectorstore.VectorStore, error) {
 	switch semantic.VectorStore {
 	case configstore.ComplexitySemanticVectorStoreEmbedded:
@@ -700,7 +781,7 @@ func warmSemanticExemplars(
 	// Creating first makes a brand-new generation work on Qdrant and Weaviate,
 	// whose reads return backend-specific errors for missing namespaces.
 	if err := store.CreateNamespace(ctx, namespace, dimension, semanticVectorStoreProperties); err != nil {
-		return 0, namespace, dimension, fmt.Errorf("create complexity generation namespace: %w", err)
+		return 0, namespace, dimension, fmt.Errorf("%w: create complexity generation namespace: %v", errSemanticVectorStoreUnavailable, err)
 	}
 	markers, err := store.GetChunks(ctx, namespace, []string{markerID})
 	if err == nil && len(markers) > 0 {
@@ -714,7 +795,7 @@ func warmSemanticExemplars(
 			return len(exemplars), namespace, dimension, nil
 		}
 	} else if err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
-		return 0, namespace, dimension, fmt.Errorf("check complexity warmup marker: %w", err)
+		return 0, namespace, dimension, fmt.Errorf("%w: check complexity warmup marker: %v", errSemanticVectorStoreUnavailable, err)
 	}
 
 	for batchStart := 0; batchStart < len(pending); batchStart += semanticWarmupBatchSize {
@@ -788,7 +869,7 @@ func warmSemanticExemplars(
 			semanticMetadataKind:        semanticMetadataKindExample,
 			semanticMetadataFingerprint: fingerprint,
 		}); err != nil {
-			return index, namespace, dimension, fmt.Errorf("store %s exemplar %d: %w", strings.ToLower(exemplar.Tier), index+1, err)
+			return index, namespace, dimension, fmt.Errorf("%w: store %s exemplar %d: %v", errSemanticVectorStoreUnavailable, strings.ToLower(exemplar.Tier), index+1, err)
 		}
 		markerEmbedding = embedding
 	}
@@ -796,7 +877,7 @@ func warmSemanticExemplars(
 		semanticMetadataKind:        semanticMetadataKindMarker,
 		semanticMetadataFingerprint: fingerprint,
 	}); err != nil {
-		return len(exemplars), namespace, dimension, fmt.Errorf("store complexity warmup marker: %w", err)
+		return len(exemplars), namespace, dimension, fmt.Errorf("%w: store complexity warmup marker: %v", errSemanticVectorStoreUnavailable, err)
 	}
 	cache.retain(exemplars)
 	return len(exemplars), namespace, dimension, nil

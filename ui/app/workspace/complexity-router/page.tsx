@@ -25,7 +25,12 @@ import {
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
-import { KeywordListKey, MAX_LLM_PROMPT_CHARACTERS, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
+import {
+	KeywordListKey,
+	MAX_LLM_PROMPT_CHARACTERS,
+	MAX_SEMANTIC_PHRASES,
+	TIER_PHRASE_LIST_DEFINITIONS,
+} from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -35,7 +40,14 @@ import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleA
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { AnalyzerFormValues, analyzerConfigSchema, DEFAULT_FORM_VALUES, toAnalyzerPayload, toFormValues } from "./formSchema";
+import {
+	AnalyzerFormValues,
+	analyzerConfigSchema,
+	countCanonicalSemanticPhrases,
+	DEFAULT_FORM_VALUES,
+	toAnalyzerPayload,
+	toFormValues,
+} from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
 import { FieldLabel, SectionHeading } from "./views/formPrimitives";
@@ -74,16 +86,16 @@ const supportsChat = (provider: ModelProvider): boolean => {
 	return true;
 };
 
-// The three tier lists sit side by side, so they collapse to a fixed height
-// rather than to a fixed number of phrases: phrases wrap to different numbers of
-// lines, and equal counts would leave the columns visibly uneven.
+// The three tier lists sit side by side, so each is a fixed-height scroll
+// container rather than a fixed number of phrases: phrases wrap to different
+// numbers of lines, and equal counts would leave the columns visibly uneven.
 //
 // This only evens out the lists themselves. The header above them varies too --
 // a tier description that wraps to two lines pushes its list down by a line
-// while its neighbours stay put -- so the card is a flex column whose
-// description grows to absorb the difference, bottom-aligning all three lists
-// at any column width.
-const PHRASE_LIST_COLLAPSED_HEIGHT = 260;
+// while its neighbours stay put -- so the cards stretch to the grid row and each
+// is a flex column whose description grows to absorb the difference,
+// bottom-aligning all three lists at any column width.
+const PHRASE_LIST_HEIGHT = 300;
 
 function testIdPart(value: string) {
 	return value.replace(/_/g, "-");
@@ -168,7 +180,13 @@ export default function ComplexityRouterPage() {
 	// save: the endpoint carries llm_default_prompt, which seeds the prompt field
 	// and powers "Reset to default" — gating on the saved config alone left a
 	// newly enabled fallback with no default prompt until after the first save.
-	const { data: semanticStatus, isLoading: statusLoading } = useGetComplexitySemanticStatusQuery(undefined, {
+	const {
+		data: semanticStatus,
+		isLoading: statusLoading,
+		isFetching: statusFetching,
+		isError: statusIsError,
+		refetch: refetchStatus,
+	} = useGetComplexitySemanticStatusQuery(undefined, {
 		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled,
 		pollingInterval: statusPollInterval,
 	});
@@ -184,9 +202,11 @@ export default function ComplexityRouterPage() {
 
 	const totalPhrases = useMemo(
 		() =>
-			(liveKeywords?.simple_keywords?.length ?? 0) +
-			(liveKeywords?.medium_keywords?.length ?? 0) +
-			(liveKeywords?.complex_keywords?.length ?? 0),
+			countCanonicalSemanticPhrases({
+				simple_keywords: liveKeywords?.simple_keywords ?? [],
+				medium_keywords: liveKeywords?.medium_keywords ?? [],
+				complex_keywords: liveKeywords?.complex_keywords ?? [],
+			}).total,
 		[liveKeywords],
 	);
 
@@ -296,7 +316,7 @@ export default function ComplexityRouterPage() {
 				toast.success("Reset to defaults", { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(getErrorMessage(err));
+				setSubmitError(`Couldn’t restore the default phrases. ${getErrorMessage(err)}`);
 			});
 	};
 
@@ -326,7 +346,7 @@ export default function ComplexityRouterPage() {
 				toast.success("Configuration saved", { position: "top-right" });
 			})
 			.catch((err) => {
-				setSubmitError(getErrorMessage(err));
+				setSubmitError(`Couldn’t save the Complexity Router configuration. ${getErrorMessage(err)}`);
 			});
 	};
 
@@ -350,7 +370,8 @@ export default function ComplexityRouterPage() {
 	if (error && !data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
-				<p className="text-destructive font-mono text-sm">{getErrorMessage(error)}</p>
+				<p className="text-sm font-medium">Couldn’t load the Complexity Router configuration.</p>
+				<p className="text-muted-foreground text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
 				</Button>
@@ -438,7 +459,11 @@ export default function ComplexityRouterPage() {
 									isNotSaved={isClassifierConfigured && !data.semantic}
 									hasUnsavedChanges={willReembed}
 									hasEmbeddingProviders={embeddingProviders.length > 0}
+									statusUnavailable={statusIsError && !semanticStatus}
+									statusRefreshFailed={statusIsError && Boolean(semanticStatus)}
+									isRetryingStatus={statusFetching}
 									onConfigure={() => setEmbeddingSheetOpen(true)}
+									onRetryStatus={() => void refetchStatus()}
 								/>
 								<Button
 									type="button"
@@ -478,7 +503,7 @@ export default function ComplexityRouterPage() {
 								description="A request takes the tier of its nearest phrase."
 								aside={
 									<span className="text-muted-foreground font-mono text-[11px] tabular-nums" data-testid="complexity-router-phrase-total">
-										{totalPhrases} phrases
+										{isClassifierConfigured ? `${totalPhrases} / ${MAX_SEMANTIC_PHRASES} phrases` : `${totalPhrases} phrases`}
 									</span>
 								}
 							/>
@@ -502,7 +527,7 @@ export default function ComplexityRouterPage() {
 							{/* One column per tier, side by side: the three lists are read against
 							    each other, and equal-width columns keep a phrase's tier obvious
 							    from its position. */}
-							<div className="grid gap-3 md:grid-cols-3">
+							<div className="grid items-stretch gap-3 md:grid-cols-3">
 								{TIER_PHRASE_LIST_DEFINITIONS.map(({ key, label, description }) => {
 									const fieldError = keywordErrors?.[key as KeywordListKey];
 									const errorId = `keywords-${key}-error`;
@@ -527,8 +552,8 @@ export default function ComplexityRouterPage() {
 															data-testid={`complexity-router-keywords-${testIdPart(key)}-input`}
 															value={field.value}
 															onValueChange={field.onChange}
-															collapsedMaxHeight={PHRASE_LIST_COLLAPSED_HEIGHT}
-															expandButtonTestId={`complexity-router-keywords-${testIdPart(key)}-expand-button`}
+															listHeight={PHRASE_LIST_HEIGHT}
+															submitOnComma={false}
 															placeholder="Type a reference phrase and press Enter"
 															aria-invalid={fieldError ? true : undefined}
 															aria-describedby={fieldError ? errorId : undefined}

@@ -62,6 +62,15 @@ export interface SemanticStatusInfo {
 	loaded: number;
 	total: number;
 	serving_previous?: boolean;
+	failure_reason?:
+		| "authentication"
+		| "model_unavailable"
+		| "rate_limited"
+		| "timeout"
+		| "provider_unavailable"
+		| "vector_store_unavailable"
+		| "invalid_response"
+		| "unknown";
 	error?: string;
 	// How many phrase vectors the gateway currently holds for the configured
 	// provider/model. The cache is in-process only — vectors cannot be read back
@@ -163,6 +172,7 @@ export const MAX_SEMANTIC_TIMEOUT_MS = 9223372036854;
 export const MIN_SEMANTIC_MESSAGE_HISTORY = 1;
 export const MAX_SEMANTIC_MESSAGE_HISTORY = 10;
 export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
+export const MAX_SEMANTIC_PHRASES = 750;
 
 // Seeded when a deployment has no semantic block saved yet. Provider and model
 // stay blank because only the operator knows them.

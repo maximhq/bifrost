@@ -3875,7 +3875,7 @@
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility.",
+      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility. When the semantic block is present, the three normalized tier lists may contain at most 750 phrases combined; additive config.json merges are checked against that combined limit.",
       "oneOf": [
         {
           "title": "Three-tier complexity keywords",
