@@ -53,6 +53,7 @@ type SearchFilters struct {
 	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
+	RequestID         string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
@@ -1530,18 +1531,18 @@ func (o WebhookDeliveryOutcome) Value() (driver.Value, error) {
 type WebhookDelivery struct {
 	ID         string `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	WebhookID  string `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
-	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
+	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;index:idx_webhook_deliveries_endpoint_created,priority:1;not null" json:"endpoint_id"`
 	AsyncJobID string `gorm:"type:varchar(255);not null" json:"async_job_id"`
 	// RequestID is the async job's inference request id — the same id the
 	// LLM logs record — copied here at attempt time. Empty when the job row
 	// expired before the attempt.
-	RequestID  string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
-	Event      tables.WebhookEvent    `gorm:"type:varchar(255);not null" json:"event"`
+	RequestID  string                 `gorm:"type:varchar(255);index:idx_webhook_deliveries_request_id" json:"request_id,omitempty"`
+	Event      tables.WebhookEvent    `gorm:"type:varchar(255);index:idx_webhook_deliveries_event;not null" json:"event"`
 	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
-	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);not null" json:"outcome"`
+	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);index:idx_webhook_deliveries_outcome;not null" json:"outcome"`
 	StatusCode int                    `gorm:"default:0" json:"status_code,omitempty"`
 	Error      string                 `gorm:"type:text" json:"error,omitempty"`
-	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;not null" json:"created_at"`
+	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;index:idx_webhook_deliveries_endpoint_created,priority:2,sort:desc;not null" json:"created_at"`
 	ExpiresAt  *time.Time             `gorm:"index:idx_webhook_deliveries_expires_at" json:"expires_at,omitempty"`
 }
 
@@ -1554,6 +1555,35 @@ func (WebhookDelivery) TableName() string {
 type WebhookDeliverySearchResult struct {
 	Deliveries []WebhookDelivery `json:"deliveries"`
 	Pagination PaginationOptions `json:"pagination"`
+}
+
+// Webhook delivery status classes, used to filter by response band without the
+// caller having to enumerate individual status codes. StatusClassNone matches
+// attempts where no response arrived at all (a zero status code).
+const (
+	WebhookDeliveryStatusClass2xx  = "2xx"
+	WebhookDeliveryStatusClass4xx  = "4xx"
+	WebhookDeliveryStatusClass5xx  = "5xx"
+	WebhookDeliveryStatusClassNone = "none"
+)
+
+// WebhookDeliverySearchFilters represents the available filters for webhook
+// delivery history searches. Every field is optional; a zero-valued struct
+// matches all history. Slice fields are OR-ed within themselves and AND-ed
+// against each other.
+//
+// Note the naming: DeliveryID is WebhookDelivery.WebhookID, the delivery-run id
+// shared by every attempt of one delivery. EndpointIDs are the webhook
+// endpoints those deliveries were addressed to.
+type WebhookDeliverySearchFilters struct {
+	EndpointIDs []string   `json:"endpoint_ids,omitempty"`
+	Events      []string   `json:"events,omitempty"`
+	Outcomes    []string   `json:"outcomes,omitempty"`
+	StatusClass []string   `json:"status_class,omitempty"`
+	RequestID   string     `json:"request_id,omitempty"`
+	DeliveryID  string     `json:"delivery_id,omitempty"`
+	StartTime   *time.Time `json:"start_time,omitempty"`
+	EndTime     *time.Time `json:"end_time,omitempty"`
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches

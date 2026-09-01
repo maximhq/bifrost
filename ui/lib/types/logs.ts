@@ -725,6 +725,8 @@ export interface LogFilters {
 	providers?: string[];
 	models?: string[];
 	aliases?: string[];
+	/** Exact lookup on the log primary key (which is the request ID). Bypasses the time range. */
+	request_id?: string;
 	parent_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];

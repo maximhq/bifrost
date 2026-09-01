@@ -246,6 +246,117 @@ webhooks-deliveries:
     security:
       - ManagementBearerAuth: []
 
+webhooks-deliveries-search:
+  get:
+    operationId: searchWebhookDeliveries
+    summary: Search delivery history
+    description: |
+      Returns one page of delivery-attempt history across every endpoint the
+      filters select, newest first. Unlike the per-endpoint
+      `/api/webhooks/{id}/deliveries` route, every filter is optional, so an
+      unfiltered call returns history for all endpoints.
+
+      Pagination is by delivery group (`webhook_id`), not by individual attempt:
+      a page holds every attempt of the deliveries it covers, so `deliveries`
+      can hold more entries than `limit`, and `total_count` counts deliveries
+      rather than attempts.
+
+      Filters select delivery groups, not attempts — a delivery is on the page
+      if any of its attempts matches — and the matched delivery is then returned
+      with its full attempt sequence intact.
+    tags:
+      - Webhooks
+    parameters:
+      - name: endpoint_ids
+        in: query
+        required: false
+        description: Comma-separated webhook endpoint ids. Omit for all endpoints.
+        schema:
+          type: string
+      - name: events
+        in: query
+        required: false
+        description: Comma-separated event names, e.g. `async_job.completed`.
+        schema:
+          type: string
+      - name: outcomes
+        in: query
+        required: false
+        description: |
+          Comma-separated delivery outcomes: `delivered`, `retryable_failure`,
+          `permanent_failure`, `exhausted`.
+        schema:
+          type: string
+      - name: status_class
+        in: query
+        required: false
+        description: |
+          Comma-separated response status bands: `2xx`, `4xx`, `5xx`, or `none`
+          for attempts where no response arrived. Bands are alternatives (OR).
+        schema:
+          type: string
+      - name: request_id
+        in: query
+        required: false
+        description: Exact inference request id the delivery was raised for.
+        schema:
+          type: string
+      - name: delivery_id
+        in: query
+        required: false
+        description: Exact delivery-run id (the `webhook-id` wire header).
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        required: false
+        description: RFC3339 lower bound on attempt time. Ignored when `period` is set.
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        required: false
+        description: RFC3339 upper bound on attempt time. Ignored when `period` is set.
+        schema:
+          type: string
+          format: date-time
+      - name: period
+        in: query
+        required: false
+        description: |
+          Relative window (e.g. `1h`, `24h`) resolved server-side. Takes
+          precedence over `start_time` / `end_time`.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: A page of delivery history
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/webhooks.yaml#/WebhookDeliveryList'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '503':
+        description: Logs store is not available.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+    security:
+      - ManagementBearerAuth: []
+
 webhooks-deliveries-redeliver:
   post:
     operationId: redeliverWebhook

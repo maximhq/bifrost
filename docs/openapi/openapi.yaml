@@ -1246,6 +1246,8 @@ paths:
     $ref: "./paths/management/webhooks.yaml#/webhooks-test"
   /api/webhooks/{id}/deliveries:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries"
+  /api/webhooks/deliveries:
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-search"
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 

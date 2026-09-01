@@ -719,6 +719,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	if requestID := string(ctx.QueryArgs().Peek("request_id")); requestID != "" {
+		filters.RequestID = requestID
+	}
 	if rootsOnly := string(ctx.QueryArgs().Peek("roots_only")); rootsOnly != "" {
 		if val, err := strconv.ParseBool(rootsOnly); err == nil {
 			filters.RootsOnly = val
@@ -980,6 +983,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	if requestID := string(ctx.QueryArgs().Peek("request_id")); requestID != "" {
+		filters.RequestID = requestID
+	}
 	parseMetadataFilters(ctx, filters)
 
 	stats, err := h.logManager.GetStats(ctx, filters)
@@ -1144,6 +1150,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
+	}
+	if requestID := string(ctx.QueryArgs().Peek("request_id")); requestID != "" {
+		filters.RequestID = requestID
 	}
 	parseMetadataFilters(ctx, filters)
 

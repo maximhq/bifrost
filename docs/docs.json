@@ -1293,6 +1293,7 @@
                   "POST /api/webhooks/{id}/rotate-secret",
                   "POST /api/webhooks/{id}/test",
                   "GET /api/webhooks/{id}/deliveries",
+                  "GET /api/webhooks/deliveries",
                   "POST /api/webhooks/deliveries/{id}/redeliver"
                 ]
               },

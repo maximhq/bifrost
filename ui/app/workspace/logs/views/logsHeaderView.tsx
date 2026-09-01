@@ -1,4 +1,5 @@
 import { ColumnConfigDropdown, type ColumnConfigEntry } from "@/components/table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
@@ -10,6 +11,7 @@ import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import type { LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
+import { formatLogSearchInput, isLogIdSearch, parseLogSearchInput } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Calculator, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
@@ -90,7 +92,7 @@ export function LogsHeaderView({
 	// the worker finishes the batch it is in the middle of.
 	const [recalcCancelRequested, setRecalcCancelRequested] = useState(false);
 	const isRecalcRunning = !!activeRecalcJobId;
-	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
+	const [localSearch, setLocalSearch] = useState(() => formatLogSearchInput(filters));
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
 
@@ -108,9 +110,10 @@ export function LogsHeaderView({
 		filtersRef.current = filters;
 	}, [filters]);
 
+	const { content_search: contentSearchFilter, request_id: requestIDFilter } = filters;
 	useEffect(() => {
-		setLocalSearch(filters.content_search || "");
-	}, [filters.content_search]);
+		setLocalSearch(formatLogSearchInput({ content_search: contentSearchFilter, request_id: requestIDFilter }));
+	}, [contentSearchFilter, requestIDFilter]);
 
 	useEffect(() => {
 		return () => {
@@ -254,12 +257,22 @@ export function LogsHeaderView({
 		(value: string) => {
 			setLocalSearch(value);
 			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-			searchTimeoutRef.current = setTimeout(() => {
-				onFiltersChange({ ...filtersRef.current, content_search: value });
-			}, 500);
+			// A pasted request ID resolves to an exact primary-key lookup; there is
+			// nothing to debounce for it, so only free text waits for the typist.
+			const { request_id = "", content_search = "" } = parseLogSearchInput(value);
+			searchTimeoutRef.current = setTimeout(
+				() => {
+					onFiltersChange({ ...filtersRef.current, request_id, content_search });
+				},
+				request_id ? 0 : 500,
+			);
 		},
 		[onFiltersChange],
 	);
+
+	// Derived from the live input rather than the filters, so the badge appears as
+	// soon as an ID is pasted instead of after the round trip.
+	const isIdSearch = isLogIdSearch(localSearch);
 
 	return (
 		<div className="flex grow flex-wrap items-center justify-between gap-2">
@@ -312,11 +325,24 @@ export function LogsHeaderView({
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
+					data-testid="logs-search-input"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs"
+					placeholder="Search logs or paste a request ID"
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}
 				/>
+				{isIdSearch && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Badge variant="secondary" className="mr-2 shrink-0 px-1.5 py-0 text-[10px]" data-testid="logs-search-id-badge">
+								ID
+							</Badge>
+						</TooltipTrigger>
+						<TooltipContent sideOffset={6} className="max-w-64">
+							Looking up this request ID exactly. The selected time range is ignored so the request is found wherever it falls.
+						</TooltipContent>
+					</Tooltip>
+				)}
 			</div>
 
 			<DateTimePickerWithRange
