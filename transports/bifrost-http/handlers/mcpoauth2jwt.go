@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -149,6 +150,13 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, sub)
 	default:
 		return fmt.Errorf("unknown bf_mode %q in JWT", claims.BfMode)
+	}
+	// Whatever the token stood for, the request authenticated by the token: the key or user it
+	// names is what resolution attributes the request to, not what it presented. A user-mode token
+	// names the user directly, so that much is recorded here.
+	lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialMCPToken, sub))
+	if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeUser {
+		lib.RecordUser(bifrostCtx, &schemas.UserRef{ID: sub})
 	}
 	return nil
 }

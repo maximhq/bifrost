@@ -416,7 +416,7 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Sampling-params normalization** (Bifrost should silently drop temperature for Opus 4.7+; Anthropic-direct + Vertex Claude Opus 4.7 covered; **Bedrock Opus 4.7 via cross-model still missing**)
 - [x] **MCP tool stripping for non-MCP providers** (Bifrost silently drops provider-side `type:"mcp"` server tools from a Responses request for Bedrock + Vertex instead of erroring; function tools — how local/configured MCP servers surface — survive — regression #3795. Folder "11. Cross-Provider Feature Tests / MCP Tool Handling cross-cut": 16-item matrix over {opus, sonnet} × {lone-mcp, mcp+function, multi-tool #3795 shape} plus /openai drop-in and streaming axes)
 - [ ] **Failover scenarios** (request to provider X falls back to provider Y on 5xx)
-- [ ] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models)
+- [x] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models) - covered by `bifrost-v1-vk-quota` (quota endpoint contract), `bifrost-v1-rate-limit` (429 request/token limits, 402 budget), and `bifrost-v1-vk-rotation-cooldown` (rotation grace windows at 1m/3m); allowed_models enforcement in `bifrost-v1-vk-expiry` and `bifrost-routing-wiring`
 - [ ] **Rate limit propagation** (provider 429 → Bifrost 429 with Retry-After preserved)
 
 ---

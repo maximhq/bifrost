@@ -61,6 +61,7 @@ import {
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetMyVKCreationPolicyQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
@@ -302,7 +303,14 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	const isManagedByProfile = isEditing && isManagedByProfileHook;
+	// On create, check whether the user's access profile will govern the new VK. If so,
+	// lock the governance fields up front — the server applies the profile regardless.
+	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+		skip: isEditing,
+		refetchOnMountOrArgChange: true,
+	});
+	const willBeGovernedOnCreate = !isEditing && !!vkCreationPolicy?.governed;
+	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
 	// A VK can have at most one user (enforced by a unique index server-side).
@@ -385,11 +393,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -401,11 +409,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						})),
 						rate_limit: mb.rate_limit
 							? {
-									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
-									token_reset_duration: mb.rate_limit.token_reset_duration,
-									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-									request_reset_duration: mb.rate_limit.request_reset_duration,
-								}
+								token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: mb.rate_limit.token_reset_duration,
+								request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: mb.rate_limit.request_reset_duration,
+							}
 							: undefined,
 					})),
 				})) || [],
@@ -423,18 +431,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-						const d = new Date(virtualKey.expires_at);
-						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-					})()
+					const d = new Date(virtualKey.expires_at);
+					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+				})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-							id: b.id,
-							max_limit: b.max_limit,
-							reset_duration: b.reset_duration ?? "1M",
-							reset_config: b.reset_config,
-						}))
+						id: b.id,
+						max_limit: b.max_limit,
+						reset_duration: b.reset_duration ?? "1M",
+						reset_config: b.reset_config,
+					}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -840,8 +848,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return;
 		}
 		try {
-			await rotateVirtualKey(virtualKey.id).unwrap();
-			toast.success("Virtual key rotated successfully");
+			const result = await rotateVirtualKey(virtualKey.id).unwrap();
+			const graceUntil = result.virtual_key?.previous_value_expires_at;
+			toast.success(
+				graceUntil
+					? `Virtual key rotated successfully. The previous key remains valid until ${new Date(graceUntil).toLocaleString()}.`
+					: "Virtual key rotated successfully",
+			);
 			setShowRotateWarning(false);
 			onSave();
 		} catch (error) {
@@ -1073,11 +1086,27 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<Alert variant="info">
 										<Lock className="h-4 w-4" />
 										<AlertDescription>
-											This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
-											rate limits, and MCP access are controlled by the profile.
+											{isEditing ? (
+												<>
+													This virtual key belongs to an access profile. What it can reach, and what it can spend, are the profile&apos;s: the
+													key itself carries only a name and a description.
+												</>
+											) : (
+												<>
+													This virtual key will be managed by your access profile
+													{vkCreationPolicy?.profile_name ? (
+														<>
+															{" "}
+															<span className="font-medium">{vkCreationPolicy.profile_name}</span>
+														</>
+													) : null}
+													. Set a name and description; providers, budgets, rate limits, and MCP access are applied from the profile on
+													creation.
+												</>
+											)}
 										</AlertDescription>
 									</Alert>
-									<ManagedVirtualKeyActions managingProfile={managingProfile} />
+									{isEditing && <ManagedVirtualKeyActions managingProfile={managingProfile} />}
 								</>
 							)}
 
@@ -1121,194 +1150,28 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									)}
 								/>
 							</div>
-							<fieldset
-								disabled={isManagedByProfile}
-								aria-disabled={isManagedByProfile}
-								inert={isManagedByProfile ? true : undefined}
-								className={isManagedByProfile ? "pointer-events-none space-y-4 opacity-50" : "space-y-4"}
-							>
+							{!isManagedByProfile && (
 								<div className="space-y-4">
-									<FormField
-										control={form.control}
-										name="isActive"
-										render={({ field }) => (
-											<FormItem>
-												<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={form.control}
-										name="expiresAt"
-										render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
-									/>
-								</div>
-								{/* Provider Configurations */}
-								<div className="space-y-2">
-									<div className="flex items-center gap-2">
-										<Label className="text-sm font-medium">Provider Configurations</Label>
-										<TooltipProvider>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span>
-														<Info className="text-muted-foreground h-3 w-3" />
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>
-													<p>
-														Configure which providers this virtual key can use and their specific settings. Leave empty to block all
-														providers. Add providers to allow them.
-													</p>
-												</TooltipContent>
-											</Tooltip>
-										</TooltipProvider>
+									<div className="space-y-4">
+										<FormField
+											control={form.control}
+											name="isActive"
+											render={({ field }) => (
+												<FormItem>
+													<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="expiresAt"
+											render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
+										/>
 									</div>
-
-									{/* Add Provider Dropdown */}
-									<div className="flex gap-2">
-										<Select
-											value={selectedProvider}
-											onValueChange={(provider) => {
-												if (provider === "__manage_providers__") {
-													navigate({ to: "/workspace/providers" });
-													setSelectedProvider("");
-													return;
-												}
-												handleAddProvider(provider);
-												setSelectedProvider(""); // Reset to placeholder state
-											}}
-										>
-											<SelectTrigger className="flex-1" data-testid="vk-provider-select">
-												<SelectValue placeholder="Select a provider to add" />
-											</SelectTrigger>
-											<SelectContent>
-												{(() => {
-													// Filter out already configured providers
-													const unconfiguredProviders = availableProviders.filter(
-														(provider) => !providerConfigs.some((config) => config.provider === provider.name),
-													);
-
-													if (unconfiguredProviders.length === 0) {
-														return (
-															<SelectItem
-																value="__manage_providers__"
-																className="text-muted-foreground hover:text-foreground"
-																data-testid="vk-provider-config-link"
-															>
-																<span>
-																	No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
-																</span>
-															</SelectItem>
-														);
-													}
-
-													// Separate base providers and custom providers
-													const baseProviders = unconfiguredProviders.filter((provider) => !provider.custom_provider_config);
-													const customProviders = unconfiguredProviders.filter((provider) => provider.custom_provider_config);
-
-													return (
-														<>
-															{/* Base providers first */}
-															{baseProviders
-																.filter((p) => p.name)
-																.map((provider, index) => (
-																	<SelectItem key={`base-${index}`} value={provider.name}>
-																		<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
-																		{ProviderLabels[provider.name as ProviderName]}
-																	</SelectItem>
-																))}
-
-															{/* Custom providers second */}
-															{customProviders
-																.filter((p) => p.name)
-																.map((provider, index) => (
-																	<SelectItem key={`custom-${index}`} value={provider.name}>
-																		<RenderProviderIcon
-																			provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-																			size="sm"
-																			className="h-4 w-4"
-																		/>
-																		{provider.name}
-																	</SelectItem>
-																))}
-														</>
-													);
-												})()}
-											</SelectContent>
-										</Select>
-									</div>
-
-									{/* Provider Configurations Table */}
-									{providerConfigs.length > 0 && (
-										<div className="space-y-2.5">
-											{providerConfigs.map((config, index) => {
-												const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
-												const providerLabel = providerConfig?.custom_provider_config
-													? providerConfig.name
-													: ProviderLabels[config.provider as ProviderName] || config.provider;
-												const iconProvider = (providerConfig?.custom_provider_config?.base_provider_type ||
-													config.provider) as ProviderIconType;
-												const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-												return (
-													<ProviderConfigCard
-														key={config.provider}
-														index={index}
-														testIdPrefix="vk"
-														providerLabel={providerLabel}
-														iconProvider={iconProvider}
-														providerKeys={providerKeys}
-														showModelBudgets
-														onRemove={() => handleRemoveProvider(index)}
-														value={{
-															providerName: config.provider,
-															allowedModels: config.allowed_models || [],
-															blacklistedModels: config.blacklisted_models || [],
-															weight: config.weight,
-															keyIds: config.key_ids || [],
-															budgets: config.budgets || [],
-															rateLimit: config.rate_limit ?? null,
-															modelBudgets: (config.model_budgets || []).map((mb) => ({
-																model_name: mb.model_name,
-																budgets: mb.budgets || [],
-																rate_limit: mb.rate_limit,
-															})),
-														}}
-														onChange={(next) => {
-															const updated = [...providerConfigs];
-															updated[index] = {
-																...config,
-																allowed_models: next.allowedModels,
-																blacklisted_models: next.blacklistedModels,
-																weight: next.weight ?? undefined,
-																key_ids: next.keyIds,
-																budgets: next.budgets.map((l) => ({
-																	id: l.id,
-																	max_limit: l.max_limit,
-																	reset_duration: l.reset_duration,
-																	reset_config: l.reset_config,
-																})),
-																rate_limit: next.rateLimit ?? undefined,
-																model_budgets: next.modelBudgets,
-															};
-															form.setValue("providerConfigs", updated, {
-																shouldDirty: true,
-															});
-														}}
-													/>
-												);
-											})}
-										</div>
-									)}
-									{/* Display validation errors for provider configurations */}
-									{form.formState.errors.providerConfigs && (
-										<div className="text-destructive text-sm">{form.formState.errors.providerConfigs.message}</div>
-									)}
-								</div>
-								{/* MCP Client Configurations */}
-								{((mcpClientsData && mcpClientsData.length > 0) || (mcpConfigs && mcpConfigs.length > 0)) && (
-									<div className="mt-6 space-y-2">
+									{/* Provider Configurations */}
+									<div className="space-y-2">
 										<div className="flex items-center gap-2">
-											<Label className="text-sm font-medium">MCP Client Configurations</Label>
+											<Label className="text-sm font-medium">Provider Configurations</Label>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
@@ -1318,550 +1181,720 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													</TooltipTrigger>
 													<TooltipContent>
 														<p>
-															Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
-															blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
-															<span className="font-medium">Allow All Tools</span> to grant tool access.
+															Configure which providers this virtual key can use and their specific settings. Leave empty to block all
+															providers. Add providers to allow them.
 														</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
 
-										{/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
-										{(() => {
-											const defaultMCPClients = mcpClientsData.filter(
-												(client) =>
-													client.config.allow_on_all_virtual_keys &&
-													!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-											);
-											return defaultMCPClients.length > 0 ? (
-												<div className="text-muted-foreground rounded-md border p-3 text-xs">
-													<div className="flex items-start gap-1.5">
-														<Info className="mt-0.5 h-3 w-3 shrink-0" />
-														<span>
-															The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
-															<span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>.
-															Adding an explicit config for any of them below will override the all-tools default for this key.
-														</span>
-													</div>
-												</div>
-											) : null;
-										})()}
-
-										{/* Add MCP Client Dropdown */}
-										{mcpClientsData && mcpClientsData.length > 0 && (
-											<div className="flex gap-2">
-												<Select
-													value={selectedMCPClient}
-													onValueChange={(mcpClientId) => {
-														handleAddMCPClient(mcpClientId);
-														setSelectedMCPClient(""); // Reset to placeholder state
-													}}
-												>
-													<SelectTrigger className="flex-1">
-														<SelectValue placeholder="Select an MCP client to add" />
-													</SelectTrigger>
-													<SelectContent>
-														{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
-															.length > 0 ? (
-															mcpClientsData
-																.filter(
-																	(client) =>
-																		client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-																)
-																.map((client, index) => {
-																	const client_tools = client.tools || [];
-																	const totalTools = client.config.tools_to_execute?.includes("*")
-																		? client_tools.length
-																		: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
-																	return (
-																		<SelectItem key={index} value={client.config.name}>
-																			<div className="flex items-center gap-2">
-																				{client.config.name}
-																				<span className="text-muted-foreground text-xs">
-																					({totalTools} {totalTools === 1 ? "enabled tool" : "enabled tools"})
-																				</span>
-																			</div>
-																		</SelectItem>
-																	);
-																})
-														) : (
-															<div className="text-muted-foreground px-2 py-1.5 text-sm">All MCP clients configured</div>
-														)}
-													</SelectContent>
-												</Select>
-											</div>
-										)}
-
-										{/* MCP Configurations Table */}
-										{mcpConfigs.length > 0 && (
-											<div className="rounded-md border">
-												<Table>
-													<TableHeader>
-														<TableRow>
-															<TableHead>MCP Client</TableHead>
-															<TableHead>Allowed Tools</TableHead>
-															<TableHead className="w-[50px]"></TableHead>
-														</TableRow>
-													</TableHeader>
-													<TableBody>
-														{mcpConfigs.map((config, index) => {
-															const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
-
-															// Handle new wildcard semantics for client-level filtering
-															const clientToolsToExecute = mcpClient?.config?.tools_to_execute;
-															let availableTools: any[] = [];
-
-															if (!clientToolsToExecute || clientToolsToExecute.length === 0) {
-																// nil/undefined or empty array - no tools available from client config
-																availableTools = [];
-															} else if (clientToolsToExecute.includes("*")) {
-																// Wildcard - all tools available
-																availableTools = mcpClient?.tools || [];
-															} else {
-																// Specific tools listed
-																availableTools = (mcpClient?.tools || []).filter((tool) => clientToolsToExecute.includes(tool.name)) || [];
-															}
-
-															const enabledToolsByConfig =
-																(mcpClient?.tools || []).filter((tool) => config.tools_to_execute?.includes(tool.name)) || [];
-															const selectedTools = config.tools_to_execute || [];
-
-															return (
-																<TableRow key={`${config.mcp_client_name}-${index}`}>
-																	<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
-																	<TableCell>
-																		<MultiSelect
-																			options={[
-																				{
-																					label: "Allow All Tools",
-																					value: "*",
-																					description: "Allow all current and future tools",
-																				},
-																				...[...availableTools, ...enabledToolsByConfig]
-																					.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
-																					.map((tool) => ({
-																						label: tool.name,
-																						value: tool.name,
-																						description: tool.description,
-																					})),
-																			]}
-																			defaultValue={selectedTools}
-																			onValueChange={(tools: string[]) => {
-																				const hadStar = selectedTools.includes("*");
-																				const hasStar = tools.includes("*");
-																				if (!hadStar && hasStar) {
-																					// Just selected "Allow All Tools" — set to ["*"] only
-																					handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
-																				} else if (hadStar && hasStar && tools.length > 1) {
-																					// Had "*", still has "*", but user also selected a specific tool — drop "*"
-																					handleUpdateMCPConfig(
-																						index,
-																						"tools_to_execute",
-																						tools.filter((t) => t !== "*"),
-																					);
-																				} else {
-																					handleUpdateMCPConfig(index, "tools_to_execute", tools);
-																				}
-																			}}
-																			placeholder={
-																				selectedTools.length === 0
-																					? "No tools selected"
-																					: selectedTools.includes("*")
-																						? "All tools allowed"
-																						: "Select tools..."
-																			}
-																			variant="inverted"
-																			className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
-																			commandClassName="w-full max-w-96"
-																			modalPopover={true}
-																			animation={0}
-																		/>
-																	</TableCell>
-																	<TableCell>
-																		<Button
-																			type="button"
-																			variant="ghost"
-																			size="sm"
-																			onClick={() => handleRemoveMCPClient(index)}
-																			data-testid={`vk-delete-mcp-${index}`}
-																		>
-																			<Trash2 className="h-4 w-4" />
-																		</Button>
-																	</TableCell>
-																</TableRow>
-															);
-														})}
-													</TableBody>
-												</Table>
-											</div>
-										)}
-									</div>
-								)}
-								<DottedSeparator className="mt-6 mb-5" />
-								{/* Budget Configuration */}
-								<div className="space-y-4">
-									<MultiBudgetLines
-										data-testid="vk-budget-lines"
-										label="Budget Configuration"
-										lines={form.watch("budgets") ?? []}
-										onChange={(lines) => {
-											form.setValue("budgets", lines, { shouldDirty: true });
-										}}
-										onReset={clearVirtualKeyBudget}
-										showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
-									/>
-
-									{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
-										<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
-											<div>
-												<h4 className="text-sm font-medium">Budget Overrides</h4>
-												<p className="text-muted-foreground text-xs">
-													Add temporary capacity without changing the configured base budgets above.
-												</p>
-											</div>
-											<div className="divide-y">
-												{persistedOverrideBudgets.map(({ budget, label }) => (
-													<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
-														<div className="min-w-0">
-															<p className="truncate text-sm font-medium">
-																{label} · resets every {parseResetPeriod(budget.reset_duration)}
-															</p>
-															<p className="text-muted-foreground text-xs">
-																Base {formatCurrency(budget.max_limit)}
-																{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
-															</p>
-														</div>
-														<BudgetOverrideDialog
-															budget={budget}
-															onSave={(data) => saveBudgetOverride(budget.id, data)}
-															onRemove={() => clearBudgetOverride(budget.id)}
-															disabled={!hasUpdateAccess}
-															calendarAligned={virtualKey.calendar_aligned}
-														/>
-													</div>
-												))}
-											</div>
-										</div>
-									) : null}
-
-									{/* Reassign team confirmation dialog */}
-									<AlertDialog
-										open={showReassignTeamWarning}
-										onOpenChange={(open) => {
-											setShowReassignTeamWarning(open);
-											if (!open) {
-												setPendingTeamId(null);
-											}
-										}}
-									>
-										<AlertDialogContent>
-											<AlertDialogHeader>
-												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
-												<AlertDialogDescription>
-													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
-													requests through this key will count against this team’s budget, not the previous one.
-												</AlertDialogDescription>
-											</AlertDialogHeader>
-											<AlertDialogFooter>
-												<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>
-													Cancel
-												</AlertDialogCancel>
-												<AlertDialogAction
-													data-testid="virtual-key-reassign-confirm"
-													onClick={() => {
-														if (pendingTeamId !== null) {
-															form.setValue("teamId", pendingTeamId, {
-																shouldDirty: true,
-															});
-															void form.trigger("entityType");
-														}
-														setPendingTeamId(null);
-														setShowReassignTeamWarning(false);
-													}}
-												>
-													Reassign
-												</AlertDialogAction>
-											</AlertDialogFooter>
-										</AlertDialogContent>
-									</AlertDialog>
-								</div>
-								{/* Rate Limiting Configuration */}
-								<div className="space-y-4">
-									<div className="flex items-center justify-between gap-2">
-										<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
-										{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												onClick={clearVirtualKeyRateLimits}
-												data-testid="vk-rate-limit-reset-button"
-											>
-												<RotateCcw className="h-4 w-4" />
-												Reset
-											</Button>
-										)}
-									</div>
-
-									<FormField
-										control={form.control}
-										name="tokenMaxLimit"
-										render={({ field }) => (
-											<FormItem>
-												<NumberAndSelect
-													id="tokenMaxLimit"
-													labelClassName="font-normal"
-													label="Maximum Tokens"
-													value={field.value}
-													selectValue={form.watch("tokenResetDuration") || "1h"}
-													onChangeNumber={(value) => {
-														field.onChange(value);
-													}}
-													onChangeSelect={(value) =>
-														form.setValue("tokenResetDuration", value, {
-															shouldDirty: true,
-														})
+										{/* Add Provider Dropdown */}
+										<div className="flex gap-2">
+											<Select
+												value={selectedProvider}
+												onValueChange={(provider) => {
+													if (provider === "__manage_providers__") {
+														navigate({ to: "/workspace/providers" });
+														setSelectedProvider("");
+														return;
 													}
-													options={resetDurationOptions}
-												/>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-
-									<FormField
-										control={form.control}
-										name="requestMaxLimit"
-										render={({ field }) => (
-											<FormItem>
-												<NumberAndSelect
-													id="requestMaxLimit"
-													labelClassName="font-normal"
-													label="Maximum Requests"
-													value={field.value}
-													selectValue={form.watch("requestResetDuration") || "1h"}
-													onChangeNumber={(value) => {
-														field.onChange(value);
-													}}
-													onChangeSelect={(value) =>
-														form.setValue("requestResetDuration", value, {
-															shouldDirty: true,
-														})
-													}
-													options={resetDurationOptions}
-												/>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-								</div>
-								{/* Calendar alignment — VK-wide setting that applies to both budgets and rate limits */}
-								{showCalendarAlignToggle && (
-									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-										<div className="space-y-0.5">
-											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
-												Align to calendar cycle
-											</Label>
-											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
-												Applies to durations of a day or longer.
-											</p>
-										</div>
-										<Switch
-											id="vk-budget-calendar-aligned-toggle"
-											aria-describedby="vk-budget-calendar-aligned-description"
-											checked={watchedBudgetCalendarAligned}
-											onCheckedChange={handleCalendarAlignedChange}
-											data-testid="vk-budget-calendar-aligned-toggle"
-										/>
-									</div>
-								)}
-
-								{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
-								<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
-											<AlertDialogDescription>
-												Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
-												token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
-												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
-												undone, but calendar alignment can be turned off later. This will take effect when you save.
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
-											<AlertDialogAction
-												data-testid="vk-calendar-align-enable-btn"
-												onClick={() => {
-													form.setValue("budgetCalendarAligned", true, {
-														shouldDirty: true,
-													});
-													setShowCalendarAlignWarning(false);
+													handleAddProvider(provider);
+													setSelectedProvider(""); // Reset to placeholder state
 												}}
 											>
-												Enable Calendar Alignment
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
-								<DottedSeparator className="my-6" />
+												<SelectTrigger className="flex-1" data-testid="vk-provider-select">
+													<SelectValue placeholder="Select a provider to add" />
+												</SelectTrigger>
+												<SelectContent>
+													{(() => {
+														// Filter out already configured providers
+														const unconfiguredProviders = availableProviders.filter(
+															(provider) => !providerConfigs.some((config) => config.provider === provider.name),
+														);
 
-								{/* Entity Assignment */}
-								<div className="space-y-4">
-									<Label className="text-sm font-medium">Entity Assignment</Label>
+														if (unconfiguredProviders.length === 0) {
+															return (
+																<SelectItem
+																	value="__manage_providers__"
+																	className="text-muted-foreground hover:text-foreground"
+																	data-testid="vk-provider-config-link"
+																>
+																	<span>
+																		No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
+																	</span>
+																</SelectItem>
+															);
+														}
 
-									<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
+														// Separate base providers and custom providers
+														const baseProviders = unconfiguredProviders.filter((provider) => !provider.custom_provider_config);
+														const customProviders = unconfiguredProviders.filter((provider) => provider.custom_provider_config);
+
+														return (
+															<>
+																{/* Base providers first */}
+																{baseProviders
+																	.filter((p) => p.name)
+																	.map((provider, index) => (
+																		<SelectItem key={`base-${index}`} value={provider.name}>
+																			<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
+																			{ProviderLabels[provider.name as ProviderName]}
+																		</SelectItem>
+																	))}
+
+																{/* Custom providers second */}
+																{customProviders
+																	.filter((p) => p.name)
+																	.map((provider, index) => (
+																		<SelectItem key={`custom-${index}`} value={provider.name}>
+																			<RenderProviderIcon
+																				provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
+																				size="sm"
+																				className="h-4 w-4"
+																			/>
+																			{provider.name}
+																		</SelectItem>
+																	))}
+															</>
+														);
+													})()}
+												</SelectContent>
+											</Select>
+										</div>
+
+										{/* Provider Configurations Table */}
+										{providerConfigs.length > 0 && (
+											<div className="space-y-2.5">
+												{providerConfigs.map((config, index) => {
+													const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
+													const providerLabel = providerConfig?.custom_provider_config
+														? providerConfig.name
+														: ProviderLabels[config.provider as ProviderName] || config.provider;
+													const iconProvider = (providerConfig?.custom_provider_config?.base_provider_type ||
+														config.provider) as ProviderIconType;
+													const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+													return (
+														<ProviderConfigCard
+															key={config.provider}
+															index={index}
+															testIdPrefix="vk"
+															providerLabel={providerLabel}
+															iconProvider={iconProvider}
+															providerKeys={providerKeys}
+															showModelBudgets
+															onRemove={() => handleRemoveProvider(index)}
+															value={{
+																providerName: config.provider,
+																allowedModels: config.allowed_models || [],
+																blacklistedModels: config.blacklisted_models || [],
+																weight: config.weight,
+																keyIds: config.key_ids || [],
+																budgets: config.budgets || [],
+																rateLimit: config.rate_limit ?? null,
+																modelBudgets: (config.model_budgets || []).map((mb) => ({
+																	model_name: mb.model_name,
+																	budgets: mb.budgets || [],
+																	rate_limit: mb.rate_limit,
+																})),
+															}}
+															onChange={(next) => {
+																const updated = [...providerConfigs];
+																updated[index] = {
+																	...config,
+																	allowed_models: next.allowedModels,
+																	blacklisted_models: next.blacklistedModels,
+																	weight: next.weight ?? undefined,
+																	key_ids: next.keyIds,
+																	budgets: next.budgets.map((l) => ({
+																		id: l.id,
+																		max_limit: l.max_limit,
+																		reset_duration: l.reset_duration,
+																		reset_config: l.reset_config,
+																	})),
+																	rate_limit: next.rateLimit ?? undefined,
+																	model_budgets: next.modelBudgets,
+																};
+																form.setValue("providerConfigs", updated, {
+																	shouldDirty: true,
+																});
+															}}
+														/>
+													);
+												})}
+											</div>
+										)}
+										{/* Display validation errors for provider configurations */}
+										{form.formState.errors.providerConfigs && (
+											<div className="text-destructive text-sm">{form.formState.errors.providerConfigs.message}</div>
+										)}
+									</div>
+									{/* MCP Client Configurations */}
+									{((mcpClientsData && mcpClientsData.length > 0) || (mcpConfigs && mcpConfigs.length > 0)) && (
+										<div className="mt-6 space-y-2">
+											<div className="flex items-center gap-2">
+												<Label className="text-sm font-medium">MCP Client Configurations</Label>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<span>
+																<Info className="text-muted-foreground h-3 w-3" />
+															</span>
+														</TooltipTrigger>
+														<TooltipContent>
+															<p>
+																Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
+																blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
+																<span className="font-medium">Allow All Tools</span> to grant tool access.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+
+											{/* MCP servers allowed by default, excluding explicitly overridden ones */}
+											{(() => {
+												const defaultMCPClients = mcpClientsData.filter(
+													(client) =>
+														client.config.allow_by_default &&
+														!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+												);
+												return defaultMCPClients.length > 0 ? (
+													<div className="text-muted-foreground rounded-md border p-3 text-xs">
+														<div className="flex items-start gap-1.5">
+															<Info className="mt-0.5 h-3 w-3 shrink-0" />
+															<span>
+																The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
+																<span className="text-foreground font-medium">
+																	{defaultMCPClients.map((c) => c.config.name).join(", ")}
+																</span>
+																. Adding an explicit config for any of them below will override the all-tools default for this key.
+															</span>
+														</div>
+													</div>
+												) : null;
+											})()}
+
+											{/* Add MCP Client Dropdown */}
+											{mcpClientsData && mcpClientsData.length > 0 && (
+												<div className="flex gap-2">
+													<Select
+														value={selectedMCPClient}
+														onValueChange={(mcpClientId) => {
+															handleAddMCPClient(mcpClientId);
+															setSelectedMCPClient(""); // Reset to placeholder state
+														}}
+													>
+														<SelectTrigger className="flex-1">
+															<SelectValue placeholder="Select an MCP client to add" />
+														</SelectTrigger>
+														<SelectContent>
+															{mcpClientsData.filter(
+																(client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+															).length > 0 ? (
+																mcpClientsData
+																	.filter(
+																		(client) =>
+																			client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+																	)
+																	.map((client, index) => {
+																		const client_tools = client.tools || [];
+																		const totalTools = client.config.tools_to_execute?.includes("*")
+																			? client_tools.length
+																			: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
+																		return (
+																			<SelectItem key={index} value={client.config.name}>
+																				<div className="flex items-center gap-2">
+																					{client.config.name}
+																					<span className="text-muted-foreground text-xs">
+																						({totalTools} {totalTools === 1 ? "enabled tool" : "enabled tools"})
+																					</span>
+																				</div>
+																			</SelectItem>
+																		);
+																	})
+															) : (
+																<div className="text-muted-foreground px-2 py-1.5 text-sm">All MCP clients configured</div>
+															)}
+														</SelectContent>
+													</Select>
+												</div>
+											)}
+
+											{/* MCP Configurations Table */}
+											{mcpConfigs.length > 0 && (
+												<div className="rounded-md border">
+													<Table>
+														<TableHeader>
+															<TableRow>
+																<TableHead>MCP Client</TableHead>
+																<TableHead>Allowed Tools</TableHead>
+																<TableHead className="w-[50px]"></TableHead>
+															</TableRow>
+														</TableHeader>
+														<TableBody>
+															{mcpConfigs.map((config, index) => {
+																const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
+
+																// Handle new wildcard semantics for client-level filtering
+																const clientToolsToExecute = mcpClient?.config?.tools_to_execute;
+																let availableTools: any[] = [];
+
+																if (!clientToolsToExecute || clientToolsToExecute.length === 0) {
+																	// nil/undefined or empty array - no tools available from client config
+																	availableTools = [];
+																} else if (clientToolsToExecute.includes("*")) {
+																	// Wildcard - all tools available
+																	availableTools = mcpClient?.tools || [];
+																} else {
+																	// Specific tools listed
+																	availableTools =
+																		(mcpClient?.tools || []).filter((tool) => clientToolsToExecute.includes(tool.name)) || [];
+																}
+
+																const enabledToolsByConfig =
+																	(mcpClient?.tools || []).filter((tool) => config.tools_to_execute?.includes(tool.name)) || [];
+																const selectedTools = config.tools_to_execute || [];
+
+																return (
+																	<TableRow key={`${config.mcp_client_name}-${index}`}>
+																		<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
+																		<TableCell>
+																			<MultiSelect
+																				options={[
+																					{
+																						label: "Allow All Tools",
+																						value: "*",
+																						description: "Allow all current and future tools",
+																					},
+																					...[...availableTools, ...enabledToolsByConfig]
+																						.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
+																						.map((tool) => ({
+																							label: tool.name,
+																							value: tool.name,
+																							description: tool.description,
+																						})),
+																				]}
+																				defaultValue={selectedTools}
+																				onValueChange={(tools: string[]) => {
+																					const hadStar = selectedTools.includes("*");
+																					const hasStar = tools.includes("*");
+																					if (!hadStar && hasStar) {
+																						// Just selected "Allow All Tools": set to ["*"] only
+																						handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
+																					} else if (hadStar && hasStar && tools.length > 1) {
+																						// Had "*", still has "*", but user also selected a specific tool, drop "*"
+																						handleUpdateMCPConfig(
+																							index,
+																							"tools_to_execute",
+																							tools.filter((t) => t !== "*"),
+																						);
+																					} else {
+																						handleUpdateMCPConfig(index, "tools_to_execute", tools);
+																					}
+																				}}
+																				placeholder={
+																					selectedTools.length === 0
+																						? "No tools selected"
+																						: selectedTools.includes("*")
+																							? "All tools allowed"
+																							: "Select tools..."
+																				}
+																				variant="inverted"
+																				className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
+																				commandClassName="w-full max-w-96"
+																				modalPopover={true}
+																				animation={0}
+																			/>
+																		</TableCell>
+																		<TableCell>
+																			<Button
+																				type="button"
+																				variant="ghost"
+																				size="sm"
+																				onClick={() => handleRemoveMCPClient(index)}
+																				data-testid={`vk-delete-mcp-${index}`}
+																			>
+																				<Trash2 className="h-4 w-4" />
+																			</Button>
+																		</TableCell>
+																	</TableRow>
+																);
+															})}
+														</TableBody>
+													</Table>
+												</div>
+											)}
+										</div>
+									)}
+									<DottedSeparator className="mt-6 mb-5" />
+									{/* Budget Configuration */}
+									<div className="space-y-4">
+										<MultiBudgetLines
+											data-testid="vk-budget-lines"
+											label="Budget Configuration"
+											lines={form.watch("budgets") ?? []}
+											onChange={(lines) => {
+												form.setValue("budgets", lines, { shouldDirty: true });
+											}}
+											onReset={clearVirtualKeyBudget}
+											showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
+										/>
+
+										{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
+											<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
+												<div>
+													<h4 className="text-sm font-medium">Budget Overrides</h4>
+													<p className="text-muted-foreground text-xs">
+														Add temporary capacity without changing the configured base budgets above.
+													</p>
+												</div>
+												<div className="divide-y">
+													{persistedOverrideBudgets.map(({ budget, label }) => (
+														<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+															<div className="min-w-0">
+																<p className="truncate text-sm font-medium">
+																	{label} · resets every {parseResetPeriod(budget.reset_duration)}
+																</p>
+																<p className="text-muted-foreground text-xs">
+																	Base {formatCurrency(budget.max_limit)}
+																	{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+																</p>
+															</div>
+															<BudgetOverrideDialog
+																budget={budget}
+																onSave={(data) => saveBudgetOverride(budget.id, data)}
+																onRemove={() => clearBudgetOverride(budget.id)}
+																disabled={!hasUpdateAccess}
+																calendarAligned={virtualKey.calendar_aligned}
+															/>
+														</div>
+													))}
+												</div>
+											</div>
+										) : null}
+
+										{/* Reassign team confirmation dialog */}
+										<AlertDialog
+											open={showReassignTeamWarning}
+											onOpenChange={(open) => {
+												setShowReassignTeamWarning(open);
+												if (!open) {
+													setPendingTeamId(null);
+												}
+											}}
+										>
+											<AlertDialogContent>
+												<AlertDialogHeader>
+													<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
+													<AlertDialogDescription>
+														This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
+														requests through this key will count against this team’s budget, not the previous one.
+													</AlertDialogDescription>
+												</AlertDialogHeader>
+												<AlertDialogFooter>
+													<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>
+														Cancel
+													</AlertDialogCancel>
+													<AlertDialogAction
+														data-testid="virtual-key-reassign-confirm"
+														onClick={() => {
+															if (pendingTeamId !== null) {
+																form.setValue("teamId", pendingTeamId, {
+																	shouldDirty: true,
+																});
+																void form.trigger("entityType");
+															}
+															setPendingTeamId(null);
+															setShowReassignTeamWarning(false);
+														}}
+													>
+														Reassign
+													</AlertDialogAction>
+												</AlertDialogFooter>
+											</AlertDialogContent>
+										</AlertDialog>
+									</div>
+									{/* Rate Limiting Configuration */}
+									<div className="space-y-4">
+										<div className="flex items-center justify-between gap-2">
+											<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+											{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
+												<Button
+													type="button"
+													variant="ghost"
+													size="sm"
+													onClick={clearVirtualKeyRateLimits}
+													data-testid="vk-rate-limit-reset-button"
+												>
+													<RotateCcw className="h-4 w-4" />
+													Reset
+												</Button>
+											)}
+										</div>
+
 										<FormField
 											control={form.control}
-											name="entityType"
+											name="tokenMaxLimit"
 											render={({ field }) => (
 												<FormItem>
-													<FormLabel className="font-normal">Assignment Type</FormLabel>
-													<ComboboxSelect
-														options={[
-															{ value: "none", label: "No Assignment" },
-															{ value: "team", label: "Assign to Team" },
-															{
-																value: "customer",
-																label: "Assign to Customer",
-															},
-															// Enterprise-only; also kept visible when the VK is already
-															// user-assigned so the current state is never mislabelled.
-															...(UserPicker || field.value === "user" ? [{ value: "user", label: "Assign to User" }] : []),
-														]}
+													<NumberAndSelect
+														id="tokenMaxLimit"
+														labelClassName="font-normal"
+														label="Maximum Tokens"
 														value={field.value}
-														onValueChange={(value) => {
-															const val = value ?? "none";
-															field.onChange(val);
-															// Switching type clears the other ids and lets the user pick;
-															// there is no entity list loaded to default from.
-															// Defer validation until submit or until an entity is chosen —
-															// eager trigger left a stuck refine error on entityType.
-															form.setValue("teamId", "", { shouldDirty: true });
-															form.setValue("customerId", "", { shouldDirty: true });
-															form.setValue("userId", "", { shouldDirty: true });
-															form.clearErrors(["entityType", "teamId", "customerId", "userId"]);
+														selectValue={form.watch("tokenResetDuration") || "1h"}
+														onChangeNumber={(value) => {
+															field.onChange(value);
 														}}
-														disabled={isTeamLocked}
-														disableSearch
-														hideClear
-														className="h-9"
+														onChangeSelect={(value) =>
+															form.setValue("tokenResetDuration", value, {
+																shouldDirty: true,
+															})
+														}
+														options={resetDurationOptions}
 													/>
 													<FormMessage />
 												</FormItem>
 											)}
 										/>
-										{form.watch("entityType") === "team" && (
+
+										<FormField
+											control={form.control}
+											name="requestMaxLimit"
+											render={({ field }) => (
+												<FormItem>
+													<NumberAndSelect
+														id="requestMaxLimit"
+														labelClassName="font-normal"
+														label="Maximum Requests"
+														value={field.value}
+														selectValue={form.watch("requestResetDuration") || "1h"}
+														onChangeNumber={(value) => {
+															field.onChange(value);
+														}}
+														onChangeSelect={(value) =>
+															form.setValue("requestResetDuration", value, {
+																shouldDirty: true,
+															})
+														}
+														options={resetDurationOptions}
+													/>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</div>
+									{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
+									{showCalendarAlignToggle && (
+										<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+											<div className="space-y-0.5">
+												<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
+													Align to calendar cycle
+												</Label>
+												<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+													Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation 	date. Quarterly budgets always align to fiscal quarter starts.
+													Applies to durations of a day or longer.
+												</p>
+											</div>
+											<Switch
+												id="vk-budget-calendar-aligned-toggle"
+												aria-describedby="vk-budget-calendar-aligned-description"
+												checked={watchedBudgetCalendarAligned}
+												onCheckedChange={handleCalendarAlignedChange}
+												data-testid="vk-budget-calendar-aligned-toggle"
+											/>
+										</div>
+									)}
+
+									{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
+									<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+										<AlertDialogContent>
+											<AlertDialogHeader>
+												<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+												<AlertDialogDescription>
+													Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+													token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
+													reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
+													undone, but calendar alignment can be turned off later. This will take effect when you save.
+												</AlertDialogDescription>
+											</AlertDialogHeader>
+											<AlertDialogFooter>
+												<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+												<AlertDialogAction
+													data-testid="vk-calendar-align-enable-btn"
+													onClick={() => {
+														form.setValue("budgetCalendarAligned", true, {
+															shouldDirty: true,
+														});
+														setShowCalendarAlignWarning(false);
+													}}
+												>
+													Enable Calendar Alignment
+												</AlertDialogAction>
+											</AlertDialogFooter>
+										</AlertDialogContent>
+									</AlertDialog>
+									<DottedSeparator className="my-6" />
+
+									{/* Entity Assignment */}
+									<div className="space-y-4">
+										<Label className="text-sm font-medium">Entity Assignment</Label>
+
+										<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
 											<FormField
 												control={form.control}
-												name="teamId"
+												name="entityType"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel className="font-normal">Select Team</FormLabel>
-														<TeamSelector
-															value={field.value || ""}
-															onChange={(newVal) => {
-																if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
-																	setPendingTeamId(newVal);
-																	setShowReassignTeamWarning(true);
-																} else {
-																	field.onChange(newVal);
-																	// Refine error lives on entityType; re-run so a valid
-																	// team selection clears the assignment-type message.
-																	void form.trigger("entityType");
-																}
+														<FormLabel className="font-normal">Assignment Type</FormLabel>
+														<ComboboxSelect
+															options={[
+																{ value: "none", label: "No Assignment" },
+																{ value: "team", label: "Assign to Team" },
+																{
+																	value: "customer",
+																	label: "Assign to Customer",
+																},
+																// Enterprise-only; also kept visible when the VK is already
+																// user-assigned so the current state is never mislabelled.
+																...(UserPicker || field.value === "user" ? [{ value: "user", label: "Assign to User" }] : []),
+															]}
+															value={field.value}
+															onValueChange={(value) => {
+																const val = value ?? "none";
+																field.onChange(val);
+																// Switching type clears the other ids and lets the user pick;
+																// there is no entity list loaded to default from.
+																// Defer validation until submit or until an entity is chosen,
+																// eager trigger left a stuck refine error on entityType.
+																form.setValue("teamId", "", { shouldDirty: true });
+																form.setValue("customerId", "", { shouldDirty: true });
+																form.setValue("userId", "", { shouldDirty: true });
+																form.clearErrors(["entityType", "teamId", "customerId", "userId"]);
 															}}
-															// The already-assigned team may fall outside the
-															// selector's first page, so seed its label from the
-															// team embedded on the virtual key itself.
-															fallbackOption={
-																field.value
-																	? {
+															disabled={isTeamLocked}
+															disableSearch
+															hideClear
+															className="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											{form.watch("entityType") === "team" && (
+												<FormField
+													control={form.control}
+													name="teamId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="font-normal">Select Team</FormLabel>
+															<TeamSelector
+																value={field.value || ""}
+																onChange={(newVal) => {
+																	if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
+																		setPendingTeamId(newVal);
+																		setShowReassignTeamWarning(true);
+																	} else {
+																		field.onChange(newVal);
+																		// Refine error lives on entityType; re-run so a valid
+																		// team selection clears the assignment-type message.
+																		void form.trigger("entityType");
+																	}
+																}}
+																// The already-assigned team may fall outside the
+																// selector's first page, so seed its label from the
+																// team embedded on the virtual key itself.
+																fallbackOption={
+																	field.value
+																		? {
 																			value: field.value,
 																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
 																		}
-																	: null
-															}
-															disabled={isTeamLocked}
-															triggerClassName="h-9"
-														/>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-										)}
+																		: null
+																}
+																disabled={isTeamLocked}
+																triggerClassName="h-9"
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											)}
 
-										{form.watch("entityType") === "customer" && (
-											<FormField
-												control={form.control}
-												name="customerId"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel className="font-normal">Select Customer</FormLabel>
-														<CustomerSelector
-															value={field.value || ""}
-															onChange={(val) => {
-																field.onChange(val);
-																void form.trigger("entityType");
-															}}
-															fallbackOption={
-																field.value
-																	? {
+											{form.watch("entityType") === "customer" && (
+												<FormField
+													control={form.control}
+													name="customerId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="font-normal">Select Customer</FormLabel>
+															<CustomerSelector
+																value={field.value || ""}
+																onChange={(val) => {
+																	field.onChange(val);
+																	void form.trigger("entityType");
+																}}
+																fallbackOption={
+																	field.value
+																		? {
 																			value: field.value,
 																			label:
-																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																				field.value === virtualKey?.customer_id
+																					? (virtualKey?.customer?.name ?? field.value)
+																					: field.value,
 																		}
-																	: null
-															}
-															triggerClassName="h-9"
-														/>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-										)}
+																		: null
+																}
+																triggerClassName="h-9"
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											)}
 
-										{form.watch("entityType") === "user" && UserPicker && (
-											<FormField
-												control={form.control}
-												name="userId"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel className="font-normal">Select User</FormLabel>
-														<UserPicker
-															value={field.value || ""}
-															onChange={(val) => {
-																field.onChange(val);
-																void form.trigger("entityType");
-															}}
-															// The attached user may fall outside the picker's first
-															// page; seed the label resolved from the association.
-															fallbackOption={
-																field.value
-																	? {
+											{form.watch("entityType") === "user" && UserPicker && (
+												<FormField
+													control={form.control}
+													name="userId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="font-normal">Select User</FormLabel>
+															<UserPicker
+																value={field.value || ""}
+																onChange={(val) => {
+																	field.onChange(val);
+																	void form.trigger("entityType");
+																}}
+																// The attached user may fall outside the picker's first
+																// page; seed the label resolved from the association.
+																fallbackOption={
+																	field.value
+																		? {
 																			value: field.value,
 																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
 																		}
-																	: null
-															}
-															triggerClassName="h-9"
-														/>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
+																		: null
+																}
+																triggerClassName="h-9"
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											)}
+										</div>
+										{form.watch("entityType") === "user" && (
+											<p className="text-muted-foreground text-xs">
+												A virtual key can be assigned to only one user. If that user has an access profile, the key is adopted into it: it
+												keeps working, but its providers, budgets, rate limits and MCP access are discarded and replaced by the
+												profile&apos;s. This cannot be undone: a key inside a profile can be deleted, never released.
+											</p>
 										)}
 									</div>
-									{form.watch("entityType") === "user" && (
-										<p className="text-muted-foreground text-xs">
-											A virtual key can be assigned to only one user. If that user has an access profile, the key is adopted into it and
-											becomes profile-managed.
-										</p>
-									)}
 								</div>
-							</fieldset>
+							)}
 						</div>
 						<AlertDialog open={showRotateWarning} onOpenChange={setShowRotateWarning}>
 							<AlertDialogContent>
@@ -1870,7 +1903,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<AlertDialogDescription>
 										This will replace the secret value for &quot;
 										{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider permissions, MCP access, and assignments stay the
-										same. The previous key value will stop working immediately.
+										same. The previous key value stops working immediately unless a rotation cooldown is configured, in which case it
+										remains valid until the cooldown ends.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>

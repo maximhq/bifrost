@@ -820,6 +820,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		}
 	}
 
+	// Everything the middlewares and the headers can say about who this request is now sits on the
+	// context, so this is where it is settled onto the request's grant.
+	settleIdentity(bifrostCtx)
+
 	return bifrostCtx, cancel
 }
 

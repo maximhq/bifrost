@@ -2487,6 +2487,41 @@ func TestValidateClientConfig_AuthCodeTTL(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_VKRotationCooldown covers the same load-time
+// invariant for the rotation grace period. PUT /api/config rejects a cooldown
+// outside 0..30d, but config.json and any pre-existing DB row bypass that
+// handler, so the bound has to hold here too: an unbounded cooldown keeps a
+// retired credential authenticating indefinitely.
+func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
+	cooldown := func(d time.Duration) *configstore.ClientConfig {
+		return &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(d)}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"unset means no grace period", &configstore.ClientConfig{}, false},
+		{"zero is valid", cooldown(0), false},
+		{"in-range", cooldown(5 * time.Minute), false},
+		{"exactly at cap", cooldown(configstore.MaxVKRotationCooldown), false},
+		{"one nanosecond over cap", cooldown(configstore.MaxVKRotationCooldown + 1), true},
+		{"744h is over the 30 day cap", cooldown(744 * time.Hour), true},
+		{"negative", cooldown(-time.Minute), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "vk_rotation_cooldown")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot verifies an over-cap auth_code_ttl
 // in config.json makes LoadConfig fail rather than silently clamping the value.
 func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
@@ -8695,6 +8730,124 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 	t.Logf("DB hash: %s", dbHash)
 	t.Logf("File hash: %s", fileHash)
 	t.Log("✓ Different hashes correctly detected - file config would be synced to DB")
+}
+
+// vkSyncTestSetup builds a merge scenario: a DB VK (with ConfigHash derived from
+// an older file state so the update branch is entered) and a file VK.
+func vkSyncTestSetup(t *testing.T, dbVK tables.TableVirtualKey, fileVK tables.TableVirtualKey, cooldown time.Duration) (*Config, *ConfigData, *configstore.GovernanceConfig) {
+	t.Helper()
+	initTestLogger()
+	dbGovernance := &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{dbVK}}
+	config := &Config{
+		GovernanceConfig: dbGovernance,
+		ClientConfig:     &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(cooldown)},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{fileVK}},
+	}
+	return config, configData, dbGovernance
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace: a config.json
+// value differing from both the active and previous values is treated as an
+// explicit rotation - active becomes previous with a grace expiry.
+func TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue(), "config.json value must become active")
+	require.Equal(t, "sk-bf-active", merged.PreviousValue.GetValue(), "old active value must move to previous")
+	require.NotNil(t, merged.RotatedAt)
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash")
+
+	// Second boot with the same file: hash matches, nothing re-syncs.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}}},
+	}
+	firstRotatedAt := merged.RotatedAt
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	again := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", again.Value.GetValue())
+	require.Equal(t, firstRotatedAt, again.RotatedAt, "second boot must not re-rotate")
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately: with
+// no cooldown configured the rotation still happens but no grace state is kept.
+func TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 0)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue())
+	require.False(t, merged.PreviousValue.IsSet(), "no grace state at zero cooldown")
+	require.Nil(t, merged.PreviousValueExpiresAt)
+	require.NotNil(t, merged.RotatedAt)
+}
+
+// TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange: when the file
+// still holds the pre-rotation value (rotated via API/UI after the file was
+// written), the active value is kept and no rotation happens; the file-derived
+// ConfigHash is stored so the next boot no-ops.
+func TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange(t *testing.T) {
+	graceExpiry := time.Now().UTC().Add(10 * time.Minute)
+	rotatedAt := time.Now().UTC().Add(-time.Minute)
+	dbVK := tables.TableVirtualKey{
+		ID:                     "vk-1",
+		Name:                   "rotated-vk",
+		Description:            "old description",
+		Value:                  *schemas.NewSecretVar("sk-bf-active"),
+		PreviousValue:          *schemas.NewSecretVar("sk-bf-rotated-out"),
+		PreviousValueHash:      encrypt.HashSHA256("sk-bf-rotated-out"),
+		PreviousValueExpiresAt: &graceExpiry,
+		RotatedAt:              &rotatedAt,
+	}
+	// The DB row was last synced when the file held the pre-rotation value.
+	oldFileState := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "old description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(oldFileState)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	// The file still holds the pre-rotation value but changes another field, so
+	// the update branch is entered.
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-active", merged.Value.GetValue(), "active value must be kept when the file holds the previous value")
+	require.Equal(t, "new description", merged.Description, "non-value fields must still sync")
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash so the next boot no-ops")
+	require.Equal(t, "sk-bf-rotated-out", merged.PreviousValue.GetValue(), "in-flight grace state must be carried over")
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, &rotatedAt, merged.RotatedAt)
+
+	// Second boot with the same file: hash matches, value untouched.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}}},
+	}
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	require.Equal(t, "sk-bf-active", dbGovernance.VirtualKeys[0].Value.GetValue())
 }
 
 // TestVirtualKeyHashComparison_VirtualKeyOnlyInDB tests that dashboard-added VK is preserved
@@ -18001,14 +18154,16 @@ var excludedGoFields = map[string]map[string]bool{
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash":        true,
-		"created_at":         true,
-		"updated_at":         true,
-		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
-		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
-		"rate_limit":         true, // GORM relation
-		"team":               true, // GORM relation
-		"customer":           true, // GORM relation
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"created_by_user_id":        true, // DB ownership metadata; set by API/session layer
+		"budgets":                   true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":                true, // GORM relation
+		"team":                      true, // GORM relation
+		"customer":                  true, // GORM relation
+		"previous_value_expires_at": true, // Runtime rotation grace-period state; not config.json-settable
+		"rotated_at":                true, // Runtime rotation state; not config.json-settable
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation
@@ -18098,8 +18253,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
-		"websocket_config": true, // Schema documents all connection types
-		"http_config":      true, // Schema documents all connection types
+		"websocket_config":          true, // Schema documents all connection types
+		"http_config":               true, // Schema documents all connection types
+		"allow_on_all_virtual_keys": true, // Earlier name of allow_by_default; read by MCPClientConfig.UnmarshalJSON, kept in schema for backward-compatible config.json validation
 	},
 }
 
