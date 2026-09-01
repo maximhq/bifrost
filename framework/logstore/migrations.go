@@ -298,6 +298,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_debug_column"}, run: migrationAddVideoDebugColumn},
 	{IDs: []string{"logs_add_project_columns"}, run: migrationAddProjectColumns},
 	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
+	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3031,7 +3032,6 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -3146,7 +3146,6 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -4587,6 +4586,30 @@ func migrationAddVideoDebugColumn(ctx context.Context, db *gorm.DB, logger schem
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding video_debug column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddServedModelColumn adds the served_model column to the logs table.
+// Records the model the provider named on the response body when it differs from
+// the one the caller addressed.
+func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_served_model_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding served model column: %s", err.Error())
 	}
 	return nil
 }

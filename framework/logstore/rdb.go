@@ -1256,7 +1256,7 @@ func normalizeAggregateTimestamp(value any) string {
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
-		"canonical_model_name", "alias_model_family", "server_side_fallback_model",
+		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
@@ -1368,9 +1368,9 @@ var billingPayloadColumns = map[string][]string{
 var billingScalarColumns = []string{
 	// Identity and the object-storage key.
 	"id", "timestamp", "object_type",
-	// Pricing lookup: provider, the wire/alias/canonical model triplet, and the
+	// Pricing lookup: provider, the wire/alias/canonical model triplet, the
 	// server-side fallback model that resolvePricing ranks first.
-	"provider", "model", "alias", "canonical_model_name", "server_side_fallback_model",
+	"provider", "model", "alias", "canonical_model_name", "server_side_fallback_model", "served_model",
 	// Override scopes.
 	"selected_key_id", "virtual_key_id", "user_id",
 	// Usage, and the denormalized fallback used when token_usage was offloaded.
