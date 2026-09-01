@@ -265,18 +265,18 @@ func newModelScopedFixture(t *testing.T) *modelScopedFixture {
 	t.Helper()
 	logger := NewMockLogger()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("model-budget", 1_000_000.0, 0.0, "1d")
 	perModelRL := buildRateLimit("model-rl", 1_000_000_000, 1_000_000)
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, perModelRL)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, perModelRL)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("wildcard-budget", 1_000_000.0, 0.0, "1d")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},

@@ -3213,7 +3213,6 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 
 	scopes := []struct{ name, id string }{
 		{configstoreTables.ModelConfigScopeGlobal, ""},
-		{configstoreTables.ModelConfigScopeUser, userID},
 		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
 	}
 	for _, scope := range scopes {
@@ -4427,20 +4426,10 @@ func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitSco
 		kind: grant.LimitHolderModelConfig,
 	}}
 	// The user the request was made as, when there is one. A user is not the permit holder, since a
-	// request can be made as a user through a key, so it is a scope of its own rather than one
-	// derived from the permit.
+	// request can be made as a user through a key, so downstream-registered scopes keyed off it
+	// (e.g. enterprise's per-access-profile per-model budgets — see RegisterExtraScopedIDsResolver)
+	// are scopes of their own rather than derived from the permit.
 	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-	if userID != "" {
-		scopes = append(scopes, limitScope{
-			name: configstoreTables.ModelConfigScopeUser,
-			id:   userID,
-			kind: grant.LimitHolderUserModelConfig,
-		})
-	}
-	// Downstream-registered scopes that also apply to the user the request was made
-	// as (e.g. enterprise's per-access-profile per-model budgets) — see
-	// RegisterExtraScopedIDsResolver. Attributed the same as the user's own scope:
-	// from the requester's perspective both are "your model limit".
 	vkID := ""
 	if permit != nil && permit.Type() == string(grant.PermitVirtualKey) {
 		vkID = permit.ID()

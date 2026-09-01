@@ -13,7 +13,6 @@ import (
 const (
 	ModelConfigScopeGlobal     = "global"
 	ModelConfigScopeVirtualKey = "virtual_key"
-	ModelConfigScopeUser       = "user"
 )
 
 // ModelConfigAllModels is the model_name sentinel meaning "all models". Combined with a
@@ -23,7 +22,7 @@ const ModelConfigAllModels = "*"
 
 // validModelConfigScopes is the runtime registry of accepted scope values.
 // OSS seeds it with global + virtual_key; downstream consumers (e.g. the
-// enterprise build registering "user") extend it at startup via
+// enterprise build registering "access_profile") extend it at startup via
 // RegisterModelConfigScope. Guarded by validModelConfigScopesMu.
 var (
 	validModelConfigScopesMu sync.RWMutex
