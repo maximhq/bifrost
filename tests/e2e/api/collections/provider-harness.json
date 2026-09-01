@@ -137944,6 +137944,131 @@
               ]
             }
           }
+        },
+        {
+          "name": "OpenAI gpt-5.6: cache_control becomes prompt_cache_breakpoint plus explicit mode - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.7 gpt-5.6 translation: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('62.7 raw_request captured', function () { pm.expect(rr).to.be.an('object'); });",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('62.7 breakpoint reaches the wire', function () {",
+                  "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 800)).to.include('prompt_cache_breakpoint');",
+                  "});",
+                  "// The block marker alone leaves implicit caching on, which anchors the prefix",
+                  "// to the newest message and bills a write every turn. mode=explicit pins it.",
+                  "pm.test('62.7 explicit cache mode is set alongside it (#6180)', function () {",
+                  "  var opts = rr.prompt_cache_options || {};",
+                  "  pm.expect(opts.mode, 'prompt_cache_options: ' + JSON.stringify(opts)).to.eql('explicit');",
+                  "});",
+                  "pm.test('62.7 cache_control is not forwarded to an OpenAI-shaped endpoint', function () {",
+                  "  pm.expect(rawStr.indexOf('cache_control')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-4o: pre-5.6 models gain no cache fields - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.8 pre-5.6: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('62.8 raw_request captured', function () { pm.expect(rr).to.be.an('object'); });",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "// gpt-4o has no prompt_cache_breakpoint field at all, so synthesizing one would",
+                  "// send an unknown key. Stripping cache_control remains the correct behaviour.",
+                  "pm.test('62.8 no breakpoint is synthesized for a pre-5.6 model (#6180)', function () {",
+                  "  pm.expect(rawStr.indexOf('prompt_cache_breakpoint'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);",
+                  "});",
+                  "pm.test('62.8 no prompt_cache_options is added', function () {",
+                  "  pm.expect(rawStr.indexOf('prompt_cache_options')).to.equal(-1);",
+                  "});",
+                  "pm.test('62.8 cache_control is still stripped', function () {",
+                  "  pm.expect(rawStr.indexOf('cache_control')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }

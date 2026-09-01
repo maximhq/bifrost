@@ -89,7 +89,7 @@ func hoistAdditionalTools(message schemas.ResponsesMessage) []schemas.ResponsesT
 // Responses-shaped spelling of an Anthropic cache breakpoint.
 const PromptCacheBreakpointModeExplicit = "explicit"
 
-// openRouterMaxCacheBreakpoints mirrors the ceiling the Anthropic Messages API
+// maxResponsesCacheBreakpoints mirrors the ceiling the Anthropic Messages API
 // enforces on blocks carrying cache_control. Exceeding it is a hard rejection
 // rather than a degradation ("A maximum of 4 blocks with cache_control may be
 // provided. Found 5."), and it binds here because OpenRouter converts every
@@ -98,17 +98,79 @@ const PromptCacheBreakpointModeExplicit = "explicit"
 // provider so this package takes on no provider-to-provider dependency; see
 // AnthropicMaxCacheBreakpoints in core/providers/anthropic/utils.go for the
 // live verification behind the number.
-const openRouterMaxCacheBreakpoints = 4
+const maxResponsesCacheBreakpoints = 4
 
-// applyOpenRouterCacheBreakpoints rewrites Anthropic-style per-block
-// cache_control markers into the representation OpenRouter's Responses endpoint
-// actually accepts.
+// responsesUsesPromptCacheBreakpoints reports whether this provider and model take
+// caching intent as prompt_cache_breakpoint on a content block rather than as
+// Anthropic-style per-block cache_control.
+//
+// Two unrelated families landed on the same field. OpenRouter does not expose
+// per-block cache_control through /v1/responses and converts a breakpoint back into
+// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6, where it pairs with
+// request-level prompt_cache_options; Azure and Bedrock Mantle serve the same models
+// through the same wire format, so they inherit it (#6180).
+//
+// Everything else either accepts cache_control directly or caches implicitly, and for
+// those the serializer's existing strip is the correct behaviour.
+func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenRouter:
+		return true
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+		return schemas.IsGPT56Model(model)
+	default:
+		return false
+	}
+}
+
+// responsesHasPromptCacheBreakpoint reports whether any content block carries a
+// breakpoint. Used to decide whether explicit cache mode is warranted: switching a
+// request to explicit mode with no breakpoint anywhere opts it out of caching
+// entirely, which is strictly worse than the implicit default it replaced.
+func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool {
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		for j := range messages[i].Content.ContentBlocks {
+			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// responsesUsesPromptCacheOptions reports whether the target also needs request-level
+// prompt_cache_options to honour an explicit breakpoint.
+//
+// This is the gpt-5.6 half only. Those models default to IMPLICIT caching, which puts
+// the breakpoint on the latest message - so an agent loop rewrites the whole growing
+// prompt every turn at the cache-write rate. The block marker alone does not switch
+// that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
+func responsesUsesPromptCacheOptions(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+		return schemas.IsGPT56Model(model)
+	default:
+		return false
+	}
+}
+
+// applyResponsesCacheBreakpoints rewrites Anthropic-style per-block cache_control
+// markers into the prompt_cache_breakpoint representation the target actually accepts.
 //
 // OpenRouter does not expose per-block cache_control through /v1/responses. The
 // documented equivalent is prompt_cache_breakpoint on an individual input_text
 // block, which OpenRouter converts back into a default Anthropic breakpoint when
 // the request routes to Claude:
 // https://openrouter.ai/docs/features/prompt-caching#anthropic-claude
+//
+// The gpt-5.6 family reaches the same field from the other direction: OpenAI defined
+// prompt_cache_breakpoint natively, and callers arriving through an Anthropic-shaped
+// surface (or through breakpoint injection, which writes the neutral marker) express
+// the same intent as cache_control. Translating here means one implementation serves
+// both, and callers do not have to know which dialect their target speaks.
 //
 // Without this, OpenAIResponsesRequestInput.MarshalJSON deletes the marker and
 // puts nothing in its place, so Claude prompt caching never activates on the
@@ -129,10 +191,20 @@ const openRouterMaxCacheBreakpoints = 4
 //     isFunctionCallOutputBlocksFlattenable before it reaches the wire, which
 //     would discard any breakpoint set on it.
 //
+// A marker's TTL is not carried across, and there is nowhere to carry it to. The
+// only request-level field on this path is prompt_cache_options.ttl, whose "only
+// supported value, 30m, is also the default"
+// (https://developers.openai.com/api/docs/guides/prompt-caching) - so writing it
+// changes nothing, while the values cache_control actually carries (absent for 5m,
+// or "1h": https://platform.claude.com/docs/en/build-with-claude/prompt-caching) are
+// rejected there outright. OpenRouter, the one target where a "1h" marker would mean
+// something, exposes no equivalent field at all, so its Claude requests fall back to
+// the default breakpoint lifetime. Another limit forced by the wire format.
+//
 // messages is this function's own slice, but each element's Content pointer and
 // the block array beneath it still alias bifrostReq.Input, which plugins and the
 // fallback chain reuse. Both are copied before a marker is written.
-func applyOpenRouterCacheBreakpoints(messages []schemas.ResponsesMessage) {
+func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
 	// Locate every markable block in render order, and count the breakpoints the
 	// caller already set, before anything is copied.
 	type blockRef struct{ msg, block int }
@@ -167,7 +239,7 @@ func applyOpenRouterCacheBreakpoints(messages []schemas.ResponsesMessage) {
 	// Spend only the budget the caller's own breakpoints leave behind. A caller
 	// who sets more than the ceiling by hand owns that request and its upstream
 	// error; Bifrost declines to manufacture one on top.
-	budget := openRouterMaxCacheBreakpoints - existing
+	budget := maxResponsesCacheBreakpoints - existing
 	if budget <= 0 {
 		return
 	}
@@ -405,9 +477,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
-	// OpenRouter accepts the caching intent only in its Responses-shaped form.
-	if bifrostReq.Provider == schemas.OpenRouter {
-		applyOpenRouterCacheBreakpoints(messages)
+	// Targets that speak prompt_cache_breakpoint need the caching intent translated
+	// out of cache_control, which their serializer would otherwise strip.
+	needsExplicitPromptCacheMode := false
+	if responsesUsesPromptCacheBreakpoints(bifrostReq.Provider, capModel) {
+		applyResponsesCacheBreakpoints(messages)
+		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(bifrostReq.Provider, capModel) &&
+			responsesHasPromptCacheBreakpoint(messages)
 	}
 
 	// Updating params
@@ -485,6 +561,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		if topPUnsupported(caps, capModel, effort) {
 			req.ResponsesParameters.TopP = nil
+		}
+	}
+
+	// gpt-5.6 defaults to IMPLICIT caching, which anchors the breakpoint on the latest
+	// message - so an agent loop rewrites the whole growing prompt every turn at the
+	// cache-write rate and reads almost nothing back (#6180). A block marker alone does
+	// not switch that off; mode=explicit does. Runs after the params assignment above so
+	// a caller that set prompt_cache_options themselves is visible, and wins.
+	if needsExplicitPromptCacheMode && req.ResponsesParameters.PromptCacheOptions == nil {
+		req.ResponsesParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
 		}
 	}
 
