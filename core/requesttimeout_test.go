@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -303,6 +304,185 @@ func TestWrapStreamForRequestTimeout_NoForwardAfterCancellation(t *testing.T) {
 			t.Fatal("stop was not called after the cancelled-before-drain path completed")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestResolveRequestContext_CallerSuppliedContextIsNotOwned verifies a
+// caller-supplied context is returned untouched and never reported as owned --
+// cancelling it would cancel a context whose lifetime the caller controls.
+func TestResolveRequestContext_CallerSuppliedContextIsNotOwned(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+	root.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+
+	caller, cancelCaller := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelCaller()
+
+	resolved, owned := resolveRequestContext(caller, root)
+	if resolved != caller {
+		t.Fatal("a caller-supplied context must be returned unchanged")
+	}
+	if owned != nil {
+		t.Fatal("a caller-supplied context must never be reported as owned")
+	}
+}
+
+// TestResolveRequestContext_NoDeadlineDoesNotDerive verifies the nil-ctx path
+// aliases root directly when no deadline is declared. Deriving here would start
+// a watchCancellation goroutine that nothing releases until Shutdown, leaking
+// one goroutine per nil-ctx request.
+func TestResolveRequestContext_NoDeadlineDoesNotDerive(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+
+	resolved, owned := resolveRequestContext(nil, root)
+	if resolved != root {
+		t.Fatal("with no deadline declared, the nil-ctx path must alias root rather than derive")
+	}
+	if owned != nil {
+		t.Fatal("nothing is owned when no context was derived")
+	}
+}
+
+// TestResolveRequestContext_DeadlineDerivesOwnedChild verifies that when a
+// deadline IS declared the nil-ctx path derives an isolated child, reports it
+// as owned, still inherits the declared deadline, and that cancelling it
+// leaves root and its other children alone.
+func TestResolveRequestContext_DeadlineDerivesOwnedChild(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+	root.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+
+	resolved, owned := resolveRequestContext(nil, root)
+	if owned == nil {
+		t.Fatal("a declared deadline must derive an owned context to isolate Cancel() from root")
+	}
+	if resolved != owned {
+		t.Fatal("the resolved context must be the derived one")
+	}
+	if resolved == root {
+		t.Fatal("the derived context must not be root itself")
+	}
+	if d, _ := resolved.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); d != time.Minute {
+		t.Fatalf("the derived context must inherit the declared deadline, got %v", d)
+	}
+
+	sibling := schemas.NewBifrostContext(root, schemas.NoDeadline)
+	defer sibling.Cancel()
+
+	owned.Cancel()
+	if root.Err() != nil {
+		t.Fatalf("releasing an owned context must not cancel root, got %v", root.Err())
+	}
+	select {
+	case <-sibling.Done():
+		t.Fatal("releasing an owned context must not cancel a sibling request")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestResolveRequestContext_ReleasedContextLeaksNoGoroutine is the regression
+// guard for the nil-ctx goroutine leak: resolving and then releasing many
+// nil-ctx requests must leave no watchCancellation goroutines behind. Before
+// the fix, every nil-ctx request derived a child whose watchCancellation
+// goroutine blocked on root until Shutdown, whether or not a deadline was
+// declared.
+func TestResolveRequestContext_ReleasedContextLeaksNoGoroutine(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+
+	const requests = 200
+
+	// Exercise both shapes: no deadline declared (must not derive at all), and
+	// a deadline declared (derives, and the owned context must be released).
+	for _, declareDeadline := range []bool{false, true} {
+		if declareDeadline {
+			root.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Hour)
+		}
+
+		settle(t)
+		before := runtime.NumGoroutine()
+
+		for i := 0; i < requests; i++ {
+			_, owned := resolveRequestContext(nil, root)
+			if owned != nil {
+				owned.Cancel()
+			}
+		}
+
+		settle(t)
+		after := runtime.NumGoroutine()
+
+		// A small allowance absorbs unrelated runtime/test scheduler noise;
+		// the leak this guards against grows with `requests`, so it lands far
+		// outside it.
+		if grew := after - before; grew > requests/10 {
+			t.Fatalf("declareDeadline=%v: %d goroutines still running after %d released nil-ctx requests (before=%d after=%d)",
+				declareDeadline, grew, requests, before, after)
+		}
+	}
+}
+
+// TestResolveRequestContext_StreamPathReleasesOwnedContextAfterDrain mirrors
+// how handleStreamRequest composes resolveRequestContext, armRequestTimeout and
+// wrapStreamForRequestTimeout: the stream returns to its caller before it is
+// drained, so the owned context cannot be released with a defer and is instead
+// folded into the stop function that runs once the stream is exhausted. Guards
+// the ordering too -- the context must still be live while chunks are being
+// forwarded, and released only after the channel closes.
+func TestResolveRequestContext_StreamPathReleasesOwnedContextAfterDrain(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+	root.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Hour)
+
+	ctx, ownedCtx := resolveRequestContext(nil, root)
+	if ownedCtx == nil {
+		t.Fatal("expected an owned context for a nil-ctx request with a declared deadline")
+	}
+
+	stopRequestTimeout, armed := armRequestTimeout(ctx)
+	if !armed {
+		t.Fatal("armed must be true whenever a context was derived, or the wrapped-stream path never runs stop")
+	}
+	stopTimer := stopRequestTimeout
+	stopRequestTimeout = func() {
+		stopTimer()
+		ownedCtx.Cancel()
+	}
+
+	in := make(chan *schemas.BifrostStreamChunk, 1)
+	out := wrapStreamForRequestTimeout(ctx, in, stopRequestTimeout, armed)
+
+	in <- &schemas.BifrostStreamChunk{}
+	<-out
+	if ctx.Err() != nil {
+		t.Fatalf("the owned context must stay live while the stream is being drained, got %v", ctx.Err())
+	}
+
+	close(in)
+	for range out {
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for ctx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the owned context was never released after the stream was fully drained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if root.Err() != nil {
+		t.Fatalf("releasing the owned context must not cancel root, got %v", root.Err())
+	}
+}
+
+// settle gives finished goroutines a chance to actually exit before
+// NumGoroutine is sampled; watchCancellation returns asynchronously after its
+// context is cancelled.
+func settle(t *testing.T) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		runtime.Gosched()
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
