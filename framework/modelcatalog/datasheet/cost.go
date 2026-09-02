@@ -418,6 +418,19 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
 
+	// A video is billed once, at settlement — the job may still be queued, may
+	// produce different dimensions than were asked for, and may fail outright. This
+	// gate sits *ahead* of the provider-cost short-circuit below rather than in the
+	// modality switch, because a provider-reported cost on a job that has not
+	// finished is a quote, not a bill, and would otherwise be returned here before
+	// any status was consulted.
+	//
+	// An absent status means the provider does not report one, so there is nothing
+	// to gate on and pricing proceeds as before.
+	if input.videoStatus != "" && input.videoStatus != schemas.VideoStatusCompleted {
+		return nil
+	}
+
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
 		return input.usage.Cost
@@ -651,6 +664,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.VideoGenerationResponse != nil:
 		video := result.VideoGenerationResponse
+		input.videoStatus = video.Status
 		if video.Usage != nil && video.Usage.Cost != nil {
 			// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
 			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,

@@ -341,8 +341,11 @@ type costInput struct {
 	videoSeconds        *int
 	videoSize           string // e.g. "1920x1080", used for resolution-banded video pricing
 	videoCount          int    // generated clips on the response; 0 until the job returns them
-	ocrProcessedPages   *int
-	ocrIsAnnotated      *bool
+	// videoStatus is the job's lifecycle status. A video is billed at settlement,
+	// not at submission, so a non-terminal status prices to nothing.
+	videoStatus       schemas.VideoStatus
+	ocrProcessedPages *int
+	ocrIsAnnotated    *bool
 	// containerIdentifierString, when non-empty, replaces the actual requested/resolved
 	// model names during pricing lookup. Used for request types whose cost is not
 	// tied to a specific model. Currently only used for container creates.

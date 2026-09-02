@@ -88,6 +88,7 @@ type ModelUsage struct {
 
 type PricingManager interface {
 	CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails
+	CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails
 }
 
 // Settler supplies everything about a job kind that the engine does not know: how

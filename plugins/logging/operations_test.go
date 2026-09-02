@@ -3066,3 +3066,210 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 		t.Fatalf("expected source_log_id %s, got %v", entry.ID, job.SourceLogID)
 	}
 }
+
+// newVideoLifecyclePlugin is the minimal plugin a video lifecycle record needs.
+func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
+	t.Helper()
+	bs := newFakeBatchStore()
+	return &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      newTestStore(t),
+		batchStore: bs,
+		logger:     testLogger{},
+	}, bs
+}
+
+// The request is the only witness to duration and resolution for most providers,
+// and it is in hand exactly once — here. If it is not written down now, settlement
+// minutes later has nothing to price from.
+func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	audio := true
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:            "req-video-1",
+		Provider:      string(schemas.OpenAI),
+		Model:         "sora-2-pro",
+		SelectedKeyID: "key-abc",
+		ParamsParsed: &schemas.VideoGenerationParameters{
+			Seconds: &eightSeconds,
+			Size:    "1920x1080",
+			Audio:   &audio,
+		},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_abc",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_abc"))
+	if err != nil {
+		t.Fatalf("expected a video job row: %v", err)
+	}
+	if job.Kind != cstables.ProviderJobKindVideo {
+		t.Fatalf("kind = %q, want %q", job.Kind, cstables.ProviderJobKindVideo)
+	}
+	if job.Model != "sora-2-pro" {
+		t.Fatalf("model = %q, want sora-2-pro", job.Model)
+	}
+	if job.NextCheckAt == nil {
+		t.Fatal("a queued video must be scheduled for a poll")
+	}
+	// The sweeper pins its poll to this key. An OpenAI video id is visible only to
+	// the key that created it, so a row without one can only be polled by whatever
+	// key core happens to pick — which will be told the video does not exist.
+	if job.SelectedKeyID != "key-abc" {
+		t.Fatalf("selected key id = %q, want key-abc", job.SelectedKeyID)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("seconds = %v, want 8", dims.Seconds)
+	}
+	if dims.Size != "1920x1080" {
+		t.Fatalf("size = %q, want 1920x1080", dims.Size)
+	}
+	if dims.Audio == nil || !*dims.Audio {
+		t.Fatalf("audio = %v, want true", dims.Audio)
+	}
+	if dims.RequestType != schemas.VideoGenerationRequest {
+		t.Fatalf("request type = %q, want %q", dims.RequestType, schemas.VideoGenerationRequest)
+	}
+}
+
+// A video submitted before this build was already charged at submission. Creating
+// its row on a later retrieve would hand it to the sweeper and charge it twice.
+func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	entry := &logstore.Log{ID: "req-video-retrieve", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_pre_upgrade",
+			Status: schemas.VideoStatusCompleted,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoRetrieveRequest)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_pre_upgrade")); err == nil {
+		t.Fatal("a retrieve must never create a job row we did not see submitted")
+	}
+}
+
+// A retrieve on a job we did submit must still advance it, without losing the
+// dimensions the submission captured.
+func TestRecordVideoJobLifecycle_RetrieveAdvancesKnownJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-2",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	retrieved := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusCompleted},
+	}
+	plugin.recordVideoJobLifecycle(entry, retrieved, schemas.VideoRetrieveRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_known"))
+	if err != nil {
+		t.Fatalf("expected the submitted job row: %v", err)
+	}
+	if job.ProviderStatus != string(schemas.VideoStatusCompleted) {
+		t.Fatalf("provider status = %q, want completed", job.ProviderStatus)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("the submission's dimensions must survive a retrieve that reports none: %v", dims.Seconds)
+	}
+	if dims.Size != "1280x720" {
+		t.Fatalf("size = %q, want 1280x720", dims.Size)
+	}
+}
+
+// The retrieve path settles inline off the response the caller already fetched,
+// instead of leaving the sweeper to fetch it a second time up to a sweep interval
+// later. The submission is recorded first, then the terminal poll settles it.
+func TestAccountVideoResults_SettlesTheJobTheSubmissionRecorded(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-inline",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_inline_wired", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_inline_wired",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, terminal, schemas.VideoRetrieveRequest)
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_inline_wired"))
+	if err != nil {
+		t.Fatalf("GetProviderJob() error = %v", err)
+	}
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusAccounted {
+		t.Fatalf("accounting_status = %s, want %s", job.AccountingStatus, cstables.ProviderJobAccountingStatusAccounted)
+	}
+}
+
+// A video submitted before this build was charged at submission; settling it now
+// would bill it twice. With no coordination row, the inline path must do nothing.
+func TestAccountVideoResults_SkipsAJobWithNoCoordinationRow(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	entry := &logstore.Log{ID: "req-video-orphan", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_orphan",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_orphan")); err == nil {
+		t.Fatal("inline settlement must not create a job row for a video we never saw submitted")
+	}
+}

@@ -54,7 +54,7 @@ func (s *fakeAccountingStore) FindByID(ctx context.Context, id string) (*logstor
 
 func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
 	if job.ID == "" {
-		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, job.Provider, job.JobID)
+		job.ID = cstables.ProviderJobID(job.Kind, job.Provider, job.JobID)
 	}
 	existing, ok := s.jobs[job.ID]
 	if !ok {
@@ -244,9 +244,29 @@ func (s *fakeAccountingStore) FailProviderJob(ctx context.Context, id, runnerID 
 	return nil
 }
 
-type fakeBatchPricing struct{}
+type fakePricing struct{}
 
-func (fakeBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+// Video rates for the settler tests: a per-second, per-clip rate for one known
+// model, banded on 1080p, and nothing at all for anything else — enough to
+// exercise priced / unpriced / provider-cost-wins without a real catalog.
+func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	if dims.ProviderCost != nil && *dims.ProviderCost > 0 {
+		return modelcatalog.VideoCostDetails{Cost: *dims.ProviderCost, Priced: true, ProviderCostUsed: true}
+	}
+	if dims.Model != "sora-2-pro" || dims.Seconds == nil || *dims.Seconds <= 0 {
+		return modelcatalog.VideoCostDetails{}
+	}
+	rate := 0.30
+	if dims.Size == "1920x1080" {
+		rate = 0.70
+	}
+	return modelcatalog.VideoCostDetails{
+		Cost:   float64(*dims.Seconds) * rate * float64(max(1, dims.OutputCount)),
+		Priced: true,
+	}
+}
+
+func (fakePricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	if usage == nil || requestType != schemas.BatchResultsRequest {
 		return modelcatalog.BatchCostDetails{}
 	}
@@ -296,6 +316,11 @@ func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bi
 	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens), Priced: true}
 }
 
+// This fake exists to record batch request types; video pricing is fakePricing's job.
+func (p *requestTypePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	return modelcatalog.VideoCostDetails{}
+}
+
 func (r *fakeUsageReporter) ReportUsage(ctx context.Context, report UsageReport) error {
 	r.reports = append(r.reports, report)
 	return nil
@@ -328,7 +353,7 @@ func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {
 		},
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	assert.True(t, summary.Accounted)
@@ -364,7 +389,7 @@ func TestAccountBatchResults_OpenAIAggregatesAndWritesOnce(t *testing.T) {
 	// A repeat call (e.g. a second /results fetch) does not win the claim and
 	// writes nothing new, but still mirrors the already-settled price so the
 	// caller can display it.
-	second, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	second, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.NoError(t, err)
 	require.NotNil(t, second)
 	assert.False(t, second.Claimed)
@@ -380,7 +405,7 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
 	result := openAIResult(200, "", 18, 9)
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_missing_model",
 		ClaimedBy:     "test-node",
@@ -413,7 +438,7 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 func TestAccountBatchResults_MissingBatchPricingMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_missing_pricing",
@@ -463,7 +488,7 @@ func TestAccountBatchResults_ProviderCostPassthrough(t *testing.T) {
 		"total_cost": 0.123,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_provider_cost",
 		ClaimedBy:     "test-node",
@@ -488,7 +513,7 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 		"total_cost": 0.0,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_zero_cost",
@@ -506,7 +531,7 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.Anthropic,
 		ProviderJobID: "anthropic_batch",
@@ -529,7 +554,7 @@ func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.Bedrock,
 		ProviderJobID: "bedrock_batch",
@@ -553,7 +578,7 @@ func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T
 func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.Bedrock,
 		ProviderJobID: "bedrock_cache_batch",
@@ -597,7 +622,7 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.Gemini,
 		ProviderJobID: "gemini_batch",
@@ -623,7 +648,7 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	writer := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_writer",
@@ -662,13 +687,13 @@ func TestAccountBatchResults_RetryAfterCompleteFailureDoesNotReportGovernanceTwi
 		},
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.Error(t, err)
 	require.Nil(t, summary)
 	require.Len(t, writer.emitted, 1)
 	require.Len(t, reporter.reports, 1)
 
-	summary, err = AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	summary, err = AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	assert.True(t, summary.Accounted)
@@ -681,7 +706,7 @@ func TestAccountBatchResults_RecordsPartialPricingMetadata(t *testing.T) {
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_partial",
@@ -801,7 +826,7 @@ func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 	})
@@ -841,7 +866,7 @@ func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Limit: 10,
 	})
 
@@ -879,7 +904,7 @@ func TestSweeper_AccountsCompletedGeminiJob(t *testing.T) {
 			},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Limit: 10,
 	})
 
@@ -907,7 +932,7 @@ func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 
 	fetcher := &fakeBatchResultFetcher{}
 	kv := &fakeKVStore{setNXAllowed: false}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 		KVStore:  kv,
@@ -938,7 +963,7 @@ func TestSweeper_ReleasesProviderPollLeaseAfterSuccessfulPoll(t *testing.T) {
 		Status: schemas.BatchStatusInProgress,
 	}}
 	kv := &fakeKVStore{setNXAllowed: true}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
 		KVStore:  kv,
@@ -970,7 +995,7 @@ func TestSweeper_RescheduleUsesBackoffAndJitter(t *testing.T) {
 			Status: schemas.BatchStatusInProgress,
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -1010,7 +1035,7 @@ func TestSweeper_ExpiredBatchSettlesTheRowsThatCompleted(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -1039,7 +1064,7 @@ func TestSweeper_ExpiredBatchWithoutResultsIsTerminalWithoutResults(t *testing.T
 		},
 		resultsResp: &schemas.BifrostBatchResultsResponse{BatchID: "batch_expired_empty"},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -1067,7 +1092,7 @@ func TestSweeper_DeletedBatchDoesNotFetchResults(t *testing.T) {
 		ID:     "batch_deleted",
 		Status: schemas.BatchStatusDeleted,
 	}}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -1103,7 +1128,7 @@ func TestSweeper_ReschedulesAfterSettlementFailure(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -1145,7 +1170,7 @@ func TestSweeper_SettlementFailureHitsPollAttemptCap(t *testing.T) {
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 	})
@@ -1236,7 +1261,7 @@ func TestAccountBatchResults_ExternalBatchWithoutRow(t *testing.T) {
 	writer := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "ext-batch-no-job",
 		FallbackModel: "gpt-4o-mini",
@@ -1325,7 +1350,7 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 func TestAccountBatchResults_MixedMissingModelIsNotAttributed(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_mixed_unpriced",
 		ClaimedBy:     "test",
@@ -1357,15 +1382,15 @@ func TestNewSweeperDefaultsToDistinctRunnerIDs(t *testing.T) {
 	store := newFakeAccountingStore()
 	cfg := SweeperConfig{Interval: time.Minute}
 
-	a := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
-	b := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
+	a := NewBatchSweeper(store, store, fakePricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
+	b := NewBatchSweeper(store, store, fakePricing{}, &fakeBatchResultFetcher{}, nil, nil, cfg)
 
 	assert.NotEmpty(t, a.config.ClaimedBy)
 	assert.NotEqual(t, a.config.ClaimedBy, b.config.ClaimedBy,
 		"two sweepers defaulting ClaimedBy must not share a runner identity")
 
 	// An explicit id is still honored untouched.
-	explicit := NewBatchSweeper(store, store, fakeBatchPricing{}, &fakeBatchResultFetcher{}, nil, nil,
+	explicit := NewBatchSweeper(store, store, fakePricing{}, &fakeBatchResultFetcher{}, nil, nil,
 		SweeperConfig{Interval: time.Minute, ClaimedBy: "node-7"})
 	assert.Equal(t, "node-7", explicit.config.ClaimedBy)
 }
@@ -1378,7 +1403,7 @@ func TestAccountBatchResults_PersistedJobReadFailureFailsClosed(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 	store.failGetOnce = true
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "read-failure",
 		FallbackModel: "gpt-4o-mini",
@@ -1409,7 +1434,7 @@ func TestAccountBatchResults_PersistedJobReadFailureFailsClosed(t *testing.T) {
 func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "malformed-results",
 		FallbackModel: "gpt-4o-mini",
@@ -1453,7 +1478,7 @@ func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 // they stay the reason the batch is unpriceable.
 func TestAccountBatchResults_AllRowsUnparseableMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "all-malformed",
 		FallbackModel: "gpt-4o-mini",
@@ -1484,7 +1509,7 @@ func TestAccountBatchResults_PartiallyPricedBatchKeepsCostUnknown(t *testing.T) 
 	store := newFakeAccountingStore()
 	reporter := &fakeUsageReporter{}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_half_priced",
 		UsageReporter: reporter,
@@ -1548,7 +1573,7 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 	}
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_attribution",
 		FallbackModel: "gpt-4o-mini",
@@ -1622,7 +1647,7 @@ func TestAccountBatchResults_FillsNamesFromSourceLog(t *testing.T) {
 	}
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_same_vk",
 		FallbackModel: "gpt-4o-mini",
@@ -1682,7 +1707,7 @@ func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	// Bob fetches Alice's results. Same access-profile virtual key, different person.
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_shared_vk",
 		FallbackModel: "gpt-4o-mini",
@@ -1747,7 +1772,7 @@ func TestAccountBatchResults_SweeperPathKeepsUserAttribution(t *testing.T) {
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	// No BaseLog: this is the sweeper, hours after the request that created the batch.
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_sweeper",
 		FallbackModel: "gpt-4o-mini",
@@ -1781,7 +1806,7 @@ func TestAccountBatchResults_WithoutJobAttributionUsesBaseLog(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 	fetcherVK := "vk-fetcher"
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_external",
 		FallbackModel: "gpt-4o-mini",
@@ -1827,7 +1852,7 @@ func TestAccountBatchResults_ReclaimsUnpriceableJobWhenResultsArrive(t *testing.
 		UnpriceableReason: &reason,
 	}))
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_reclaim",
 		FallbackModel: "gpt-4o-mini",
@@ -1861,7 +1886,7 @@ func TestAccountBatchResults_LosingClaimWithNoExistingLogMirrorsNothing(t *testi
 		ClaimedAt:        &now,
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_in_flight",
 		FallbackModel: "gpt-4o-mini",
@@ -1901,7 +1926,7 @@ func TestAccountBatchResults_StatusPersistsAndMirrorsOnRepeatCall(t *testing.T) 
 		},
 	}
 
-	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.NoError(t, err)
 	require.NotNil(t, summary)
 	assert.True(t, summary.Accounted)
@@ -1914,7 +1939,7 @@ func TestAccountBatchResults_StatusPersistsAndMirrorsOnRepeatCall(t *testing.T) 
 
 	// A repeat call loses the claim; it must mirror the persisted status rather
 	// than re-deriving it from this call's own (possibly different) BatchJob hint.
-	second, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, req)
+	second, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, req)
 	require.NoError(t, err)
 	require.NotNil(t, second)
 	assert.False(t, second.Claimed)
@@ -1945,7 +1970,7 @@ func TestAccountBatchResults_TerminalJobsStayClosedWithoutResults(t *testing.T) 
 			if tc.status == cstables.ProviderJobAccountingStatusUnpriceable {
 				results = nil
 			}
-			summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+			summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 				Provider:      schemas.OpenAI,
 				ProviderJobID: "batch_closed",
 				ClaimedBy:     "test",
@@ -2002,7 +2027,7 @@ func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testin
 		BudgetIDs:        &fetcherBudgets,
 	}
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_merge",
 		FallbackModel: "gpt-4o-mini",
@@ -2037,7 +2062,7 @@ func TestAccountBatchResults_UnpriceableMarkerFailureReleasesTheClaim(t *testing
 	store.failUnpriceable = true
 
 	// No results: settlement is unpriceable, so it takes the marker path.
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_unpriceable_release",
 		ClaimedBy:     "node-1",
@@ -2086,7 +2111,7 @@ func TestSweeper_FailedBatchKeepsPersistedOutputFileWhenRetrieveOmitsIt(t *testi
 			Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)},
 		},
 	}
-	sweeper := NewBatchSweeper(store, store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
+	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{Limit: 10})
 
 	sweeper.SweepOnce(context.Background())
 
@@ -2143,7 +2168,7 @@ func TestAccountJob_RestoresPersistedParamsForSettlement(t *testing.T) {
 	bare.Params = nil
 
 	settler := &paramsRecordingSettler{}
-	out, err := AccountJob(context.Background(), store, store, fakeBatchPricing{}, settler, JobRequest{
+	out, err := AccountJob(context.Background(), store, store, fakePricing{}, settler, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "job_params",
 		Job:           &bare,
@@ -2162,7 +2187,7 @@ func TestAccountJob_RestoresPersistedParamsForSettlement(t *testing.T) {
 func TestAccountJob_RequiresARunnerID(t *testing.T) {
 	store := newFakeAccountingStore()
 
-	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+	_, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_no_runner",
 		Payload:       BatchPayload{Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)}},
