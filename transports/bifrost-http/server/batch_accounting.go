@@ -34,7 +34,7 @@ func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *csta
 	}
 	resp, bifrostErr := f.client.BatchRetrieveRequest(internalJobContext(ctx, job.SelectedKeyID), req)
 	if bifrostErr != nil {
-		return nil, fmt.Errorf("%s", bifrostErr.GetErrorString())
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
 }
@@ -53,7 +53,7 @@ func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *
 	}
 	resp, bifrostErr := f.client.BatchResultsRequest(internalJobContext(ctx, job.SelectedKeyID), req)
 	if bifrostErr != nil {
-		return nil, fmt.Errorf("%s", bifrostErr.GetErrorString())
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
 }
@@ -136,7 +136,7 @@ func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables
 		ID:       job.JobID,
 	})
 	if bifrostErr != nil {
-		return nil, fmt.Errorf("%s", bifrostErr.GetErrorString())
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
 }

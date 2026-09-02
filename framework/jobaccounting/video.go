@@ -20,6 +20,14 @@ const (
 	// UnpriceableReasonVideoGone is a job the provider no longer knows about.
 	// Generated assets expire, so this is an ordinary end state, not an error.
 	UnpriceableReasonVideoGone = "video_gone"
+	// UnpriceableReasonVideoAccessDenied is the creating key being refused. Distinct
+	// from video_gone on purpose: one is an asset ageing out and needs no action, the
+	// other means a key was revoked or rotated and every in-flight job on that
+	// provider is quietly failing behind it.
+	UnpriceableReasonVideoAccessDenied = "video_access_denied"
+	// UnpriceableReasonVideoRequestRejected is the provider refusing the retrieve
+	// itself — nothing expired, Bifrost built a request it will not accept.
+	UnpriceableReasonVideoRequestRejected = "video_request_rejected"
 	// UnpriceableReasonContentFiltered is deliberately not a price. A safety-filtered
 	// job consumed real compute, but whether the provider bills for it is a
 	// per-provider policy none of them document consistently. Guessing free
@@ -104,6 +112,9 @@ func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 
 	resp, err := s.retriever.RetrieveVideo(callCtx, job)
 	if err != nil {
+		if reason := videoUnreachableReason(err); reason != "" {
+			return &PollResult{Terminal: true, UnpriceableReason: reason}, nil
+		}
 		return nil, err
 	}
 	if resp == nil {
@@ -147,6 +158,14 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		Object: videoObjectFor(dims.RequestType),
 	}
 
+	// Attached on every path below, including the unpriceable ones: a row with no
+	// cost is exactly the row an operator needs the detail on.
+	videoStatus := schemas.VideoStatus("")
+	if resp != nil {
+		videoStatus = resp.Status
+	}
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, false)
+
 	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
 		return settlement, nil
@@ -169,18 +188,44 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
+		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, true)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, false)
 	return settlement, nil
 }
 
-// HydrateFromLog is a no-op: video carries no kind-specific detail on the aggregate
-// row yet, and the engine reads cost and usage off the row itself.
-func (s *VideoSettler) HydrateFromLog(entry *logstore.Log, out *Outcome) {}
+// videoDebugFor builds the closure that attaches video detail to the aggregate row.
+// Accounting being set is what marks this row as the settlement rather than the
+// submission it settles — the two are otherwise identical but for a cost.
+func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog.VideoPricingDimensions, incomplete bool) func(*logstore.Log) {
+	return func(entry *logstore.Log) {
+		entry.VideoDebugParsed = &schemas.BifrostVideoDebug{
+			VideoID: videoID,
+			Status:  status,
+			Accounting: &schemas.VideoAccountingDebug{
+				Seconds:     dims.Seconds,
+				Size:        dims.Size,
+				OutputCount: dims.OutputCount,
+				Incomplete:  incomplete,
+			},
+		}
+	}
+}
+
+// HydrateFromLog reads this kind's detail back off an already-written aggregate row,
+// for a caller that lost the settlement claim and only wants to display a price.
+// The inverse of the closure videoDebugFor builds.
+func (s *VideoSettler) HydrateFromLog(entry *logstore.Log, out *Outcome) {
+	if entry.VideoDebugParsed == nil {
+		return
+	}
+	out.Status = string(entry.VideoDebugParsed.Status)
+}
 
 // VideoDimensionsFromJob reads the pricing dimensions captured on the job row at
 // submission. An unreadable blob yields empty dimensions rather than an error: the
@@ -264,6 +309,21 @@ func videoJobFromResponse(existing *cstables.TableProviderJob, resp *schemas.Bif
 		job.Model = resp.Model
 	}
 	return &job
+}
+
+// videoUnreachableReason names why a failed retrieve is final, or returns empty
+// when the call is worth retrying.
+func videoUnreachableReason(err error) string {
+	switch ClassifyProviderCall(err) {
+	case ProviderCallGone:
+		return UnpriceableReasonVideoGone
+	case ProviderCallAccessDenied:
+		return UnpriceableReasonVideoAccessDenied
+	case ProviderCallRejected:
+		return UnpriceableReasonVideoRequestRejected
+	default:
+		return ""
+	}
 }
 
 func isTerminalVideoStatus(status schemas.VideoStatus) bool {

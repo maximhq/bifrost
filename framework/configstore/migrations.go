@@ -479,7 +479,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
 	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
-	{IDs: []string{"add_provider_job_kind_columns"}, run: migrationAddProviderJobKindColumns},
+	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -12469,6 +12469,10 @@ func migrationAddProviderJobKindColumns(ctx context.Context, db *gorm.DB, logger
 	migrationName := "add_provider_job_kind_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	// Step 1 (transactional): the columns. Both are metadata-only — kind's constant
+	// default is applied on read rather than by rewriting rows, so this is O(1) on
+	// postgres 11+ and sqlite regardless of how large batch_jobs has grown.
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -12488,21 +12492,6 @@ func migrationAddProviderJobKindColumns(ctx context.Context, db *gorm.DB, logger
 					return fmt.Errorf("failed to add params column to batch_jobs: %w", err)
 				}
 			}
-
-			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_jobs_identity_v2 ON batch_jobs (provider, kind, batch_id)`).Error; err != nil {
-				return fmt.Errorf("failed to create idx_batch_jobs_identity_v2: %w", err)
-			}
-			if err := tx.Exec(`DROP INDEX IF EXISTS idx_batch_jobs_identity`).Error; err != nil {
-				return fmt.Errorf("failed to drop idx_batch_jobs_identity: %w", err)
-			}
-
-			// The sweeper scans by kind first now that each kind has its own settler.
-			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_batch_jobs_sweeper_v2 ON batch_jobs (kind, provider, accounting_status, next_check_at)`).Error; err != nil {
-				return fmt.Errorf("failed to create idx_batch_jobs_sweeper_v2: %w", err)
-			}
-			if err := tx.Exec(`DROP INDEX IF EXISTS idx_batch_jobs_sweeper`).Error; err != nil {
-				return fmt.Errorf("failed to drop idx_batch_jobs_sweeper: %w", err)
-			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -12512,7 +12501,88 @@ func migrationAddProviderJobKindColumns(ctx context.Context, db *gorm.DB, logger
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
-	return nil
+
+	// Step 2 (non-transactional): swap the indexes onto the new column.
+	return migrationSwapProviderJobIndexes(ctx, db, logger)
+}
+
+// providerJobIndexSwap is the index rework batch_jobs needs once rows carry a kind:
+// identity widens to include it, and the sweeper scans by it first.
+var providerJobIndexSwap = []struct {
+	name     string
+	columns  string
+	unique   bool
+	replaces string
+}{
+	{
+		name:     "idx_batch_jobs_identity_v2",
+		columns:  "(provider, kind, batch_id)",
+		unique:   true,
+		replaces: "idx_batch_jobs_identity",
+	},
+	{
+		name:     "idx_batch_jobs_sweeper_v2",
+		columns:  "(kind, provider, accounting_status, next_check_at)",
+		replaces: "idx_batch_jobs_sweeper",
+	},
+}
+
+func migrationSwapProviderJobIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "swap_provider_job_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite has a single writer and no CONCURRENTLY; the plain form is both
+			// required and harmless there.
+			concurrent := tx.Dialector.Name() != "sqlite"
+
+			for _, idx := range providerJobIndexSwap {
+				unique := ""
+				if idx.unique {
+					unique = "UNIQUE "
+				}
+				if concurrent {
+					valid, err := postgresIndexIsValid(tx, "batch_jobs", idx.name)
+					if err != nil {
+						return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
+					}
+					if !valid {
+						if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + idx.name).Error; err != nil {
+							return fmt.Errorf("failed to clear a partial %s: %w", idx.name, err)
+						}
+					}
+					if err := tx.Exec(fmt.Sprintf("CREATE %sINDEX CONCURRENTLY IF NOT EXISTS %s ON batch_jobs %s", unique, idx.name, idx.columns)).Error; err != nil {
+						return fmt.Errorf("failed to create %s: %w", idx.name, err)
+					}
+				} else if err := tx.Exec(fmt.Sprintf("CREATE %sINDEX IF NOT EXISTS %s ON batch_jobs %s", unique, idx.name, idx.columns)).Error; err != nil {
+					return fmt.Errorf("failed to create %s: %w", idx.name, err)
+				}
+
+				// Only now drop what it replaces. The new index is strictly weaker than
+				// the old one, so it can never fail to build on data the old one already
+				// accepted — but dropping second still means uniqueness is never briefly
+				// unenforced.
+				drop := "DROP INDEX IF EXISTS " + idx.replaces
+				if concurrent {
+					drop = "DROP INDEX CONCURRENTLY IF EXISTS " + idx.replaces
+				}
+				if err := tx.Exec(drop).Error; err != nil {
+					return fmt.Errorf("failed to drop %s: %w", idx.replaces, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Index-only; the column rollback restores these names itself.
+			return nil
+		},
+	})
 }
 
 // rollbackProviderJobKindColumns reverses migrationAddProviderJobKindColumns.
@@ -12581,4 +12651,20 @@ func rollbackProviderJobKindColumns(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("failed to restore idx_batch_jobs_sweeper: %w", err)
 	}
 	return nil
+}
+
+// postgresIndexIsValid reports whether an index exists on table and is usable.
+// A missing index and an INVALID one both report false: the caller wants to know
+// "can I rely on this", and an INVALID index — the residue of an interrupted
+// CREATE INDEX CONCURRENTLY — answers no while still occupying the name.
+func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
+	var valid bool
+	err := tx.Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = ? AND ic.relname = ?
+	`, table, index).Scan(&valid).Error
+	return valid, err
 }

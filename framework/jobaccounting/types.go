@@ -2,6 +2,7 @@ package jobaccounting
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -11,6 +12,92 @@ import (
 )
 
 const defaultClaimTTL = 5 * time.Minute
+
+// ProviderCallError carries the provider's HTTP status alongside the message, so a
+// settler can tell a job the provider has forgotten from one it merely could not
+// reach this time.
+//
+// Without it every provider failure looks alike: the poll returns a bare error, the
+// sweeper reschedules, and a job whose id the provider will never recognise again
+// still burns its whole attempt budget before parking under the wrong reason.
+type ProviderCallError struct {
+	// StatusCode is the provider's HTTP status, or 0 when the failure happened
+	// before a response was received (a timeout, a transport error).
+	StatusCode int
+	Message    string
+}
+
+func (e *ProviderCallError) Error() string { return e.Message }
+
+// NewProviderCallError converts a BifrostError into an error that keeps its status
+// code. Returns nil for a nil input so call sites can pass a provider error through
+// unconditionally.
+func NewProviderCallError(err *schemas.BifrostError) error {
+	if err == nil {
+		return nil
+	}
+	call := &ProviderCallError{Message: err.GetErrorString()}
+	if err.StatusCode != nil {
+		call.StatusCode = *err.StatusCode
+	}
+	return call
+}
+
+// ProviderCallStatus reports the provider HTTP status behind err, or 0 when err did
+// not come from a provider response. It unwraps, so a settler that annotates a poll
+// failure does not lose the code.
+func ProviderCallStatus(err error) int {
+	var call *ProviderCallError
+	if errors.As(err, &call) {
+		return call.StatusCode
+	}
+	return 0
+}
+
+// ProviderCallOutcome is how a settler should treat a failed provider call.
+type ProviderCallOutcome int
+
+const (
+	// ProviderCallRetry is a failure that may not recur: a 5xx, a rate limit, or no
+	// response at all. Poll again later.
+	ProviderCallRetry ProviderCallOutcome = iota
+	// ProviderCallGone is a job the provider no longer recognises. Expected — jobs
+	// and their assets age out.
+	ProviderCallGone
+	// ProviderCallAccessDenied is the pinned key being refused: revoked, rotated,
+	// or unpaid. Sound only because the sweeper polls key-pinned (see
+	// internalJobContext); an unpinned poll could get this merely by picking a key
+	// that did not create the job, where a different key would have worked.
+	ProviderCallAccessDenied
+	// ProviderCallRejected is the provider refusing the request itself. Nothing
+	// aged out — Bifrost built something the provider will not accept, and asking
+	// again with the same bytes cannot change that.
+	ProviderCallRejected
+)
+
+// retryableClientStatusCodes are the 4xx codes worth polling again. Every other 4xx
+// is the provider's final answer.
+var retryableClientStatusCodes = map[int]bool{
+	408: true, // Request Timeout — the server gave up waiting, not a refusal
+	429: true, // Too Many Requests — capacity, and the same key works later
+}
+
+// ClassifyProviderCall decides whether a failed provider call is worth retrying,
+// and if not, why it failed. A status of 0 (no response reached us) retries.
+func ClassifyProviderCall(err error) ProviderCallOutcome {
+	status := ProviderCallStatus(err)
+	if status < 400 || status > 499 || retryableClientStatusCodes[status] {
+		return ProviderCallRetry
+	}
+	switch status {
+	case 404, 410:
+		return ProviderCallGone
+	case 401, 402, 403:
+		return ProviderCallAccessDenied
+	default:
+		return ProviderCallRejected
+	}
+}
 
 // ProviderJobKind discriminates the job families sharing this engine. It is
 // deliberately not named "async job": logstore.AsyncJobExecutor and the /v1/async/*
