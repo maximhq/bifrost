@@ -3152,6 +3152,13 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
+	if err == io.EOF && r.ctx != nil {
+		// The upstream body is finished. Record it so ReleaseStreamingResponse skips its
+		// drain: fasthttp's chunked requestStream has no finished flag, so reading it again
+		// past EOF re-enters parseChunkSize and blocks waiting for a chunk header that a
+		// keep-alive connection will never send.
+		r.ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+	}
 	if err != nil && err != io.EOF && r.fired.Load() {
 		return n, ErrStreamIdleTimeout
 	}
@@ -3511,8 +3518,17 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	//
+	// Skip it once the body has already reached io.EOF. fasthttp's chunked requestStream
+	// keeps no finished flag (streaming.go: chunkLeft == 0 re-enters parseChunkSize), so a
+	// Read after the terminating zero-size chunk waits for a chunk header that a keep-alive
+	// connection never sends — the drain then blocks forever and the caller's stream channel
+	// is never closed. There is nothing left to drain in that state anyway; the guarantee
+	// the drain exists for already holds.
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
