@@ -9,6 +9,7 @@ import {
 	LogSessionSummaryResponse,
 	LogsHistogramResponse,
 	LogStats,
+	LogStatsResponse,
 	ModelHistogramResponse,
 	ModelRankingsResponse,
 	Pagination,
@@ -173,14 +174,21 @@ export const logsApi = baseApi.injectEndpoints({
 
 		// Get logs statistics with filters
 		getLogsStats: builder.query<
-			LogStats,
+			LogStatsResponse,
 			{
 				filters: LogFilters;
+				// Opt in to change-vs-previous-period. Callers that omit this get the
+				// exact response they got before, and a different RTK cache entry, so
+				// views that do not need the comparison never pay for the extra query.
+				comparePrevious?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, comparePrevious }) => ({
 				url: "/logs/stats",
-				params: buildFilterParams(filters),
+				params: {
+					...buildFilterParams(filters),
+					...(comparePrevious ? { compare_to_previous: true } : {}),
+				},
 			}),
 			providesTags: ["Logs"],
 		}),

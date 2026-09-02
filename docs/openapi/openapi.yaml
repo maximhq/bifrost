@@ -1841,6 +1841,8 @@ components:
       $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
       $ref: "./schemas/management/logging.yaml#/LogStats"
+    LogStatsResponse:
+      $ref: "./schemas/management/logging.yaml#/LogStatsResponse"
     DeleteLogsRequest:
       $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:
