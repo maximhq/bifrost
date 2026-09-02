@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -21,6 +22,8 @@ import (
 )
 
 var defaultGeminiImageURLSchemes = []string{"http", "https"}
+
+var errUnresolvedAudioURL = errors.New("audio URL must be resolved before conversion")
 
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher
 // Uses simple string operations for hot path performance
@@ -2268,6 +2271,9 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 							})
 						}
 					} else if block.InputAudio != nil {
+						if block.InputAudio.Data == "" && block.InputAudio.URL != "" {
+							return nil, nil, errUnresolvedAudioURL
+						}
 						// Decode the audio data (handles both standard and URL-safe base64)
 						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
 						if err != nil || len(decodedData) == 0 {

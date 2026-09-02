@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -19,12 +20,6 @@ import (
 // bodies already in Gemini form are unmarshaled directly. Shared by the Gemini and Vertex
 // batch paths so both emit identical request bodies.
 func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
-	return ToGeminiBatchGenerateContentRequestWithContext(context.Background(), body)
-}
-
-// ToGeminiBatchGenerateContentRequestWithContext converts a Bifrost batch request
-// while binding audio URL resolution to the supplied request context.
-func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
 	var geminiReq GeminiBatchGenerateContentRequest
 
 	requestBytes, err := providerUtils.MarshalSorted(body)
@@ -45,12 +40,11 @@ func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body ma
 		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
 			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
 		}
-		resolvedMessages, err := resolveAudioURLs(ctx, chatMessages)
+		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
 		if err != nil {
-			return geminiReq, fmt.Errorf("failed to resolve audio URLs: %w", err)
-		}
-		contents, systemInstruction, err := convertBifrostMessagesToGemini(resolvedMessages)
-		if err != nil {
+			if errors.Is(err, errUnresolvedAudioURL) {
+				return geminiReq, fmt.Errorf("failed to resolve audio URLs: %w", err)
+			}
 			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
 		}
 		geminiReq.Contents = contents
@@ -58,6 +52,47 @@ func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body ma
 	}
 
 	return geminiReq, nil
+}
+
+// ToGeminiBatchGenerateContentRequestWithContext resolves any URL-backed audio in
+// the body and then converts it. Conversion itself is deterministic and performs
+// no I/O; the resolution step is what needs the context.
+func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
+	resolvedBody, err := ResolveBatchAudioURLs(ctx, body)
+	if err != nil {
+		return GeminiBatchGenerateContentRequest{}, err
+	}
+	return ToGeminiBatchGenerateContentRequest(resolvedBody)
+}
+
+// ResolveBatchAudioURLs fetches any URL-backed audio in an OpenAI-style batch body
+// and returns a copy whose messages carry inline data. This is the network-bound
+// half of batch conversion, kept separate so the conversion itself stays pure.
+func ResolveBatchAudioURLs(ctx context.Context, body map[string]interface{}) (map[string]interface{}, error) {
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return body, nil
+	}
+
+	messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal messages: %w", err)
+	}
+	var chatMessages []schemas.ChatMessage
+	if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal messages: %w", err)
+	}
+	resolvedMessages, err := resolveAudioURLs(ctx, chatMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve audio URLs: %w", err)
+	}
+
+	resolvedBody := make(map[string]interface{}, len(body))
+	for key, value := range body {
+		resolvedBody[key] = value
+	}
+	resolvedBody["messages"] = resolvedMessages
+	return resolvedBody, nil
 }
 
 // ToBifrostBatchStatus converts Gemini batch job state to Bifrost status.
