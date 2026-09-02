@@ -285,6 +285,7 @@ bifrost:
       convertChatToResponses: false
       shouldDropParams: false
       shouldConvertParams: false
+      azureDeepseek: false
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:

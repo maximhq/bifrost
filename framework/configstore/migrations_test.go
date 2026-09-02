@@ -2210,6 +2210,43 @@ func TestMigrationReplaceEnableLiteLLMWithCompatColumns(t *testing.T) {
 	assert.False(t, rows[1].CompatShouldConvertParams, "compat_should_convert_params should default to false")
 }
 
+func TestMigrationAddCompatAzureDeepseekColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+
+	err = db.AutoMigrate(&tables.TableClientConfig{})
+	require.NoError(t, err)
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+
+	now := time.Now()
+	err = db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	require.NoError(t, migrationAddCompatAzureDeepseekColumn(ctx, db, testMigrationLogger))
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+
+	// The conversion was unconditional before the toggle existed, so existing rows are
+	// backfilled to true rather than picking up the column's false default.
+	type row struct {
+		CompatAzureDeepseek bool `gorm:"column:compat_azure_deepseek"`
+	}
+	var rows []row
+	err = db.Table("config_client").Select("compat_azure_deepseek").Order("id").Find(&rows).Error
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].CompatAzureDeepseek, "existing rows must keep the conversion enabled")
+}
+
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
 // governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
 // column from budgets and rate_limits to simulate the pre-migration schema state.
