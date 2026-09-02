@@ -63,6 +63,10 @@ servers:
         default: http://localhost:8080
         description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
 
+# Fallback only. Every operation MUST declare its own `security` (use `security: []`
+# for genuinely public endpoints) - `spec_invariants_test.py` enforces this. This
+# default exists so that an operation which somehow slips through fails closed in
+# the docs rather than rendering as unauthenticated.
 security:
   - BearerAuth: []
   - BasicAuth: []
@@ -1265,19 +1269,30 @@ components:
       type: http
       scheme: bearer
       description: |
-        Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.
-        Virtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.
+        Management API authentication for `/api/*` endpoints. Use the `Authorization` header
+        with `Bearer <token>`, where `<token>` is one of:
+
+        - a Bifrost management API key,
+        - a dashboard session token issued by `POST /api/session/login`,
+        - base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).
+
+        Virtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -
+        the sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.
     BasicAuth:
       type: http
       scheme: basic
       description: |
-        Basic authentication using username and password.
+        Basic authentication using the Bifrost admin username and password
+        (`auth_config.admin_username` / `auth_config.admin_password`).
+        Accepted on management APIs (`/api/*`, `/metrics`, `/ws`) only - the inference
+        middleware never validates Basic credentials.
     VirtualKeyAuth:
       type: apiKey
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single
+        exception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
       type: apiKey
@@ -1286,6 +1301,34 @@ components:
       description: |
         API key authentication via the `x-api-key` header.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    VirtualKeyBearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Virtual key passed as a bearer token. The value MUST be an `sk-bf-` prefixed Bifrost
+        virtual key - provider API keys and Bifrost management/session tokens are not accepted
+        on endpoints that use this scheme.
+    VirtualKeyApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        Virtual key passed via the `x-api-key` header. The value MUST be `sk-bf-` prefixed;
+        provider API keys are not accepted on endpoints that use this scheme.
+    VirtualKeyGoogleAuth:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: |
+        Virtual key passed via the Google GenAI `x-goog-api-key` header. The value MUST be
+        `sk-bf-` prefixed.
+    VirtualKeyAzureAuth:
+      type: apiKey
+      in: header
+      name: api-key
+      description: |
+        Virtual key passed via the Azure-style `api-key` header. The value MUST be
+        `sk-bf-` prefixed.
     SessionCookieAuth:
       type: apiKey
       in: cookie
@@ -1293,8 +1336,11 @@ components:
       description: |
         Dashboard session authentication via the HTTPOnly `token` cookie that is
         set by `POST /api/session/login`. Used by the Bifrost UI for same-origin
-        requests in place of an `Authorization` header. Accepted on session
-        endpoints (`logout`, `ws-ticket`) as an alternative to the management API key.
+        requests in place of an `Authorization` header, and honoured as a fallback
+        on every `/api/*` management route when no `Authorization` header is sent.
+        It is listed explicitly only on the endpoints where a non-browser client
+        realistically uses it (`/api/session/logout`, `/api/session/ws-ticket`, `/ws`);
+        elsewhere prefer `ManagementBearerAuth`.
 
   parameters:
     AsyncJobId:

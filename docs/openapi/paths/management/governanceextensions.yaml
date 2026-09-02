@@ -17,6 +17,7 @@ virtual-key-users:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached users
@@ -61,6 +62,7 @@ virtual-key-users:
               preserve_usage: { type: boolean, default: false }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Users attached
@@ -92,6 +94,7 @@ virtual-key-user:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User detached
@@ -119,6 +122,7 @@ user-virtual-keys:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User virtual keys
@@ -152,6 +156,7 @@ team-customers:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached customers
@@ -194,6 +199,7 @@ team-customers:
               customer_id: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer attached
@@ -225,6 +231,7 @@ team-customer:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer detached
@@ -252,6 +259,7 @@ customer-teams:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached teams
@@ -293,6 +301,7 @@ business-unit-customers:
         schema: { type: integer, minimum: 0, default: 0 }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached customers
@@ -341,6 +350,7 @@ business-unit-customers:
                 items: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customers attached
@@ -372,6 +382,7 @@ business-unit-customer:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer detached
@@ -399,6 +410,7 @@ customer-business-units:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached business units
