@@ -179,6 +179,14 @@ client:
       pricing can only be set once the tool list is known. For shared-connection
       clients tools are fetched after client creation; for per-user auth types
       they are discovered during the create/verify flow itself.
+
+      Two cases require a genuinely authenticated admin session and are refused
+      with 403 when dashboard authentication is disabled or unconfigured, even
+      though other management endpoints stay reachable in that state:
+      connection_type "stdio" (which runs the supplied command as a gateway
+      subprocess), and connection_type "http"/"sse" whose connection_string
+      resolves to a loopback, private-network, link-local, or CGNAT address.
+      Public http/sse targets are unaffected.
     tags:
       - MCP
     requestBody:
@@ -205,6 +213,12 @@ client:
                 - $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          The request was not genuinely authenticated (dashboard authentication
+          is disabled or unconfigured) and connection_type is "stdio", or is
+          "http"/"sse" with a connection_string resolving to a loopback,
+          private-network, link-local, or CGNAT address.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
