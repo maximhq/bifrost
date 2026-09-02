@@ -3498,6 +3498,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 		return
 	}
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
+	runtimeOwned := resolveRuntimeOwnedGovernanceRows(ctx, config.ConfigStore)
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
@@ -3514,13 +3515,16 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				}
 			}
 			for _, existing := range config.GovernanceConfig.VirtualKeys {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !runtimeOwned.VirtualKeyIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteVirtualKey(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete virtual key %s: %w", existing.ID, err)
 					}
 				}
 			}
-			config.GovernanceConfig.VirtualKeys = configData.Governance.VirtualKeys
+			config.GovernanceConfig.VirtualKeys = retainRuntimeOwned(
+				configData.Governance.VirtualKeys, config.GovernanceConfig.VirtualKeys,
+				func(vk configstoreTables.TableVirtualKey) string { return vk.ID },
+				keep, runtimeOwned.VirtualKeyIDs)
 		}
 		if configData.governanceSectionPresent("routing_rules") {
 			keep := make(map[string]bool, len(configData.Governance.RoutingRules))
@@ -3556,13 +3560,16 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !runtimeOwned.ModelConfigIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
 					}
 				}
 			}
-			config.GovernanceConfig.ModelConfigs = configData.Governance.ModelConfigs
+			config.GovernanceConfig.ModelConfigs = retainRuntimeOwned(
+				configData.Governance.ModelConfigs, config.GovernanceConfig.ModelConfigs,
+				func(mc configstoreTables.TableModelConfig) string { return mc.ID },
+				keep, runtimeOwned.ModelConfigIDs)
 		}
 		if configData.governanceSectionPresent("teams") {
 			keep := make(map[string]bool, len(configData.Governance.Teams))
@@ -3616,13 +3623,16 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.Budgets {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !runtimeOwned.BudgetIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
 					}
 				}
 			}
-			config.GovernanceConfig.Budgets = configData.Governance.Budgets
+			config.GovernanceConfig.Budgets = retainRuntimeOwned(
+				configData.Governance.Budgets, config.GovernanceConfig.Budgets,
+				func(b configstoreTables.TableBudget) string { return b.ID },
+				keep, runtimeOwned.BudgetIDs)
 		}
 		if configData.governanceSectionPresent("rate_limits") {
 			keep := make(map[string]bool, len(configData.Governance.RateLimits))
@@ -3630,13 +3640,16 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !runtimeOwned.RateLimitIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}
 				}
 			}
-			config.GovernanceConfig.RateLimits = configData.Governance.RateLimits
+			config.GovernanceConfig.RateLimits = retainRuntimeOwned(
+				configData.Governance.RateLimits, config.GovernanceConfig.RateLimits,
+				func(rl configstoreTables.TableRateLimit) string { return rl.ID },
+				keep, runtimeOwned.RateLimitIDs)
 		}
 		return nil
 	})

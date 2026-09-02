@@ -21,22 +21,29 @@ const (
 // with a nil provider it means all models on all providers.
 const ModelConfigAllModels = "*"
 
-// validModelConfigScopes is the runtime registry of accepted scope values.
-// OSS seeds it with global + virtual_key; downstream consumers (e.g. the
-// enterprise build registering "user") extend it at startup via
-// RegisterModelConfigScope. Guarded by validModelConfigScopesMu.
+// validModelConfigScopes is the runtime registry of accepted scope values,
+// seeded with every scope declared above. All three are known to this module —
+// the governance plugin reads and enforces user-scoped rows the same as the
+// other two — so none of them may depend on a registration call to become
+// writable. A scope that has to be registered before it can be persisted is one
+// this module does not declare. Guarded by validModelConfigScopesMu.
 var (
 	validModelConfigScopesMu sync.RWMutex
 	validModelConfigScopes   = map[string]bool{
 		ModelConfigScopeGlobal:     true,
 		ModelConfigScopeVirtualKey: true,
+		ModelConfigScopeUser:       true,
 	}
 )
 
-// RegisterModelConfigScope adds scope to the allow-list consulted by
-// IsValidModelConfigScope and TableModelConfig.BeforeSave. Intended to be
-// called once at process startup; safe to call concurrently. Whitespace-
-// only input is ignored.
+// RegisterModelConfigScope adds a scope this module does not declare to the
+// allow-list consulted by IsValidModelConfigScope and TableModelConfig.BeforeSave,
+// for downstream builds that introduce their own. Intended to be called once at
+// process startup; safe to call concurrently. Whitespace-only input is ignored.
+//
+// Registration is racy by nature: it takes effect only from the moment it runs,
+// so anything writing that scope earlier in startup fails validation. Nothing
+// declared above may rely on it.
 func RegisterModelConfigScope(scope string) {
 	s := strings.TrimSpace(scope)
 	if s == "" {
