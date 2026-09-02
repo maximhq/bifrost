@@ -3910,10 +3910,7 @@ func (provider *GeminiProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	// Gemini doesn't support direct file content download
 	// Files are referenced by their URI in requests
-	return nil, providerUtils.NewBifrostOperationError(
-		"Gemini Files API doesn't support direct content download. Use the file URI in your requests instead.",
-		nil,
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }
 
 // CountTokens performs a token counting request to Gemini's countTokens endpoint.

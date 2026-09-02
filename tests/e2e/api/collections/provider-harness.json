@@ -137251,6 +137251,1193 @@
           }
         }
       ]
+    },
+    {
+      "name": "62. Files API metadata + content routes across providers (files-routes)",
+      "description": "Pins the Anthropic Files API route split and the mime_type/downloadable plumbing.\n\nTwo production bugs are covered:\n1. mime_type and downloadable were dropped in the Anthropic <-> canonical round trip. BifrostFile{Upload,Retrieve}Response carried no such fields, and ToAnthropicFile*Response hardcoded MimeType to \"\", so every file reported mime_type \"\" and downloadable false - including tool-generated files that Anthropic reports as downloadable true.\n2. GET /anthropic/v1/files/{file_id}/content was wired to the retrieve handler (its FileRequestConverter returned FileRetrieveRequest), so it answered 200 with the metadata document instead of file bytes, and no route was registered at GET /anthropic/v1/files/{file_id} at all - that path fell through to the SPA catch-all and returned 200 text/html.\n\nCriss-cross shape: the same file id is exercised across the native /v1, /openai and /anthropic routes, and each route is exercised against anthropic, openai, azure and gemini (provider chosen by ?provider= on the native//openai routes and by the x-model-provider header on /anthropic). Azure is the positive byte-download cell; anthropic and openai legitimately refuse the download, and those rows assert the refusal comes from the content API rather than being the old metadata document.\n\nRows chain on {{filesAnthropicId}} / {{filesOpenaiId}} / {{filesAzureId}} / {{filesGeminiId}} / {{filesCodeExecId}} in the URL path, so filter-collection keeps producers attached under sharding and --rerun-failed.",
+      "item": [
+        {
+          "name": "62.01 Anthropic: upload sample.pdf for files-routes matrix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Anthropic upload: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.collectionVariables.set('filesAnthropicId', j.id);",
+                  "// Bug 1: the upload converter hardcoded mime_type to \"\" before the fix.",
+                  "pm.test('Anthropic upload: mime_type carried through', function () { pm.expect(j.mime_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.02 OpenAI: upload sample.pdf for files-routes matrix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenAI upload: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.collectionVariables.set('filesOpenaiId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "openai",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.03 Azure: upload sample.pdf for files-routes matrix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Azure upload: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.collectionVariables.set('filesAzureId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "azure",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.04 Gemini: upload sample.pdf for files-routes matrix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini upload: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// The /openai drop-in rewrites files/<id> to files-<id> so the id is path-safe.",
+                  "pm.collectionVariables.set('filesGeminiId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "gemini",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.05 Anthropic: retrieve carries mime_type and downloadable (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Anthropic retrieve: mime_type populated', function () { pm.expect(j.mime_type, JSON.stringify(j)).to.eql('application/pdf'); });",
+                  "// downloadable is false for an uploaded file (only tool-generated files download);",
+                  "// what regressed was the field being dropped, so pin that it survives as a boolean.",
+                  "pm.test('Anthropic retrieve: downloadable is a boolean', function () { pm.expect(j.downloadable, JSON.stringify(j)).to.be.a('boolean'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAnthropicId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAnthropicId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.06 Anthropic: list files carries mime_type (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "var id = pm.collectionVariables.get('filesAnthropicId');",
+                  "var mine = (j.data || []).filter(function (f) { return f.id === id; })[0];",
+                  "pm.test('Anthropic list: uploaded file present', function () { pm.expect(mine, 'id ' + id + ' not in list').to.be.an('object'); });",
+                  "pm.test('Anthropic list: mime_type carried per item', function () { pm.expect(mine && mine.mime_type).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.07 Anthropic: native /v1 retrieve carries content_type (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "// Native route serialises the canonical struct, where the field is content_type.",
+                  "pm.test('native retrieve: content_type populated', function () { pm.expect(j.content_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{filesAnthropicId}}?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{filesAnthropicId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.08 Gemini: retrieve carries mime_type via /openai drop-in (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini retrieve (/openai): content_type populated', function () { pm.expect(j.content_type || j.mime_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesGeminiId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesGeminiId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.09 Gemini: retrieve carries mime_type via /anthropic drop-in (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini retrieve (/anthropic): mime_type populated', function () { pm.expect(j.mime_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "gemini"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesGeminiId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesGeminiId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.10 Anthropic: metadata route returns JSON not the UI shell (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// Before the fix no route was registered here, so this fell through to the SPA",
+                  "// catch-all and answered 200 text/html.",
+                  "var ct = pm.response.headers.get('Content-Type') || '';",
+                  "pm.test('metadata route: JSON content-type', function () { pm.expect(ct, 'got ' + ct).to.include('json'); });",
+                  "pm.test('metadata route: not the UI shell', function () { pm.expect((pm.response.text() || '').indexOf('<!doctype html')).to.eql(-1); });",
+                  "var j = pm.response.json();",
+                  "pm.test('metadata route: file document', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('filesAnthropicId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAnthropicId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAnthropicId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.11 OpenAI file via /anthropic metadata route, cross-provider (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('cross-provider metadata: JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.include('json'); });",
+                  "pm.test('cross-provider metadata: id echoes', function () { pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('filesOpenaiId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesOpenaiId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesOpenaiId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.12 Azure file via /anthropic metadata route, cross-provider (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('cross-provider metadata: JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.include('json'); });",
+                  "pm.test('cross-provider metadata: id echoes', function () { pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('filesAzureId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "azure"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAzureId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAzureId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.13 [EXPECT-4XX] Anthropic: /content reaches the content API not the retrieve handler (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 4xx guard: a 400 here IS the correct post-fix behaviour for an uploaded",
+                  "// (non tool-generated) file. Pre-fix this route answered 200 with metadata.",
+                  "if ([401, 403, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var __body = pm.response.text() || '';",
+                  "var __isMeta = false;",
+                  "try { var __j = JSON.parse(__body); __isMeta = !!(__j && __j.filename && (__j.size_bytes || __j.bytes)); } catch (e) {}",
+                  "pm.test('Anthropic: /content did not return metadata JSON', function () {",
+                  "  pm.expect(__isMeta, 'content route returned file metadata instead of bytes: ' + __body.slice(0, 200)).to.eql(false);",
+                  "});",
+                  "pm.test('Anthropic: error came from the content API', function () {",
+                  "  var t = (pm.response.text() || '').toLowerCase();",
+                  "  pm.expect(pm.response.code === 200 || t.indexOf('not downloadable') !== -1, pm.response.text().slice(0, 200)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAnthropicId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAnthropicId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.14 Azure: /anthropic content route returns real bytes (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Azure via /anthropic: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
+                  "pm.test('Azure via /anthropic: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });",
+                  "pm.test('Azure via /anthropic: not JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.not.include('json'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "azure"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAzureId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAzureId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.15 Azure: /openai content route returns real bytes (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Azure via /openai: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
+                  "pm.test('Azure via /openai: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesAzureId}}/content?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesAzureId}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.16 Azure: native /v1 content route returns real bytes (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Azure via native /v1: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
+                  "pm.test('Azure via native /v1: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{filesAzureId}}/content?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{filesAzureId}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.17 [EXPECT-4XX] OpenAI: /anthropic content route surfaces provider error not metadata (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var __body = pm.response.text() || '';",
+                  "var __isMeta = false;",
+                  "try { var __j = JSON.parse(__body); __isMeta = !!(__j && __j.filename && (__j.size_bytes || __j.bytes)); } catch (e) {}",
+                  "pm.test('OpenAI: /content did not return metadata JSON', function () {",
+                  "  pm.expect(__isMeta, 'content route returned file metadata instead of bytes: ' + __body.slice(0, 200)).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesOpenaiId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesOpenaiId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.19 Anthropic: same file id consistent across native and /openai routes (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('/openai route resolves the anthropic file', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('filesAnthropicId')); });",
+                  "pm.test('/openai route carries content_type too', function () { pm.expect(j.content_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesAnthropicId}}?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesAnthropicId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.20 Anthropic: code_execution generates a downloadable file (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('code_execution: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.eql(200); });",
+                  "// Find the file_id the container emitted. If the model produced no file this run,",
+                  "// leave the chained variable unset so the dependent rows skip instead of false-failing.",
+                  "var found = (JSON.stringify(pm.response.json()).match(/\"file_id\"\\s*:\\s*\"([^\"]+)\"/) || [])[1];",
+                  "if (found) { pm.collectionVariables.set('filesCodeExecId', found); }",
+                  "pm.test('code_execution: produced a file_id', function () { pm.expect(found, 'no file_id in response').to.be.a('string'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "code-execution-2025-08-25,files-api-2025-04-14"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Create a small sample PDF file.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.21 Anthropic: tool-generated file reports downloadable true (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = pm.response.json();",
+                  "// The reported bug: this read false for every file because the field was dropped.",
+                  "pm.test('code_execution file: downloadable true', function () { pm.expect(j.downloadable, JSON.stringify(j)).to.eql(true); });",
+                  "pm.test('code_execution file: mime_type populated', function () { pm.expect(j.mime_type, JSON.stringify(j)).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesCodeExecId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesCodeExecId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.22 Anthropic: download tool-generated file returns real bytes (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('code_execution download: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
+                  "var __body = pm.response.text() || '';",
+                  "var __isMeta = false;",
+                  "try { var __j = JSON.parse(__body); __isMeta = !!(__j && __j.filename && (__j.size_bytes || __j.bytes)); } catch (e) {}",
+                  "pm.test('Anthropic code_execution: /content did not return metadata JSON', function () {",
+                  "  pm.expect(__isMeta, 'content route returned file metadata instead of bytes: ' + __body.slice(0, 200)).to.eql(false);",
+                  "});",
+                  "pm.test('code_execution download: non-empty binary body', function () { pm.expect((pm.response.text() || '').length).to.be.above(0); });",
+                  "pm.test('code_execution download: content-type is not JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.not.include('json'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesCodeExecId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesCodeExecId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.23 Anthropic: delete files-routes fixture (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cleanup - best effort, never fail the suite",
+                  "pm.test('cleanup issued', function () { pm.expect(true).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{filesAnthropicId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{filesAnthropicId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.24 OpenAI: delete files-routes fixture (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cleanup - best effort, never fail the suite",
+                  "pm.test('cleanup issued', function () { pm.expect(true).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesOpenaiId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesOpenaiId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.25 Azure: delete files-routes fixture (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cleanup - best effort, never fail the suite",
+                  "pm.test('cleanup issued', function () { pm.expect(true).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesAzureId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesAzureId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "62.26 Gemini: delete files-routes fixture (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// cleanup - best effort, never fail the suite",
+                  "pm.test('cleanup issued', function () { pm.expect(true).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{filesGeminiId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{filesGeminiId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
