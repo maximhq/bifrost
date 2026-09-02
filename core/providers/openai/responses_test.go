@@ -1205,16 +1205,21 @@ func TestResponsesToolMessageActionStruct_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown action type - unmarshal to computer tool (default)", func(t *testing.T) {
+	t.Run("unknown action type - preserve without computer coercion", func(t *testing.T) {
 		jsonData := `{"type":"unknown_action"}`
 		var action schemas.ResponsesToolMessageActionStruct
 		if err := json.Unmarshal([]byte(jsonData), &action); err != nil {
 			t.Fatalf("failed to unmarshal: %v", err)
 		}
 
-		// Default behavior is to unmarshal to computer tool
-		if action.ResponsesComputerToolCallAction == nil {
-			t.Error("expected ResponsesComputerToolCallAction to be populated for unknown type")
+		if action.ResponsesComputerToolCallAction != nil {
+			t.Error("unknown provider action must not be coerced to a computer action")
+		}
+		if len(action.Raw) == 0 {
+			t.Fatal("expected unknown action to be preserved in the raw action field")
+		}
+		if string(action.Raw) != jsonData {
+			t.Errorf("raw action mismatch: got %s", action.Raw)
 		}
 	})
 
