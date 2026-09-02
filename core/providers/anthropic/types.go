@@ -1821,6 +1821,14 @@ const (
 	AnthropicStopReasonCompaction                 AnthropicStopReason = "compaction"
 )
 
+// MarshalJSON preserves Anthropic's required-null response contract for stop_reason.
+func (r AnthropicStopReason) MarshalJSON() ([]byte, error) {
+	if r == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(r))
+}
+
 // AnthropicResponseContainer is the "container" object returned on responses
 // that used the code execution tool. The id can be passed back as the request
 // "container" to reuse the sandbox across turns.
@@ -1837,9 +1845,9 @@ type AnthropicMessageResponse struct {
 	Role         string                  `json:"role"`
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
-	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
+	StopReason   AnthropicStopReason     `json:"stop_reason"`
 	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // refusal detail; null for every stop_reason other than "refusal"
-	StopSequence *string                 `json:"stop_sequence,omitempty"`
+	StopSequence *string                 `json:"stop_sequence"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that
 	// used the code execution tool. Distinct from the request-side AnthropicContainer

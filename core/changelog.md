@@ -1,3 +1,4 @@
+- [fix]: marshal required nullable response fields as null [@PSR94](https://github.com/PSR94)
 - fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
 - feat: add Baseten to Hugging Face inference provider discovery [@nicolastoulemont](https://github.com/nicolastoulemont)
 - fix: strip the encrypted reasoning signature when the upstream reports the field as unsupported (e.g. Bedrock Converse replaying a Claude signature onto a non-Anthropic model after a mid-conversation model switch), extending the existing unverifiable-signature fail-soft
