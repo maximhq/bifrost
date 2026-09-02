@@ -42666,7 +42666,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -42919,7 +42920,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -43172,7 +43174,8 @@
                           },
                           "tool_sync_interval": {
                             "type": "integer",
-                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                            "minimum": 0,
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -43461,7 +43464,8 @@
                   },
                   "tool_sync_interval": {
                     "type": "integer",
-                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config; a negative value disables\nperiodic tool sync for this client.\n"
+                    "minimum": 0,
+                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config.\n"
                   },
                   "tool_execution_timeout": {
                     "type": "integer",
@@ -45123,7 +45127,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\nDuring an active rotation grace window (client vk_rotation_cooldown), the\nprevious key value also authenticates until previous_value_expires_at.\nAn expired virtual key is rejected with 403; an inactive one still returns\nits quota with is_active false.\n",
         "tags": ["Governance"],
         "security": [
           {
@@ -45149,6 +45153,21 @@
           },
           "401": {
             "description": "Missing or invalid virtual key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Virtual key has expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -45786,6 +45805,176 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/virtual-keys/rotate": {
+      "post": {
+        "operationId": "bulkRotateVirtualKeys",
+        "summary": "Rotate multiple virtual keys",
+        "description": "Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.",
+        "tags": ["Governance"],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["ids"],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "IDs of the virtual keys to rotate (duplicates are ignored)",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Virtual keys rotated (partial failures reported per ID in errors)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["message", "virtual_keys"],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "virtual_keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/VirtualKey"
+                      }
+                    },
+                    "errors": {
+                      "type": "object",
+                      "description": "Map of virtual key ID to failure reason for keys that could not be rotated",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (empty or missing IDs)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "All requested rotations failed; per-ID reasons are reported in errors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["message", "virtual_keys", "errors"],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "virtual_keys": {
+                      "type": "array",
+                      "description": "Always empty when every rotation failed",
+                      "items": {
+                        "$ref": "#/components/schemas/VirtualKey"
+                      }
+                    },
+                    "errors": {
+                      "type": "object",
+                      "description": "Map of virtual key ID to failure reason",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/virtual-keys/{vk_id}/rotate": {
+      "post": {
+        "operationId": "rotateVirtualKey",
+        "summary": "Rotate virtual key",
+        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.",
+        "tags": ["Governance"],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual key rotated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["message", "virtual_key"],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "virtual_key": {
+                      "$ref": "#/components/schemas/VirtualKey"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -66260,6 +66449,14 @@
             }
           },
           {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Number of logs to return (default 50, max 1000)",
@@ -66814,6 +67011,23 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_to_previous",
+            "in": "query",
+            "description": "When true, also return the same statistics for the immediately preceding window of equal length, so callers can render change-vs-previous-period. Requires a bounded window of positive length (start_time and end_time, or period) and no `request_id`, since an id lookup matches one row regardless of the window. Where there is no preceding window to compare against, the response omits `previous` with `has_previous_period` false. A failure to compute the previous period degrades to `has_previous_period` false rather than failing the request.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "security": [
@@ -66827,7 +67041,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LogStats"
+                  "$ref": "#/components/schemas/LogStatsResponse"
                 }
               }
             }
@@ -67087,6 +67301,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -67312,6 +67534,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -67534,6 +67764,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -67764,6 +68002,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -68008,6 +68254,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -68237,6 +68491,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -68463,6 +68725,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -68704,6 +68974,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -68963,6 +69241,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -69205,6 +69491,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -69461,6 +69755,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -69897,6 +70199,14 @@
             }
           },
           {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
@@ -70253,6 +70563,14 @@
             "name": "content_search",
             "in": "query",
             "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
             "schema": {
               "type": "string"
             }
@@ -76987,6 +77305,152 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEndpointId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of delivery history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Logs store is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/webhooks/deliveries": {
+      "get": {
+        "operationId": "searchWebhookDeliveries",
+        "summary": "Search delivery history",
+        "description": "Returns one page of delivery-attempt history across every endpoint the\nfilters select, newest first. Unlike the per-endpoint\n`/api/webhooks/{id}/deliveries` route, every filter is optional, so an\nunfiltered call returns history for all endpoints.\n\nPagination is by delivery group (`webhook_id`), not by individual attempt:\na page holds every attempt of the deliveries it covers, so `deliveries`\ncan hold more entries than `limit`, and `total_count` counts deliveries\nrather than attempts.\n\nFilters select delivery groups, not attempts — a delivery is on the page\nif any of its attempts matches — and the matched delivery is then returned\nwith its full attempt sequence intact.\n",
+        "tags": ["Webhooks"],
+        "parameters": [
+          {
+            "name": "endpoint_ids",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated webhook endpoint ids. Omit for all endpoints.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "events",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated event names, e.g. `async_job.completed`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "outcomes",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated delivery outcomes: `delivered`, `retryable_failure`,\n`permanent_failure`, `exhausted`.\n",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status_class",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated response status bands: `2xx`, `4xx`, `5xx`, or `none`\nfor attempts where no response arrived. Bands are alternatives (OR).\n",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": false,
+            "description": "Exact inference request id the delivery was raised for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "query",
+            "required": false,
+            "description": "Exact delivery-run id (the `webhook-id` wire header).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": false,
+            "description": "RFC3339 lower bound on attempt time. Ignored when `period` is set.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": false,
+            "description": "RFC3339 upper bound on attempt time. Ignored when `period` is set.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "description": "Relative window (e.g. `1h`, `24h`) resolved server-side. Takes\nprecedence over `start_time` / `end_time`.\n",
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "limit",
@@ -88232,6 +88696,13 @@
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
               },
+              "vk_rotation_cooldown": {
+                "type": ["string", "integer"],
+                "minimum": 0,
+                "maximum": 2592000000000000,
+                "default": 0,
+                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
+              },
               "enforce_governance_header": {
                 "type": "boolean",
                 "deprecated": true,
@@ -88297,7 +88768,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -88554,6 +89026,13 @@
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
               },
+              "vk_rotation_cooldown": {
+                "type": ["string", "integer"],
+                "minimum": 0,
+                "maximum": 2592000000000000,
+                "default": 0,
+                "description": "Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. \"5m\", \"1h\"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days."
+              },
               "enforce_governance_header": {
                 "type": "boolean",
                 "deprecated": true,
@@ -88619,7 +89098,8 @@
               },
               "mcp_tool_sync_interval": {
                 "type": "integer",
-                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+                "minimum": 0,
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -90899,6 +91379,16 @@
             "type": ["string", "null"],
             "format": "date-time",
             "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
+          },
+          "previous_value_expires_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "When set, the pre-rotation key value continues to authenticate until this timestamp (rotation grace period, configured via client vk_rotation_cooldown). Absent when no grace window is active."
+          },
+          "rotated_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Timestamp of the most recent value rotation. Absent if the key has never been rotated."
           },
           "provider_configs": {
             "type": "array",
@@ -95374,6 +95864,32 @@
             "description": "Number of semantic local-cache hits"
           }
         }
+      },
+      "LogStatsResponse": {
+        "description": "Log statistics for the requested window. The current period's fields are at the top level, so a request without `compare_to_previous` returns the LogStats fields unchanged, plus `has_previous_period` false. `has_previous_period` is always present; `previous` appears only when a comparison was requested and computed.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LogStats"
+          },
+          {
+            "type": "object",
+            "required": ["has_previous_period"],
+            "properties": {
+              "has_previous_period": {
+                "type": "boolean",
+                "description": "Always present. True when `previous` is populated. False when the comparison was not requested, the window is unbounded, or the previous-period query failed."
+              },
+              "previous": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/LogStats"
+                  }
+                ],
+                "description": "The same statistics for the preceding window of equal length, ending immediately before the requested window starts. Present only when `compare_to_previous` is true and `has_previous_period` is true."
+              }
+            }
+          }
+        ]
       },
       "DeleteLogsRequest": {
         "type": "object",

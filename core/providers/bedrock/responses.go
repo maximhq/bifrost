@@ -32,6 +32,7 @@ type BedrockResponsesStreamState struct {
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
 	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
+	OutputItems               map[int]*schemas.ResponsesMessage                              // Maps output_index to the completed output item, for response.completed's Output array
 	CurrentOutputIndex        int                                                            // Current output index counter
 	MessageID                 *string                                                        // Message ID (generated)
 	Model                     *string                                                        // Model name
@@ -59,6 +60,7 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			CompletedOutputIndices:    make(map[int]bool),
 			AnnotationIndices:         make(map[int]int),
 			TextBuffers:               make(map[int]*strings.Builder),
+			OutputItems:               make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -131,6 +133,11 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 		state.TextBuffers = make(map[int]*strings.Builder)
 	} else {
 		clear(state.TextBuffers)
+	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
 	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
@@ -220,6 +227,11 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.TextBuffers)
 	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
@@ -232,7 +244,44 @@ func (state *BedrockResponsesStreamState) flush() {
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
 // Returns a slice of responses to support cases where a single event produces multiple responses
+// recordBedrockOutputItems captures every output_item.done in a batch of emitted
+// events onto the state, keyed by output index, so FinalizeBedrockStream can rebuild
+// response.completed's Output array.
+//
+// Recording has to happen as items close, not at finalize time: an item closed
+// mid-stream (on contentBlockStop) is marked in CompletedOutputIndices and skipped by
+// the finalize loops, and its TextBuffers entry is deleted, so its content is
+// unrecoverable afterwards. Scanning the emitted batch keeps this to two call sites
+// instead of one at each of the nine output_item.done emitters, which is also why a
+// new emitter cannot silently forget to register itself.
+//
+// The item is copied so a later mutation of the emitted event cannot reach into the
+// terminal response.
+func recordBedrockOutputItems(state *BedrockResponsesStreamState, responses []*schemas.BifrostResponsesStreamResponse) {
+	if state == nil {
+		return
+	}
+	for _, response := range responses {
+		if response == nil || response.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
+			continue
+		}
+		if response.Item == nil || response.OutputIndex == nil {
+			continue
+		}
+		item := *response.Item
+		state.OutputItems[*response.OutputIndex] = &item
+	}
+}
+
+// ToBifrostResponsesStream converts one Bedrock Converse stream event into Responses
+// stream events, recording any completed output items on the state as it goes.
 func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *BedrockResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+	responses, bifrostErr, done := chunk.toBifrostResponsesStream(sequenceNumber, state)
+	recordBedrockOutputItems(state, responses)
+	return responses, bifrostErr, done
+}
+
+func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, state *BedrockResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch {
 	case chunk.Role != nil:
 		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
@@ -1463,11 +1512,29 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 	}
 
+	// Capture the items this function just closed, alongside those recorded as they
+	// closed mid-stream, so the Output array below covers the whole turn.
+	recordBedrockOutputItems(state, responses)
+
 	// Emit response.completed
 	response := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     usage,
+	}
+
+	// Populate the Output array from the accumulated items. OpenAI's Responses
+	// contract requires response.completed to carry the full output, and clients
+	// (notably the OpenAI Agents SDK) build the finished turn from it rather than
+	// from the deltas. Walk output indices in order so the array matches the order
+	// the items were streamed in.
+	if len(state.OutputItems) > 0 {
+		response.Output = make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+		for i := 0; i < state.CurrentOutputIndex; i++ {
+			if item, exists := state.OutputItems[i]; exists && item != nil {
+				response.Output = append(response.Output, *item)
+			}
+		}
 	}
 
 	if trace != nil {

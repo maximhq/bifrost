@@ -955,10 +955,11 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 }
 
 // canUseMatViewFilters returns true if the given filters can be served from
-// mv_logs_hourly. Per-row filters (content search, parent request ID, metadata,
-// numeric ranges) require the raw logs table.
+// mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
+// metadata, numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
+		f.RequestID == "" &&
 		f.ParentRequestID == "" &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&

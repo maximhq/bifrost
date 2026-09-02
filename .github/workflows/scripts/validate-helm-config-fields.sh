@@ -640,8 +640,6 @@ bifrost:
       enabled: true
       config:
         provider: "openai"
-        keys:
-          - "sk-embed-key"
         embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.85
@@ -723,7 +721,6 @@ assert_field_value 'plugins: maxim log_repo_id' '.plugins.[3].config.log_repo_id
 # Semantic cache plugin
 assert_field_value 'plugins: semantic_cache name' '.plugins.[4].name' '"semantic_cache"'
 assert_field_value 'plugins: semantic_cache provider' '.plugins.[4].config.provider' '"openai"'
-assert_field 'plugins: semantic_cache keys' '.plugins.[4].config.keys'
 assert_field_value 'plugins: semantic_cache embedding_model' '.plugins.[4].config.embedding_model' '"text-embedding-3-small"'
 assert_field_value 'plugins: semantic_cache dimension' '.plugins.[4].config.dimension' '1536'
 assert_field_value 'plugins: semantic_cache threshold' '.plugins.[4].config.threshold' '0.85'

@@ -580,6 +580,11 @@ func TestLogStoreParity(t *testing.T) {
 		"metadata":        {MetadataFilters: map[string]string{"env": "prod"}},
 		"content_search":  {ContentSearch: "charlie"},
 		"parent_request":  {ParentRequestID: "sess1"},
+		"request_id":      {RequestID: "p4"},
+		// An ID lookup is an exact PK match that deliberately ignores the window,
+		// so p4 must come back even though the range excludes its timestamp.
+		"request_id_outside_window": {RequestID: "p4", StartTime: timePtrP(base.Add(-10 * time.Second)), EndTime: timePtrP(base)},
+		"request_id_unknown":        {RequestID: "no-such-id"},
 	}
 	for name, filters := range searchCases {
 		t.Run("SearchLogs/"+name, func(t *testing.T) {
@@ -1150,14 +1155,14 @@ func TestLogStoreParity(t *testing.T) {
 
 		// Endpoint-scoped history pages newest-first on every backend.
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 10})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 10})
 			if err != nil {
 				return nil, err
 			}
 			return webhookDeliverySearchProjection(res), nil
 		})
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 1, Offset: 1})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 1, Offset: 1})
 			if err != nil {
 				return nil, err
 			}
@@ -1169,7 +1174,7 @@ func TestLogStoreParity(t *testing.T) {
 			return s.DeleteExpiredWebhookDeliveries(ctx)
 		})
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-2", PaginationOptions{Limit: 10})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-2"}}, PaginationOptions{Limit: 10})
 			if err != nil {
 				return nil, err
 			}

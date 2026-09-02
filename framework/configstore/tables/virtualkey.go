@@ -36,12 +36,24 @@ type TableVirtualKeyProviderConfig struct {
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`              // Multiple budgets with different reset intervals
-	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means all keys allowed for this provider
+	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means no keys allowed for this provider unless AllowAllKeys is set
 
 	// ModelBudgets carries per-model budgets/rate-limits under this provider for serialization
 	// only. They live in VK-scoped model configs (the source of truth), not this table; the
 	// handler hydrates this field when returning a VK so the sheet can render/edit them.
 	ModelBudgets []VKProviderModelBudget `gorm:"-" json:"model_budgets,omitempty"`
+}
+
+// KeyIDs returns the list of key IDs for this provider config, or ["*"] if AllowAllKeys is true.
+func (pc *TableVirtualKeyProviderConfig) KeyIDs() []string {
+	if pc.AllowAllKeys {
+		return []string{"*"}
+	}
+	keyIDs := make([]string, len(pc.Keys))
+	for i, key := range pc.Keys {
+		keyIDs[i] = key.KeyID
+	}
+	return keyIDs
 }
 
 // VKProviderModelBudget is one per-model budget/rate-limit group under a VK provider config,
@@ -264,6 +276,17 @@ type TableVirtualKey struct {
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
 
+	// Rotation grace-period state. When a VK is rotated with a non-zero
+	// vk_rotation_cooldown, the retired value is kept here and keeps
+	// authenticating until PreviousValueExpiresAt. Runtime state only: these
+	// fields are excluded from GenerateVirtualKeyHash so config.json sync never
+	// sees rotation as drift. The hash index is intentionally non-unique - a
+	// retiring value cannot reserve uniqueness against live values.
+	PreviousValue          schemas.SecretVar `gorm:"type:text" json:"-"`
+	PreviousValueHash      string            `gorm:"type:varchar(64);index:idx_virtual_key_previous_value_hash" json:"-"`
+	PreviousValueExpiresAt *time.Time        `gorm:"type:timestamp;null" json:"previous_value_expires_at,omitempty"`
+	RotatedAt              *time.Time        `gorm:"type:timestamp;null" json:"rotated_at,omitempty"`
+
 	CreatedByUserID *string `gorm:"type:varchar(255);index:idx_virtual_key_created_by" json:"created_by_user_id,omitempty"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
@@ -306,6 +329,22 @@ func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// HasActivePreviousValue reports whether the VK carries a rotated-out value
+// that is still inside its grace window. now == expiry is treated as expired.
+func (vk *TableVirtualKey) HasActivePreviousValue(now time.Time) bool {
+	if vk == nil || !vk.PreviousValue.IsSet() || vk.PreviousValueExpiresAt == nil {
+		return false
+	}
+	return now.UTC().Before(vk.PreviousValueExpiresAt.UTC())
+}
+
+// ClearPreviousValue drops the grace-period state, leaving only the current value.
+func (vk *TableVirtualKey) ClearPreviousValue() {
+	vk.PreviousValue = schemas.SecretVar{}
+	vk.PreviousValueHash = ""
+	vk.PreviousValueExpiresAt = nil
+}
+
 // IsExpiredAt reports whether the virtual key has passed its expiry.
 // now == expires_at is treated as expired; nil ExpiresAt means never expires.
 func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
@@ -332,6 +371,16 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 		}
 		vk.ValueHash = encrypt.HashSHA256(resolved)
 	}
+	// PreviousValue is always a plain retired value (never an env/vault ref at
+	// this point), but guard resolution anyway: persisting a set-but-unresolved
+	// value would leave an empty hash that grace-period auth can never match.
+	if vk.PreviousValue.IsSet() {
+		resolved := vk.PreviousValue.GetValue()
+		if resolved == "" {
+			return fmt.Errorf("virtual key %s: previous env/vault ref %q could not be resolved", vk.ID, vk.PreviousValue.GetRawRef())
+		}
+		vk.PreviousValueHash = encrypt.HashSHA256(resolved)
+	}
 	// Store plaintext SecretVar into vault and rewrite to vault ref before encrypting.
 	if schemas.VaultStoreWriteEnabled() {
 		base := schemas.VaultBasePath(vk.TableName(), vk.VaultPathKey())
@@ -344,6 +393,11 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
 		vk.EncryptionStatus = EncryptionStatusEncrypted
+	}
+	if encrypt.IsEnabled() && vk.PreviousValue.IsSet() {
+		if err := encryptSecretVar(&vk.PreviousValue); err != nil {
+			return fmt.Errorf("failed to encrypt virtual key previous value: %w", err)
+		}
 	}
 	return nil
 }
@@ -358,6 +412,11 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	case EncryptionStatusEncrypted:
 		if err := decryptSecretVar(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
+		}
+		if vk.PreviousValue.IsSet() {
+			if err := decryptSecretVar(&vk.PreviousValue); err != nil {
+				return fmt.Errorf("failed to decrypt virtual key previous value: %w", err)
+			}
 		}
 	}
 	StampCalendarAlignment(vk.CalendarAligned, vk.Budgets, vk.RateLimit)

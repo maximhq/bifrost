@@ -294,6 +294,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
+	{IDs: []string{"webhook_deliveries_add_filter_indexes_v1"}, run: migrationAddWebhookDeliveryFilterIndexes},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -1792,6 +1793,96 @@ func migrationAddWebhookDeliveryRequestIDColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+// migrationAddWebhookDeliveryFilterIndexes creates the indexes backing the
+// delivery-history filters (outcome, event, request_id, plus the composite
+// endpoint_id+created_at used by the default page query) on databases that
+// predate them.
+//
+// Postgres is deliberately skipped: there the same indexes are built
+// post-startup and CONCURRENTLY by ensurePerformanceIndexes, so a rolling
+// upgrade never blocks writes on this insert-heavy table.
+func migrationAddWebhookDeliveryFilterIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	logger.Info("[logstore] starting migration %s", webhookDeliveryFilterIndexMigrationName)
+	defer logger.Info("[logstore] finished migration %s", webhookDeliveryFilterIndexMigrationName)
+	if err := webhookDeliveryFilterIndexMigration(ctx, db, logger).Migrate(); err != nil {
+		return fmt.Errorf("error while adding webhook delivery filter indexes: %s", err.Error())
+	}
+	return nil
+}
+
+const webhookDeliveryFilterIndexMigrationName = "webhook_deliveries_add_filter_indexes_v1"
+
+// webhookDeliveryFilterIndexNames are the indexes this migration owns on the
+// dialects it applies to. On Postgres the same four are built post-startup and
+// CONCURRENTLY by ensurePerformanceIndexes instead.
+var webhookDeliveryFilterIndexNames = []string{
+	"idx_webhook_deliveries_endpoint_created",
+	"idx_webhook_deliveries_outcome",
+	"idx_webhook_deliveries_event",
+	"idx_webhook_deliveries_request_id",
+}
+
+// webhookDeliveryFilterIndexMigration builds the migration so both directions
+// are reachable from a test — the rollback in particular, which must stay as
+// Postgres-exempt as the forward direction.
+func webhookDeliveryFilterIndexMigration(ctx context.Context, db *gorm.DB, logger schemas.Logger) *migrator.Gormigrate {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	indexes := webhookDeliveryFilterIndexNames
+	return migrator.New(db, &opts, []*migrator.Migration{{
+		ID: webhookDeliveryFilterIndexMigrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&WebhookDelivery{}) {
+				return nil
+			}
+			for _, index := range indexes {
+				if dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				logger.Info("[logstore] %s: creating index %s on WebhookDelivery", webhookDeliveryFilterIndexMigrationName, index)
+				if err := dbMigrator.CreateIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to create index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Symmetric with Migrate: on Postgres this migration never created
+			// these indexes, so it must not drop them either. They belong to
+			// ensurePerformanceIndexes, which builds them CONCURRENTLY — a plain
+			// DropIndex here would take an ACCESS EXCLUSIVE lock on
+			// webhook_deliveries inside this transaction, blocking reads and
+			// writes on an insert-heavy table.
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			for _, index := range indexes {
+				if !dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				if err := dbMigrator.DropIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to drop index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+	}})
+}
+
+// skipWebhookDeliveryFilterIndexes reports whether this migration leaves the
+// filter indexes alone on the given dialect. See the comment on
+// migrationAddWebhookDeliveryFilterIndexes.
+func skipWebhookDeliveryFilterIndexes(tx *gorm.DB) bool {
+	return tx.Dialector.Name() == "postgres"
+}
+
 // migrationAddMetadataColumn adds the metadata JSON column to the logs table.
 func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_add_metadata_column"
@@ -2829,6 +2920,29 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_cluster_node_inc_usage",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
+	},
+	// Webhook delivery history filtering (see WebhookDeliverySearchFilters).
+	// The composite backs the default endpoint-scoped, newest-first page query;
+	// the rest back the sidebar filters.
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_endpoint_created",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at DESC)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_outcome",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_outcome ON webhook_deliveries(outcome)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_event",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_event ON webhook_deliveries(event)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_request_id ON webhook_deliveries(request_id)",
 	},
 }
 

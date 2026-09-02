@@ -256,8 +256,7 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 		return
 	}
 	if entry.TokenUsageParsed == nil {
-		usageCopy := *billed
-		entry.TokenUsageParsed = &usageCopy
+		entry.TokenUsageParsed = billed.DeepCopy()
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
@@ -334,6 +333,19 @@ const (
 	// large-payload requests. Generous, because each one is idle on a channel receive;
 	// it exists so a pathological burst cannot grow the goroutine set without limit.
 	maxDeferredUsageWatchers = 2048
+	// maxWriterQueueCapacity and maxWriterDeferredUsageConcurrency bound the two
+	// WriterConfig values that Init passes straight to make() (writeQueue and
+	// deferredUsageSem). Without an upper bound a fat-fingered config.json
+	// allocates the channel at boot and takes the process down before it serves a
+	// request, which is a confusing way to fail. They live here rather than beside
+	// the Default* constants in framework/logstore because this plugin is their
+	// only consumer: framework owns the WriterConfig shape and fills defaults, it
+	// enforces nothing. Keeping them local also means the concurrency ceiling sits
+	// next to maxDeferredUsageWatchers, the cap it is deliberately matched to.
+	// Both are far above any real deployment: 100x the default queue, and a
+	// concurrency ceiling equal to the parked-watcher cap it feeds.
+	maxWriterQueueCapacity            = 1000000
+	maxWriterDeferredUsageConcurrency = 2048
 	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
 	// batch writer to land the row before giving up. Backoff doubles per attempt:
 	// 250ms, 500ms, 1s.
@@ -762,11 +774,19 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.MaxBatchBytes <= 0 {
 		return fmt.Errorf("writer max_batch_bytes must be greater than 0")
 	}
+	// Both bounds matter: these two values are passed straight to make() below, so an
+	// out-of-range config allocates at boot instead of being rejected here.
 	if config.WriteQueueCapacity <= 0 {
 		return fmt.Errorf("writer write_queue_capacity must be greater than 0")
 	}
+	if config.WriteQueueCapacity > maxWriterQueueCapacity {
+		return fmt.Errorf("writer write_queue_capacity must be at most %d, got %d", maxWriterQueueCapacity, config.WriteQueueCapacity)
+	}
 	if config.DeferredUsageConcurrency <= 0 {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
+	}
+	if config.DeferredUsageConcurrency > maxWriterDeferredUsageConcurrency {
+		return fmt.Errorf("writer deferred_usage_concurrency must be at most %d, got %d", maxWriterDeferredUsageConcurrency, config.DeferredUsageConcurrency)
 	}
 	return nil
 }
@@ -1876,9 +1896,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.OutputCost = breakdown.OutputCost
 				entry.AdditionalCost = breakdown.AdditionalCost
 			}
-			// Speech / transcription / OCR usage is not aliased into
-			// TokenUsageParsed, so write the split onto the native response too.
-			attachCostToNativeUsage(result, breakdown)
 		}
 		if bifrostErr == nil &&
 			requestType == schemas.BatchResultsRequest &&

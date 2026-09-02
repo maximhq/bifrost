@@ -270,7 +270,7 @@ async function assertOtelReceived() {
     requestID,
     "gen_ai.provider.name",
     "gen_ai.request.model",
-    "gen_ai.request_id",
+    "bifrost.request.id",
     "gen_ai.usage.input_tokens",
     "gen_ai.usage.output_tokens",
     "gen_ai.usage.total_tokens",
@@ -316,7 +316,7 @@ async function assertOtelErrorTrace(id, label) {
     () => state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))));
   assertBufferContainsAll(`OTEL ${label} trace export`, entry.body, [
     id,
-    "gen_ai.error.type",
+    "error.type",
     "invalid_request_error",
     "gen_ai.error.code",
     "model_not_found",

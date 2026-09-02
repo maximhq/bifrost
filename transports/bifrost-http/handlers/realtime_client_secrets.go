@@ -182,12 +182,13 @@ func (h *RealtimeClientSecretsHandler) evaluateMintingGovernance(
 		return nil
 	}
 
-	_, bifrostErr := governancePlugin.EvaluateGovernanceRequest(bifrostCtx, &governance.EvaluationRequest{
-		VirtualKey: bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyVirtualKey),
-		Provider:   providerKey,
-		Model:      model,
-		UserID:     bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyUserID),
-	}, schemas.RealtimeRequest)
+	// The credential and the user the request was made as travel on the context, which is where
+	// evaluation reads them from, so naming them here would only be a second copy to keep in step.
+	_, bifrostErr := governancePlugin.Evaluate(bifrostCtx, &governance.EvaluationRequest{
+		RequestType: schemas.RealtimeRequest,
+		Provider:    providerKey,
+		Model:       model,
+	})
 	return bifrostErr
 }
 
