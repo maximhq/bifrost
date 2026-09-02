@@ -137,7 +137,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, tier))
+}
+
+func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -1783,6 +1787,111 @@ func TestComputeVideoCost_NilSeconds(t *testing.T) {
 	cost := computeVideoCostTotal(&p, usage, nil, serviceTier{})
 	// Only input tokens: 1000 * 0.000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
+}
+
+// sizedVideoPricing mirrors sora-2-pro's published rates: $0.30/s at 720p,
+// $0.50/s at 1024p, $0.70/s at 1080p, with the unbanded rate as the fallback.
+func sizedVideoPricing() configstoreTables.TableModelPricing {
+	return configstoreTables.TableModelPricing{
+		OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond480p:  bifrost.Ptr(0.10),
+		OutputCostPerVideoPerSecond720p:  bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond1024p: bifrost.Ptr(0.50),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	}
+}
+
+func TestComputeVideoCost_ResolutionBands(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	for _, tc := range []struct {
+		name string
+		size string
+		want float64
+	}{
+		{"720p landscape", "1280x720", 8 * 0.30},
+		{"720p portrait", "720x1280", 8 * 0.30},
+		{"1024p landscape", "1792x1024", 8 * 0.50},
+		{"1024p portrait", "1024x1792", 8 * 0.50},
+		{"1080p landscape", "1920x1080", 8 * 0.70},
+		{"1080p portrait", "1080x1920", 8 * 0.70},
+		{"4k", "3840x2160", 8 * 0.60},
+		// No band matches 480, so this must not round up into the 720p rate.
+		{"480p landscape", "854x480", 8 * 0.10},
+		{"480p portrait", "480x854", 8 * 0.10},
+		// 360 has no band, so it must not round up into the 480p rate.
+		{"unlisted resolution falls back", "640x360", 8 * 0.30},
+		{"malformed size falls back", "not-a-size", 8 * 0.30},
+		{"absent size falls back", "", 8 * 0.30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := computeVideoCostTotalSized(&p, nil, &seconds, tc.size, 1, serviceTier{})
+			assert.InDelta(t, tc.want, cost, 1e-12)
+		})
+	}
+}
+
+// A pricing row carrying no banded rates must price exactly as it did before the
+// bands existed.
+func TestComputeVideoCost_NoBandedRatesMatchesUnbanded(t *testing.T) {
+	p := configstoreTables.TableModelPricing{OutputCostPerVideoPerSecond: bifrost.Ptr(0.001)}
+	seconds := 30
+	assert.InDelta(t,
+		computeVideoCostTotal(&p, nil, &seconds, serviceTier{}),
+		computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 1, serviceTier{}),
+		1e-12)
+}
+
+// Seconds is one clip's duration, so a job returning several clips bills for each.
+func TestComputeVideoCost_MultipleOutputsBillPerClip(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	assert.InDelta(t, 3*8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 3, serviceTier{}), 1e-12)
+	// A job that has not yet produced its clips still owes one clip's worth.
+	assert.InDelta(t, 8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 0, serviceTier{}), 1e-12)
+}
+
+// Completion tokens win over the per-second path, and the clip multiplier belongs
+// only to the per-second branch — token usage already covers every output.
+func TestComputeVideoCost_CompletionTokensIgnoreClipCount(t *testing.T) {
+	p := sizedVideoPricing()
+	p.OutputCostPerToken = bifrost.Ptr(0.00002)
+	seconds := 8
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 1000, TotalTokens: 1000}
+
+	cost := computeVideoCostTotalSized(&p, usage, &seconds, "1920x1080", 4, serviceTier{})
+
+	assert.InDelta(t, 1000*0.00002, cost, 1e-12)
+}
+
+// End-to-end through the catalog: a 1080p sora-2-pro job must bill at the 1080p
+// rate rather than the base rate its model row carries.
+func TestCalculateCost_VideoResolutionBandEndToEnd(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): {
+			Model: "sora-2-pro", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+			OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("8"),
+			Size:    "1920x1080",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4")}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 5.60, s.CalculateCost(resp, nil), 1e-9)
 }
 
 // =========================================================================
