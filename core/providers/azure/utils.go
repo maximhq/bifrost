@@ -1,9 +1,12 @@
 package azure
 
 import (
+	"bytes"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // getAzureScopes returns the configured scopes or the default scope if none are valid.
@@ -64,4 +67,58 @@ func resolveAzureEndpoint(ctx *schemas.BifrostContext, key schemas.Key) string {
 		return key.AzureKeyConfig.Endpoint.GetValue()
 	}
 	return ""
+}
+
+// resolvePassthroughAlias rewrites a passthrough path and body so the
+// user-facing alias name is replaced by the wire deployment (alias model_id)
+// resolved for this attempt's key. Azure resolves the deployment from either
+// the /openai/deployments/{name} path segment or the top-level "model" body
+// field, so both are rewritten. No-op when no alias matched.
+func resolvePassthroughAlias(ctx *schemas.BifrostContext, path string, body []byte) (string, []byte) {
+	ra := schemas.GetResolvedAlias(ctx)
+	if ra == nil || ra.Config == nil || ra.Key == "" || ra.Config.ModelID == "" || ra.Config.ModelID == ra.Key {
+		return path, body
+	}
+	return rewriteDeploymentSegment(path, ra.Key, ra.Config.ModelID),
+		rewriteBodyModel(body, ra.Key, ra.Config.ModelID)
+}
+
+// rewriteDeploymentSegment replaces the path segment after "/deployments/"
+// when it equals the alias (case-insensitive, matching KeyAliases.ResolveConfig).
+func rewriteDeploymentSegment(path, alias, modelID string) string {
+	const seg = "/deployments/"
+	i := strings.Index(path, seg)
+	if i == -1 {
+		return path
+	}
+	name := path[i+len(seg):]
+	tail := ""
+	if j := strings.IndexByte(name, '/'); j != -1 {
+		name, tail = name[:j], name[j:]
+	}
+	if !strings.EqualFold(name, alias) {
+		return path
+	}
+	return path[:i+len(seg)] + modelID + tail
+}
+
+// rewriteBodyModel replaces the top-level "model" JSON field when it equals
+// the alias (case-insensitive). Non-JSON and modelless bodies pass through
+// untouched. ponytail: top-level JSON only — multipart passthrough routes
+// carry the deployment in the path, not the body.
+func rewriteBodyModel(body []byte, alias, modelID string) []byte {
+	// JSON objects only: gjson/sjson do not validate, and a multipart body
+	// carrying a "model" form field would otherwise get corrupted.
+	if trimmed := bytes.TrimLeft(body, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
+		return body
+	}
+	current := gjson.GetBytes(body, "model")
+	if current.Type != gjson.String || !strings.EqualFold(current.Str, alias) {
+		return body
+	}
+	out, err := sjson.SetBytes(body, "model", modelID)
+	if err != nil {
+		return body
+	}
+	return out
 }
