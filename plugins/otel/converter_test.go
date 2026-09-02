@@ -42,7 +42,7 @@ func TestConvertTraceToResourceSpan_PluginSpanFilter(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, MessageFormatFlat)
 	spans := rs.ScopeSpans[0].Spans
 
 	// The filtered logging span is dropped; root + governance remain.
@@ -103,13 +103,13 @@ func TestConvertTraceToResourceSpan_DisableRootSpanContent(t *testing.T) {
 	}
 
 	// Flag off: root keeps its content (current default behavior).
-	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false)
+	off := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, false, MessageFormatFlat)
 	if root := findRoot(off.ScopeSpans[0].Spans); attrString(root, schemas.AttrInputMessages) == "" {
 		t.Error("with flag off, root span should retain input content")
 	}
 
 	// Flag on: root content dropped, request model retained, child content untouched.
-	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, true)
+	on := p.convertTraceToResourceSpan("svc", makeContentTrace(), nil, false, false, true, MessageFormatFlat)
 	root := findRoot(on.ScopeSpans[0].Spans)
 	if got := attrString(root, schemas.AttrInputMessages); got != "" {
 		t.Errorf("root input content = %q, want empty when disableRootSpanContent is set", got)
@@ -198,7 +198,7 @@ func TestSessionGroupingOverridesTraceID(t *testing.T) {
 	wantParent := hexToBytes(sessionParentSpanID(sess), 8)
 
 	for _, original := range []string{"00000000000000000000000000000001", "00000000000000000000000000000002"} {
-		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), nil, false, true, false)
+		rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, sess, ""), nil, false, true, false, MessageFormatFlat)
 		spans := rs.ScopeSpans[0].Spans
 		if len(spans) != 2 {
 			t.Fatalf("expected 2 spans, got %d", len(spans))
@@ -228,7 +228,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0123456789abcdef0123456789abcdef"
 	const inboundParent = "fedcba9876543210"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), nil, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", inboundParent), nil, false, true, false, MessageFormatFlat)
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -255,7 +255,7 @@ func TestSessionGroupingTraceparentWins(t *testing.T) {
 func TestSessionGroupingDisabled(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "00000000000000000000000000000009"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), nil, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "user-42", ""), nil, false, false, false, MessageFormatFlat)
 	spans := rs.ScopeSpans[0].Spans
 
 	wantTrace := hexToBytes(original, 16)
@@ -281,7 +281,7 @@ func TestSessionGroupingDisabled(t *testing.T) {
 func TestNoSessionIDNoTag(t *testing.T) {
 	p := &OtelPlugin{}
 	const original = "0000000000000000000000000000000a"
-	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), nil, false, true, false)
+	rs := p.convertTraceToResourceSpan("svc", makeSessionTrace(original, "", ""), nil, false, true, false, MessageFormatFlat)
 	root := findRoot(rs.ScopeSpans[0].Spans)
 	if root == nil {
 		t.Fatal("root span not found")
