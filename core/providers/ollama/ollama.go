@@ -50,7 +50,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "")
 
 	// BaseURL is optional when keys have ollama_key_config with per-key URLs
 	return &OllamaProvider{
@@ -74,8 +74,8 @@ func (provider *OllamaProvider) getBaseURL(key schemas.Key) string {
 	if key.OllamaKeyConfig != nil && key.OllamaKeyConfig.URL.GetValue() != "" {
 		return strings.TrimRight(key.OllamaKeyConfig.URL.GetValue(), "/")
 	}
-	if provider.networkConfig.BaseURL != "" {
-		return strings.TrimRight(provider.networkConfig.BaseURL, "/")
+	if provider.networkConfig.BaseURL.GetValue() != "" {
+		return strings.TrimRight(provider.networkConfig.BaseURL.GetValue(), "/")
 	}
 	return ""
 }

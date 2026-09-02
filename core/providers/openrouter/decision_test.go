@@ -29,7 +29,7 @@ const decisionResponseBody = `{
 
 func newDecisionTestProvider(baseURL string) *openrouter.OpenRouterProvider {
 	return openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 }
 
