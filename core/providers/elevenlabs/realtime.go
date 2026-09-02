@@ -22,7 +22,7 @@ func (provider *ElevenlabsProvider) RealtimeWebSocketURL(_ schemas.Key, model, i
 	if intent == "transcription" {
 		return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
 	}
-	base := provider.networkConfig.BaseURL
+	base := provider.networkConfig.BaseURL.GetValue()
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	return base + "/v1/convai/conversation?agent_id=" + model, nil

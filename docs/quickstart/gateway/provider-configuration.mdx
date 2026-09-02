@@ -183,6 +183,7 @@ export COHERE_API_KEY="your-cohere-api-key"
 **Environment Variable Handling:**
 
 - Use `"value": "env.VARIABLE_NAME"` to reference environment variables
+- `network_config.base_url` also accepts `env.VARIABLE_NAME` (or a `vault.` reference), so a private endpoint URL never has to be committed in plaintext; the reference is kept on read-back and a reference that resolves to an empty value is rejected at load time
 - Use `"value": "sk-proj-xxxxxxxxx"` to pass keys directly
 - All sensitive data is automatically redacted in GET requests and UI responses for security
 

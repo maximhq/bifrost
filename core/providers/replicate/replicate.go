@@ -54,11 +54,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = replicateAPIBaseURL
-	}
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, replicateAPIBaseURL)
 
 	return &ReplicateProvider{
 		logger:               logger,
@@ -82,7 +78,7 @@ func (provider *ReplicateProvider) buildRequestURL(ctx *schemas.BifrostContext, 
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 const (
@@ -414,7 +410,7 @@ func (provider *ReplicateProvider) ListModels(ctx *schemas.BifrostContext, keys 
 		return nil, err
 	}
 
-	if provider.networkConfig.BaseURL == "" {
+	if provider.networkConfig.BaseURL.GetValue() == "" {
 		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
 
@@ -458,7 +454,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.TextCompletionRequest,
@@ -550,7 +546,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.TextCompletionStreamRequest,
@@ -808,7 +804,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ChatCompletionRequest,
@@ -900,7 +896,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ChatCompletionStreamRequest,
@@ -1172,7 +1168,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ResponsesRequest,
@@ -1259,7 +1255,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	// Build prediction URL
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ResponsesStreamRequest,
@@ -1790,7 +1786,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageGenerationRequest,
@@ -1892,7 +1888,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageGenerationStreamRequest,
@@ -2217,7 +2213,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageEditRequest,
@@ -2317,7 +2313,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	// Build prediction URL based on model type (version ID or model name)
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageEditStreamRequest,
@@ -2625,7 +2621,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	// Create prediction asynchronously and return job ID without polling.
 	predictionURL := buildPredictionURL(
 		ctx,
-		provider.networkConfig.BaseURL,
+		provider.networkConfig.BaseURL.GetValue(),
 		request.Model,
 		provider.customProviderConfig,
 		schemas.VideoGenerationRequest,
@@ -2977,7 +2973,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files")
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files")
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
 
@@ -3053,7 +3049,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with query params
-	requestURL := provider.networkConfig.BaseURL + "/v1/files"
+	requestURL := provider.networkConfig.BaseURL.GetValue() + "/v1/files"
 	values := url.Values{}
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
@@ -3165,7 +3161,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + url.PathEscape(request.FileID))
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + url.PathEscape(request.FileID))
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -3242,7 +3238,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + url.PathEscape(request.FileID))
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + url.PathEscape(request.FileID))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 

@@ -30,8 +30,8 @@ func TestOpencodeProviderConstructors(t *testing.T) {
 		if provider.GetProviderKey() != schemas.OpencodeZen {
 			t.Errorf("expected provider key %s, got %s", schemas.OpencodeZen, provider.GetProviderKey())
 		}
-		if provider.networkConfig.BaseURL != "https://opencode.ai/zen" {
-			t.Errorf("expected base URL https://opencode.ai/zen, got %s", provider.networkConfig.BaseURL)
+		if provider.networkConfig.BaseURL.GetValue() != "https://opencode.ai/zen" {
+			t.Errorf("expected base URL https://opencode.ai/zen, got %s", provider.networkConfig.BaseURL.GetValue())
 		}
 	})
 
@@ -45,8 +45,8 @@ func TestOpencodeProviderConstructors(t *testing.T) {
 		if provider.GetProviderKey() != schemas.OpencodeGo {
 			t.Errorf("expected provider key %s, got %s", schemas.OpencodeGo, provider.GetProviderKey())
 		}
-		if provider.networkConfig.BaseURL != "https://opencode.ai/zen/go" {
-			t.Errorf("expected base URL https://opencode.ai/zen/go, got %s", provider.networkConfig.BaseURL)
+		if provider.networkConfig.BaseURL.GetValue() != "https://opencode.ai/zen/go" {
+			t.Errorf("expected base URL https://opencode.ai/zen/go, got %s", provider.networkConfig.BaseURL.GetValue())
 		}
 	})
 }
@@ -367,7 +367,7 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 
 			provider, err := tc.newProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        server.URL,
+					BaseURL:                        schemas.NewSecretVar(server.URL),
 					DefaultRequestTimeoutInSeconds: 10,
 				},
 			})

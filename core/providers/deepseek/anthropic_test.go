@@ -31,7 +31,7 @@ func (l testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBui
 func newTestDeepSeekProvider(baseURL string) (*deepseek.DeepSeekProvider, error) {
 	return deepseek.NewDeepSeekProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        baseURL,
+			BaseURL:                        schemas.NewSecretVar(baseURL),
 			DefaultRequestTimeoutInSeconds: 5,
 			StreamIdleTimeoutInSeconds:     5,
 			MaxConnsPerHost:                1,

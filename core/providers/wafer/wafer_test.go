@@ -114,7 +114,7 @@ func TestWaferFileUpload(t *testing.T) {
 
 	provider, err := wafer.NewWaferProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL + "/v1",
+			BaseURL:                        schemas.NewSecretVar(server.URL + "/v1"),
 			DefaultRequestTimeoutInSeconds: 10,
 		},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -215,7 +215,7 @@ func TestWaferFileUploadRequiredFields(t *testing.T) {
 
 	provider, err := wafer.NewWaferProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL + "/v1",
+			BaseURL:                        schemas.NewSecretVar(server.URL + "/v1"),
 			DefaultRequestTimeoutInSeconds: 10,
 		},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -284,7 +284,7 @@ func TestWaferChatImageFileID(t *testing.T) {
 
 	provider, err := wafer.NewWaferProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL + "/v1",
+			BaseURL:                        schemas.NewSecretVar(server.URL + "/v1"),
 			DefaultRequestTimeoutInSeconds: 10,
 		},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
