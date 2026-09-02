@@ -4219,7 +4219,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					if *bifrostReq.Params.Reasoning.Effort != "none" {
 						effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 
-						if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
+						if schemas.ShouldUseAdaptiveThinking(ctx,
+							caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())),
+							caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model()))) {
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
