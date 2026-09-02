@@ -16,7 +16,7 @@ import (
 
 type fakeAccountingStore struct {
 	logs             map[string]*logstore.Log
-	jobs             map[string]*cstables.TableBatchJob
+	jobs             map[string]*cstables.TableProviderJob
 	failCompleteOnce bool
 	// failCompleteAlways models a settlement that keeps failing (a wedged store, a
 	// deleted budget), which is what the accounting retry budget has to bound.
@@ -30,7 +30,7 @@ type fakeAccountingStore struct {
 func newFakeAccountingStore() *fakeAccountingStore {
 	return &fakeAccountingStore{
 		logs: make(map[string]*logstore.Log),
-		jobs: make(map[string]*cstables.TableBatchJob),
+		jobs: make(map[string]*cstables.TableProviderJob),
 	}
 }
 
@@ -52,15 +52,15 @@ func (s *fakeAccountingStore) FindByID(ctx context.Context, id string) (*logstor
 	return &copied, nil
 }
 
-func (s *fakeAccountingStore) UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error {
+func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
 	if job.ID == "" {
-		job.ID = cstables.BatchJobID(job.Provider, job.BatchID)
+		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, job.Provider, job.JobID)
 	}
 	existing, ok := s.jobs[job.ID]
 	if !ok {
 		copied := *job
 		if copied.AccountingStatus == "" {
-			copied.AccountingStatus = cstables.BatchJobAccountingStatusPending
+			copied.AccountingStatus = cstables.ProviderJobAccountingStatusPending
 		}
 		s.jobs[job.ID] = &copied
 		return nil
@@ -83,7 +83,7 @@ func (s *fakeAccountingStore) UpsertBatchJob(ctx context.Context, job *cstables.
 	return nil
 }
 
-func (s *fakeAccountingStore) GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error) {
+func (s *fakeAccountingStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
 	if s.failGetOnce {
 		s.failGetOnce = false
 		return nil, errors.New("transient read failure")
@@ -96,21 +96,32 @@ func (s *fakeAccountingStore) GetBatchJob(ctx context.Context, jobID string) (*c
 	return &copied, nil
 }
 
-func (s *fakeAccountingStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error) {
-	var jobs []*cstables.TableBatchJob
+func (s *fakeAccountingStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*cstables.TableProviderJob, error) {
+	var jobs []*cstables.TableProviderJob
+	if kind == "" {
+		kind = cstables.ProviderJobKindBatch
+	}
 	for _, job := range s.jobs {
+		// Mirror the real store: a sweeper only ever sees its own kind's rows.
+		jobKind := job.Kind
+		if jobKind == "" {
+			jobKind = cstables.ProviderJobKindBatch
+		}
+		if jobKind != kind {
+			continue
+		}
 		if provider != "" && job.Provider != provider {
 			continue
 		}
 		if job.NextCheckAt == nil || job.NextCheckAt.After(now) {
 			continue
 		}
-		if job.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || job.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+		if job.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || job.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable {
 			continue
 		}
 		// Hand back a detached copy: a real store returns rows, not live pointers.
 		// Returning the map pointer would let sweeper mutations persist without an
-		// UpsertBatchJob and hide missing-write bugs.
+		// UpsertProviderJob and hide missing-write bugs.
 		copied := *job
 		jobs = append(jobs, &copied)
 		if limit > 0 && len(jobs) >= limit {
@@ -120,29 +131,35 @@ func (s *fakeAccountingStore) ListDueBatchJobs(ctx context.Context, provider str
 	return jobs, nil
 }
 
-func (s *fakeAccountingStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (s *fakeAccountingStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+	// Mirror the real store, which refuses a blank runner id. Without this the fake
+	// is more permissive than production and a caller that never claims anything
+	// looks fine in tests while failing against a real database.
+	if runnerID == "" {
+		return false, errors.New("runner id is required")
+	}
 	entry, ok := s.jobs[jobID]
 	if !ok {
 		return false, errors.New("missing batch job")
 	}
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusAccounted {
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted {
 		return false, nil
 	}
 	// "unpriceable" is a stop-polling marker, not a refusal of money: a caller
 	// holding real results may re-drive it. Mirrors the real store's allowUnpriceable.
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable && !allowUnpriceable {
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable && !allowUnpriceable {
 		return false, nil
 	}
 	// Staleness reads claimed_at, never updated_at — mirroring the real store, where
-	// updated_at is refreshed by the unfenced UpsertBatchJob and so cannot be trusted
+	// updated_at is refreshed by the unfenced UpsertProviderJob and so cannot be trusted
 	// to represent claim age.
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusProcessing &&
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusProcessing &&
 		entry.ClaimedAt != nil && entry.ClaimedAt.After(staleBefore) {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	rid := runnerID
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusProcessing
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusProcessing
 	entry.RunnerID = &rid
 	entry.ClaimedAt = &now
 	entry.LastError = nil
@@ -150,7 +167,7 @@ func (s *fakeAccountingStore) ClaimBatchJob(ctx context.Context, jobID, runnerID
 	return true, nil
 }
 
-func (s *fakeAccountingStore) ownedJob(id, runnerID string) (*cstables.TableBatchJob, error) {
+func (s *fakeAccountingStore) ownedJob(id, runnerID string) (*cstables.TableProviderJob, error) {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return nil, errors.New("missing batch job")
@@ -161,7 +178,7 @@ func (s *fakeAccountingStore) ownedJob(id, runnerID string) (*cstables.TableBatc
 	return entry, nil
 }
 
-func (s *fakeAccountingStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+func (s *fakeAccountingStore) MarkProviderJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
 	entry, err := s.ownedJob(id, runnerID)
 	if err != nil {
 		return err
@@ -171,7 +188,7 @@ func (s *fakeAccountingStore) MarkBatchJobAggregateLogWritten(ctx context.Contex
 	return nil
 }
 
-func (s *fakeAccountingStore) MarkBatchJobGovernanceReported(ctx context.Context, id, runnerID string) error {
+func (s *fakeAccountingStore) MarkProviderJobGovernanceReported(ctx context.Context, id, runnerID string) error {
 	entry, err := s.ownedJob(id, runnerID)
 	if err != nil {
 		return err
@@ -181,7 +198,7 @@ func (s *fakeAccountingStore) MarkBatchJobGovernanceReported(ctx context.Context
 	return nil
 }
 
-func (s *fakeAccountingStore) CompleteBatchJob(ctx context.Context, id, runnerID string) error {
+func (s *fakeAccountingStore) CompleteProviderJob(ctx context.Context, id, runnerID string) error {
 	entry, err := s.ownedJob(id, runnerID)
 	if err != nil {
 		return err
@@ -193,13 +210,13 @@ func (s *fakeAccountingStore) CompleteBatchJob(ctx context.Context, id, runnerID
 	if s.failCompleteAlways {
 		return errors.New("complete failed")
 	}
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusAccounted
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
 	entry.RunnerID = nil
 	entry.ClaimedAt = nil
 	return nil
 }
 
-func (s *fakeAccountingStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+func (s *fakeAccountingStore) MarkProviderJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
 	if s.failUnpriceable {
 		return errors.New("unpriceable marker write failed")
 	}
@@ -207,21 +224,21 @@ func (s *fakeAccountingStore) MarkBatchJobUnpriceable(ctx context.Context, id, r
 	if ownErr != nil {
 		return ownErr
 	}
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusUnpriceable
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusUnpriceable
 	entry.UnpriceableReason = &reason
 	entry.RunnerID = nil
 	entry.ClaimedAt = nil
 	return nil
 }
 
-func (s *fakeAccountingStore) FailBatchJob(ctx context.Context, id, runnerID string, err error) error {
-	// Fenced on runnerID like the real finishBatchJob: a stale runner must not be
+func (s *fakeAccountingStore) FailProviderJob(ctx context.Context, id, runnerID string, err error) error {
+	// Fenced on runnerID like the real finishProviderJob: a stale runner must not be
 	// able to release another runner's live claim.
 	entry, ownErr := s.ownedJob(id, runnerID)
 	if ownErr != nil {
 		return ownErr
 	}
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusError
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusError
 	entry.RunnerID = nil
 	entry.ClaimedAt = nil
 	return nil
@@ -261,7 +278,7 @@ type fakeAggregateLogWriter struct {
 	emitted []*logstore.Log
 }
 
-func (w *fakeAggregateLogWriter) EmitBatchAggregateLog(ctx context.Context, entry *logstore.Log) {
+func (w *fakeAggregateLogWriter) EmitAggregateLog(ctx context.Context, entry *logstore.Log) {
 	copied := *entry
 	w.emitted = append(w.emitted, &copied)
 }
@@ -279,7 +296,7 @@ func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bi
 	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens), Priced: true}
 }
 
-func (r *fakeUsageReporter) ReportBatchUsage(ctx context.Context, report UsageReport) error {
+func (r *fakeUsageReporter) ReportUsage(ctx context.Context, report UsageReport) error {
 	r.reports = append(r.reports, report)
 	return nil
 }
@@ -376,9 +393,9 @@ func TestAccountBatchResults_MissingModelMarksUnpriceable(t *testing.T) {
 	assert.False(t, summary.Accounted)
 	assert.Equal(t, UnpriceableReasonMissingModel, summary.UnpriceableReason)
 
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_missing_model")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_missing_model")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonMissingModel, *job.UnpriceableReason)
 
@@ -397,6 +414,7 @@ func TestAccountBatchResults_MissingBatchPricingMarksUnpriceable(t *testing.T) {
 	store := newFakeAccountingStore()
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_missing_pricing",
 		Payload: BatchPayload{
@@ -408,9 +426,9 @@ func TestAccountBatchResults_MissingBatchPricingMarksUnpriceable(t *testing.T) {
 	assert.False(t, summary.Accounted)
 	assert.Equal(t, UnpriceableReasonMissingBatchPricing, summary.UnpriceableReason)
 
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_missing_pricing")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_missing_pricing")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonMissingBatchPricing, *job.UnpriceableReason)
 
@@ -471,6 +489,7 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 	}
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_zero_cost",
 		Payload: BatchPayload{
@@ -488,6 +507,7 @@ func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 	store := newFakeAccountingStore()
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.Anthropic,
 		ProviderJobID: "anthropic_batch",
 		Payload: BatchPayload{
@@ -510,6 +530,7 @@ func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T
 	store := newFakeAccountingStore()
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.Bedrock,
 		ProviderJobID: "bedrock_batch",
 		FallbackModel: "amazon.nova-lite-v1:0",
@@ -533,6 +554,7 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 	store := newFakeAccountingStore()
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.Bedrock,
 		ProviderJobID: "bedrock_cache_batch",
 		FallbackModel: "amazon.nova-lite-v1:0",
@@ -576,6 +598,7 @@ func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T)
 	store := newFakeAccountingStore()
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.Gemini,
 		ProviderJobID: "gemini_batch",
 		FallbackModel: "gemini-2.0-flash",
@@ -601,6 +624,7 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_writer",
 		FallbackModel: "gpt-4o-mini",
@@ -627,6 +651,7 @@ func TestAccountBatchResults_RetryAfterCompleteFailureDoesNotReportGovernanceTwi
 	reporter := &fakeUsageReporter{}
 
 	req := JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_retry_governance",
 		FallbackModel: "gpt-4o-mini",
@@ -657,6 +682,7 @@ func TestAccountBatchResults_RecordsPartialPricingMetadata(t *testing.T) {
 	reporter := &fakeUsageReporter{}
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_partial",
 		UsageReporter: reporter,
@@ -716,12 +742,12 @@ type fakeBatchResultFetcher struct {
 	resultsResp   *schemas.BifrostBatchResultsResponse
 }
 
-func (f *fakeBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (f *fakeBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	f.retrieveCalls++
 	return f.retrieveResp, nil
 }
 
-func (f *fakeBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (f *fakeBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	f.resultsCalls++
 	return f.resultsResp, nil
 }
@@ -753,15 +779,15 @@ func (s *fakeKVStore) Delete(key string) (bool, error) {
 func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_sweep"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_sweep"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_sweep",
+		JobID:            "batch_sweep",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -784,24 +810,24 @@ func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
 
 	assert.Equal(t, 1, fetcher.retrieveCalls)
 	assert.Equal(t, 1, fetcher.resultsCalls)
-	accounted := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_sweep")]
+	accounted := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_sweep")]
 	require.NotNil(t, accounted)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, accounted.AccountingStatus)
 	assert.Len(t, store.logs, 1)
 }
 
 func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Anthropic), "anthropic_sweep"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Anthropic), "anthropic_sweep"),
 		Provider:         string(schemas.Anthropic),
-		BatchID:          "anthropic_sweep",
+		JobID:            "anthropic_sweep",
 		Model:            "claude-3-5-haiku",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -823,23 +849,23 @@ func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
 
 	assert.Equal(t, 1, fetcher.retrieveCalls)
 	assert.Equal(t, 1, fetcher.resultsCalls)
-	accounted := store.jobs[cstables.BatchJobID(string(schemas.Anthropic), "anthropic_sweep")]
+	accounted := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Anthropic), "anthropic_sweep")]
 	require.NotNil(t, accounted)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, accounted.AccountingStatus)
 }
 
 func TestSweeper_AccountsCompletedGeminiJob(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Gemini), "gemini_sweep"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Gemini), "gemini_sweep"),
 		Provider:         string(schemas.Gemini),
-		BatchID:          "gemini_sweep",
+		JobID:            "gemini_sweep",
 		Model:            "gemini-2.0-flash",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -861,23 +887,23 @@ func TestSweeper_AccountsCompletedGeminiJob(t *testing.T) {
 
 	assert.Equal(t, 1, fetcher.retrieveCalls)
 	assert.Equal(t, 1, fetcher.resultsCalls)
-	accounted := store.jobs[cstables.BatchJobID(string(schemas.Gemini), "gemini_sweep")]
+	accounted := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Gemini), "gemini_sweep")]
 	require.NotNil(t, accounted)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, accounted.AccountingStatus)
 }
 
 func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_sweep_lease"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_sweep_lease"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_sweep_lease",
+		JobID:            "batch_sweep_lease",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{}
 	kv := &fakeKVStore{setNXAllowed: false}
@@ -898,17 +924,17 @@ func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 func TestSweeper_ReleasesProviderPollLeaseAfterSuccessfulPoll(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_release_lease"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_release_lease"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_release_lease",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_release_lease",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{retrieveResp: &schemas.BifrostBatchRetrieveResponse{
-		ID:     job.BatchID,
+		ID:     job.JobID,
 		Status: schemas.BatchStatusInProgress,
 	}}
 	kv := &fakeKVStore{setNXAllowed: true}
@@ -927,16 +953,16 @@ func TestSweeper_ReleasesProviderPollLeaseAfterSuccessfulPoll(t *testing.T) {
 func TestSweeper_RescheduleUsesBackoffAndJitter(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_backoff"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_backoff"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_backoff",
+		JobID:            "batch_backoff",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		PollAttempts:     9,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -964,13 +990,13 @@ func TestSweeper_RescheduleUsesBackoffAndJitter(t *testing.T) {
 func TestSweeper_ExpiredBatchSettlesTheRowsThatCompleted(t *testing.T) {
 	store := newFakeAccountingStore()
 	due := time.Now().UTC().Add(-time.Minute)
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_expired")
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_expired")
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_expired",
+		JobID:            "batch_expired",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &due,
 	}))
 
@@ -990,19 +1016,19 @@ func TestSweeper_ExpiredBatchSettlesTheRowsThatCompleted(t *testing.T) {
 
 	assert.Equal(t, 1, fetcher.resultsCalls, "a terminal batch must still be asked for its results")
 	require.Len(t, store.logs, 1)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, store.jobs[jobID].AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[jobID].AccountingStatus)
 }
 
 // With nothing to fetch, the terminal batch ends where it always did.
 func TestSweeper_ExpiredBatchWithoutResultsIsTerminalWithoutResults(t *testing.T) {
 	store := newFakeAccountingStore()
 	due := time.Now().UTC().Add(-time.Minute)
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_expired_empty")
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_expired_empty")
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_expired_empty",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_expired_empty",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &due,
 	}))
 
@@ -1020,7 +1046,7 @@ func TestSweeper_ExpiredBatchWithoutResultsIsTerminalWithoutResults(t *testing.T
 	assert.Empty(t, store.logs)
 	job := store.jobs[jobID]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, "terminal_without_results", *job.UnpriceableReason)
 }
@@ -1029,11 +1055,11 @@ func TestSweeper_ExpiredBatchWithoutResultsIsTerminalWithoutResults(t *testing.T
 func TestSweeper_DeletedBatchDoesNotFetchResults(t *testing.T) {
 	store := newFakeAccountingStore()
 	due := time.Now().UTC().Add(-time.Minute)
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_deleted"),
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_deleted"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_deleted",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_deleted",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &due,
 	}))
 
@@ -1049,23 +1075,23 @@ func TestSweeper_DeletedBatchDoesNotFetchResults(t *testing.T) {
 }
 
 // A settlement that keeps failing used to re-download the whole results payload and
-// re-fail every sweep, forever: FailBatchJob left next_check_at in the past and never
+// re-fail every sweep, forever: FailProviderJob left next_check_at in the past and never
 // advanced poll_attempts. It has to consume the same retry budget as any other failure.
 func TestSweeper_ReschedulesAfterSettlementFailure(t *testing.T) {
 	store := newFakeAccountingStore()
 	store.failCompleteAlways = true
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_settle_fail")
-	job := &cstables.TableBatchJob{
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_settle_fail")
+	job := &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_settle_fail",
+		JobID:            "batch_settle_fail",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		PollAttempts:     9,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -1097,17 +1123,17 @@ func TestSweeper_SettlementFailureHitsPollAttemptCap(t *testing.T) {
 	store := newFakeAccountingStore()
 	store.failCompleteAlways = true
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_settle_cap")
-	job := &cstables.TableBatchJob{
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_settle_cap")
+	job := &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_settle_cap",
+		JobID:            "batch_settle_cap",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		PollAttempts:     MaxPollAttempts - 1,
 		NextCheckAt:      &now,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -1128,7 +1154,7 @@ func TestSweeper_SettlementFailureHitsPollAttemptCap(t *testing.T) {
 
 	updated := store.jobs[jobID]
 	require.NotNil(t, updated)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, updated.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, updated.AccountingStatus)
 	require.NotNil(t, updated.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonMaxPollAttempts, *updated.UnpriceableReason)
 }
@@ -1228,10 +1254,10 @@ func TestAccountBatchResults_ExternalBatchWithoutRow(t *testing.T) {
 	assert.True(t, summary.Accounted)
 	assert.Greater(t, summary.Cost, 0.0)
 
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "ext-batch-no-job")
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "ext-batch-no-job")
 	job, ok := store.jobs[jobID]
 	require.True(t, ok, "batch_jobs row should be created for externally-created batch")
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
 }
 
 func TestAccountBatchResults_EmbeddingEndpointUsesEmbeddingPricing(t *testing.T) {
@@ -1371,9 +1397,9 @@ func TestAccountBatchResults_PersistedJobReadFailureFailsClosed(t *testing.T) {
 	assert.Empty(t, reporter.reports, "no usage should be reported")
 
 	// The claim is released so a later attempt can retry without waiting out the TTL.
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "read-failure")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "read-failure")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusError, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusError, job.AccountingStatus)
 	assert.Nil(t, job.RunnerID)
 }
 
@@ -1404,9 +1430,9 @@ func TestAccountBatchResults_ParseErrorsStillPriceTheParsedRows(t *testing.T) {
 	assert.Equal(t, 30, summary.Usage.PromptTokens)
 	assert.Equal(t, 9, summary.Usage.CompletionTokens)
 
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "malformed-results")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "malformed-results")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
 
 	logged := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "malformed-results")]
 	require.NotNil(t, logged)
@@ -1443,9 +1469,9 @@ func TestAccountBatchResults_AllRowsUnparseableMarksUnpriceable(t *testing.T) {
 	require.NotNil(t, summary)
 	assert.False(t, summary.Accounted)
 	assert.Equal(t, UnpriceableReasonResultParseErrors, summary.UnpriceableReason)
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "all-malformed")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "all-malformed")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonResultParseErrors, *job.UnpriceableReason)
 	assert.Empty(t, store.logs)
@@ -1493,9 +1519,9 @@ func TestAccountBatchResults_PartiallyPricedBatchKeepsCostUnknown(t *testing.T) 
 	assert.Nil(t, breakdowns["unknown-model"].Cost)
 
 	// Parked, not closed: the job stops being polled but stays re-drivable.
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_half_priced")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_half_priced")]
 	require.NotNil(t, job)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonMissingBatchPricing, *job.UnpriceableReason)
 }
@@ -1510,17 +1536,17 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 	creatorBudgets := `["budget-creator"]`
 	fetcherVK := "vk-fetcher"
 
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_attribution"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_attribution"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_attribution",
+		JobID:            "batch_attribution",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-creator",
 		VirtualKeyID:     &creatorVK,
 		BudgetIDs:        &creatorBudgets,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
@@ -1583,18 +1609,18 @@ func TestAccountBatchResults_FillsNamesFromSourceLog(t *testing.T) {
 		TeamName:       strPtr("Team One"),
 	}
 
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_same_vk"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_same_vk"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_same_vk",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_same_vk",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-1",
 		VirtualKeyID:     &sharedVK,
 		UserID:           strPtr("user-creator"),
 		TeamID:           strPtr("team-1"),
 		SourceLogID:      &sourceLogID,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
 		Provider:      schemas.OpenAI,
@@ -1642,18 +1668,18 @@ func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
 		UserName:       strPtr("Alice"),
 	}
 
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_shared_vk"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_shared_vk"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_shared_vk",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_shared_vk",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-1",
 		VirtualKeyID:     &sharedVK,
 		UserID:           strPtr("user-alice"),
 		BudgetIDs:        &creatorBudgets,
 		SourceLogID:      &sourceLogID,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	// Bob fetches Alice's results. Same access-profile virtual key, different person.
 	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
@@ -1707,18 +1733,18 @@ func TestAccountBatchResults_SweeperPathKeepsUserAttribution(t *testing.T) {
 		TeamName:     strPtr("Team One"),
 	}
 
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.OpenAI), "batch_sweeper"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_sweeper"),
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_sweeper",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_sweeper",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-1",
 		VirtualKeyID:     &vk,
 		UserID:           strPtr("user-alice"),
 		TeamID:           strPtr("team-1"),
 		SourceLogID:      &sourceLogID,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	// No BaseLog: this is the sweeper, hours after the request that created the batch.
 	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
@@ -1790,14 +1816,14 @@ func TestAccountBatchResults_WithoutJobAttributionUsesBaseLog(t *testing.T) {
 // permanently.
 func TestAccountBatchResults_ReclaimsUnpriceableJobWhenResultsArrive(t *testing.T) {
 	store := newFakeAccountingStore()
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_reclaim")
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_reclaim")
 	reason := UnpriceableReasonMaxPollAttempts
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 		ID:                jobID,
 		Provider:          string(schemas.OpenAI),
-		BatchID:           "batch_reclaim",
+		JobID:             "batch_reclaim",
 		Model:             "gpt-4o-mini",
-		AccountingStatus:  cstables.BatchJobAccountingStatusUnpriceable,
+		AccountingStatus:  cstables.ProviderJobAccountingStatusUnpriceable,
 		UnpriceableReason: &reason,
 	}))
 
@@ -1814,7 +1840,7 @@ func TestAccountBatchResults_ReclaimsUnpriceableJobWhenResultsArrive(t *testing.
 	require.NotNil(t, summary)
 	assert.True(t, summary.Claimed)
 	assert.True(t, summary.Accounted)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, store.jobs[jobID].AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[jobID].AccountingStatus)
 	assert.Len(t, store.logs, 1)
 }
 
@@ -1823,14 +1849,14 @@ func TestAccountBatchResults_ReclaimsUnpriceableJobWhenResultsArrive(t *testing.
 // zero-valued rather than erroring, so a caller displays "not priced yet".
 func TestAccountBatchResults_LosingClaimWithNoExistingLogMirrorsNothing(t *testing.T) {
 	store := newFakeAccountingStore()
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_in_flight")
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_in_flight")
 	now := time.Now().UTC()
-	store.jobs[jobID] = &cstables.TableBatchJob{
+	store.jobs[jobID] = &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_in_flight",
+		JobID:            "batch_in_flight",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusProcessing,
+		AccountingStatus: cstables.ProviderJobAccountingStatusProcessing,
 		RunnerID:         schemas.Ptr("other-node"),
 		ClaimedAt:        &now,
 	}
@@ -1863,9 +1889,9 @@ func TestAccountBatchResults_StatusPersistsAndMirrorsOnRepeatCall(t *testing.T) 
 		Provider:      schemas.OpenAI,
 		ProviderJobID: "batch_status",
 		FallbackModel: "gpt-4o-mini",
-		Job: &cstables.TableBatchJob{
+		Job: &cstables.TableProviderJob{
 			Provider:       string(schemas.OpenAI),
-			BatchID:        "batch_status",
+			JobID:          "batch_status",
 			Model:          "gpt-4o-mini",
 			ProviderStatus: string(schemas.BatchStatusEnded),
 		},
@@ -1902,21 +1928,21 @@ func TestAccountBatchResults_TerminalJobsStayClosedWithoutResults(t *testing.T) 
 		name   string
 		status string
 	}{
-		{"unpriceable without results", cstables.BatchJobAccountingStatusUnpriceable},
-		{"accounted", cstables.BatchJobAccountingStatusAccounted},
+		{"unpriceable without results", cstables.ProviderJobAccountingStatusUnpriceable},
+		{"accounted", cstables.ProviderJobAccountingStatusAccounted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeAccountingStore()
-			jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_closed")
-			require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+			jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_closed")
+			require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 				ID:               jobID,
 				Provider:         string(schemas.OpenAI),
-				BatchID:          "batch_closed",
+				JobID:            "batch_closed",
 				AccountingStatus: tc.status,
 			}))
 
 			results := []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 10, 5)}
-			if tc.status == cstables.BatchJobAccountingStatusUnpriceable {
+			if tc.status == cstables.ProviderJobAccountingStatusUnpriceable {
 				results = nil
 			}
 			summary, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
@@ -1950,13 +1976,13 @@ func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testin
 	creatorBudgets := `["budget-creator"]`
 	fetcherVK := "vk-fetcher"
 	fetcherBudgets := `["budget-fetcher"]`
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_merge")
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_merge")
 
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_merge",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_merge",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-creator",
 		VirtualKeyID:     &creatorVK,
 		UserID:           strPtr("user-creator"),
@@ -1965,11 +1991,11 @@ func TestAccountBatchResults_PersistedIdentityOverridesFetcherBuiltJob(t *testin
 
 	// What plugins/logging builds on the /results path: a job derived from the
 	// fetcher's log entry, carrying the fetcher's identity end to end.
-	fetcherBuiltJob := &cstables.TableBatchJob{
+	fetcherBuiltJob := &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_merge",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		JobID:            "batch_merge",
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-fetcher",
 		VirtualKeyID:     &fetcherVK,
 		UserID:           strPtr("user-fetcher"),
@@ -2019,9 +2045,9 @@ func TestAccountBatchResults_UnpriceableMarkerFailureReleasesTheClaim(t *testing
 	})
 	require.Error(t, err)
 
-	job := store.jobs[cstables.BatchJobID(string(schemas.OpenAI), "batch_unpriceable_release")]
+	job := store.jobs[cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_unpriceable_release")]
 	require.NotNil(t, job)
-	assert.NotEqual(t, cstables.BatchJobAccountingStatusProcessing, job.AccountingStatus,
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusProcessing, job.AccountingStatus,
 		"the fence must be released, not left held by a runner that gave up")
 	assert.Nil(t, job.RunnerID)
 }
@@ -2035,14 +2061,15 @@ func TestAccountBatchResults_UnpriceableMarkerFailureReleasesTheClaim(t *testing
 func TestSweeper_FailedBatchKeepsPersistedOutputFileWhenRetrieveOmitsIt(t *testing.T) {
 	store := newFakeAccountingStore()
 	due := time.Now().UTC().Add(-time.Minute)
-	jobID := cstables.BatchJobID(string(schemas.OpenAI), "batch_failed_partial")
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "batch_failed_partial")
 	outputFileID := "file-partial-output"
-	require.NoError(t, store.UpsertBatchJob(context.Background(), &cstables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
 		ID:               jobID,
 		Provider:         string(schemas.OpenAI),
-		BatchID:          "batch_failed_partial",
+		Kind:             cstables.ProviderJobKindBatch,
+		JobID:            "batch_failed_partial",
 		Model:            "gpt-4o-mini",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &due,
 		// Recorded by an earlier poll, when the provider did report it.
 		OutputFileID: &outputFileID,
@@ -2069,7 +2096,81 @@ func TestSweeper_FailedBatchKeepsPersistedOutputFileWhenRetrieveOmitsIt(t *testi
 
 	settled := store.jobs[jobID]
 	require.NotNil(t, settled)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, settled.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
 	require.NotNil(t, settled.OutputFileID)
 	assert.Equal(t, outputFileID, *settled.OutputFileID)
+}
+
+// paramsRecordingSettler captures the coordination row the engine hands to Settle,
+// so a test can assert what the engine actually restored onto it.
+type paramsRecordingSettler struct{ seenParams *string }
+
+func (p *paramsRecordingSettler) Kind() ProviderJobKind                       { return ProviderJobKindBatch }
+func (p *paramsRecordingSettler) SupportsProvider(schemas.ModelProvider) bool { return true }
+func (p *paramsRecordingSettler) Backoff(int, time.Duration) time.Duration    { return time.Minute }
+func (p *paramsRecordingSettler) HydrateFromLog(*logstore.Log, *Outcome)      {}
+func (p *paramsRecordingSettler) Poll(context.Context, *cstables.TableProviderJob) (*PollResult, error) {
+	return nil, errors.New("not polled in this test")
+}
+
+func (p *paramsRecordingSettler) Settle(ctx context.Context, pricing PricingManager, req JobRequest) (*Settlement, error) {
+	if req.Job != nil {
+		p.seenParams = req.Job.Params
+	}
+	return &Settlement{Priced: true, Complete: true, Cost: 1, Model: "m", Object: schemas.BatchResultsRequest}, nil
+}
+
+// Params is the persisted pricing basis — for video, the duration and resolution
+// that exist nowhere else by settlement time. UpsertProviderJob deliberately leaves
+// it alone when a caller passes nil, so the row keeps it; the engine must then put
+// it back on the copy it hands to Settle, or a caller that rebuilt its coordination
+// row from scratch would settle against nothing.
+func TestAccountJob_RestoresPersistedParamsForSettlement(t *testing.T) {
+	store := newFakeAccountingStore()
+	captured := `{"seconds":8,"size":"1920x1080"}`
+	persisted := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.OpenAI), "job_params"),
+		Kind:             cstables.ProviderJobKindBatch,
+		Provider:         string(schemas.OpenAI),
+		JobID:            "job_params",
+		Params:           &captured,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
+	}
+	require.NoError(t, store.UpsertProviderJob(context.Background(), persisted))
+
+	// A caller holding a row it built itself: same identity, no params.
+	bare := *persisted
+	bare.Params = nil
+
+	settler := &paramsRecordingSettler{}
+	out, err := AccountJob(context.Background(), store, store, fakeBatchPricing{}, settler, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "job_params",
+		Job:           &bare,
+		ClaimedBy:     "node-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, settler.seenParams, "the engine must restore the persisted params before settling")
+	assert.Equal(t, captured, *settler.seenParams)
+}
+
+// The runner id is the ownership fence every later transition is keyed on, so a
+// settlement that supplies none can never claim its job. Reject it before anything
+// is written, rather than defaulting: a shared default would let two callers both
+// believe they own the same job, which is the double-settlement the fence prevents.
+func TestAccountJob_RequiresARunnerID(t *testing.T) {
+	store := newFakeAccountingStore()
+
+	_, err := AccountBatchResults(context.Background(), store, store, fakeBatchPricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: "batch_no_runner",
+		Payload:       BatchPayload{Results: []schemas.BatchResultItem{openAIResult(200, "gpt-4o-mini", 18, 9)}},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runner id")
+	assert.Empty(t, store.jobs,
+		"the rejection must land before the coordination row is written, or an unclaimable job is left behind")
+	assert.Empty(t, store.logs)
 }

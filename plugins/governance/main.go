@@ -1512,7 +1512,7 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }
 
-func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
+func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
 	if usage.Cost > 0 {

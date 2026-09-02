@@ -25,18 +25,18 @@ func loadPricingFromFile(t *testing.T) *modelcatalog.ModelCatalog {
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
-func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelCatalog, job *cstables.TableBatchJob, results []schemas.BatchResultItem, expectedCost float64) {
+func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelCatalog, job *cstables.TableProviderJob, results []schemas.BatchResultItem, expectedCost float64) {
 	t.Helper()
 	store := newFakeAccountingStore()
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
-			ID:     job.BatchID,
+			ID:     job.JobID,
 			Status: schemas.BatchStatusCompleted,
 		},
 		resultsResp: &schemas.BifrostBatchResultsResponse{
-			BatchID: job.BatchID,
+			BatchID: job.JobID,
 			Results: results,
 		},
 	}
@@ -54,11 +54,11 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 
 	accounted := store.jobs[job.ID]
 	require.NotNil(t, accounted, "batch job should exist in store")
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus,
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, accounted.AccountingStatus,
 		"batch job should be accounted, got status=%s", accounted.AccountingStatus)
 
 	assert.Len(t, store.logs, 1, "one aggregate log should be written")
-	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.ModelProvider(job.Provider), job.BatchID)]
+	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.ModelProvider(job.Provider), job.JobID)]
 	require.NotNil(t, logEntry, "aggregate log entry should exist")
 	require.NotNil(t, logEntry.Cost, "log entry should have a cost")
 	assert.InDelta(t, expectedCost, *logEntry.Cost, 1e-12,
@@ -73,12 +73,12 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 func TestBatchPricing_ClaudeSonnet5_Anthropic(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Anthropic), "batch_claude_sonnet_5"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Anthropic), "batch_claude_sonnet_5"),
 		Provider:         string(schemas.Anthropic),
-		BatchID:          "batch_claude_sonnet_5",
+		JobID:            "batch_claude_sonnet_5",
 		Model:            "claude-sonnet-5",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 	results := []schemas.BatchResultItem{
@@ -90,12 +90,12 @@ func TestBatchPricing_ClaudeSonnet5_Anthropic(t *testing.T) {
 func TestBatchPricing_Gemini25Flash(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Gemini), "batch_gemini_25_flash"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Gemini), "batch_gemini_25_flash"),
 		Provider:         string(schemas.Gemini),
-		BatchID:          "batch_gemini_25_flash",
+		JobID:            "batch_gemini_25_flash",
 		Model:            "gemini-2.5-flash",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 	results := []schemas.BatchResultItem{
@@ -107,12 +107,12 @@ func TestBatchPricing_Gemini25Flash(t *testing.T) {
 func TestBatchPricing_ClaudeSonnet46_Bedrock(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Bedrock), "batch_claude_sonnet_46"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Bedrock), "batch_claude_sonnet_46"),
 		Provider:         string(schemas.Bedrock),
-		BatchID:          "batch_claude_sonnet_46",
+		JobID:            "batch_claude_sonnet_46",
 		Model:            "anthropic.claude-sonnet-4-6",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 	results := []schemas.BatchResultItem{
@@ -124,12 +124,12 @@ func TestBatchPricing_ClaudeSonnet46_Bedrock(t *testing.T) {
 func TestBatchPricing_GlobalClaudeSonnet46_Bedrock(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Bedrock), "batch_global_claude_sonnet_46"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Bedrock), "batch_global_claude_sonnet_46"),
 		Provider:         string(schemas.Bedrock),
-		BatchID:          "batch_global_claude_sonnet_46",
+		JobID:            "batch_global_claude_sonnet_46",
 		Model:            "global.anthropic.claude-sonnet-4-6",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 	results := []schemas.BatchResultItem{
@@ -146,12 +146,12 @@ func TestBatchPricing_GlobalClaudeSonnet46_Bedrock(t *testing.T) {
 func TestBatchPricing_ClaudeHaiku45_DefaultsToHalfStandardRate(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Anthropic), "batch_haiku_45"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Anthropic), "batch_haiku_45"),
 		Provider:         string(schemas.Anthropic),
-		BatchID:          "batch_haiku_45",
+		JobID:            "batch_haiku_45",
 		Model:            "claude-haiku-4-5",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 	results := []schemas.BatchResultItem{
@@ -166,17 +166,17 @@ func TestBatchPricing_ClaudeHaiku45_DefaultsToHalfStandardRate(t *testing.T) {
 func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Anthropic), "batch_unknown_model"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Anthropic), "batch_unknown_model"),
 		Provider:         string(schemas.Anthropic),
-		BatchID:          "batch_unknown_model",
+		JobID:            "batch_unknown_model",
 		Model:            "totally-unknown-model-xyz",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 
 	store := newFakeAccountingStore()
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -202,7 +202,7 @@ func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 
 	unpriced := store.jobs[job.ID]
 	require.NotNil(t, unpriced)
-	assert.Equal(t, cstables.BatchJobAccountingStatusUnpriceable, unpriced.AccountingStatus,
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, unpriced.AccountingStatus,
 		"batch with no pricing at all should be marked unpriceable")
 	require.NotNil(t, unpriced.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonMissingBatchPricing, *unpriced.UnpriceableReason,
@@ -229,17 +229,17 @@ func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 func TestBatchPricing_MultiModel(t *testing.T) {
 	mc := loadPricingFromFile(t)
 	now := time.Now().UTC().Add(-time.Minute)
-	job := &cstables.TableBatchJob{
-		ID:               cstables.BatchJobID(string(schemas.Bedrock), "batch_multimodel"),
+	job := &cstables.TableProviderJob{
+		ID:               cstables.ProviderJobID(cstables.ProviderJobKindBatch, string(schemas.Bedrock), "batch_multimodel"),
 		Provider:         string(schemas.Bedrock),
-		BatchID:          "batch_multimodel",
+		JobID:            "batch_multimodel",
 		Model:            "anthropic.claude-sonnet-4-6",
-		AccountingStatus: cstables.BatchJobAccountingStatusPending,
+		AccountingStatus: cstables.ProviderJobAccountingStatusPending,
 		NextCheckAt:      &now,
 	}
 
 	store := newFakeAccountingStore()
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{
 		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
@@ -266,7 +266,7 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 
 	accounted := store.jobs[job.ID]
 	require.NotNil(t, accounted)
-	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, accounted.AccountingStatus)
 
 	require.Len(t, store.logs, 1)
 	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.Bedrock, "batch_multimodel")]

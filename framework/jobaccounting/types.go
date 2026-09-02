@@ -18,28 +18,26 @@ const defaultClaimTTL = 5 * time.Minute
 // which is a different thing entirely — these are jobs the *provider* runs.
 type ProviderJobKind string
 
-const ProviderJobKindBatch ProviderJobKind = "batch"
+const ProviderJobKindBatch ProviderJobKind = cstables.ProviderJobKindBatch
 
 // JobStore is the mutable coordination-state store for delayed settlement. It is
 // satisfied by configstore.ConfigStore.
-//
-// The method names still say "BatchJob" because the backing table and its store
-// methods have not been renamed yet; both sides move together in a later change.
 type JobStore interface {
-	UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error
-	GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error)
-	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
-	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
-	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
-	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+	UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error
+	GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error)
+	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
 }
 
-// SweepStore adds the due-job scan the sweeper needs.
+// SweepStore adds the due-job scan the sweeper needs. The scan is per kind: a
+// sweeper must never be handed a kind its settler cannot talk to.
 type SweepStore interface {
 	JobStore
-	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error)
+	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*cstables.TableProviderJob, error)
 }
 
 // AggregateLogStore writes the append-only aggregate cost record. It is satisfied
@@ -55,7 +53,7 @@ type AggregateLogStore interface {
 }
 
 type AggregateLogEmitter interface {
-	EmitBatchAggregateLog(ctx context.Context, entry *logstore.Log)
+	EmitAggregateLog(ctx context.Context, entry *logstore.Log)
 }
 
 // UsageReporter receives the settled usage/cost for a job so it can be billed.
@@ -64,11 +62,8 @@ type AggregateLogEmitter interface {
 // at-least-once, so the same report can be delivered more than once when the
 // durable "reported" marker fails to persist after a successful report. See the
 // package doc for the exact window and its limits.
-//
-// The method name still says "BatchUsage" because the governance plugin satisfies
-// this interface today; renaming it moves both sides at once.
 type UsageReporter interface {
-	ReportBatchUsage(ctx context.Context, usage UsageReport) error
+	ReportUsage(ctx context.Context, usage UsageReport) error
 }
 
 type UsageReport struct {
@@ -107,7 +102,7 @@ type Settler interface {
 
 	// Poll fetches current provider state. Returning an error asks the engine to
 	// reschedule; see PollResult for the non-error outcomes.
-	Poll(ctx context.Context, job *cstables.TableBatchJob) (*PollResult, error)
+	Poll(ctx context.Context, job *cstables.TableProviderJob) (*PollResult, error)
 
 	// Settle prices a job the poll (or an inline caller) says is ready.
 	Settle(ctx context.Context, pricing PricingManager, req JobRequest) (*Settlement, error)
@@ -130,7 +125,7 @@ type PollResult struct {
 	// Job is the updated coordination row to persist. Nil leaves the row untouched.
 	// It is persisted before any Retry/Terminal decision, so a poll that advanced
 	// the provider status records that even when settlement cannot proceed.
-	Job *cstables.TableBatchJob
+	Job *cstables.TableProviderJob
 	// Terminal reports that the provider will not advance this job further.
 	Terminal bool
 	// Settleable reports that the payload below is sufficient to price the job.
@@ -188,7 +183,7 @@ type JobRequest struct {
 	ProviderJobID string
 	FallbackModel string
 
-	Job       *cstables.TableBatchJob
+	Job       *cstables.TableProviderJob
 	BaseLog   *logstore.Log
 	SourceLog *logstore.Log
 

@@ -21,7 +21,7 @@ type accountingFixture struct {
 	tracker *UsageTracker
 }
 
-func TestReportBatchUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
+func TestReportUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 	f := newAccountingFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 	report := jobaccounting.UsageReport{
@@ -34,8 +34,8 @@ func TestReportBatchUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 		RateLimitIDs: []string{"rl1"},
 	}
 
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
 	assert.Equal(t, 12.5, f.cost())
 	assert.Equal(t, int64(123), f.tokens())
 	assert.Equal(t, int64(1), f.requests())
@@ -224,7 +224,7 @@ func TestAccounting_ZeroCostFailureNotBilled(t *testing.T) {
 // store methods, because those are not on the GovernanceStore interface at all —
 // the plugin cannot reach them, so a spy could never observe anything and would
 // pass no matter what the code did.
-func TestReportBatchUsage_UserOnReportDoesNotAddASecondCharge(t *testing.T) {
+func TestReportUsage_UserOnReportDoesNotAddASecondCharge(t *testing.T) {
 	newReport := func(requestID, userID string) jobaccounting.UsageReport {
 		return jobaccounting.UsageReport{
 			RequestID:    requestID,
@@ -241,12 +241,12 @@ func TestReportBatchUsage_UserOnReportDoesNotAddASecondCharge(t *testing.T) {
 	withUser := newAccountingFixture(t)
 	withUserPlugin := &GovernancePlugin{store: withUser.store, tracker: withUser.tracker}
 	// Settlement is at-least-once, so a repeated report must not double-charge either.
-	require.NoError(t, withUserPlugin.ReportBatchUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
-	require.NoError(t, withUserPlugin.ReportBatchUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
+	require.NoError(t, withUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
+	require.NoError(t, withUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
 
 	withoutUser := newAccountingFixture(t)
 	withoutUserPlugin := &GovernancePlugin{store: withoutUser.store, tracker: withoutUser.tracker}
-	require.NoError(t, withoutUserPlugin.ReportBatchUsage(context.Background(), newReport("batch-cost:openai:no-user", "")))
+	require.NoError(t, withoutUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:no-user", "")))
 
 	assert.Equal(t, 12.5, withUser.cost(), "the grant's ids are charged exactly once")
 	assert.Equal(t, withoutUser.cost(), withUser.cost(),
@@ -296,7 +296,7 @@ func (f *modelScopedFixture) budgetUsage(id string) float64 {
 	return f.store.GetGovernanceData(context.Background()).Budgets[id].CurrentUsage
 }
 
-func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
+func TestReportUsage_ChargesPerModelBudgets(t *testing.T) {
 	f := newModelScopedFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 
@@ -316,19 +316,19 @@ func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
 	}
 
 	// Settlement is at-least-once, so a repeat must not double-charge.
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
 
 	assert.Equal(t, 20.0, f.budgetUsage("model-budget"), "the gpt-5 budget takes gpt-5's share, not the batch total")
 	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
 }
 
 // A batch whose models carry no per-model config must behave exactly as before.
-func TestReportBatchUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
+func TestReportUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
 	f := newModelScopedFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), jobaccounting.UsageReport{
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
 		RequestID:  "batch-cost:openai:batch-nomodels",
 		Provider:   schemas.OpenAI,
 		Cost:       12.0,

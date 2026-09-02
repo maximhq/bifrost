@@ -33,22 +33,22 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 
 // fakeBatchStore is an in-memory jobaccounting.SweepStore for logging tests.
 type fakeBatchStore struct {
-	jobs map[string]*cstables.TableBatchJob
+	jobs map[string]*cstables.TableProviderJob
 }
 
 func newFakeBatchStore() *fakeBatchStore {
-	return &fakeBatchStore{jobs: make(map[string]*cstables.TableBatchJob)}
+	return &fakeBatchStore{jobs: make(map[string]*cstables.TableProviderJob)}
 }
 
-func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error {
+func (s *fakeBatchStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
 	if job.ID == "" {
-		job.ID = cstables.BatchJobID(job.Provider, job.BatchID)
+		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, job.Provider, job.JobID)
 	}
 	existing, ok := s.jobs[job.ID]
 	if !ok {
 		copied := *job
 		if copied.AccountingStatus == "" {
-			copied.AccountingStatus = cstables.BatchJobAccountingStatusPending
+			copied.AccountingStatus = cstables.ProviderJobAccountingStatusPending
 		}
 		s.jobs[job.ID] = &copied
 		return nil
@@ -76,7 +76,7 @@ func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.Table
 	return nil
 }
 
-func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error) {
+func (s *fakeBatchStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
 	job, ok := s.jobs[jobID]
 	if !ok {
 		return nil, errors.New("missing batch job")
@@ -85,16 +85,27 @@ func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstabl
 	return &copied, nil
 }
 
-func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error) {
-	var jobs []*cstables.TableBatchJob
+func (s *fakeBatchStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*cstables.TableProviderJob, error) {
+	var jobs []*cstables.TableProviderJob
+	if kind == "" {
+		kind = cstables.ProviderJobKindBatch
+	}
 	for _, job := range s.jobs {
+		// Mirror the real store: a sweeper only ever sees its own kind's rows.
+		jobKind := job.Kind
+		if jobKind == "" {
+			jobKind = cstables.ProviderJobKindBatch
+		}
+		if jobKind != kind {
+			continue
+		}
 		if provider != "" && job.Provider != provider {
 			continue
 		}
 		if job.NextCheckAt == nil || job.NextCheckAt.After(now) {
 			continue
 		}
-		if job.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || job.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+		if job.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || job.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable {
 			continue
 		}
 		jobs = append(jobs, job)
@@ -102,23 +113,30 @@ func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, 
 	return jobs, nil
 }
 
-func (s *fakeBatchStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (s *fakeBatchStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	entry, ok := s.jobs[jobID]
 	if !ok {
 		return false, errors.New("missing batch job")
 	}
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || entry.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted {
+		return false, nil
+	}
+	// "unpriceable" is a stop-polling marker, not a refusal of money: a caller
+	// holding real results may re-drive it. Mirrors the real store's allowUnpriceable,
+	// which this fake previously ignored — hiding the result-driven re-accounting path
+	// from every test using it.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable && !allowUnpriceable {
 		return false, nil
 	}
 	// Claim staleness reads claimed_at, not updated_at — updated_at is refreshed by
-	// the unfenced UpsertBatchJob, so it cannot represent claim age.
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusProcessing &&
+	// the unfenced UpsertProviderJob, so it cannot represent claim age.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusProcessing &&
 		entry.ClaimedAt != nil && entry.ClaimedAt.After(staleBefore) {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	rid := runnerID
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusProcessing
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusProcessing
 	entry.RunnerID = &rid
 	entry.ClaimedAt = &now
 	entry.UpdatedAt = now
@@ -139,7 +157,7 @@ func (s *fakeBatchStore) markTerminal(id, status, reason string) error {
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -149,7 +167,7 @@ func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobGovernanceReported(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -159,16 +177,16 @@ func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id,
 	return nil
 }
 
-func (s *fakeBatchStore) CompleteBatchJob(ctx context.Context, id, runnerID string) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusAccounted, "")
+func (s *fakeBatchStore) CompleteProviderJob(ctx context.Context, id, runnerID string) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusAccounted, "")
 }
 
-func (s *fakeBatchStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusUnpriceable, reason)
+func (s *fakeBatchStore) MarkProviderJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusUnpriceable, reason)
 }
 
-func (s *fakeBatchStore) FailBatchJob(ctx context.Context, id, runnerID string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusError, "")
+func (s *fakeBatchStore) FailProviderJob(ctx context.Context, id, runnerID string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusError, "")
 }
 
 func newTestStore(t *testing.T) logstore.LogStore {
@@ -458,7 +476,7 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 }
 
-func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
+func TestEmitAggregateLogRunsCallback(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
 		ctx:   context.Background(),
@@ -477,7 +495,7 @@ func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
 		Model:     "gpt-4o-mini",
 		Status:    "success",
 	}
-	plugin.EmitBatchAggregateLog(context.Background(), entry)
+	plugin.EmitAggregateLog(context.Background(), entry)
 	if callbacks != 1 {
 		t.Fatalf("callback count after emit = %d, want 1", callbacks)
 	}
@@ -2726,12 +2744,12 @@ func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
 			}
 			plugin.recordBatchJobLifecycle(entry, result)
 
-			job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", batchID))
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", batchID))
 			if err != nil {
-				t.Fatalf("GetBatchJob() error = %v", err)
+				t.Fatalf("GetProviderJob() error = %v", err)
 			}
-			if job.BatchID != batchID {
-				t.Fatalf("expected batch_id %s, got %s", batchID, job.BatchID)
+			if job.JobID != batchID {
+				t.Fatalf("expected batch_id %s, got %s", batchID, job.JobID)
 			}
 			if job.ProviderStatus != tt.status {
 				t.Fatalf("expected status %s, got %s", tt.status, job.ProviderStatus)
@@ -2787,9 +2805,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	}
 	plugin.recordBatchJobLifecycle(entry, result)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-create-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-create-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.Model != "gpt-4o" {
 		t.Fatalf("expected model %s, got %s", "gpt-4o", job.Model)
@@ -2797,8 +2815,8 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	if job.InputFileID != "file-abc" {
 		t.Fatalf("expected input_file_id %s, got %s", "file-abc", job.InputFileID)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusPending {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusPending, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusPending {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusPending, job.AccountingStatus)
 	}
 }
 
@@ -2827,9 +2845,9 @@ func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
 	plugin.accountBatchResults(entry, nonResultsResult, nil)
 
 	// Verify no batch_jobs rows were created
-	jobs, err := bs.ListDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
+	jobs, err := bs.ListDueProviderJobs(context.Background(), cstables.ProviderJobKindBatch, "openai", time.Now().UTC().Add(time.Hour), 100)
 	if err != nil {
-		t.Fatalf("ListDueBatchJobs() error = %v", err)
+		t.Fatalf("ListDueProviderJobs() error = %v", err)
 	}
 	if len(jobs) > 0 {
 		t.Fatalf("expected no batch jobs from non-batch-response, got %d", len(jobs))
@@ -2861,12 +2879,12 @@ func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
 
 	plugin.accountBatchResults(entry, result, nil)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-empty-results"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-empty-results"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusUnpriceable {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusUnpriceable {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	}
 	if job.UnpriceableReason == nil || *job.UnpriceableReason != jobaccounting.UnpriceableReasonNoResults {
 		t.Fatalf("expected unpriceable_reason %s, got %#v", jobaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
@@ -2958,11 +2976,11 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 // provider: the point of the test below is that it is never reached.
 type noopBatchFetcher struct{}
 
-func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	return nil, nil
 }
 
-func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	return nil, nil
 }
 
@@ -3031,9 +3049,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 		},
 	})
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-identity-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-identity-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.UserID == nil || *job.UserID != userID {
 		t.Fatalf("expected user_id %s, got %v", userID, job.UserID)
