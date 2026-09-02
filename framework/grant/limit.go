@@ -38,6 +38,13 @@ const (
 	LimitHolderUserAccessProfileProviderConfig LimitHolderKind = "user_access_profile_provider_config"
 	LimitHolderUserAccessProfileModelConfig    LimitHolderKind = "user_access_profile_model_config"
 
+	// Held by the user a request is attributed to, directly — a per-model limit assigned straight
+	// to the user rather than derived from an access profile they hold. Kept distinct from the
+	// LimitHolderUserAccessProfile* kinds because a refusal has to say which one ran out, and from
+	// LimitHolderVirtualKey because a caller can be told to stop counting a request against the key
+	// that granted it while still counting it against the user who made it.
+	LimitHolderUserModelConfig LimitHolderKind = "user_model_config"
+
 	// Held by the organization above the caller. Spent by every request made under anything they
 	// contain.
 	LimitHolderTeam         LimitHolderKind = "team"

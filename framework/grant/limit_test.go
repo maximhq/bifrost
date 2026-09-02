@@ -106,7 +106,7 @@ func TestLimitHolderKindsAreDistinct(t *testing.T) {
 		LimitHolderProject, LimitHolderProjectProviderConfig,
 		LimitHolderProvider, LimitHolderModelConfig,
 		LimitHolderVirtualKeyModelConfig, LimitHolderProjectModelConfig,
-		LimitHolderUserAccessProfileModelConfig,
+		LimitHolderUserAccessProfileModelConfig, LimitHolderUserModelConfig,
 	}
 	seen := make(map[LimitHolderKind]bool, len(kinds))
 	for _, k := range kinds {

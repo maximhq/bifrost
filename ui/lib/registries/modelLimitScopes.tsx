@@ -46,6 +46,13 @@ export interface ModelLimitScopeEntry {
 	// normal form — e.g. enterprise's "access_profile" scope, whose rows must
 	// only be changed by editing the owning access profile.
 	readOnly?: boolean;
+	// When explicitly false, this scope is never offered as a choice when
+	// creating a limit, but an EXISTING row of it stays fully editable and
+	// deletable through the normal form — unlike readOnly, which also locks
+	// editing. Defaults to true (creatable) when omitted. For a scope whose
+	// creation is retired but whose pre-existing rows must keep working exactly
+	// as before — e.g. enterprise's "user" scope.
+	creatable?: boolean;
 	// Optional. Overrides the label shown in the Scope column/field for rows of
 	// this scope, while `label` above still names the scope itself (e.g. in the
 	// filter dropdown). Lets a scope whose rows apply to a user — but aren't the

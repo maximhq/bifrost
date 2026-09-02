@@ -533,7 +533,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</FormControl>
 											<SelectContent>
 												{getModelLimitScopes()
-													.filter((option) => !option.readOnly)
+													.filter((option) => !option.readOnly && option.creatable !== false)
 													.map((option) => (
 														<SelectItem key={option.value} value={option.value}>
 															{option.label}

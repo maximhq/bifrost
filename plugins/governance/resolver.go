@@ -188,11 +188,13 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 }
 
 // untrackedHolderKinds are the kinds still billed when a caller has asked for the holder's usage not
-// to be counted: what the deployment imposes. There is no per-user kind here: a user can hold
-// several access profiles at once, each granting different restrictions, so no access-profile-derived
-// limit is unconditionally "the user's own money" the way a single global per-user allowance used to
-// be — access-profile limits are scoped limits like a virtual key's or a project's, and respect the
-// caller's request not to be counted the same way those do.
+// to be counted: what the deployment imposes, and what the user who made the request answers to
+// directly. Access-profile-derived limits are deliberately NOT here: a user can hold several access
+// profiles at once, each granting different restrictions, so no access-profile-derived limit is
+// unconditionally "the user's own money" the way a limit assigned straight to the user is — those
+// are scoped limits like a virtual key's or a project's, and respect the caller's request not to be
+// counted the same way those do. LimitHolderUserModelConfig has no such ambiguity: it is always the
+// user's own money, so it stays billed regardless of what the caller asked to skip.
 //
 // This names what to keep rather than what to drop, because the set it names is closed and belongs
 // to this package, while what a holder funds is open: a kind nobody here has heard of is a holder's,
@@ -202,6 +204,7 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 var untrackedHolderKinds = []grant.LimitHolderKind{
 	grant.LimitHolderProvider,
 	grant.LimitHolderModelConfig,
+	grant.LimitHolderUserModelConfig,
 }
 
 // spendingChecksSkipped reports whether this request was told not to be checked against anything it
