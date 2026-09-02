@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -391,6 +392,9 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// Single accumulation point for every unary provider call.
 		schemas.AddUpstreamLatency(ctx, latency)
 		if err != nil {
+			if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+				return latency, SetErrorLatency(NewBifrostOperationError(schemas.ErrProviderResponseTooLarge, err), latency), noop
+			}
 			if errors.Is(err, context.Canceled) {
 				return latency, &schemas.BifrostError{
 					IsBifrostError: false,
@@ -499,6 +503,37 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
 	}
 	return resp, err
+}
+
+// ErrResponseBodyTooLarge is returned when a bounded net/http response reader
+// consumes more than the configured provider response limit.
+var ErrResponseBodyTooLarge = errors.New(schemas.ErrProviderResponseTooLarge)
+
+// ReadHTTPResponseBody reads a unary net/http response with an optional byte
+// limit. The extra byte probe distinguishes an oversized body from an exact
+// boundary and prevents partial JSON/XML from being treated as a successful
+// response. A zero limit preserves the historical unlimited behavior.
+func ReadHTTPResponseBody(resp *http.Response, maxBytes int64) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	if maxBytes <= 0 {
+		return io.ReadAll(resp.Body)
+	}
+	if resp.ContentLength > maxBytes {
+		return nil, ErrResponseBodyTooLarge
+	}
+	if maxBytes == math.MaxInt64 {
+		return io.ReadAll(resp.Body)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, ErrResponseBodyTooLarge
+	}
+	return body, nil
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -791,6 +826,23 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	// MaxResponseBodySize is enforced by the unary client. Streaming clients
+	// explicitly clear this value in BuildStreamingClient, while Enterprise's
+	// large-response client replaces it with its own streaming threshold.
+	if networkConfig.MaxResponseBodySize < 0 {
+		// Negative values are invalid (the config schema rejects them). Fail closed
+		// for direct core callers or stale persisted configuration instead of
+		// silently converting an invalid value into unlimited buffering.
+		logger.Error("invalid provider configuration: network_config.max_response_body_size cannot be negative")
+		client.MaxResponseBodySize = 1
+	} else if networkConfig.MaxResponseBodySize > 0 && networkConfig.MaxResponseBodySize <= int64(math.MaxInt) {
+		client.MaxResponseBodySize = int(networkConfig.MaxResponseBodySize)
+	} else {
+		// Zero is explicitly unlimited. Clear a value inherited by a reused
+		// client so a config reload cannot retain a stale response bound.
+		client.MaxResponseBodySize = 0
+	}
+
 	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
 		logger.Error(errMsg)
@@ -1440,6 +1492,7 @@ func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c.ReadTimeout = 0
 	c.WriteTimeout = 0
 	c.MaxConnDuration = 0
+	c.MaxResponseBodySize = 0
 	c.StreamResponseBody = true
 	return c
 }
@@ -2412,8 +2465,19 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
+	if errors.Is(err, ErrResponseBodyTooLarge) || errors.Is(err, fasthttp.ErrBodyTooLarge) {
+		message = schemas.ErrProviderResponseTooLarge
+	}
+	var statusCode *int
+	if message == schemas.ErrProviderResponseTooLarge {
+		// The gateway rejected an upstream response, so surface a provider-side
+		// bad-gateway error rather than the generic 500 used for internal failures.
+		status := http.StatusBadGateway
+		statusCode = &status
+	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
+		StatusCode:     statusCode,
 		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,
