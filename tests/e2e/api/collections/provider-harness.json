@@ -137204,6 +137204,53 @@
           }
         }
       ]
+    },
+    {
+      "name": "61. Hugging Face Baseten model discovery (#6631)",
+      "description": "Pins native Hugging Face model discovery for Baseten. Bifrost must query the Hub for the Baseten inference provider and expose its models with the huggingface/baseten/ prefix.",
+      "item": [
+        {
+          "name": "Hugging Face Baseten models appear in /v1/models - #6631",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Baseten models are discoverable through Hugging Face', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var baseten = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('huggingface/baseten/') === 0; });",
+                  "  pm.expect(baseten, 'no huggingface/baseten model found: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=huggingface",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "huggingface"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
