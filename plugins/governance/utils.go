@@ -178,7 +178,16 @@ func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
 // lacking an access it was never meant to have. It still answers the mandatory-auth question (something
 // was presented), which is why that step asks about it separately.
 func presentedGrantBearingCredential(ctx *schemas.BifrostContext) bool {
-	if identity := ctx.Grant().Identity(); identity != nil {
+	// A context with no grant at all reads as nothing presented, the same answer an empty
+	// identity gives. Worth stating explicitly because Grant() returns a nil interface rather
+	// than a zero value, so reaching straight for Identity() panics: every request that reaches
+	// Evaluate has a grant, but a transport asking this question directly (realtime admission)
+	// can hold a context built before one was ever recorded.
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	if identity := g.Identity(); identity != nil {
 		return identity.Presented() || identity.User() != nil
 	}
 	return false
@@ -197,4 +206,24 @@ func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostC
 	requested, _ := existing.([]string)
 	ctx.SetValue(schemas.MCPContextKeyIncludeTools, access.NarrowMCPToolIncludeList(requested))
 	return true
+}
+
+// PresentedAnyCredential reports whether the request carried any credential at all that answers
+// the mandatory-authentication question: a grant-bearing one (virtual key or authenticated
+// identity), or a direct provider key. It is the exact question Evaluate's first step asks, and
+// asking it alone costs nothing - it reads the context and settles no limits.
+//
+// Exported so a transport can admit or refuse a connection on the same answer, rather than
+// reimplementing "was this authenticated" beside this one. Realtime is the caller that needs it:
+// a WebSocket upgrade opens an upstream provider session on the operator's key before any turn
+// exists to evaluate, so admission has to be decided at the upgrade, while the per-turn pipeline
+// keeps owning access and limits. Callers must still let the per-request pipeline run - this
+// answers only whether a credential was presented, never whether it grants what is being asked
+// for, and it deliberately settles no limits so an admission check cannot double-count usage
+// against the turns that follow.
+func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
 }
