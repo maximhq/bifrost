@@ -529,7 +529,7 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 		config: RedisConfig{
 			ContextTimeout: schemas.Duration(time.Second),
 		},
-		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -764,9 +764,9 @@ func TestParseOffsetCursor(t *testing.T) {
 }
 
 func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
-	fieldTypes := map[string]VectorStorePropertyType{
-		"size": VectorStorePropertyTypeInteger,
-		"type": VectorStorePropertyTypeString,
+	fieldTypes := map[string]VectorStoreProperties{
+		"size": {DataType: VectorStorePropertyTypeInteger},
+		"type": {DataType: VectorStorePropertyTypeString},
 	}
 
 	tests := []struct {
@@ -895,8 +895,8 @@ func TestEscapeSearchValue(t *testing.T) {
 }
 
 func TestBuildRedisQueryCondition_TagValueEscaping(t *testing.T) {
-	fieldTypes := map[string]VectorStorePropertyType{
-		"model": VectorStorePropertyTypeString,
+	fieldTypes := map[string]VectorStoreProperties{
+		"model": {DataType: VectorStorePropertyTypeString},
 	}
 
 	tests := []struct {
@@ -1975,4 +1975,75 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		}
 		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 	})
+}
+
+func TestEncodeDecodeTagValue(t *testing.T) {
+	for _, value := range []string{"gpt-5.6-luna", "openai/gpt-4o", "gemma31b-q6:latest", "plain", "", "héllo"} {
+		encoded := encodeTagValue(value)
+		assert.Equal(t, value, decodeTagValue(encoded), "roundtrip %q", value)
+		for _, c := range encoded {
+			assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'),
+				"encoded %q must need no escaping, got %q", value, encoded)
+		}
+		assert.Equal(t, encoded, escapeSearchValue(encoded), "encoded %q must be escape-invariant", value)
+	}
+
+	// Values written before encoding was introduced are passed through.
+	assert.Equal(t, "gpt-5.6-luna", decodeTagValue("gpt-5.6-luna"))
+	assert.Equal(t, "zzz", decodeTagValue("zzz"))
+}
+
+func TestBuildRedisQueryCondition_FilterableTagUsesHex(t *testing.T) {
+	fieldProps := map[string]VectorStoreProperties{
+		"model":    {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"response": {DataType: VectorStorePropertyTypeString},
+		"expires":  {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+	}
+	hexModel := encodeTagValue("gpt-5.6-luna")
+
+	tests := []struct {
+		name        string
+		query       Query
+		expected    string
+		noBackslash bool
+	}{
+		{
+			name:        "filterable tag is hex encoded, never escaped",
+			query:       Query{Field: "model", Operator: QueryOperatorEqual, Value: "gpt-5.6-luna"},
+			expected:    "@model:{" + hexModel + "}",
+			noBackslash: true,
+		},
+		{
+			name:        "filterable tag negation is hex encoded",
+			query:       Query{Field: "model", Operator: QueryOperatorNotEqual, Value: "gpt-5.6-luna"},
+			expected:    "-@model:{" + hexModel + "}",
+			noBackslash: true,
+		},
+		{
+			name:        "contains any hex encodes each value",
+			query:       Query{Field: "model", Operator: QueryOperatorContainsAny, Value: []interface{}{"a:b", "c/d"}},
+			expected:    "(@model:{" + encodeTagValue("a:b") + "} | @model:{" + encodeTagValue("c/d") + "})",
+			noBackslash: true,
+		},
+		{
+			name:     "non-filterable field keeps escaping",
+			query:    Query{Field: "response", Operator: QueryOperatorEqual, Value: "gpt-5.6-luna"},
+			expected: `@response:{gpt\-5\.6\-luna}`,
+		},
+		{
+			name:     "filterable integer stays a numeric range",
+			query:    Query{Field: "expires", Operator: QueryOperatorEqual, Value: 1700000000},
+			expected: "@expires:[1700000000 1700000000]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRedisQueryCondition(tt.query, fieldProps)
+			assert.Equal(t, tt.expected, got)
+			if tt.noBackslash {
+				assert.NotContains(t, got, `\`, "filterable tag queries must contain no backslashes")
+			}
+		})
+	}
 }
