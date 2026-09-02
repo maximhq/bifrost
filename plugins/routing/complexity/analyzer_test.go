@@ -747,6 +747,12 @@ func TestContainsWord(t *testing.T) {
 		{"sécuritétest", "sécurité", false},
 		{"", "test", false},
 		{"write a function", "", false},
+		// Space-separating scripts keep strict whole-word matching: a keyword
+		// embedded in a longer Latin word is not a match.
+		{"decode this please", "code", false},
+		{"encoded payload", "code", false},
+		{"please refactor this code now", "code", true},
+		{"the code, and more", "code", true},
 	}
 
 	for _, tt := range tests {
@@ -803,6 +809,20 @@ func TestBuildWordPresenceSet_UnicodeWords(t *testing.T) {
 	if _, ok := words["réseau"]; !ok {
 		t.Fatalf("expected second unicode word to be preserved in presence set")
 	}
+
+	// Letters of a script that does not separate words with spaces end a token
+	// instead of extending one, so the run contributes no token of its own and
+	// a keyword in another script embedded in it becomes a token.
+	japanese := "このコードを直して"
+	if words := buildWordPresenceSet(japanese, countWordsNoAlloc(japanese)); len(words) != 0 {
+		t.Fatalf("expected %q to yield no tokens of its own, got %v", japanese, words)
+	}
+
+	embedded := "このapiを直して"
+	words = buildWordPresenceSet(embedded, countWordsNoAlloc(embedded))
+	if _, ok := words["api"]; !ok {
+		t.Fatalf("expected %q to yield the token \"api\", got %v", embedded, words)
+	}
 }
 
 func TestAnalyze_PunctuatedKeywordStillMatches(t *testing.T) {
@@ -812,4 +832,152 @@ func TestAnalyze_PunctuatedKeywordStillMatches(t *testing.T) {
 	if signals.codeCount == 0 {
 		t.Fatalf("expected punctuated keyword path to match code signals")
 	}
+}
+
+// TestContainsWordInUnsegmentedScripts covers keywords written in scripts that
+// do not separate words with spaces. There is no whitespace or punctuation
+// around a word in these scripts, so the neighbouring rune is another letter
+// and a strict whole-word rule would reject every occurrence.
+func TestContainsWordInUnsegmentedScripts(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		word string
+	}{
+		{"japanese katakana keyword", "このコードをリファクタリングして", "コード"},
+		{"japanese kanji keyword", "日本語の文章を要約してください", "要約"},
+		{"japanese hiragana keyword", "ふりがなをつけてください", "ふりがな"},
+		{"chinese keyword", "帮我写一段代码来实现快速排序算法", "代码"},
+		{"chinese multi character keyword", "分析这个架构设计的死锁问题", "架构设计"},
+		{"korean noun followed by a particle", "이 코드를 리팩토링 해줘", "코드"},
+		{"thai keyword", "ช่วยเขียนโค้ดให้หน่อย", "โค้ด"},
+
+		// A keyword that forms part of a longer compound must still match.
+		// Compounds are written as an unbroken run in these scripts, so
+		// refusing to match inside one would miss the majority of real usage.
+		{"korean compound", "원자력발전소 설계 문제", "원자"},
+		{"japanese compound", "原子力発電所の設計", "原子"},
+		{"chinese compound", "原子能发电站的设计", "原子"},
+
+		// Latin technical terms are routinely embedded in unsegmented text
+		// without surrounding spaces. The boundary rule looks at the
+		// neighbouring rune, not at the script of the keyword, so these match
+		// even though the keyword itself is Latin.
+		{"latin keyword inside japanese text", "このapiを直して", "api"},
+		{"latin keyword inside japanese text with kana suffix", "このcodeをレビューして", "code"},
+		{"latin keyword at the start of japanese text", "bugを修正してください", "bug"},
+		{"latin keyword inside chinese text", "帮我看看这个api的问题", "api"},
+		{"latin keyword inside korean text", "이 api를 고쳐줘", "api"},
+
+		// Japanese letters whose Line_Break class is CJ or NS rather than ID.
+		// The prolonged sound mark U+30FC is class CJ, and katakana loanwords
+		// are commonly written both with and without it, so a keyword spelled
+		// one way has to match text spelled the other.
+		{"keyword before a prolonged sound mark", "サーバーの設定を確認して", "サーバ"},
+		{"keyword before a prolonged sound mark in a loanword", "ユーザーを追加して", "ユーザ"},
+		{"keyword before a prolonged sound mark mid word", "メモリーリークを調べて", "メモリ"},
+		// U+3005 is the ideographic iteration mark, class NS. It stands in for
+		// the letter before it, so it always sits inside an unsegmented run.
+		{"keyword before an iteration mark", "時々エラーが出る", "時"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !containsWord(tt.text, tt.word) {
+				t.Errorf("containsWord(%q, %q) = false, want true", tt.text, tt.word)
+			}
+		})
+	}
+}
+
+// TestContainsWordOverMatchesInsideUnsegmentedRuns pins the accepted cost of
+// treating unsegmented letters as word boundaries: a short keyword also matches
+// when it happens to occur inside an unrelated longer run.
+//
+// These are not defects. Splitting an unsegmented run into words requires a
+// dictionary or a statistical segmenter, which keyword matching deliberately
+// does not carry. The alternative is the opposite failure, where no keyword in
+// these scripts ever matches anything, so over-matching is the better trade for
+// a routing signal that only feeds a score. Operators who hit a specific false
+// positive can configure a longer, more specific keyword.
+func TestContainsWordOverMatchesInsideUnsegmentedRuns(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		word string
+	}{
+		// "レコード" is the loanword "record"; it contains "コード" ("code").
+		{"japanese keyword inside a longer loanword", "レコードを更新して", "コード"},
+		// Segmented as 重要|約束 ("important" + "promise"), so "要約"
+		// ("summary") spans the boundary between two words.
+		{"japanese keyword spanning two words", "重要約束を守る", "要約"},
+		// "设计师" is "designer"; it contains "设计" ("design").
+		{"chinese keyword inside a longer word", "帮我做一个设计师用的工具", "设计"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !containsWord(tt.text, tt.word) {
+				t.Errorf("containsWord(%q, %q) = false, want true (accepted over-match)", tt.text, tt.word)
+			}
+		})
+	}
+}
+
+// TestDefaultKeywordsDoNotMatchOrdinaryEnglishPrompts guards the boundary check
+// itself. The default lists contain very short entries such as "pr", "diff",
+// "rest" and "hi", which occur as substrings of everyday English words. Each
+// prompt below contains at least one such substring and no genuine keyword, so
+// dropping the boundary check would light up the code and technical dimensions
+// on plainly non-technical traffic.
+func TestDefaultKeywordsDoNotMatchOrdinaryEnglishPrompts(t *testing.T) {
+	prompts := []string{
+		"Please provide a different approach to this problem", // provide, different, this
+		"Can you summarize the restaurant menu for me",        // restaurant
+		"I need help writing a thank you note",
+		"Describe the difference between these two paintings", // difference
+		"The history of the printing press is fascinating",    // history, printing
+		"My grandmother restored an old wooden chest",         // restored
+		"A lighthouse keeper prepared dinner for his guests",  // prepared, his
+	}
+
+	keywords := defaultFullKeywordConfig()
+	allKeywords := make([]string, 0, len(keywords.CodeKeywords))
+	for _, list := range [][]string{
+		keywords.CodeKeywords,
+		keywords.StrongReasoningKeywords,
+		keywords.TechnicalKeywords,
+		keywords.SimpleKeywords,
+		keywords.ContinuationPhrases,
+	} {
+		allKeywords = append(allKeywords, list...)
+	}
+
+	// A lower bound rather than an exact count, so adding a keyword later does
+	// not turn this into a false failure.
+	const minDefaultKeywords = 100
+	if len(allKeywords) < minDefaultKeywords {
+		t.Fatalf("default keyword lists hold %d entries, expected at least %d; this test is no longer exercising the real lists", len(allKeywords), minDefaultKeywords)
+	}
+
+	naiveMatches := 0
+	for _, prompt := range prompts {
+		lowerPrompt := strings.ToLower(prompt)
+		for _, keyword := range allKeywords {
+			if containsWord(lowerPrompt, keyword) {
+				t.Errorf("containsWord(%q, %q) = true, want false; ordinary English prompts must not match default keywords", lowerPrompt, keyword)
+			}
+			if strings.Contains(lowerPrompt, keyword) {
+				naiveMatches++
+			}
+		}
+	}
+
+	// Proves the prompts really are the dangerous kind: without a boundary
+	// check they would match. If this ever drops to zero the prompts have
+	// stopped testing anything.
+	if naiveMatches == 0 {
+		t.Fatalf("expected the prompts to contain default keywords as bare substrings, got none; the prompts no longer exercise boundary checking")
+	}
+	t.Logf("%d substring occurrences of default keywords were correctly rejected by boundary checking", naiveMatches)
 }

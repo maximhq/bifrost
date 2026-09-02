@@ -7,7 +7,9 @@ import (
 	"unicode/utf8"
 )
 
-// containsWord checks if a word appears in text delimited by non-alphanumeric boundaries.
+//go:generate go run genunsegmentedscripts.go
+
+// containsWord checks if a word appears in text delimited by word boundaries.
 func containsWord(text, word string) bool {
 	if word == "" {
 		return false
@@ -22,8 +24,8 @@ func containsWord(text, word string) bool {
 		start := idx + pos
 		end := start + len(word)
 
-		startOk := start == 0 || !isWordChar(lastRune(text[:start]))
-		endOk := end == len(text) || !isWordChar(firstRune(text[end:]))
+		startOk := start == 0 || isWordBoundary(lastRune(text[:start]))
+		endOk := end == len(text) || isWordBoundary(firstRune(text[end:]))
 
 		if startOk && endOk {
 			return true
@@ -47,6 +49,31 @@ func lastRune(text string) rune {
 
 func isWordChar(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// isWordBoundary reports whether the rune next to a candidate match still
+// allows it to count as a whole word.
+func isWordBoundary(neighbour rune) bool {
+	return !isWordChar(neighbour) || isUnsegmentedLetter(neighbour)
+}
+
+// isUnsegmentedLetter reports whether r is a letter of a script that does not
+// separate words with spaces. Hangul is included although UAX #29 groups it
+// with the space-separating scripts, because Korean particles attach directly.
+func isUnsegmentedLetter(r rune) bool {
+	if r < 0x80 { // no unsegmented script lies in ASCII
+		return false
+	}
+	return unicode.Is(unsegmentedScriptLetters, r) || unicode.Is(unicode.Hangul, r)
+}
+
+func containsUnsegmentedLetter(text string) bool {
+	for _, r := range text {
+		if isUnsegmentedLetter(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func countWordsNoAlloc(text string) int {
