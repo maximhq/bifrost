@@ -180,6 +180,41 @@ func TestIdleTimeoutReaderMarksBodyExhaustedOnEOF(t *testing.T) {
 	}
 }
 
+// TestIdleTimeoutReaderMarksBodyExhaustedUnderBlockedWrites covers the race the reserved
+// write exists for. Async per-chunk post-hooks hold blockRestrictedWrites while they run,
+// so a terminal read landing in that window must still record the flag. A plain SetValue
+// would be dropped here and the release path would go back to draining a body at EOF.
+func TestIdleTimeoutReaderMarksBodyExhaustedUnderBlockedWrites(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.BlockRestrictedWrites()
+
+	source := &sequenceReader{chunks: []string{"one"}}
+	reader, stop := NewIdleTimeoutReader(source, source, 5*time.Second, ctx)
+	defer stop()
+
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatalf("reading returned %v", err)
+	}
+
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		t.Fatal("the exhausted flag must survive a read that races a post-hook")
+	}
+}
+
+// TestStreamBodyExhaustedIsNotPluginWritable pins the other half: the flag decides whether
+// the release path drains, so a plugin must not be able to set it and leave an unread body
+// on a pooled connection.
+func TestStreamBodyExhaustedIsNotPluginWritable(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+
+	if ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted) != nil {
+		t.Fatal("a plugin was able to set the stream exhausted flag")
+	}
+}
+
 // sequenceReader yields each chunk from its own Read call, then io.EOF, mirroring how a
 // chunked transfer surfaces to the idle-timeout reader.
 type sequenceReader struct {
