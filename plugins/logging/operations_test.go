@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -31,7 +31,7 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 	return schemas.NoopLogEvent
 }
 
-// fakeBatchStore is an in-memory batchaccounting.SweepStore for logging tests.
+// fakeBatchStore is an in-memory jobaccounting.SweepStore for logging tests.
 type fakeBatchStore struct {
 	jobs map[string]*cstables.TableBatchJob
 }
@@ -2868,8 +2868,8 @@ func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
 	if job.AccountingStatus != cstables.BatchJobAccountingStatusUnpriceable {
 		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
 	}
-	if job.UnpriceableReason == nil || *job.UnpriceableReason != batchaccounting.UnpriceableReasonNoResults {
-		t.Fatalf("expected unpriceable_reason %s, got %#v", batchaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
+	if job.UnpriceableReason == nil || *job.UnpriceableReason != jobaccounting.UnpriceableReasonNoResults {
+		t.Fatalf("expected unpriceable_reason %s, got %#v", jobaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
 	}
 }
 
@@ -2945,7 +2945,7 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 	aggregateRows := 0
 	for _, l := range logs.Logs {
-		if l.ID == batchaccounting.AccountingLogID(schemas.OpenAI, "batch-repeat-fetch") {
+		if l.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch-repeat-fetch") {
 			aggregateRows++
 		}
 	}
@@ -2954,7 +2954,7 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 }
 
-// noopBatchFetcher satisfies batchaccounting.BatchResultFetcher without touching a
+// noopBatchFetcher satisfies jobaccounting.BatchResultFetcher without touching a
 // provider: the point of the test below is that it is never reached.
 type noopBatchFetcher struct{}
 

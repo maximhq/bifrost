@@ -1,4 +1,4 @@
-package batchaccounting
+package jobaccounting
 
 import (
 	"context"
@@ -44,7 +44,7 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 	reporter := &fakeUsageReporter{}
 
 	kv := &fakeKVStore{setNXAllowed: true}
-	sweeper := NewSweeper(store, store, mc, fetcher, emitter, reporter, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, mc, fetcher, emitter, reporter, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 		KVStore:  kv,
@@ -58,7 +58,7 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 		"batch job should be accounted, got status=%s", accounted.AccountingStatus)
 
 	assert.Len(t, store.logs, 1, "one aggregate log should be written")
-	logEntry := store.logs[AccountingLogID(schemas.ModelProvider(job.Provider), job.BatchID)]
+	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.ModelProvider(job.Provider), job.BatchID)]
 	require.NotNil(t, logEntry, "aggregate log entry should exist")
 	require.NotNil(t, logEntry.Cost, "log entry should have a cost")
 	assert.InDelta(t, expectedCost, *logEntry.Cost, 1e-12,
@@ -192,7 +192,7 @@ func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 	}
 
 	kv := &fakeKVStore{setNXAllowed: true}
-	sweeper := NewSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 		KVStore:  kv,
@@ -256,7 +256,7 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 	}
 
 	kv := &fakeKVStore{setNXAllowed: true}
-	sweeper := NewSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
+	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
 		KVStore:  kv,
@@ -269,7 +269,7 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 	assert.Equal(t, cstables.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
 
 	require.Len(t, store.logs, 1)
-	logEntry := store.logs[AccountingLogID(schemas.Bedrock, "batch_multimodel")]
+	logEntry := store.logs[AccountingLogID(ProviderJobKindBatch, schemas.Bedrock, "batch_multimodel")]
 	require.NotNil(t, logEntry)
 	require.NotNil(t, logEntry.Cost, "accounted batch should have a cost")
 

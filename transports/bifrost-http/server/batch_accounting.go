@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -83,9 +83,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// this runs on reload, and a stale reporter keeps the logging plugin (and the
 	// sweeper it is about to start, which snapshots it) reporting batch usage
 	// through a torn-down plugin instance.
-	var usageReporter batchaccounting.UsageReporter
+	var usageReporter jobaccounting.UsageReporter
 	if governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName()); govErr == nil && governancePlugin != nil {
-		if reporter, ok := governancePlugin.(batchaccounting.UsageReporter); ok {
+		if reporter, ok := governancePlugin.(jobaccounting.UsageReporter); ok {
 			usageReporter = reporter
 		}
 	}
