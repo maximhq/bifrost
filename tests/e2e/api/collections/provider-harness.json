@@ -137251,6 +137251,343 @@
           }
         }
       ]
+    },
+    {
+      "name": "62. OpenRouter Claude prompt caching on Responses (#6290)",
+      "description": "Regression coverage for #6290: OpenRouter Claude prompt caching was still broken on the Responses API after #4203 fixed Chat Completions.\n\nProduction path: OpenRouterProvider.Responses / ResponsesStream -> openai.HandleOpenAIResponses* -> ToOpenAIResponsesRequest -> POST {OpenRouter}/v1/responses.\n\nBefore the fix, OpenAIResponsesRequestInput.MarshalJSON deleted every message- and block-level cache_control and put nothing in its place, so Claude caching never activated on this route. Unlike Chat Completions, OpenRouter does NOT expose per-block cache_control through /v1/responses; the documented equivalent is prompt_cache_breakpoint on an input_text block, which OpenRouter converts back into an Anthropic breakpoint (https://openrouter.ai/docs/features/prompt-caching#anthropic-claude).\n\nFolder 13 covers the same feature on /v1/chat/completions and is Chat-only; these cases pin the Responses half.\n\nWhat each case pins:\n  62.1 the translation itself, asserted on the outbound body via x-bf-send-back-raw-request (deterministic, independent of whether Anthropic actually cached).\n  62.2/62.3 a real cache read on the non-streaming route. A 2xx alone does not prove caching, so [read] asserts cached_tokens > 0.\n  62.4/62.5 the same invariant through the streaming handler, which the issue calls out separately.\n  62.6 the four-breakpoint clamp. Anthropic hard-rejects a fifth cache_control block, and OpenRouter converts every breakpoint into one, so translating without clamping would turn a silent cache miss into a 400.\n\nThe [write]/[read] pairs depend on folder order and on {{cachePrefix}} (23KB, comfortably over the 1024-token minimum for claude-sonnet-4) plus the collection-level {{pcNonce}} for per-run cache isolation.",
+      "item": [
+        {
+          "name": "OpenRouter Claude Responses: cache_control becomes prompt_cache_breakpoint on the wire - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.1 openrouter responses cache_control: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('62.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "var blk = ((((rr.input || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('62.1 marked input_text carries prompt_cache_breakpoint mode=explicit (#6290)', function () {",
+                  "  pm.expect(blk.prompt_cache_breakpoint, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect((blk.prompt_cache_breakpoint || {}).mode).to.eql('explicit');",
+                  "});",
+                  "pm.test('62.1 per-block cache_control is not forwarded (not exposed on OpenRouter Responses)', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), 'cache_control must be translated, not forwarded: ' + inp.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('62.1 unmarked block does not acquire a breakpoint', function () {",
+                  "  var b2 = ((((rr.input || [])[0] || {}).content || [])[1]) || {};",
+                  "  pm.expect(b2.prompt_cache_breakpoint, 'unmarked block: ' + JSON.stringify(b2).slice(0, 300)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Responses: prompt caching non-streaming [write] - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.2 openrouter responses cache write: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Responses: prompt caching non-streaming [read] - #6290",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Let the breakpoint written by the paired [write] land before this [read].",
+                  "var __t = Date.now(); while (Date.now() - __t < 2000) { /* busy-wait for cache propagation */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.3 openrouter responses cache read: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var u = j.usage || {};",
+                  "var d = u.input_tokens_details || u.prompt_tokens_details || {};",
+                  "var cached = (typeof d.cached_tokens === 'number') ? d.cached_tokens : 0;",
+                  "pm.test('62.3 cache read: cached_tokens > 0 (#6290)', function () {",
+                  "  pm.expect(cached, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Responses: prompt caching streaming [write] - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.4 openrouter responses cache write: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('62.4 stream reached a terminal event', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw.indexOf('response.completed') !== -1 || raw.indexOf('response.incomplete') !== -1, 'no terminal SSE event: ' + raw.slice(-400)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Responses: prompt caching streaming [read] - #6290",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Let the breakpoint written by the paired [write] land before this [read].",
+                  "var __t = Date.now(); while (Date.now() - __t < 2000) { /* busy-wait for cache propagation */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.5 openrouter responses cache read: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// Terminal usage rides the final SSE event; scan the whole stream for the",
+                  "// largest cached_tokens rather than guessing which event carries usage.",
+                  "var raw = pm.response.text() || '';",
+                  "var m = raw.match(/\"cached_tokens\"\\s*:\\s*(\\d+)/g) || [];",
+                  "var cached = 0;",
+                  "for (var i = 0; i < m.length; i++) { var v = parseInt(m[i].replace(/[^0-9]/g, ''), 10); if (v > cached) { cached = v; } }",
+                  "pm.test('62.5 streaming cache read: cached_tokens > 0 (#6290)', function () {",
+                  "  pm.expect(cached, 'no cached_tokens in the stream; tail: ' + raw.slice(-600)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Claude Responses: five cache_control markers clamp to four - #6290",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// A 400 here IS the regression signature (Anthropic: 'A maximum of 4 blocks",
+                  "// with cache_control may be provided. Found 5.') - never guard it away.",
+                  "pm.test('62.6 five markers must not 400 (clamped to four) - #6290', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('62.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var blocks = (((rr.input || [])[0] || {}).content) || [];",
+                  "var bps = 0;",
+                  "for (var i = 0; i < blocks.length; i++) { if (blocks[i] && blocks[i].prompt_cache_breakpoint) { bps++; } }",
+                  "pm.test('62.6 exactly four breakpoints reach the wire', function () {",
+                  "  pm.expect(bps, 'blocks: ' + JSON.stringify(blocks.map(function (b) { return !!(b && b.prompt_cache_breakpoint); }))).to.equal(4);",
+                  "});",
+                  "pm.test('62.6 the earliest marker is the one dropped (later breakpoints anchor longer prefixes)', function () {",
+                  "  pm.expect(!!(blocks[0] && blocks[0].prompt_cache_breakpoint), 'block 0 must lose its marker').to.be.false;",
+                  "  pm.expect(!!(blocks[4] && blocks[4].prompt_cache_breakpoint), 'block 4 must keep its marker').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} clamp]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section two of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section three of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section four of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section five of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
