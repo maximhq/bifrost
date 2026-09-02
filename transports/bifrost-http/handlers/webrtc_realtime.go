@@ -304,6 +304,19 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
 	}
 
+	// Admission check, before any key is selected: resolveRealtimeWebRTCKeys below reaches
+	// SelectKeyForProviderRequestType and hands the relay the operator's provider key. Covers
+	// both the GA /realtime/calls and the legacy raw-SDP routes, which funnel through here.
+	if authErr := refuseUnauthenticatedRealtime(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		h.handlerStore.GetKVStore(),
+		bifrostCtx,
+		string(ctx.Request.Header.Peek("Authorization")),
+	); authErr != nil {
+		SendBifrostError(ctx, authErr)
+		return
+	}
+
 	authKey, selectedKey, err := h.resolveRealtimeWebRTCKeys(ctx, bifrostCtx, providerKey, model)
 	if err != nil {
 		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", err.Error(), nil))
