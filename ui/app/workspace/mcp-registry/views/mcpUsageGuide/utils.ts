@@ -67,7 +67,7 @@ export function encodeBase64(value: string): string {
 /** Whether an MCP client is reachable using the given virtual key. */
 export function isClientAllowedForVirtualKey(client: MCPClient, virtualKey: VirtualKey): boolean {
 	if (client.config.disabled) return false;
-	if (client.config.allow_on_all_virtual_keys) return true;
+	if (client.config.allow_by_default) return true;
 	return client.vk_configs?.some((config) => config.virtual_key_id === virtualKey.id) ?? false;
 }
 

@@ -570,7 +570,14 @@ func (s *fakeSidekiqStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, 
 }
 
 type dashboardLogManager struct {
-	failStats              bool
+	failStats bool
+	// statsCalls records every GetStats filter in call order, so tests that
+	// trigger more than one stats query (compare_to_previous) can assert on both
+	// windows rather than just the last one.
+	statsCalls []logstore.SearchFilters
+	// statsFunc, when set, supplies the SearchStats for each GetStats call so a
+	// test can tell the current and previous periods apart.
+	statsFunc              func(filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
@@ -592,8 +599,12 @@ func (m *dashboardLogManager) GetSessionSummary(ctx context.Context, sessionID s
 }
 func (m *dashboardLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	m.lastLLMFilters = *filters
+	m.statsCalls = append(m.statsCalls, *filters)
 	if m.failStats {
 		return nil, errors.New("stats failed")
+	}
+	if m.statsFunc != nil {
+		return m.statsFunc(filters)
 	}
 	return &logstore.SearchStats{}, nil
 }

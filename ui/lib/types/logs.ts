@@ -725,6 +725,8 @@ export interface LogFilters {
 	providers?: string[];
 	models?: string[];
 	aliases?: string[];
+	/** Exact lookup on the log primary key (which is the request ID). Bypasses the time range. */
+	request_id?: string;
 	parent_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
@@ -772,6 +774,15 @@ export interface LogStats {
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
 	semantic_cache_hits?: number | null;
+}
+
+// LogStatsResponse is the GET /api/logs/stats payload. The current period's
+// fields stay at the top level, so this is a superset of LogStats: `previous` and
+// `has_previous_period` are only populated when the caller passes
+// compare_to_previous and the window is bounded.
+export interface LogStatsResponse extends LogStats {
+	previous?: LogStats;
+	has_previous_period?: boolean;
 }
 
 export interface LogSessionDetailResponse {

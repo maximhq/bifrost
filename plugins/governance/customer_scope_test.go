@@ -42,37 +42,41 @@ func TestCollectHierarchy_ScopedCustomerSkipsScalarTeamCustomer(t *testing.T) {
 		RateLimits:  []configstoreTables.TableRateLimit{*customerRL},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
-	hasCustomerBudget := func(ctx context.Context) bool {
-		for _, b := range store.collectBudgetsFromHierarchy(ctx, vk, schemas.OpenAI)["Customer"] {
-			if b.ID == "customer-budget" {
+	// Which customer pays is decided when the holder's limits are resolved, so that is what this reads.
+	holds := func(limits []schemas.Limit, id string) bool {
+		for _, limit := range limits {
+			if limit.ID == id {
 				return true
 			}
 		}
 		return false
 	}
-	hasCustomerRateLimit := func(ctx context.Context) bool {
-		for _, rl := range store.collectRateLimitsFromHierarchy(ctx, vk, schemas.OpenAI)["Customer"] {
-			if rl.ID == "customer-rl" {
-				return true
-			}
-		}
-		return false
+	holderLimits := func(ctx *schemas.BifrostContext) ([]schemas.Limit, []schemas.Limit) {
+		return store.HolderLimits(ctx, store.permitForVirtualKey(ctx, vk))
+	}
+	hasCustomerBudget := func(ctx *schemas.BifrostContext) bool {
+		budgets, _ := holderLimits(ctx)
+		return holds(budgets, "customer-budget")
+	}
+	hasCustomerRateLimit := func(ctx *schemas.BifrostContext) bool {
+		_, rateLimits := holderLimits(ctx)
+		return holds(rateLimits, "customer-rl")
 	}
 
-	scopedCtx := func(id string) context.Context {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	scopedCtx := func(id string) *schemas.BifrostContext {
+		ctx := emptyCtx()
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceScopedCustomerID, id)
 		return ctx
 	}
 
 	t.Run("no scope charges the scalar team customer", func(t *testing.T) {
-		assert.True(t, hasCustomerBudget(context.Background()))
-		assert.True(t, hasCustomerRateLimit(context.Background()))
+		assert.True(t, hasCustomerBudget(emptyCtx()))
+		assert.True(t, hasCustomerRateLimit(emptyCtx()))
 	})
 
 	t.Run("scope matching the team customer charges it", func(t *testing.T) {
@@ -86,13 +90,13 @@ func TestCollectHierarchy_ScopedCustomerSkipsScalarTeamCustomer(t *testing.T) {
 	})
 }
 
-// TestEvaluateGovernanceRequest_ScopedCustomerSkipsScalarTeamCustomerEnforcement pins
-// the request-time enforcement gate (EvaluateGovernanceRequest) — the path the
+// TestEvaluate_ScopedCustomerSkipsScalarTeamCustomerEnforcement pins
+// the request-time enforcement gate (Evaluate), the path the
 // store-level collect test does not exercise. The scalar team.CustomerID customer has
 // an exceeded budget; when the request is scoped to a *different* customer the guard
 // (customerFromTeam && scopedAway) must skip enforcing it (DecisionAllow), while no
 // scope or a matching scope still enforces it (DecisionBudgetExceeded).
-func TestEvaluateGovernanceRequest_ScopedCustomerSkipsScalarTeamCustomerEnforcement(t *testing.T) {
+func TestEvaluate_ScopedCustomerSkipsScalarTeamCustomerEnforcement(t *testing.T) {
 	logger := NewMockLogger()
 
 	teamBudget := buildBudgetWithUsage("team-budget", 1000.0, 0.0, "1d")
@@ -113,7 +117,7 @@ func TestEvaluateGovernanceRequest_ScopedCustomerSkipsScalarTeamCustomerEnforcem
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	p := &GovernancePlugin{
@@ -123,15 +127,16 @@ func TestEvaluateGovernanceRequest_ScopedCustomerSkipsScalarTeamCustomerEnforcem
 	}
 
 	evaluate := func(scope string) *EvaluationResult {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		// The key the request presented is what it is evaluated as, settled the way the transport
+		// settles it.
+		ctx := presentCtx("sk-bf-test")
 		if scope != "" {
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceScopedCustomerID, scope)
 		}
-		res, _ := p.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
-			VirtualKey: "sk-bf-test",
-			Provider:   schemas.OpenAI,
-			Model:      "gpt-4o",
-		}, schemas.ChatCompletionRequest)
+		res, _ := p.Evaluate(ctx, &EvaluationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+		})
 		return res
 	}
 

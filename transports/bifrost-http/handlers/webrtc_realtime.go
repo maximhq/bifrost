@@ -15,6 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -431,6 +432,9 @@ func applyRealtimeEphemeralKeyMapping(bifrostCtx *schemas.BifrostContext, mappin
 	}
 	if mapping.VirtualKey != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, mapping.VirtualKey)
+		// The ephemeral key stood in for the virtual key it was minted from, so the request is
+		// that key's.
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialVirtualKey, mapping.VirtualKey))
 	}
 	if mapping.KeyID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, mapping.KeyID)

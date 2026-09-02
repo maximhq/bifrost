@@ -201,7 +201,7 @@ The **OAuth Grants** page lists credentials Bifrost **issued to clients** for in
 
 ## Token Lifetime & Revocation
 
-- **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). On every `/mcp` request Bifrost validates the JWT — signature, expiry, issuer, and audience — and confirms the bound identity (the virtual key or user) still exists and is active. The identity check reads an in-memory cache, so in the common case it adds no database round-trip (vk-mode falls back to a single store lookup only on a cache miss).
+- **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). On every `/mcp` request Bifrost validates the JWT (signature, expiry, issuer, and audience) and confirms the bound identity still exists: a user-mode token is rejected with `401` when the user is gone, and a vk-mode token resolves to its key, which governance refuses with `403` when it is inactive or expired, the same way the inference endpoints refuse it. The identity check reads an in-memory cache, so in the common case it adds no database round-trip (vk-mode falls back to a single store lookup only on a cache miss).
 - **Refresh tokens** rotate on each use and have no fixed expiry. A token is invalidated by rotation, by the bound virtual key or user becoming inactive or deleted, or by an explicit revoke.
 - An explicit revoke marks the grant's refresh-token row revoked, so renewals stop immediately — but it does **not** remove the bound identity, so the identity check still passes and the already-issued access token keeps working until it expires. Lower `access_token_ttl` to shorten that window.
 - **Deleting** the bound virtual key or user is stronger than revoking a grant: it revokes the grant immediately *and* the identity check rejects the grant's already-issued access token on its next `/mcp` request, instead of letting it live out its TTL.
@@ -235,6 +235,11 @@ In `headers` mode these endpoints return `404`.
 **Symptom:** A virtual key or API key that worked before now gets a `401`.
 **Cause:** `mcp_server_auth_mode` is `oauth`, which accepts JWTs only.
 **Fix:** Use `both` to accept header credentials alongside OAuth.
+
+### Key refused with 403 on /mcp
+**Symptom:** A request with a valid virtual key gets `403` with `virtual key is inactive` or `virtual key has expired`.
+**Cause:** The key authenticated, but governance refuses it, exactly as it would on an inference request.
+**Fix:** Reactivate the key or extend its expiry; the change applies on the next `/mcp` request.
 
 ### Conflicting credentials on /mcp
 **Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.

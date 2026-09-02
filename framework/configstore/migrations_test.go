@@ -691,6 +691,62 @@ func forEachProviderMigrationDB(t *testing.T, testSuffix string) []namedDB {
 	return dbs
 }
 
+// setupVKTestDBWithoutRotationColumns creates an in-memory SQLite database with
+// governance_virtual_keys in its pre-rotation-migration shape: none of the
+// previous_value*/rotated_at columns and no idx_virtual_key_previous_value_hash
+// index, simulating an upgraded (not fresh) installation.
+func setupVKTestDBWithoutRotationColumns(t *testing.T) *gorm.DB {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+
+	err = db.Exec(`
+		CREATE TABLE governance_virtual_keys (
+			id VARCHAR(255) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			value TEXT,
+			value_hash VARCHAR(64),
+			encryption_status VARCHAR(20) DEFAULT 'plain_text',
+			config_hash VARCHAR(255),
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create governance_virtual_keys table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS migrations (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create migrations table")
+
+	return db
+}
+
+func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "previous_value_hash"),
+		"previous_value_hash column must not exist before migration")
+	require.False(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_virtual_key_previous_value_hash"),
+		"previous_value_hash index must not exist before migration")
+
+	require.NoError(t, migrationAddVKRotationCooldownColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"} {
+		assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, column),
+			"%s column should exist after migration", column)
+	}
+	assert.True(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_virtual_key_previous_value_hash"),
+		"upgrade path must create the previous_value_hash index declared in struct tags")
+
+	// Idempotent: a re-run with the index already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_vk_rotation_cooldown_columns").Error)
+	require.NoError(t, migrationAddVKRotationCooldownColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 	tests := []struct {
 		name                            string

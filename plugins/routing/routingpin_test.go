@@ -55,7 +55,7 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 	pluginName := PluginName
 	scoped := root.WithPluginScope(&pluginName)
 
-	decision, err := plugin.applyRoutingRules(scoped, req, nil)
+	decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
 	require.NoError(t, err)
 	require.NotNil(t, decision)
 	assert.Equal(t, pinnedKeyID, decision.KeyID)

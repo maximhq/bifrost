@@ -307,7 +307,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
-	} else if filters.RootsOnly {
+	} else if filters.RootsOnly && filters.RequestID == "" {
+		// An explicit ID lookup targets exactly one row; collapsing it as a
+		// non-root would hide the very row that was pasted.
 		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
@@ -398,11 +400,18 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 	}
-	if filters.StartTime != nil {
-		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
-	}
-	if filters.EndTime != nil {
-		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+	if filters.RequestID != "" {
+		// The log primary key is the request ID, so this is an exact PK lookup. A
+		// unique ID must not be hidden by the selected window, so the time-range
+		// clauses are skipped for it.
+		baseQuery = baseQuery.Where("id = ?", filters.RequestID)
+	} else {
+		if filters.StartTime != nil {
+			baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+		}
+		if filters.EndTime != nil {
+			baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+		}
 	}
 	if filters.MinLatency != nil {
 		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)
@@ -5149,13 +5158,79 @@ func (s *RDBLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*
 	return &delivery, nil
 }
 
-// SearchWebhookDeliveries returns one page of delivery history for an
-// endpoint. Pagination is by delivery group (webhook_id), not by individual
-// attempt: a page holds every attempt of the webhook_ids it covers, so a
-// delivery run never straddles a page boundary and the caller can group
-// attempts into runs without losing any. Groups are ordered by their most
-// recent attempt, and attempts within the page are returned newest first.
-func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+// webhookDeliveryStatusClassClause returns the SQL predicate for one response
+// status class, or an empty string when the class is unrecognized.
+func webhookDeliveryStatusClassClause(class string) string {
+	switch class {
+	case WebhookDeliveryStatusClass2xx:
+		return "(status_code >= 200 AND status_code < 300)"
+	case WebhookDeliveryStatusClass4xx:
+		return "(status_code >= 400 AND status_code < 500)"
+	case WebhookDeliveryStatusClass5xx:
+		return "(status_code >= 500 AND status_code < 600)"
+	case WebhookDeliveryStatusClassNone:
+		// No response ever arrived (network error): the attempt has no status code.
+		return "(status_code = 0)"
+	default:
+		return ""
+	}
+}
+
+// applyWebhookDeliveryFilters narrows a webhook_deliveries query to the rows
+// matching filters. A nil or zero-valued filter set is a no-op.
+func applyWebhookDeliveryFilters(query *gorm.DB, filters *WebhookDeliverySearchFilters) *gorm.DB {
+	if filters == nil {
+		return query
+	}
+	if len(filters.EndpointIDs) > 0 {
+		query = query.Where("endpoint_id IN ?", filters.EndpointIDs)
+	}
+	if len(filters.Events) > 0 {
+		query = query.Where("event IN ?", filters.Events)
+	}
+	if len(filters.Outcomes) > 0 {
+		query = query.Where("outcome IN ?", filters.Outcomes)
+	}
+	if len(filters.StatusClass) > 0 {
+		// Classes are alternatives, so they OR together into a single clause
+		// rather than AND-ing each into the query.
+		clauses := make([]string, 0, len(filters.StatusClass))
+		for _, class := range filters.StatusClass {
+			if clause := webhookDeliveryStatusClassClause(class); clause != "" {
+				clauses = append(clauses, clause)
+			}
+		}
+		if len(clauses) > 0 {
+			query = query.Where(strings.Join(clauses, " OR "))
+		}
+	}
+	if filters.RequestID != "" {
+		query = query.Where("request_id = ?", filters.RequestID)
+	}
+	if filters.DeliveryID != "" {
+		query = query.Where("webhook_id = ?", filters.DeliveryID)
+	}
+	if filters.StartTime != nil {
+		query = query.Where("created_at >= ?", *filters.StartTime)
+	}
+	if filters.EndTime != nil {
+		query = query.Where("created_at <= ?", *filters.EndTime)
+	}
+	return query
+}
+
+// SearchWebhookDeliveries returns one page of matching delivery history.
+// Pagination is by delivery group (webhook_id), not by individual attempt: a
+// page holds every attempt of the webhook_ids it covers, so a delivery run
+// never straddles a page boundary and the caller can group attempts into runs
+// without losing any. Groups are ordered by their most recent attempt, and
+// attempts within the page are returned newest first.
+//
+// Filters select delivery groups, not attempts: a group is on the page if ANY
+// of its attempts matches. The attempts themselves are then fetched unfiltered,
+// so a run selected by, say, outcome=exhausted still reports its full attempt
+// sequence rather than only the exhausted tail.
+func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
 	limit := pagination.Limit
 	if limit <= 0 || limit > defaultMaxSearchLimit {
 		limit = defaultMaxSearchLimit
@@ -5163,17 +5238,13 @@ func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID st
 	// Total counts delivery groups, so the pager reflects the rows the caller
 	// renders rather than raw attempts.
 	var total int64
-	if err := s.db.WithContext(ctx).Model(&WebhookDelivery{}).
-		Where("endpoint_id = ?", endpointID).
-		Distinct("webhook_id").
-		Count(&total).Error; err != nil {
+	countQuery := applyWebhookDeliveryFilters(s.db.WithContext(ctx).Model(&WebhookDelivery{}), filters)
+	if err := countQuery.Distinct("webhook_id").Count(&total).Error; err != nil {
 		return nil, err
 	}
 	// Select the page of webhook_ids, most-recently-active first.
 	webhookIDs := []string{}
-	pageQuery := s.db.WithContext(ctx).
-		Model(&WebhookDelivery{}).
-		Where("endpoint_id = ?", endpointID).
+	pageQuery := applyWebhookDeliveryFilters(s.db.WithContext(ctx).Model(&WebhookDelivery{}), filters).
 		Group("webhook_id").
 		Order("MAX(created_at) DESC, webhook_id DESC").
 		Limit(limit)
@@ -5183,11 +5254,12 @@ func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID st
 	if err := pageQuery.Pluck("webhook_id", &webhookIDs).Error; err != nil {
 		return nil, err
 	}
-	// Fetch every attempt of the selected groups so no run is split.
+	// Fetch every attempt of the selected groups so no run is split. Deliberately
+	// unfiltered — see the doc comment.
 	deliveries := []WebhookDelivery{}
 	if len(webhookIDs) > 0 {
 		if err := s.db.WithContext(ctx).
-			Where("endpoint_id = ? AND webhook_id IN ?", endpointID, webhookIDs).
+			Where("webhook_id IN ?", webhookIDs).
 			Order("created_at DESC, id DESC").
 			Find(&deliveries).Error; err != nil {
 			return nil, err

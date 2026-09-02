@@ -552,7 +552,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -726,7 +726,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		TokenExchange:             clientConfig.TokenExchange,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -844,11 +844,18 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
 		VirtualKeyIDs:   parseCommaSeparated(string(ctx.QueryArgs().Peek("virtual_keys"))),
 	}
-	if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
+	// allowed_by_default replaced all_virtual_keys. The earlier name is still read, and the current
+	// one decides when both are sent.
+	if b, ok, err := parseBoolQueryArg(ctx, "allowed_by_default"); err != nil {
+		SendError(ctx, 400, "Invalid allowed_by_default parameter: must be a boolean")
+		return
+	} else if ok {
+		params.OnlyAllowedByDefault = b
+	} else if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
 		SendError(ctx, 400, "Invalid all_virtual_keys parameter: must be a boolean")
 		return
 	} else if ok {
-		params.OnlyAllVirtualKeys = b
+		params.OnlyAllowedByDefault = b
 	}
 	// Runtime state selection (healthy/unstable) — resolved against the
 	// live engine inside getMCPClientsPaginated since it isn't a DB column.
@@ -1297,7 +1304,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:            dbClient.ToolPricing,
-			AllowOnAllVirtualKeys:  dbClient.AllowOnAllVirtualKeys,
+			AllowByDefault:         dbClient.AllowByDefault,
 			Disabled:               dbClient.Disabled,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
@@ -1437,6 +1444,23 @@ type MCPClientRequest struct {
 	UserHeaders map[string]string   `json:"user_headers,omitempty"`
 }
 
+// UnmarshalJSON reads allow_by_default under its earlier name as well, allow_on_all_virtual_keys, so a
+// caller that has not moved to the current key is still understood. The current key decides when both
+// are sent; see schemas.ResolveAllowByDefault.
+func (r *MCPClientRequest) UnmarshalJSON(data []byte) error {
+	type alias MCPClientRequest
+	aux := &struct {
+		AllowByDefault        *bool `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool `json:"allow_on_all_virtual_keys,omitempty"`
+		*alias
+	}{alias: (*alias)(r)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.AllowByDefault = schemas.ResolveAllowByDefault(aux.AllowByDefault, aux.AllowOnAllVirtualKeys)
+	return nil
+}
+
 // MCPVKConfigRequest represents a per-VK tool access config for an MCP client
 type MCPVKConfigRequest struct {
 	VirtualKeyID   string            `json:"virtual_key_id"`
@@ -1459,7 +1483,7 @@ const errToolSyncIntervalNegative = "tool_sync_interval must be 0 (use the globa
 type MCPClientUpdateRequest struct {
 	Name                   *string                         `json:"name,omitempty"`
 	Disabled               *bool                           `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys  *bool                           `json:"allow_on_all_virtual_keys,omitempty"`
+	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
@@ -1475,6 +1499,20 @@ type MCPClientUpdateRequest struct {
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
 	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
 	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
+
+	// AllowOnAllVirtualKeys is the earlier name of allow_by_default, still accepted. AllowByDefault
+	// decides when both are sent; see schemas.ResolveAllowByDefault.
+	AllowOnAllVirtualKeys *bool `json:"allow_on_all_virtual_keys,omitempty"`
+}
+
+// resolvedAllowByDefault applies PATCH semantics to allow_by_default: the request's value when it
+// sent one under either wire name, otherwise existing. The current name decides when both are sent;
+// see schemas.ResolveAllowByDefault.
+func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
+	if req.AllowByDefault == nil && req.AllowOnAllVirtualKeys == nil {
+		return existing
+	}
+	return schemas.ResolveAllowByDefault(req.AllowByDefault, req.AllowOnAllVirtualKeys)
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -1614,7 +1652,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Verify connection and discover tools using the admin's sample
@@ -1724,7 +1762,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Resolve an admin credential for synchronous verification + tool
@@ -1855,7 +1893,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
@@ -1941,7 +1979,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			ToolPricing:            req.ToolPricing,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Store pending config in database (associated with oauth_config_id for multi-instance support)
@@ -1998,7 +2036,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolSyncInterval:       toolSyncInterval,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		ToolPricing:            req.ToolPricing,
-		AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+		AllowByDefault:         req.AllowByDefault,
 	}
 
 	// Creating MCP client config in config store
@@ -2074,7 +2112,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// PerUserHeaderKeys is snapshotted via append (independent backing array) rather
 	// than a bare slice-header copy, so we're safe if a future change mutates the
 	// slice contents in-place instead of reassigning the header.
-	existingAllowOnAllVirtualKeys := existingConfig.AllowOnAllVirtualKeys
+	existingAllowByDefault := existingConfig.AllowByDefault
 	existingPerUserHeaderKeys := append([]string(nil), existingConfig.PerUserHeaderKeys...)
 
 	// Resolve all mutable fields with PATCH semantics: use the provided value if
@@ -2087,10 +2125,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	if req.Disabled != nil {
 		disabled = *req.Disabled
 	}
-	allowOnAllVKs := existingConfig.AllowOnAllVirtualKeys
-	if req.AllowOnAllVirtualKeys != nil {
-		allowOnAllVKs = *req.AllowOnAllVirtualKeys
-	}
+	allowByDefault := req.resolvedAllowByDefault(existingConfig.AllowByDefault)
 	isCodeMode := existingConfig.IsCodeModeClient
 	if req.IsCodeModeClient != nil {
 		isCodeMode = *req.IsCodeModeClient
@@ -2483,7 +2518,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
 		AuthType:               string(existingConfig.AuthType),
 		OauthConfigID:          existingConfig.OauthConfigID,
-		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		AllowByDefault:         allowByDefault,
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
@@ -2540,7 +2575,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolSyncInterval:       toolSyncInterval,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		ToolPricing:            toolPricing,
-		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		AllowByDefault:         allowByDefault,
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
@@ -2827,15 +2862,15 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// Per-user credential reconciliation for changes that mutate who can
 	// access this MCP. Two trigger conditions:
 	//   1. vk_configs explicitly diffed (rows added/removed/updated).
-	//   2. AllowOnAllVirtualKeys flipped — the implicit fallback toggled,
-	//      every VK with a credential for this MCP needs re-evaluation.
+	//   2. allow_by_default flipped: the default grant toggled, so every
+	//      credential held for this MCP needs re-evaluation.
 	//
 	// Reconcile is enterprise-only behavior (no-op in OSS). It orphans
 	// credentials whose MCP just lost the grant and reactivates orphaned
 	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
 	// are reconciled — they share the same VK→MCP allowlist model.
 	if h.store.ConfigStore != nil {
-		shouldReconcile := req.VKConfigs != nil || allowOnAllVKs != existingAllowOnAllVirtualKeys
+		shouldReconcile := req.VKConfigs != nil || allowByDefault != existingAllowByDefault
 		if shouldReconcile {
 			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
@@ -3154,7 +3189,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -3412,7 +3447,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
-				AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+				AllowByDefault:            mcpClientConfig.AllowByDefault,
 				PerUserHeaderKeys:         mcpClientConfig.PerUserHeaderKeys,
 				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
@@ -3535,7 +3570,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			TLSConfig:                 mcpClientConfig.TLSConfig,
-			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+			AllowByDefault:            mcpClientConfig.AllowByDefault,
 			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
 			Disabled:                  mcpClientConfig.Disabled,

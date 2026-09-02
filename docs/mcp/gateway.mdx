@@ -118,19 +118,19 @@ Include any required Virtual Key authentication headers if governance is enabled
 
 ## Virtual Key Authentication
 
-Bifrost supports per-Virtual Key MCP servers, allowing you to expose different tools to different clients.
+Every request to `/mcp` is scoped to what its credentials allow, so different clients see different tools from the same endpoint.
 
 <Note>
 Header credentials are one of two ways clients authenticate to `/mcp`. Clients can also connect through a browser-based OAuth flow — see [Gateway Authentication](./gateway-auth) for the `mcp_server_auth_mode` setting and the OAuth connect flow.
 </Note>
 
-### Global Server (No Virtual Key)
+### Anonymous Access (No Credentials)
 
-When `enforce_auth_on_inference` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
+When `enforce_auth_on_inference` is `false`, requests without credentials see all available tools.
 
-### Virtual Key-Specific Servers
+### Scoped by Virtual Key
 
-When using Virtual Keys, each VK gets its own MCP server with filtered tools based on its configuration.
+With a Virtual Key, `tools/list` returns only the tools the key allows: the clients configured on the key (see [Tool Filtering](#tool-filtering-for-mcp-clients)) plus any client marked **Allow by Default**. `tools/call` is checked against the same allow-list, and a key that is inactive or expired is refused with `403`, exactly as on the inference endpoints. An `x-bf-mcp-include-tools` header can narrow the list further for a request, never widen it.
 
 **Authenticate with Virtual Key:**
 
@@ -225,6 +225,8 @@ Configure which tools each Virtual Key can access:
   }
 }
 ```
+
+A client marked **Allow by Default** (`allow_by_default` in its configuration) is available, with all of its tools, to every key that does not configure it explicitly. A key's own configuration for that client takes precedence, including an empty tool list, which blocks it for that key.
 
 Learn more about Virtual Key tool filtering in [MCP Tool Filtering](../features/governance/mcp-tools).
 
