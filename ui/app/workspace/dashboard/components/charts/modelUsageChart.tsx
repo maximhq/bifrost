@@ -10,10 +10,11 @@ import {
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
-	OTHER_SERIES_LABEL,
+	getOtherSeriesLabel,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
 
 // Sanitize model names to avoid Recharts interpreting dots/brackets as path separators
 function sanitizeModelKey(model: string): string {
@@ -48,7 +49,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
 										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : model}</span>
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? getOtherSeriesLabel() : model}</span>
 									</span>
 									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>
 										{total.toLocaleString()}
@@ -145,7 +146,7 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 	}, [data, selectedModel]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {

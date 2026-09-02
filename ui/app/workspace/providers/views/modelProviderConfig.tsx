@@ -4,6 +4,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { SettingsIcon, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
 
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function ModelProviderConfig({ provider, onRequestDelete }: Props) {
+	const { t } = useTranslation("models");
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
@@ -31,7 +33,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 					variant="outline"
 					onClick={onRequestDelete}
 					className="text-destructive hover:bg-destructive/10 hover:text-destructive size-9 px-0"
-					aria-label="Delete provider"
+					aria-label={t("providers.deleteProviderAria")}
 					data-testid="provider-delete-btn"
 				>
 					<Trash className="h-4 w-4" />
@@ -43,13 +45,13 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 						variant="outline"
 						className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
 						onClick={() => setShowConfigSheet(true)}
-						aria-label={hasUpdateProviderAccess ? "Edit provider configuration" : "View provider configuration"}
+						aria-label={hasUpdateProviderAccess ? t("providers.editConfigAria") : t("providers.viewConfigAria")}
 					>
 						<SettingsIcon className="h-4 w-4" />
-						<span className="hidden xl:inline">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</span>
+						<span className="hidden xl:inline">{hasUpdateProviderAccess ? t("providers.editConfig") : t("providers.viewConfig")}</span>
 					</Button>
 				</TooltipTrigger>
-				<TooltipContent className="xl:hidden">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</TooltipContent>
+				<TooltipContent className="xl:hidden">{hasUpdateProviderAccess ? t("providers.editConfig") : t("providers.viewConfig")}</TooltipContent>
 			</Tooltip>
 		</div>
 	);

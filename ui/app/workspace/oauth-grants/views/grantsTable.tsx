@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 // Results table for OAuth grants: one row per active downstream grant, with the
 // bound identity, an approximate access-token expiry, created/last-used relative
 // times, and a per-row actions menu. Owns the empty state and pagination; the
@@ -36,30 +37,31 @@ export default function GrantsTable({
 	pendingActionRowId,
 	onRevoke,
 }: GrantsTableProps) {
+	const { t } = useTranslation("mcp");
 	return (
 		<div className="flex grow flex-col overflow-hidden">
 			<div className={`mb-2 grow overflow-hidden rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
 				<Table containerClassName="h-full overflow-auto">
 					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow>
-							<TableHead>Client</TableHead>
+							<TableHead>{t("oauthGrants.columns.client")}</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
-									label="Bound to"
-									tooltip="The identity this grant is tied to: an end user (via SSO), a virtual key (shared by anyone using that VK), or an anonymous session. This determines which upstream per-user OAuth sessions are reachable under this grant."
+									label={t("oauthGrants.columns.boundTo")}
+									tooltip={t("oauthGrants.tooltips.boundTo")}
 								/>
 							</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
-									label="Access token expiry"
-									tooltip="When the current JWT access token expires. MCP clients silently refresh using the refresh token, so an active grant past its expiry will mint a new token automatically on the next request."
+									label={t("oauthGrants.columns.accessTokenExpiry")}
+									tooltip={t("oauthGrants.tooltips.accessTokenExpiry")}
 								/>
 							</TableHead>
-							<TableHead>Created</TableHead>
+							<TableHead>{t("oauthGrants.columns.created")}</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
-									label="Last used"
-									tooltip="When this grant last refreshed its access token. MCP clients refresh as their token nears expiry, so this tracks the grant's most recent activity. Grants that have not refreshed since they were authorized fall back to when they were created."
+									label={t("oauthGrants.columns.lastUsed")}
+									tooltip={t("oauthGrants.tooltips.lastUsed")}
 								/>
 							</TableHead>
 							<TableHead className={`bg-muted relative sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`} />
@@ -70,7 +72,7 @@ export default function GrantsTable({
 							<TableRow>
 								<TableCell colSpan={6} className="h-24 text-center">
 									{hasActiveFilters ? (
-										<div className="text-muted-foreground text-sm">No grants match these filters.</div>
+										<div className="text-muted-foreground text-sm">{t("oauthGrants.noMatch")}</div>
 									) : (
 										<EmptyGrantsState />
 									)}
@@ -119,7 +121,7 @@ export default function GrantsTable({
 							onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
 							disabled={offset === 0}
 							data-testid="oauth-grants-prev-page-btn"
-							aria-label="Previous page"
+							aria-label={t("common.previousPage")}
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
@@ -136,7 +138,7 @@ export default function GrantsTable({
 							onClick={() => onOffsetChange(offset + pageSize)}
 							disabled={offset + pageSize >= totalCount}
 							data-testid="oauth-grants-next-page-btn"
-							aria-label="Next page"
+							aria-label={t("common.nextPage")}
 						>
 							<ChevronRight className="size-3" />
 						</Button>
