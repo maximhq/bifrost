@@ -664,6 +664,14 @@ func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
 	return t.accumulator.ClearPausedStreamBuffer(traceID)
 }
 
+// TransformPausedStreamBuffer forwards atomic rewrites of paused client chunks to the streaming accumulator.
+func (t *Tracer) TransformPausedStreamBuffer(traceID string, transform schemas.PausedStreamBufferTransform) error {
+	if t == nil || t.accumulator == nil {
+		return errors.New("stream accumulator is not configured")
+	}
+	return t.accumulator.TransformPausedStreamBuffer(traceID, transform)
+}
+
 // EndStream terminates the streaming response. Any buffered chunks are flushed
 // first; if err is non-nil it is then delivered as a terminal error chunk. After
 // EndStream, all further provider chunks are dropped (PostLLMHook still fires).
