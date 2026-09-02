@@ -47,7 +47,7 @@ func TestGemini(t *testing.T) {
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel:       "gemini-3-pro-preview",
+		ReasoningModel:       "gemini-3.1-pro-preview",
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		PassthroughModel:     "gemini-2.5-flash",
 		Scenarios: llmtests.TestScenarios{
