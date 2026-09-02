@@ -113,6 +113,7 @@ type ClientConfig struct {
 	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
 	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
 	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
+	UploadSessionTTL                      schemas.Duration                      `json:"upload_session_ttl,omitempty"`                // TTL for resumable upload sessions
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery

@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -18,7 +17,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/grant"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -338,6 +336,9 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 	if maxUploadSizeBytes > 0 {
 		maxResumableUploadSize = maxUploadSizeBytes
 	}
+
+	uploadSessionTTL := handlerStore.GetUploadSessionTTL()
+
 	var logger schemas.Logger = bifrost.NewNoOpLogger()
 	if len(loggers) > 0 && loggers[0] != nil {
 		logger = loggers[0]
@@ -401,11 +402,6 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return false, nil
 			}
 
-			uploadID, err := generateUploadID()
-			if err != nil {
-				return true, fmt.Errorf("failed to generate upload ID: %w", err)
-			}
-
 			kvStore := handlerStore.GetKVStore()
 			if kvStore == nil {
 				return true, errors.New("kvstore not initialized")
@@ -416,10 +412,19 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				MimeType:    r.MimeType,
 				Provider:    r.Provider,
 			}
-			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
-				session.VirtualKey = vk
+
+			vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+			if !ok || vk == "" {
+				return true, errors.New("virtual key is required for resumable upload")
 			}
-			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
+
+			uploadID, err := generateUploadID()
+			if err != nil {
+				return true, fmt.Errorf("failed to generate upload ID: %w", err)
+			}
+
+			session.VirtualKey = vk
+			if err := kvStore.SetWithTTL(uploadID, session, uploadSessionTTL); err != nil {
 				return true, fmt.Errorf("failed to store upload session: %w", err)
 			}
 
@@ -488,6 +493,22 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 					return nil, errors.New("invalid upload session type in kvstore")
 				}
 
+				// Step 2 must provide the same virtual-key credential that
+				// created the upload session. Do this validation before
+				// modifying or restoring any session state.
+				if currentSession.VirtualKey == "" {
+					return nil, errors.New("virtual key is required for resumable upload")
+				}
+
+				vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+				if !ok || vk == "" {
+					return nil, errors.New("virtual key is required for resumable upload")
+				}
+
+				if vk != currentSession.VirtualKey {
+					return nil, errors.New("virtual key does not match the upload session")
+				}
+
 				// For finalize requests, prevent concurrent uploads from reaching the provider.
 				if normalizedCmd == "upload,finalize" && currentSession.Finalizing {
 					return nil, newErrorWithStatus(errors.New("upload already being finalized"), fasthttp.StatusConflict)
@@ -535,7 +556,7 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 					newSession.Finalizing = true
 				}
 
-				success, err := kvStore.CompareAndSwap(r.UploadID, val, newSession, 1*time.Minute)
+				success, err := kvStore.CompareAndSwap(r.UploadID, val, newSession, uploadSessionTTL)
 				if err != nil {
 					return nil, fmt.Errorf("failed to persist upload chunk: %w", err)
 				}
@@ -548,15 +569,6 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 
 				session = newSession
 				break
-			}
-
-			// Resumable chunk requests may not contain the original auth headers.
-			// Restore the virtual key associated with the upload session.
-			if session.VirtualKey != "" {
-				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
-					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
-					lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, session.VirtualKey))
-				}
 			}
 
 			// Upload without finalize: keep the session and acknowledge progress.
@@ -618,7 +630,7 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 						for offset, chunk := range session.Chunks {
 							resetSession.Chunks[offset] = append([]byte(nil), chunk...)
 						}
-						success, err := kvStore.CompareAndSwap(r.UploadID, value, resetSession, time.Minute)
+						success, err := kvStore.CompareAndSwap(r.UploadID, value, resetSession, uploadSessionTTL)
 						if err != nil {
 							logger.Warn("failed to reset upload session after provider failure: %v", err)
 							return

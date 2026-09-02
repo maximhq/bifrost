@@ -5410,6 +5410,19 @@ func (c *Config) GetMaxRequestBodySizeMB() int {
 	return c.ClientConfig.MaxRequestBodySizeMB
 }
 
+// DefaultUploadSessionTTL is the default TTL for resumable upload sessions.
+const DefaultUploadSessionTTL = 10 * time.Minute
+
+// GetUploadSessionTTL returns the configured upload session TTL.
+// Returns the configured value or 10 minutes if not set (default).
+func (c *Config) GetUploadSessionTTL() time.Duration {
+	if c.ClientConfig == nil || c.ClientConfig.UploadSessionTTL <= 0 {
+		return DefaultUploadSessionTTL
+	}
+
+	return c.ClientConfig.UploadSessionTTL
+}
+
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
 // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
 func (c *Config) GetHeaderMatcher() *HeaderMatcher {
