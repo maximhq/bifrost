@@ -1182,8 +1182,17 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	var blocks []AnthropicContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
-		// sent and none may be invented — that would burn a cache checkpoint (max 4) the caller
-		// never asked for.
+		// sent and none may be invented HERE — that would burn a cache checkpoint (max 4) the
+		// caller never asked for.
+		//
+		// Breakpoints are synthesized in exactly one place, and it is not this one: the
+		// opt-in injector at core/providers/utils/promptcache.go, gated on the provider's
+		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
+		// request either carries the caller's intent or the operator's, never a third thing
+		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
+		// "never drops": the loop below deliberately collapses intermediate markers onto the
+		// last block, for the reasons stated there. Adding is what changes the caller's cost
+		// profile behind their back; collapsing a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),

@@ -137588,6 +137588,364 @@
           }
         }
       ]
+    },
+    {
+      "name": "62. Auto-injected prompt cache breakpoints (#6180)",
+      "description": "Regression coverage for #6180: agentic clients send no cache markers, so providers that cache implicitly slide the cached prefix onto the newest message and bill every turn as a cache write.\n\nThese cases send NO client-side cache_control at all - the client is a stand-in for Codex, which emits none (openai/codex#37674). Injection is enabled per request with x-bf-prompt-cache-auto-inject rather than by editing provider config, so nothing here leaks into other folders in a full run. The header only works because tests/integrations/python/config.json opts the anthropic provider in with auto_inject false; a header alone can never manufacture operator opt-in.\n\nWhat each case pins:\n  62.1 a breakpoint IS injected, asserted on the outbound body via x-bf-send-back-raw-request. Exactly one, because overshooting the four-marker ceiling is a hard rejection upstream.\n  62.2 nothing is injected when opted out. The negative case matters as much as the positive: Bifrost must not spend a cache checkpoint the operator did not ask for.\n  62.3/62.4 a real cache read on the non-streaming route. A 2xx proves nothing about caching, so [read] asserts cached_tokens > 0.\n  62.5/62.6 the same through the streaming handler.\n\nThe [write]/[read] pairs depend on folder order and on {{cachePrefix}} (23KB, well over the 1024-token minimum for claude-sonnet-4) plus the collection-level {{pcNonce}} for per-run cache isolation.",
+      "item": [
+        {
+          "name": "Anthropic Claude: auto-inject adds cache_control the client never sent - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.1 auto-inject: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('62.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "// The request carried no markers, so any cache_control on the wire was injected.",
+                  "var count = (rawStr.match(/\"cache_control\"/g) || []).length;",
+                  "pm.test('62.1 exactly one breakpoint was injected (#6180)', function () {",
+                  "  pm.expect(count, 'raw_request: ' + rawStr.slice(0, 800)).to.equal(1);",
+                  "});",
+                  "// Counting is not enough. A marker on the NEWEST message also counts one, and that",
+                  "// is precisely the implicit-caching behaviour #6180 exists to replace: the cached",
+                  "// prefix slides forward every turn and each turn bills a write. Identify the block.",
+                  "var markedTexts = [];",
+                  "JSON.stringify(rr, function (k, v) { if (v && typeof v === 'object' && v.cache_control) { markedTexts.push(String(v.text || '')); } return v; });",
+                  "pm.test('62.1 the marker anchors the stable prefix, not the newest message (#6180)', function () {",
+                  "  pm.expect(markedTexts.length, 'marked blocks: ' + JSON.stringify(markedTexts)).to.equal(1);",
+                  "  pm.expect(markedTexts[0], 'the marked block must be the replayed prefix, not the trailing question').to.include('bf-6180');",
+                  "});",
+                  "pm.test('62.1 the breakpoint is ephemeral', function () {",
+                  "  pm.expect(rawStr).to.include('\"type\":\"ephemeral\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} wire]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Claude: no injection without the opt-in - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.2 default off: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('62.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "// Same body, opted out. Bifrost must not invent a breakpoint the operator",
+                  "// did not ask for - that would spend one of four checkpoints and change billing.",
+                  "pm.test('62.2 nothing is injected when auto-inject is off (#6180)', function () {",
+                  "  pm.expect(rawStr.indexOf('cache_control'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} off]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Claude: auto-injected cache non-streaming [write] - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.3 cache write: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} nonstream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Claude: auto-injected cache non-streaming [read] - #6180",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Let the breakpoint written by the paired [write] land before this [read].",
+                  "var __t = Date.now(); while (Date.now() - __t < 2000) { /* busy-wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.4 cache read: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var u = j.usage || {};",
+                  "var d = u.input_tokens_details || u.prompt_tokens_details || {};",
+                  "var cached = (typeof d.cached_tokens === 'number') ? d.cached_tokens : 0;",
+                  "pm.test('62.4 cached_tokens > 0 with no client markers (#6180)', function () {",
+                  "  pm.expect(cached, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} nonstream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Claude: auto-injected cache streaming [write] - #6180",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.5 cache write: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('62.5 stream reached a terminal event', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw.indexOf('response.completed') !== -1 || raw.indexOf('response.incomplete') !== -1, 'no terminal SSE event: ' + raw.slice(-400)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} stream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic Claude: auto-injected cache streaming [read] - #6180",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Let the breakpoint written by the paired [write] land before this [read].",
+                  "var __t = Date.now(); while (Date.now() - __t < 2000) { /* busy-wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('62.6 cache read: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var m = raw.match(/\"cached_tokens\"\\s*:\\s*(\\d+)/g) || [];",
+                  "var cached = 0;",
+                  "for (var i = 0; i < m.length; i++) { var v = parseInt(m[i].replace(/[^0-9]/g, ''), 10); if (v > cached) { cached = v; } }",
+                  "pm.test('62.6 streaming: cached_tokens > 0 with no client markers (#6180)', function () {",
+                  "  pm.expect(cached, 'no cached_tokens in the stream; tail: ' + raw.slice(-600)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} stream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
