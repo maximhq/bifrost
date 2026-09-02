@@ -136,6 +136,10 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "mistral": {
@@ -227,6 +231,10 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "azure": {
@@ -263,6 +271,10 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "bedrock": {
@@ -359,6 +371,314 @@
           "use_for_batch_api": false
         }
       ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic_pc_auto": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "gemini_pc_auto": {
+      "keys": [
+        {
+          "name": "Gemini API Key",
+          "value": "env.GEMINI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "gemini",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "anthropic_pc_points": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "bedrock_pc_auto": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "bedrock",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "bedrock_pc_points": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "bedrock",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "openai_pc_auto": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "openai_pc_points": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "anthropic_pc_edge": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "index": -1
+          },
+          {
+            "location": "message",
+            "role": "user",
+            "index": 1
+          },
+          {
+            "location": "message",
+            "index": 99
+          },
+          {
+            "location": "message"
+          }
+        ]
+      }
+    },
+    "anthropic_pc_overflow": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "index": 0
+          },
+          {
+            "location": "message",
+            "index": 1
+          },
+          {
+            "location": "message",
+            "index": 2
+          },
+          {
+            "location": "message",
+            "index": 3
+          },
+          {
+            "location": "message",
+            "index": 4
+          },
+          {
+            "location": "message",
+            "index": 5
+          }
+        ]
+      }
+    },
+    "anthropic_pc_absent": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
@@ -509,6 +829,7 @@
     "read_buffer_size": 65536
   },
   "client": {
+    "allow_per_request_raw_override": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],

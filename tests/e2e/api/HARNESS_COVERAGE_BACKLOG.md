@@ -111,7 +111,7 @@ Sources:
 - [x] Extended thinking (`thinking: { type: "enabled", budget_tokens }`)
 - [x] Adaptive thinking (`thinking: { type: "adaptive" }` for Opus 4.7)
 - [x] Prompt caching ephemeral (`cache_control: { type: "ephemeral" }`)
-- [ ] **Prompt caching persistent / 1-hour** (`cache_control: { type: "ephemeral", ttl: "1h" }`)
+- [~] **Prompt caching persistent / 1-hour** (`cache_control: { type: "ephemeral", ttl: "1h" }`) - folder 64.1 asserts `"ttl":"1h"` reaching the Anthropic, Vertex Claude and Bedrock wires (and being dropped where the dialect cannot carry it) for an **injected** breakpoint via `prompt_cache.ttl`. A client-sent `cache_control.ttl` on the request itself is still uncovered.
 - [ ] **Web fetch tool** (`web_fetch_20250910`, `web_fetch_20260209`, `web_fetch_20260309`)
 - [ ] **Memory tool** (`memory_20250818`)
 - [ ] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`)
