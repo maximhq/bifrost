@@ -4165,15 +4165,26 @@ func validateBudgetLinkOwnership(tx *gorm.DB, budgetID *string, ownerType, owner
 		return nil
 	}
 
+	// All five owner columns TableBudget.BeforeSave counts must be checked here,
+	// or a budget already owned through the missing column double-links at
+	// config load and the two layers disagree about the invariant (#6623).
 	var budget configstoreTables.TableBudget
-	if err := tx.Select("id", "team_id", "virtual_key_id", "provider_config_id").Where("id = ?", id).First(&budget).Error; err != nil {
+	if err := tx.Select("id", "team_id", "virtual_key_id", "provider_config_id", "model_config_id", "customer_id").Where("id = ?", id).First(&budget).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("budget_id %q referenced by %s %q does not exist", id, ownerType, ownerID)
 		}
 		return fmt.Errorf("failed to validate budget ownership for %s %q: %w", ownerType, ownerID, err)
 	}
 
-	if budget.TeamID != nil || budget.VirtualKeyID != nil || budget.ProviderConfigID != nil {
+	// A budget's own model_config_id marks a BudgetIDs-list linkage
+	// (linkModelConfigBudgets); on config reload the same model config
+	// re-validates its own entries, so its own linkage must not self-conflict,
+	// mirroring the `id <> ?` exclusion on the follow-up query below.
+	modelConfigOwnedElsewhere := budget.ModelConfigID != nil &&
+		!(ownerType == "model config" && *budget.ModelConfigID == ownerID)
+
+	if budget.TeamID != nil || budget.VirtualKeyID != nil || budget.ProviderConfigID != nil ||
+		budget.CustomerID != nil || modelConfigOwnedElsewhere {
 		return fmt.Errorf("budget_id %q is already owned by another governance entity and cannot be linked to %s %q", id, ownerType, ownerID)
 	}
 
