@@ -40,7 +40,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 
 ## `version`
 
-Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
+Controls how empty arrays in the allow-list fields of provider keys (`models`) and virtual keys (`allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -48,6 +48,8 @@ Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key
 | `1` *(v1.4.x compat)* | Empty array = **allow all** |
 
 Omitting `version` uses v2 semantics. Set `"version": 1` only if you are migrating from v1.4.x and need the old behaviour temporarily.
+
+Projects declared under `governance.projects` are not covered by this switch: their `key_ids` and `tools_to_execute` always treat an empty or omitted array as granting nothing, under either value.
 
 ---
 
@@ -133,6 +135,7 @@ Seeds governance resources at startup. All sub-keys are optional arrays.
 | `routing_rules` | CEL-based dynamic provider/model routing |
 | `pricing_overrides` | Scoped per-model pricing overrides |
 | `model_configs` | Per-model rate limit and budget configurations |
+| `projects` | Projects: access gates and accounting scopes that requests opt into, with budgets divisible between members *(enterprise only)* |
 
 Full documentation: [Governance](/deployment-guides/config-json/governance).
 

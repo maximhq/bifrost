@@ -18232,6 +18232,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
 		"roles":          true, // Enterprise RBAC role bootstrap; not in OSS GovernanceConfig
+		"projects":       true, // Enterprise projects bootstrap; not in OSS GovernanceConfig
 	},
 	"auth_config": {
 		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
