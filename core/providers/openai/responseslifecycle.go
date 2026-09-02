@@ -285,6 +285,12 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		lastChunkTime := startTime
 
+		// A detail-free response.failed held back while the loop reads on for the
+		// terminal {"type":"error"} frame some providers (Azure) send right after
+		// it, carrying the real failure reason (issue #6419).
+		var pendingFailedErr *schemas.BifrostError
+		var pendingFailedRaw []byte
+
 		for {
 			if ctx.Err() != nil {
 				return
@@ -326,6 +332,13 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			// Some providers send response.failed on HTTP 200 streams instead of a pre-stream 4xx.
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
 				bifrostErr := responsesStreamError(&response)
+				// Hold a detail-free failed event and keep reading for the richer
+				// terminal error frame; see the identical branch in openai.go (#6419).
+				if !responsesFailedEventHasErrorDetail(&response) {
+					pendingFailedErr = bifrostErr
+					pendingFailedRaw = []byte(jsonData)
+					continue
+				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, nil, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 				return
@@ -343,6 +356,14 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			lastChunkTime = time.Now()
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// A detail-free response.failed with no richer error frame after it: the
+		// stream is over, surface the held failed-derived error now.
+		if pendingFailedErr != nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, pendingFailedErr, nil, pendingFailedRaw, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+			return
 		}
 
 		// Falling out of the loop means the body ended without a terminal event.

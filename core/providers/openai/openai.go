@@ -1943,6 +1943,12 @@ func HandleOpenAIResponsesStreaming(
 
 		lastChunkTime := startTime
 
+		// A detail-free response.failed held back while the loop reads on for the
+		// terminal {"type":"error"} frame some providers (Azure) send right after
+		// it, carrying the real failure reason (issue #6419).
+		var pendingFailedErr *schemas.BifrostError
+		var pendingFailedRaw []byte
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -2026,6 +2032,17 @@ func HandleOpenAIResponsesStreaming(
 			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
 				bifrostErr := responsesStreamError(&response)
+				// Azure sends response.failed with a null error object and follows it
+				// with a terminal {"type":"error"} frame holding the real reason (e.g.
+				// content_policy_violation). Surfacing the detail-free failed event
+				// immediately would drop that frame unread, so hold it and keep
+				// reading; the error branch above surfaces the richer frame, and the
+				// post-loop flush surfaces this one if nothing follows.
+				if !responsesFailedEventHasErrorDetail(&response) {
+					pendingFailedErr = bifrostErr
+					pendingFailedRaw = []byte(jsonData)
+					continue
+				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
@@ -2047,6 +2064,14 @@ func HandleOpenAIResponsesStreaming(
 			lastChunkTime = time.Now()
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// A detail-free response.failed with no richer error frame after it: the
+		// stream is over, surface the held failed-derived error now.
+		if pendingFailedErr != nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, pendingFailedErr, jsonBody, pendingFailedRaw, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+			return
 		}
 
 		// The loop returns as soon as a terminal event (completed / incomplete /
