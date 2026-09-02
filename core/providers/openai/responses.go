@@ -366,6 +366,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.Reasoning.Effort != nil {
 			effort = *req.ResponsesParameters.Reasoning.Effort
 		}
+		if IsOpenAIReasoningModel(capModel) && (bifrostReq.Provider == schemas.OpenAI || bifrostReq.Provider == schemas.Azure) {
+			req.ResponsesParameters.Temperature = nil
+		}
 		if topPUnsupported(caps, capModel, effort) {
 			req.ResponsesParameters.TopP = nil
 		}
