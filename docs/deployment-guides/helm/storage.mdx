@@ -328,6 +328,34 @@ storage:
 
 ---
 
+## ClickHouse
+
+Use ClickHouse as the log store by setting `storage.logsStore.type` to
+`clickhouse`. For a native `ENGINE = Replicated` database, use managed
+replication. Bifrost emits `ReplicatedReplacingMergeTree(ver)` without
+`ON CLUSTER` and without an explicit Keeper path.
+
+```yaml
+storage:
+  logsStore:
+    enabled: true
+    type: clickhouse
+    clickhouse:
+      host: "clickhouse.default.svc.cluster.local"
+      database: bifrost
+      managedReplication: true
+      tableEngine: REPLICATED_MERGETREE
+```
+
+Do not set `cluster` in managed mode. For unmanaged replicated tables,
+`cluster` is required as a deployment-safety check, but table DDL must be
+applied to each replica by an external migration mechanism because Bifrost does
+not send `ON CLUSTER` for replicated engines. `tableEngine` defaults to
+`MergeTree`; select `REPLICATED_MERGETREE` explicitly for managed mode. With
+`tableEngine: MergeTree`, a
+configured `cluster` does send `ON CLUSTER` to create missing tables and
+columns on every member.
+
 ## Object Storage for Logs
 
 Offload large request/response payloads from the database to S3 or GCS. The DB retains only lightweight index records; payloads are fetched on demand.

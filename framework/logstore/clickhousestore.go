@@ -29,9 +29,7 @@ import (
 // lightweight `DELETE ... WHERE`, and TTL is the primary retention mechanism.
 type ClickHouseLogStore struct {
 	*RDBLogStore
-	// cluster is the optional ON CLUSTER name (empty = single-node). Retained
-	// for future cluster-aware DDL.
-	cluster string
+	ddlConfig clickHouseDDLConfig
 	// rmwLocks serializes read-modify-write cycles per row key within this
 	// process. Because updates re-insert the whole row, two concurrent updaters
 	// of the same id (e.g. object offload setting has_object while the
