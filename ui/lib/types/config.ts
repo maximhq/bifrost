@@ -408,6 +408,24 @@ export interface OpenAIConfig {
 	disable_store?: boolean;
 }
 
+// CacheControlInjectionPoint names one place to add a cache breakpoint.
+// A point must set role, index, or both; a point with neither matches nothing.
+export interface CacheControlInjectionPoint {
+	location: "message";
+	role?: "system" | "developer" | "user" | "assistant";
+	// Negative values count from the end, so -1 is the last message.
+	index?: number;
+}
+
+// PromptCacheConfig opts a provider into synthesizing cache breakpoints for requests
+// that carry none. Off by default; requests that already carry their own markers are
+// never modified.
+export interface PromptCacheConfig {
+	auto_inject?: boolean;
+	ttl?: string;
+	cache_control_injection_points?: CacheControlInjectionPoint[];
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -418,6 +436,7 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -446,6 +465,7 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -458,6 +478,7 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

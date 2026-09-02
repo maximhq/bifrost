@@ -1690,6 +1690,36 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsGPT56Model reports whether the model belongs to the gpt-5.6 family, which is the
+// first OpenAI generation to accept prompt_cache_options / prompt_cache_breakpoint.
+//
+// Substring-matched on the full dot-revision, deliberately. Catalog IDs carry region
+// and vendor namespaces ("azure/eu/gpt-5.6", "openai.gpt-5.6-terra"), so a prefix test
+// would miss them. Including the revision in the needle rules out gpt-5.5 and earlier,
+// but not a longer one: a bare Contains also answers true for gpt-5.60, a different
+// model that never declared support. Hence the trailing boundary - the character after
+// the needle must be absent or non-numeric. This mirrors the gating in
+// core/providers/openai/utils.go, restated here because core/schemas cannot import a
+// provider package.
+func IsGPT56Model(model string) bool {
+	const needle = "gpt-5.6"
+	lower := strings.ToLower(model)
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := start + idx + len(needle)
+		if end == len(lower) || lower[end] < '0' || lower[end] > '9' {
+			return true
+		}
+		// A digit here means a longer dot-revision; keep scanning, since a
+		// namespaced id may carry the real match further along.
+		start = end
+	}
+	return false
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -1738,6 +1768,33 @@ func IsElevenlabsSoundModel(model string) bool {
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// ModelSupportsPromptCaching is the datasheet-independent fallback for
+// ModelCaps.SupportsPromptCaching. It answers the narrower question the breakpoint
+// injector needs: can a marker placed on a content block actually do anything here?
+//
+// It is deliberately conservative. Providers whose caching is implicit and
+// provider-managed (OpenAI pre-5.6, DeepSeek, xAI, Groq, and the OpenAI-compatible
+// long tail) answer false, so injection is a no-op for them and no marker is ever
+// sent to an endpoint that would reject it. Gemini also answers false: its caching is
+// a server-side cachedContent resource with its own lifecycle, not a per-block
+// marker, so a breakpoint there would be inert.
+func ModelSupportsPromptCaching(provider ModelProvider, model string) bool {
+	switch provider {
+	case Anthropic, OpenRouter:
+		return IsAnthropicModel(model)
+	case Bedrock, BedrockMantle:
+		return BedrockModelSupportsCachePoints(model) || IsGPT56Model(model)
+	case Vertex:
+		// Vertex serves Claude (cache_control) and Gemini (cachedContent) side by
+		// side; only the former is markable.
+		return IsAnthropicModel(model)
+	case Azure, OpenAI:
+		return IsGPT56Model(model)
+	default:
+		return false
+	}
 }
 
 // BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports

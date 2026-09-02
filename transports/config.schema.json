@@ -1091,6 +1091,9 @@
               },
               "openai_config": {
                 "$ref": "#/$defs/openai_config"
+              },
+              "prompt_cache": {
+                "$ref": "#/$defs/prompt_cache"
               }
             },
             "required": ["name"]
@@ -4100,6 +4103,50 @@
       },
       "additionalProperties": false
     },
+    "cache_control_injection_point": {
+      "type": "object",
+      "description": "One place to add a cache breakpoint. Must set role, index, or both; a point with neither matches nothing.",
+      "properties": {
+        "location": {
+          "type": "string",
+          "enum": ["message"],
+          "description": "What to target. Only conversation messages are supported today."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["system", "developer", "user", "assistant"],
+          "description": "Match messages with this role."
+        },
+        "index": {
+          "type": "integer",
+          "description": "Match the message at this position. Negative values count from the end, so -1 is the last message. An index past either end matches nothing."
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt_cache": {
+      "type": "object",
+      "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Agentic clients such as Codex send no cache markers, so providers that cache implicitly slide the cached prefix onto the latest message and bill a cache write every turn. Requests that already carry their own cache_control or prompt_cache_breakpoint are never modified.",
+      "properties": {
+        "auto_inject": {
+          "type": "boolean",
+          "description": "Mark the first cacheable content block. That block is the prefix an agent loop replays verbatim each turn, so the cached region stays stable and turn 2 onward is a cache read."
+        },
+        "ttl": {
+          "type": "string",
+          "enum": ["1h"],
+          "description": "Lifetime for injected markers. Omit for the provider default (5 minutes on Anthropic). Providers that cannot carry a TTL ignore it."
+        },
+        "cache_control_injection_points": {
+          "type": "array",
+          "description": "Target specific messages instead of the first cacheable block. When set, this REPLACES auto_inject rather than adding to it. At most four markers are injected, matching the Anthropic ceiling.",
+          "items": {
+            "$ref": "#/$defs/cache_control_injection_point"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -4670,6 +4717,9 @@
         },
         "openai_config": {
           "$ref": "#/$defs/openai_config"
+        },
+        "prompt_cache": {
+          "$ref": "#/$defs/prompt_cache"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"

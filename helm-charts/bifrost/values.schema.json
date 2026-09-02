@@ -2107,6 +2107,33 @@
                   },
                   "store_raw_request_response": {
                     "type": "boolean"
+                  },
+                  "prompt_cache": {
+                    "type": "object",
+                    "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+                    "properties": {
+                      "auto_inject": {
+                        "type": "boolean",
+                        "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+                      },
+                      "ttl": {
+                        "type": "string",
+                        "enum": ["1h"],
+                        "description": "Lifetime for injected markers; omit for the provider default"
+                      },
+                      "cache_control_injection_points": {
+                        "type": "array",
+                        "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "location": { "type": "string", "enum": ["message"] },
+                            "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
+                            "index": { "type": "integer", "description": "Negative values count from the end" }
+                          }
+                        }
+                      }
+                    }
                   }
                 },
                 "required": ["name"]
@@ -5585,6 +5612,33 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
+        },
+        "prompt_cache": {
+          "type": "object",
+          "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+          "properties": {
+            "auto_inject": {
+              "type": "boolean",
+              "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+            },
+            "ttl": {
+              "type": "string",
+              "enum": ["1h"],
+              "description": "Lifetime for injected markers; omit for the provider default"
+            },
+            "cache_control_injection_points": {
+              "type": "array",
+              "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "location": { "type": "string", "enum": ["message"] },
+                  "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
+                  "index": { "type": "integer", "description": "Negative values count from the end" }
+                }
+              }
+            }
+          }
         },
         "custom_provider_config": {
           "type": "object",
