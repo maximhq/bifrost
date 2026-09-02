@@ -3,6 +3,7 @@ import { MaximConfigSchema, MaximFormSchema } from "@/lib/types/schemas";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { MaximFormFragment } from "../../fragments/maximFormFragment";
+import { useTranslation } from "react-i18next";
 
 interface MaximViewProps {
 	onDelete?: () => void;
@@ -10,6 +11,7 @@ interface MaximViewProps {
 }
 
 export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
+	const { t } = useTranslation("observability");
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [updatePlugin] = useUpdatePluginMutation();
 	const currentConfig = useMemo(
@@ -28,11 +30,11 @@ export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 			})
 				.unwrap()
 				.then(() => {
-					toast.success("Maxim configuration updated successfully");
+					toast.success(t("connectors.toast.maximUpdated"));
 					resolve();
 				})
 				.catch((err) => {
-					toast.error("Failed to update Maxim configuration", {
+					toast.error(t("connectors.toast.maximFailed"), {
 						description: getErrorMessage(err),
 					});
 					reject(err);

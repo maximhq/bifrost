@@ -27,6 +27,7 @@ import { RFRuleNode } from "./node/rfRuleNode";
 import { RFSourceNode } from "./node/rfSourceNode";
 import { POSITIONS_COOKIE, PositionCookie, computeFingerprint } from "./positionPersistence";
 import { RfChainEdge } from "./rfChainEdge";
+import { useTranslation } from "react-i18next";
 
 // ─── Node types (stable reference) ────────────────────────────────────────
 
@@ -41,6 +42,7 @@ const edgeTypes = { rfChain: RfChainEdge };
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function RoutingTreeView() {
+	const { t } = useTranslation("models");
 	const isMobile = useIsMobile();
 	const navigate = useNavigate();
 	const { data, isLoading, isError } = useGetRoutingRulesQuery({ limit: 500 });
@@ -381,7 +383,7 @@ export function RoutingTreeView() {
 		return (
 			<div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3">
 				<GitBranch className="h-10 w-10 opacity-20" />
-				<p className="text-sm">No routing rules to display</p>
+				<p className="text-sm">{t("routing.noRulesDisplay")}</p>
 				<Button
 					variant="outline"
 					size="sm"

@@ -1,6 +1,7 @@
+import { LanguageSwitcher } from "@/components/language-switcher";
 import NotificationCenter from "@/components/notificationCenter";
 import { ThemeToggle } from "@/components/themeToggle";
-import { deriveTitleFromPathname } from "@/components/topbar.utils";
+import { deriveTitleFromPathname, getRouteTitleI18nKey } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -25,52 +26,25 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import { BugIcon, ChevronDown, LogOut, Menu, User } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Fragment, useEffect, useMemo, useState } from "react";
-
-// External links that used to live in the sidebar footer icon row. They now
-// render as labelled rows inside the topbar menu, which is both more legible
-// than a row of bare glyphs and frees the sidebar footer for the promo card.
-const externalLinks: {
-	title: string;
-	url: string;
-	// Mixed lucide + phosphor icons, which disagree on their prop surface
-	// (`weight` vs `strokeWidth`), so the slot is intentionally loose.
-	icon: React.ComponentType<Record<string, unknown>>;
-	strokeWidth?: number;
-}[] = [
-	{
-		title: "Discord Server",
-		url: "https://discord.gg/exN5KAydbU",
-		icon: DiscordLogoIcon,
-	},
-	{
-		title: "GitHub Repository",
-		url: "https://github.com/maximhq/bifrost",
-		icon: GithubLogoIcon,
-	},
-	{
-		title: "Report a bug",
-		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-		icon: BugIcon,
-		strokeWidth: 1.5,
-	},
-	{
-		title: "Full Documentation",
-		url: "https://docs.getbifrost.ai",
-		icon: BooksIcon,
-		strokeWidth: 1,
-	},
-];
+import { useTranslation } from "react-i18next";
 
 /**
  * Resolves the topbar title. A page can name itself via useSetTopbarTitle();
- * otherwise we derive it from the last non-empty path segment, e.g.
- * "/workspace/mcp-registry" -> "MCP Registry".
+ * otherwise we prefer a shell.json titles.* key, then fall back to the last
+ * non-empty path segment, e.g. "/workspace/mcp-registry" -> "MCP Registry".
  */
 function usePageTitle() {
+	const { t } = useTranslation("shell");
 	const pathname = useLocation({ select: (location) => location.pathname });
 	const override = useTopbarTitle();
+	const i18nKey = useMemo(() => getRouteTitleI18nKey(pathname), [pathname]);
 	const derived = useMemo(() => deriveTitleFromPathname(pathname), [pathname]);
-	return override ?? derived;
+	if (override) return override;
+	if (i18nKey) return t(i18nKey);
+	if (!pathname.split("?")[0].split("/").filter(Boolean).length) {
+		return t("titles.dashboard");
+	}
+	return derived;
 }
 
 /**
@@ -128,6 +102,7 @@ function TopbarHeading({ title }: { title: TopbarTitleValue }) {
  * against that variable.
  */
 export default function Topbar() {
+	const { t } = useTranslation("shell");
 	const title = usePageTitle();
 	const setDescriptionSlot = useDescriptionSlotRef();
 	const setMobileFilterSlot = useMobileFilterSlotRef();
@@ -153,9 +128,37 @@ export default function Topbar() {
 	const showUserPill = IS_ENTERPRISE && !!userInfo;
 	const canLogout = showUserPill || isAuthEnabled;
 
-	const displayName = userInfo?.name || userInfo?.email || userInfo?.preferred_username || "User";
+	const displayName = userInfo?.name || userInfo?.email || userInfo?.preferred_username || t("topbar.userFallback");
 	// Only show the email as a second line when it isn't already the headline.
 	const secondaryLine = userInfo?.email && userInfo.email !== displayName ? userInfo.email : undefined;
+
+	const externalLinks = useMemo(
+		() => [
+			{
+				title: t("topbar.discord"),
+				url: "https://discord.gg/exN5KAydbU",
+				icon: DiscordLogoIcon,
+			},
+			{
+				title: t("topbar.github"),
+				url: "https://github.com/maximhq/bifrost",
+				icon: GithubLogoIcon,
+			},
+			{
+				title: t("topbar.reportBug"),
+				url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
+				icon: BugIcon,
+				strokeWidth: 1.5,
+			},
+			{
+				title: t("topbar.docs"),
+				url: "https://docs.getbifrost.ai",
+				icon: BooksIcon,
+				strokeWidth: 1,
+			},
+		],
+		[t],
+	);
 
 	const handleLogout = async () => {
 		try {
@@ -188,6 +191,7 @@ export default function Topbar() {
 			    it's a display preference, not an account action. */}
 			<span ref={setMobileFilterSlot} className="flex shrink-0 items-center md:hidden" />
 			<NotificationCenter />
+			<LanguageSwitcher />
 			<ThemeToggle />
 
 			<DropdownMenu>
@@ -196,7 +200,7 @@ export default function Topbar() {
 						<button
 							type="button"
 							data-testid="topbar-user-pill"
-							aria-label="Account menu"
+							aria-label={t("topbar.accountMenu")}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground md:border-border md:bg-card md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
 						>
 							<span className="bg-muted text-muted-foreground hidden size-6 shrink-0 items-center justify-center rounded-full md:flex">
@@ -213,7 +217,7 @@ export default function Topbar() {
 						<button
 							type="button"
 							data-testid="topbar-menu-btn"
-							aria-label="Open menu"
+							aria-label={t("topbar.openMenu")}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 						>
 							<Menu className="size-4" strokeWidth={2} />
@@ -248,7 +252,7 @@ export default function Topbar() {
 							<DropdownMenuSeparator />
 							<DropdownMenuItem onClick={handleLogout} data-testid="topbar-logout-btn" className="cursor-pointer">
 								<LogOut className="size-4" strokeWidth={2} />
-								<span>Sign out</span>
+								<span>{t("topbar.signOut")}</span>
 							</DropdownMenuItem>
 						</>
 					)}
@@ -259,7 +263,7 @@ export default function Topbar() {
 						<>
 							<DropdownMenuSeparator />
 							<DropdownMenuLabel className="text-muted-foreground flex items-center justify-between gap-2 py-1.5 text-xs font-normal">
-								<span>Version</span>
+								<span>{t("topbar.version")}</span>
 								<span className="truncate font-mono">{version}</span>
 							</DropdownMenuLabel>
 						</>

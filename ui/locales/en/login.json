@@ -1,0 +1,18 @@
+{
+	"title": "Sign in",
+	"subtitle": "Sign in to Bifrost",
+	"welcomeBack": "Welcome back",
+	"welcomeSubtitle": "Sign in to your account to continue",
+	"username": "Username",
+	"usernamePlaceholder": "Enter your username",
+	"password": "Password",
+	"passwordPlaceholder": "Enter your password",
+	"showPassword": "Show password",
+	"hidePassword": "Hide password",
+	"signIn": "Sign in",
+	"signingIn": "Signing in...",
+	"checkingAuth": "Checking authentication...",
+	"discord": "Discord Server",
+	"github": "GitHub Repository",
+	"docs": "Full Documentation"
+}
