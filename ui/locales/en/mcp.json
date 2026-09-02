@@ -1,0 +1,244 @@
+{
+	"common": {
+		"readMore": "Read more",
+		"readMoreAria": "Read more about this feature (opens in new tab)",
+		"filters": "Filters",
+		"hideFilters": "Hide filters",
+		"reset": "Reset",
+		"noResults": "No results",
+		"page": "Page",
+		"previousPage": "Previous page",
+		"nextPage": "Next page",
+		"ofEntries": "{{from}}-{{to}} of {{total}} entries",
+		"ofPages": "of {{total}}",
+		"enabled": "Enabled",
+		"disabled": "Disabled",
+		"success": "Success",
+		"library": "Library",
+		"status": "Status",
+		"state": "State",
+		"name": "Name",
+		"type": "Type",
+		"created": "Created",
+		"revoke": "Revoke",
+		"continue": "Continue"
+	},
+	"registry": {
+		"title": "MCP Server Catalog",
+		"description": "Manage servers that can connect to the MCP Tools endpoint.",
+		"emptyTitle": "MCP servers connect tools and context to the gateway",
+		"emptyDescription": "Add MCP servers to expose tools and resources to the MCP Tools endpoint. Configure connection type, auth, and which tools to enable.",
+		"addServer": "Add MCP Server",
+		"addServerAria": "Add your first MCP server",
+		"browseLibrary": "Browse Library",
+		"browseLibraryAria": "Browse the MCP server library",
+		"readMoreAria": "Read more about MCP servers (opens in new tab)",
+		"searchPlaceholder": "Search by name...",
+		"searchAria": "Search MCP servers by name",
+		"newServer": "New MCP Server",
+		"libraryAria": "MCP server library",
+		"actionsAria": "MCP server actions",
+		"noMatch": "No matching MCP servers found.",
+		"removeTitle": "Remove MCP Server",
+		"removeDescription": "Are you sure you want to remove MCP server {{name}}? You will need to reconnect the server to continue using it.",
+		"columns": {
+			"name": "Name",
+			"endpoint": "Endpoint",
+			"connectionType": "Connection Type",
+			"authType": "Auth Type",
+			"authScope": "Auth Scope",
+			"codeMode": "Code Mode",
+			"vkAccess": "Access",
+			"enabledTools": "Enabled Tools",
+			"autoExecuteTools": "Auto-execute Tools",
+			"state": "State",
+			"status": "Status",
+			"access": "Access"
+		},
+		"actions": {
+			"edit": "Edit",
+			"authorize": "Authorize",
+			"reconnect": "Reconnect",
+			"reauthorize": "Reauthorize",
+			"refreshAdminCredential": "Refresh admin credential",
+			"reverifyAsMe": "Re-verify as me",
+			"delete": "Delete"
+		},
+		"toast": {
+			"reconnected": "Reconnected",
+			"reconnectedDesc": "Client {{name}} reconnected successfully.",
+			"authorizationFailed": "Authorization failed",
+			"reauthorizationFailed": "Reauthorization failed",
+			"verified": "Verified",
+			"verificationFailed": "Verification failed",
+			"deleted": "Deleted",
+			"deletedDesc": "Client {{name}} removed successfully.",
+			"alreadyVerified": "Already verified",
+			"serverEnabled": "Server enabled successfully",
+			"serverDisabled": "Server disabled successfully",
+			"adminCredentialRefreshed": "Admin discovery credential refreshed successfully.",
+			"reauthorized": "MCP client re-authorized successfully",
+			"unexpectedResponse": "Unexpected response from server. Please try again."
+		},
+		"filter": {
+			"connectionType": "Connection Type",
+			"authType": "Auth Type",
+			"state": "State",
+			"codeMode": "Code Mode",
+			"status": "Status",
+			"vkAccess": "Access",
+			"searchVirtualKeys": "Search virtual keys",
+			"healthy": "Healthy",
+			"unstable": "Unstable",
+			"none": "None",
+			"headers": "Headers",
+			"perUserOauth": "Per-User OAuth",
+			"perUserHeaders": "Per-User Headers",
+			"tokenExchange": "Token Exchange",
+			"allVirtualKeys": "All virtual keys",
+			"access": "Access",
+			"allowedByDefault": "Allowed by default"
+		},
+		"verify": {
+			"verifyAsMe": "Verify as me",
+			"reverifyAsMe": "Re-verify as me",
+			"establishTitle": "Establish Bifrost's discovery credential using your identity.",
+			"renewTitle": "Renew Bifrost's own discovery credential using your identity.",
+			"exchangeBody": "This exchanges your own signed-in identity to {{action}} Bifrost's discovery credential for {{name}}.",
+			"establish": "establish",
+			"renew": "renew",
+			"pendingHint": "That credential is only used to periodically fetch this server's tool list, not for real user requests, whose tokens are exchanged automatically on every request.",
+			"renewHint": "That credential is only used to periodically fetch this server's tool list, not for real user requests, whose tokens are exchanged automatically on every request. You only need this if the credential badge shows it's expired, but running it any time is safe.",
+			"verifying": "Verifying..."
+		},
+		"serverFilter": "Server filter",
+		"seeAllConnectionStates": "See all connection states"
+	},
+	"library": {
+		"title": "MCP Server Library",
+		"description": "Browse and install MCP servers from the synced catalog.",
+		"searchPlaceholder": "Search servers...",
+		"addToLibrary": "Add to Library",
+		"configureSync": "Configure sync",
+		"settings": "Settings",
+		"grid": "Grid",
+		"table": "Table",
+		"gridView": "Grid view",
+		"tableView": "Table view",
+		"viewModeAria": "Library view mode"
+	},
+	"sessions": {
+		"title": "MCP Auth Sessions",
+		"description": "Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.",
+		"loadFailed": "Failed to load MCP sessions: {{message}}",
+		"searchPlaceholder": "Search MCP, user, VK, session...",
+		"searchAria": "Search sessions",
+		"actionsAria": "MCP session actions",
+		"noMatch": "No sessions match these filters.",
+		"empty": "No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication (OAuth or header submission).",
+		"columns": {
+			"mcpServer": "MCP server",
+			"type": "Type",
+			"boundTo": "Bound to",
+			"status": "Status",
+			"accessTokenExpiry": "Access token expiry",
+			"created": "Created"
+		},
+		"tooltips": {
+			"type": "OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission.",
+			"boundTo": "The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header).",
+			"status": "Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored.",
+			"accessTokenExpiry": "When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
+		},
+		"status": {
+			"active": "Active",
+			"orphaned": "Orphaned",
+			"needsReauth": "Needs re-auth",
+			"needsUpdate": "Needs update",
+			"pending": "Pending"
+		},
+		"kind": {
+			"oauth": "OAuth",
+			"headers": "Headers"
+		},
+		"binding": {
+			"sessionBound": "Session-bound"
+		},
+		"actions": {
+			"reauthenticate": "Re-authenticate",
+			"completeAuth": "Complete authentication",
+			"triggerReauth": "Trigger a request to re-authenticate",
+			"revoke": "Revoke",
+			"updateValues": "Update values",
+			"editValues": "Edit values"
+		},
+		"revokeHeaderTitle": "Revoke these stored header values?",
+		"revokeHeaderDescription": "Bifrost will remove the stored credential values for this binding. There is no upstream token to revoke; the user will need to resubmit their header values to use this MCP again.",
+		"revokeSessionTitle": "Revoke this MCP session?",
+		"revokeSessionDescription": "Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.",
+		"toast": {
+			"reauthFailed": "Re-authentication failed",
+			"headerRevoked": "Header values revoked",
+			"sessionRevoked": "Session revoked",
+			"headerRevokeFailed": "Failed to revoke header values",
+			"sessionRevokeFailed": "Failed to revoke session"
+		},
+		"filter": {
+			"type": "Type",
+			"status": "Status",
+			"identity": "Identity",
+			"mcpServer": "MCP Server",
+			"virtualKey": "Virtual Key",
+			"users": "Users",
+			"searchMcpServers": "Search MCP servers",
+			"searchVirtualKeys": "Search virtual keys",
+			"searchUsers": "Search by name or email",
+			"user": "User",
+			"virtualKeyOption": "Virtual key",
+			"session": "Session"
+		}
+	},
+	"oauthGrants": {
+		"title": "OAuth Grants",
+		"description": "Active downstream OAuth grants issued to MCP clients that connected via the OAuth consent flow.",
+		"searchPlaceholder": "Search client, identity...",
+		"searchAria": "Search grants",
+		"loadFailed": "Failed to load OAuth grants: {{message}}",
+		"grantRevoked": "Grant revoked",
+		"revokeFailed": "Failed to revoke grant",
+		"noMatch": "No grants match these filters.",
+		"columns": {
+			"client": "Client",
+			"boundTo": "Bound to",
+			"accessTokenExpiry": "Access token expiry",
+			"created": "Created",
+			"lastUsed": "Last used"
+		},
+		"tooltips": {
+			"boundTo": "The identity this grant is tied to: an end user (via SSO), a virtual key (shared by anyone using that VK), or an anonymous session. This determines which upstream per-user OAuth sessions are reachable under this grant.",
+			"accessTokenExpiry": "When the current JWT access token expires. MCP clients silently refresh using the refresh token, so an active grant past its expiry will mint a new token automatically on the next request.",
+			"lastUsed": "When this grant last refreshed its access token. MCP clients refresh as their token nears expiry, so this tracks the grant's most recent activity. Grants that have not refreshed since they were authorized fall back to when they were created."
+		},
+		"refreshesOnNextUse": "Refreshes on next use",
+		"unknown": "Unknown",
+		"revokeTitle": "Revoke this OAuth grant?",
+		"revokeDescription": "The refresh token for this grant stops rotating right away, so the MCP client can no longer renew its access. Its current access token is a short-lived JWT that keeps working on the /mcp endpoint until it expires (default 10 minutes), after which the client is fully cut off and must reconnect via the OAuth consent flow.",
+		"filter": {
+			"identity": "Identity",
+			"virtualKey": "Virtual Key",
+			"users": "Users",
+			"searchVirtualKeys": "Search virtual keys",
+			"searchUsers": "Search by name or email"
+		}
+	},
+	"toolGroups": {
+		"title": "MCP Tool Groups",
+		"description": "Configure tool groups for MCP servers to organize and govern tools.",
+		"unlockTitle": "Unlock MCP Tool Groups",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. Configure tool groups for MCP servers to organize your MCP tools and govern them across your organization."
+	},
+	"authConfig": {
+		"unlockTitle": "Unlock MCP Auth Config",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. Configure authentication for MCP servers to secure your MCP connections."
+	}
+}

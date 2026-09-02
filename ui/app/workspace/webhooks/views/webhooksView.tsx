@@ -31,6 +31,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, History, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { WebhookSecretDialog, WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 import { WebhookDetailsSheet } from "./webhookDetailsSheet";
@@ -85,6 +86,8 @@ function WebhookActionsMenu({
 	onDelete: (endpoint: WebhookEndpoint) => void;
 	onViewDeliveries: (endpoint: WebhookEndpoint) => void;
 }) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
 
 	return (
@@ -94,7 +97,7 @@ function WebhookActionsMenu({
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="Webhook actions"
+					aria-label={t("webhooks.actionsAria")}
 					data-testid={`webhook-actions-btn-${endpoint.name}`}
 				>
 					<MoreHorizontal className="h-4 w-4" />
@@ -129,7 +132,7 @@ function WebhookActionsMenu({
 							onEdit(endpoint);
 						}}
 					>
-						<PencilIcon className="h-4 w-4" /> Edit
+						<PencilIcon className="h-4 w-4" /> {t("webhooks.actions.edit")}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && (
@@ -142,7 +145,7 @@ function WebhookActionsMenu({
 							onRotate(endpoint);
 						}}
 					>
-						<RotateCcw className="h-4 w-4" /> Rotate secret
+						<RotateCcw className="h-4 w-4" /> {t("webhooks.actions.rotateSecret")}
 					</DropdownMenuItem>
 				)}
 				{hasDeleteAccess && (
@@ -156,7 +159,7 @@ function WebhookActionsMenu({
 							onDelete(endpoint);
 						}}
 					>
-						<Trash2 className="h-4 w-4" /> Delete
+						<Trash2 className="h-4 w-4" /> {t("webhooks.actions.delete")}
 					</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
@@ -165,6 +168,8 @@ function WebhookActionsMenu({
 }
 
 export default function WebhooksView() {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
@@ -261,7 +266,7 @@ export default function WebhooksView() {
 		setTogglingIds((prev) => new Set(prev).add(endpoint.id));
 		try {
 			await updateWebhookEndpoint({ id: endpoint.id, data: toRequest(endpoint, { disabled: !enabled }) }).unwrap();
-			toast.success(`Endpoint ${enabled ? "enabled" : "disabled"} successfully`);
+			toast.success(enabled ? t("webhooks.enabledSuccess") : t("webhooks.disabledSuccess"));
 		} catch (err) {
 			toast.error(getErrorMessage(err));
 		} finally {
@@ -278,11 +283,11 @@ export default function WebhooksView() {
 		try {
 			const result = await testWebhookEndpoint({ id: endpoint.id, event }).unwrap();
 			if (result.delivered) {
-				toast.success(`Test delivered, receiver answered ${result.receiver_status_code}`);
+				toast.success(t("webhooks.testDelivered", { code: result.receiver_status_code }));
 			} else if (result.error) {
-				toast.error(`Test failed: ${result.error}`);
+				toast.error(t("webhooks.testFailed", { error: result.error }));
 			} else {
-				toast.error(`Test rejected, receiver answered ${result.receiver_status_code}`);
+				toast.error(t("webhooks.testRejected", { code: result.receiver_status_code }));
 			}
 		} catch (err) {
 			toast.error(getErrorMessage(err));
@@ -299,7 +304,7 @@ export default function WebhooksView() {
 		if (!deleteTarget) return;
 		try {
 			await deleteWebhookEndpoint(deleteTarget.id).unwrap();
-			toast.success("Webhook endpoint deleted successfully");
+			toast.success(t("webhooks.deleted"));
 			if (detailsEndpoint?.id === deleteTarget.id) setDetailsEndpoint(null);
 		} catch (err) {
 			toast.error(getErrorMessage(err));
@@ -312,7 +317,7 @@ export default function WebhooksView() {
 		if (!rotateTarget) return;
 		try {
 			const response = await rotateWebhookEndpointSecret(rotateTarget.id).unwrap();
-			toast.success("Signing secret rotated successfully");
+			toast.success(t("webhooks.rotated"));
 			setSecretReveal({ endpointName: response.endpoint.name, secret: response.secret });
 		} catch (err) {
 			toast.error(getErrorMessage(err));
@@ -332,7 +337,7 @@ export default function WebhooksView() {
 	if (isError && !data) {
 		return (
 			<div className="flex flex-col items-center justify-center gap-3 py-16 text-center" data-testid="webhooks-load-error">
-				<p className="text-sm font-medium">Failed to load webhook endpoints.</p>
+				<p className="text-sm font-medium">{t("webhooks.loadFailed")}</p>
 				<p className="text-muted-foreground max-w-md text-sm">{getErrorMessage(error)}</p>
 				<Button variant="outline" size="sm" onClick={() => void refetch()}>
 					Retry
@@ -347,9 +352,8 @@ export default function WebhooksView() {
 				<WebhooksEmptyState onAddClick={handleAdd} canCreate={hasCreateAccess} />
 			) : (
 				<>
-					<PageTitle title="Webhooks">
-						Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in the{" "}
-						<code>x-bf-async-webhook</code> header when submitting a job.
+					<PageTitle title={t("webhooks.title")}>
+						{t("webhooks.description")}
 					</PageTitle>
 
 					<WebhooksFilterBar
@@ -364,7 +368,7 @@ export default function WebhooksView() {
 						actions={
 							<Button onClick={handleAdd} disabled={!hasCreateAccess} data-testid="create-webhook-btn">
 								<Plus className="h-4 w-4" />
-								Add Endpoint
+								{t("webhooks.addEndpoint")}
 							</Button>
 						}
 					/>
@@ -373,10 +377,10 @@ export default function WebhooksView() {
 						<Table data-testid="webhooks-table">
 							<TableHeader className="bg-muted sticky top-0 z-10">
 								<TableRow>
-									<TableHead>Name</TableHead>
-									<TableHead>URL</TableHead>
-									<TableHead>Events</TableHead>
-									<TableHead>Enabled</TableHead>
+									<TableHead>{t("webhooks.columns.name")}</TableHead>
+									<TableHead>{t("webhooks.columns.url")}</TableHead>
+									<TableHead>{t("webhooks.columns.events")}</TableHead>
+									<TableHead>{t("webhooks.columns.enabled")}</TableHead>
 									<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 								</TableRow>
 							</TableHeader>
@@ -384,7 +388,7 @@ export default function WebhooksView() {
 								{endpoints.length === 0 ? (
 									<TableRow>
 										<TableCell colSpan={5} className="text-muted-foreground h-24 text-center">
-											No matching webhook endpoints found.
+											{t("webhooks.noMatch")}
 										</TableCell>
 									</TableRow>
 								) : (
@@ -498,14 +502,14 @@ export default function WebhooksView() {
 			<AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete webhook endpoint</AlertDialogTitle>
+						<AlertDialogTitle>{t("webhooks.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete <b>{deleteTarget?.name}</b>? Pending deliveries to it will be dropped and jobs referencing it
 							will be rejected. This action cannot be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="webhook-delete-cancel-btn">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="webhook-delete-cancel-btn">{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							className="bg-destructive hover:bg-destructive/90"
 							onClick={() => void handleDelete()}
@@ -521,16 +525,16 @@ export default function WebhooksView() {
 			<AlertDialog open={!!rotateTarget} onOpenChange={(open) => !open && setRotateTarget(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Rotate signing secret</AlertDialogTitle>
+						<AlertDialogTitle>{t("webhooks.rotateTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							The current secret for <b>{rotateTarget?.name}</b> stops working immediately and deliveries are signed with the new one from
 							now on. Update your receiver right after rotating.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="webhook-rotate-cancel-btn">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="webhook-rotate-cancel-btn">{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={() => void handleRotate()} disabled={isRotating} data-testid="webhook-rotate-confirm-btn">
-							Rotate
+							{t("webhooks.actions.rotate")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

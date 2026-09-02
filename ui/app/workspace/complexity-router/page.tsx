@@ -41,6 +41,7 @@ import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleA
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import {
 	AnalyzerFormValues,
 	analyzerConfigSchema,
@@ -104,6 +105,8 @@ function testIdPart(value: string) {
 }
 
 export default function ComplexityRouterPage() {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery();
 	const [updateConfig, { isLoading: isSaving }] = useUpdateComplexityAnalyzerConfigMutation();
@@ -321,7 +324,7 @@ export default function ComplexityRouterPage() {
 			.then((defaults) => {
 				promptEdited.current = false;
 				reset(toFormValues(defaults));
-				toast.success("Reset to defaults", { position: "top-right" });
+				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => {
 				setSubmitError(`Couldn’t restore the default phrases. ${getErrorMessage(err)}`);
@@ -365,7 +368,7 @@ export default function ComplexityRouterPage() {
 				promptEdited.current = false;
 				reset(toFormValues(res));
 				setEmbeddingSheetOpen(false);
-				toast.success("Configuration saved", { position: "top-right" });
+				toast.success(t("routing.configSaved"), { position: "top-right" });
 			})
 			.catch((err) => {
 				setSubmitError(`Couldn’t save the Complexity Router configuration. ${getErrorMessage(err)}`);
@@ -510,7 +513,7 @@ export default function ComplexityRouterPage() {
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 									<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 										<ExternalLink className="size-3.5" />
-										Docs
+										{t("routing.complexityDocs")}
 									</a>
 								</Button>
 							</div>
@@ -720,7 +723,7 @@ export default function ComplexityRouterPage() {
 							disabled={!canUpdate || isSaving || isResetting}
 						>
 							{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</Button>
 						<Button
 							data-testid="complexity-router-discard-changes-button"
@@ -730,11 +733,11 @@ export default function ComplexityRouterPage() {
 							onClick={handleDiscard}
 							disabled={!isDirty || isSaving || isResetting || isFetching}
 						>
-							Discard changes
+							{t("routing.discard")}
 						</Button>
 						<Button data-testid="complexity-router-save-changes-button" type="submit" size="sm" disabled={!canSave || isSaving}>
 							{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-							{isSaving ? "Saving…" : "Save changes"}
+							{isSaving ? t("routing.saving") : t("routing.save")}
 						</Button>
 					</div>
 				</div>
@@ -767,7 +770,7 @@ export default function ComplexityRouterPage() {
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
+						<AlertDialogTitle>{t("routing.restoreDefaults")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the phrase to tier mapping with the default reference phrases. Your current phrases will be lost and this
 							action cannot be undone. Your embedding configuration is kept, so classification keeps running and the restored phrases are
@@ -780,7 +783,7 @@ export default function ComplexityRouterPage() {
 							onClick={() => setRestoreDialogOpen(false)}
 							disabled={isResetting}
 						>
-							Cancel
+							{tc("cancel")}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="complexity-router-restore-confirm-button"
@@ -790,7 +793,7 @@ export default function ComplexityRouterPage() {
 							}}
 							disabled={!canUpdate || isResetting}
 						>
-							Restore defaults
+							{t("routing.restoreDefaults")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

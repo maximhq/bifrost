@@ -12,6 +12,7 @@ import {
 import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
 
 interface ProviderLatencyChartProps {
 	data: ProviderLatencyHistogramResponse | null;
@@ -136,7 +137,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 	}, [data, selectedProvider]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {

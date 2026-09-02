@@ -39,6 +39,7 @@ import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { useNavigate } from "@tanstack/react-router";
+import { useTranslation } from "react-i18next";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -149,6 +150,8 @@ export default function ModelLimitsTable({
 	onOffsetChange,
 	isLoading = false,
 }: ModelLimitsTableProps) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const navigate = useNavigate();
 	// The edit sheet is driven entirely by the URL: /workspace/model-limits?edit=<model-config-id>.
 	// Clicking Edit writes the param, closing it clears the param — so the open
@@ -227,8 +230,8 @@ export default function ModelLimitsTable({
 	// draws nothing inline, and leaving it out drops the topbar to the
 	// route-derived fallback, which for this route reads "Model Limits".
 	const pageTitle = (
-		<PageTitle title="Budgets & Limits">
-			Configure budgets and rate limits at any scope: virtual keys, users, providers, or specific models.
+		<PageTitle title={t("modelLimits.title")}>
+			{t("modelLimits.titleDescription")}
 		</PageTitle>
 	);
 
@@ -251,23 +254,24 @@ export default function ModelLimitsTable({
 			<AlertDialog open={!!deletingModelConfig} onOpenChange={(open) => !open && setDeleteModelConfigId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Limit</AlertDialogTitle>
+						<AlertDialogTitle>{t("modelLimits.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete the limit for &quot;
-							{deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
-								? `${deletingModelConfig.model_name.slice(0, 30)}...`
-								: deletingModelConfig?.model_name}
-							&quot;? This action cannot be undone.
+							{t("modelLimits.deleteDescription", {
+								name:
+									deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
+										? `${deletingModelConfig.model_name.slice(0, 30)}...`
+										: deletingModelConfig?.model_name,
+							})}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => deletingModelConfig && handleDelete(deletingModelConfig.id)}
 							disabled={isDeleting}
 							className="bg-red-600 hover:bg-red-700"
 						>
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? t("modelLimits.deleting") : tc("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -280,8 +284,8 @@ export default function ModelLimitsTable({
 					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search model limits by model name"
-							placeholder="Search by model name..."
+							aria-label={t("modelLimits.searchAria")}
+							placeholder={t("modelLimits.searchByModelName")}
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"
@@ -291,10 +295,10 @@ export default function ModelLimitsTable({
 
 					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
 						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-scope">
-							<SelectValue placeholder="All Scopes" />
+							<SelectValue placeholder={t("modelLimits.allScopes")} />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="all">All Scopes</SelectItem>
+							<SelectItem value="all">{t("modelLimits.allScopes")}</SelectItem>
 							{getModelLimitScopeFilterOptions().map((o) => (
 								<SelectItem key={o.value} value={o.value}>
 									{o.label}
@@ -305,10 +309,10 @@ export default function ModelLimitsTable({
 
 					<Select value={provider || "all"} onValueChange={(v) => onProviderChange(v === "all" ? "" : v)}>
 						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-provider">
-							<SelectValue placeholder="All Providers" />
+							<SelectValue placeholder={t("modelLimits.allProviders")} />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="all">All Providers</SelectItem>
+							<SelectItem value="all">{t("modelLimits.allProviders")}</SelectItem>
 							{(providers ?? []).map((p) => (
 								<SelectItem key={p.name} value={p.name}>
 									<div className="flex items-center gap-2">
@@ -331,13 +335,13 @@ export default function ModelLimitsTable({
 							}}
 							data-testid="model-limits-filter-clear"
 						>
-							Clear filters
+							{t("modelLimits.clearFilters")}
 						</Button>
 					)}
 
 					<Button className="ml-auto" onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
-						Add Limit
+						{t("modelLimits.addLimit")}
 					</Button>
 				</div>
 
@@ -345,12 +349,12 @@ export default function ModelLimitsTable({
 					<Table containerClassName="h-full overflow-auto">
 						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="font-medium">Provider</TableHead>
-								<TableHead className="font-medium">Scope</TableHead>
-								<TableHead className="font-medium">Scope Target</TableHead>
-								<TableHead className="font-medium">Budget</TableHead>
-								<TableHead className="font-medium">Rate Limit</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.model")}</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.provider")}</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.scope")}</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.scopeTarget")}</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.budget")}</TableHead>
+								<TableHead className="font-medium">{t("modelLimits.rateLimit")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -358,7 +362,7 @@ export default function ModelLimitsTable({
 							{modelConfigs.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">{isLoading ? "Loading limits..." : "No matching limits found."}</span>
+										<span className="text-muted-foreground text-sm">{isLoading ? t("modelLimits.loading") : t("modelLimits.noMatching")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -410,7 +414,7 @@ export default function ModelLimitsTable({
 														<span className="text-sm">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 													</div>
 												) : (
-													<span className="text-muted-foreground text-sm">All Providers</span>
+													<span className="text-muted-foreground text-sm">{t("modelLimits.allProviders")}</span>
 												)}
 											</TableCell>
 											<TableCell>

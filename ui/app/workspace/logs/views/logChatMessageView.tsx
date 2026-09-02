@@ -6,6 +6,7 @@ import { cleanJson, isJson } from "@/lib/utils/validation";
 import { Download } from "lucide-react";
 import AudioPlayer from "./audioPlayer";
 import CollapsibleBox from "./collapsibleBox";
+import i18n from "@/lib/i18n";
 
 interface LogChatMessageViewProps {
 	message: ChatMessage;
@@ -327,7 +328,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 								ID: {message.audio.id} | Expires:{" "}
 								{message.audio.expires_at && Number.isFinite(message.audio.expires_at)
 									? new Date(message.audio.expires_at * 1000).toLocaleString()
-									: "N/A"}
+									: i18n.t("labels.nA", { ns: "observability" })}
 							</div>
 						)}
 					</div>

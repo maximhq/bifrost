@@ -1,11 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { getCachedBrandingAssets } from "@/lib/hooks/useBranding";
+import i18n from "@/lib/i18n";
 import { getEndpointUrl } from "@/lib/utils/port";
 import { consumeAutoReload, startVersionPoll } from "@/lib/utils/versionSkew";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
+import { I18nextProvider, useTranslation } from "react-i18next";
 
-export function UpdatingBanner() {
+function UpdatingBannerBody() {
+	const { t } = useTranslation("shell");
 	return (
 		<div
 			className="pointer-events-none fixed inset-x-0 bottom-4 z-[100] flex justify-center px-4 sm:bottom-6"
@@ -19,8 +22,8 @@ export function UpdatingBanner() {
 					<span className="bg-primary relative size-2 rounded-full" aria-hidden="true" />
 				</div>
 				<div className="min-w-0 flex-1">
-					<p className="text-foreground text-sm font-medium">Bifrost is upgrading</p>
-					<p className="text-muted-foreground truncate text-xs">You can keep working and reload when the upgrade is complete.</p>
+					<p className="text-foreground text-sm font-medium">{t("updating.bannerTitle")}</p>
+					<p className="text-muted-foreground truncate text-xs">{t("updating.bannerDescription")}</p>
 				</div>
 				<Button
 					variant="outline"
@@ -30,14 +33,23 @@ export function UpdatingBanner() {
 					onClick={() => window.location.reload()}
 				>
 					<RefreshCw aria-hidden="true" />
-					<span className="hidden sm:inline">Reload</span>
+					<span className="hidden sm:inline">{t("updating.reload")}</span>
 				</Button>
 			</div>
 		</div>
 	);
 }
 
-export function UpdatingScreen() {
+export function UpdatingBanner() {
+	return (
+		<I18nextProvider i18n={i18n}>
+			<UpdatingBannerBody />
+		</I18nextProvider>
+	);
+}
+
+function UpdatingScreenBody() {
+	const { t } = useTranslation("shell");
 	// Rendered above <ReduxProvider> (main.tsx) and as the router error component,
 	// so branding has to come from the cache rather than a query.
 	const [{ logoSrc, logoAlt }] = useState(() => getCachedBrandingAssets(false));
@@ -88,12 +100,10 @@ export function UpdatingScreen() {
 						<Sparkles className="size-5" aria-hidden="true" />
 					</div>
 					<h1 id="updating-title" className="text-foreground mt-5 text-2xl font-semibold tracking-tight">
-						Bifrost is upgrading
+						{t("updating.screenTitle")}
 					</h1>
 					<p id="updating-description" className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-						{autoReloadExhausted
-							? "Bifrost is still upgrading. If this is taking longer than expected, reach out to your administrator for more information."
-							: "A new version of Bifrost is being rolled out. Keep this page open and it will reload automatically when the upgrade is complete."}
+						{autoReloadExhausted ? t("updating.descriptionStuck") : t("updating.descriptionWaiting")}
 					</p>
 
 					<div className="bg-muted mt-7 h-1.5 overflow-hidden rounded-full" aria-hidden="true">
@@ -107,11 +117,11 @@ export function UpdatingScreen() {
 					<div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 						<div className="text-muted-foreground flex items-center gap-2 text-xs">
 							{autoReloadExhausted ? (
-								<span>Automatic reload paused</span>
+								<span>{t("updating.autoReloadPaused")}</span>
 							) : (
 								<>
 									<Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden="true" />
-									<span>Waiting for the upgrade to complete</span>
+									<span>{t("updating.waiting")}</span>
 								</>
 							)}
 						</div>
@@ -123,11 +133,19 @@ export function UpdatingScreen() {
 							onClick={() => window.location.reload()}
 						>
 							<RefreshCw aria-hidden="true" />
-							Reload now
+							{t("updating.reloadNow")}
 						</Button>
 					</div>
 				</div>
 			</section>
 		</main>
+	);
+}
+
+export function UpdatingScreen() {
+	return (
+		<I18nextProvider i18n={i18n}>
+			<UpdatingScreenBody />
+		</I18nextProvider>
 	);
 }

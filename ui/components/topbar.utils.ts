@@ -34,6 +34,9 @@ function formatTitlePart(part: string) {
  * topbar agree, with one adjustment: where a sub-item's label is only
  * meaningful under its parent ("Rules", "Approvals", "Connectors", "Settings"),
  * the parent is folded in, because the topbar shows the title alone.
+ *
+ * English values are kept for deriveTitleFromPathname (and its unit tests).
+ * getRouteTitleI18nKey maps the same paths to shell.json keys for live UI.
  */
 const routeTitleOverrides: Record<string, string> = {
 	"/workspace/adaptive-routing/settings": "Adaptive Routing Settings",
@@ -57,6 +60,39 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/routing-rules/tree": "Routing Tree",
 	"/workspace/scim": "User Provisioning",
 };
+
+const routeTitleI18nKeys: Record<string, string> = {
+	"/workspace/adaptive-routing/settings": "titles.adaptiveRoutingSettings",
+	"/workspace/alerting/channels": "titles.alertChannels",
+	"/workspace/alerting/history": "titles.alertHistory",
+	"/workspace/alerting/rules": "titles.alertRules",
+	"/workspace/cluster": "titles.clusterConfig",
+	"/workspace/config": "titles.settings",
+	"/workspace/config/license": "titles.licenseInfo",
+	"/workspace/edge-control/config": "titles.edgeSettings",
+	"/workspace/edge-control/devices": "titles.edgeDevices",
+	"/workspace/edge-control/inventory": "titles.edgeApprovals",
+	"/workspace/governance/rbac": "titles.rolesPermissions",
+	"/workspace/guardrails/configuration": "titles.guardrailRules",
+	"/workspace/guardrails/providers": "titles.guardrailProviders",
+	"/workspace/logs": "titles.llmLogs",
+	"/workspace/logs/connectors": "titles.logConnectors",
+	"/workspace/observability": "titles.observabilityConnectors",
+	"/workspace/prompt-repo": "titles.promptRepository",
+	"/workspace/providers": "titles.modelProviders",
+	"/workspace/routing-rules/tree": "titles.routingTree",
+	"/workspace/scim": "titles.userProvisioning",
+};
+
+function pathKey(pathname: string): string {
+	const segments = pathname.split("?")[0].split("/").filter(Boolean);
+	return `/${segments.join("/")}`;
+}
+
+/** shell.json key for a route override, or undefined when the slug fallback applies. */
+export function getRouteTitleI18nKey(pathname: string): string | undefined {
+	return routeTitleI18nKeys[pathKey(pathname)];
+}
 
 /**
  * Title for a route that does not name itself: an entry from

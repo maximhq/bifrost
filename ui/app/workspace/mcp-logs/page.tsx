@@ -12,6 +12,7 @@ import {
 	useGetMCPLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
+import { useTranslation } from "react-i18next";
 import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -30,6 +31,7 @@ import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
 export default function MCPLogsPage() {
+	const { t } = useTranslation("observability");
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -293,26 +295,26 @@ export default function MCPLogsPage() {
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Executions",
+				title: t("mcpLogs.stats.totalExecutions"),
 				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
-				title: "Success Rate",
+				title: t("mcpLogs.stats.successRate"),
 				value: (
 					<NumberFlow value={statsData?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
 				),
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
-				title: "Avg Latency",
+				title: t("mcpLogs.stats.avgLatency"),
 				value: (
 					<NumberFlow value={statsData?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
-				title: "Total Cost",
+				title: t("mcpLogs.stats.totalCost"),
 				value: (
 					<NumberFlow
 						value={statsData?.total_cost ?? 0}
@@ -341,8 +343,8 @@ export default function MCPLogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess],
+		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons, t),
+		[customAppIcons, handleDelete, hasDeleteAccess, t],
 	);
 
 	const columnIds = useMemo(
@@ -369,14 +371,14 @@ export default function MCPLogsPage() {
 
 	const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			tool_name: "Tool Name",
-			server_label: "Server",
-			latency: "Latency",
-			cost: "Cost",
-			virtual_key: "Virtual Key",
+			timestamp: t("labels.time"),
+			tool_name: t("labels.toolName"),
+			server_label: t("labels.server"),
+			latency: t("labels.latency"),
+			cost: t("labels.cost"),
+			virtual_key: t("labels.virtualKey"),
 		}),
-		[],
+		[t],
 	);
 
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
