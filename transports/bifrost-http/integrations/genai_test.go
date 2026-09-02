@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -10,8 +11,83 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text and function-result values without touching metadata or function-call arguments.
+func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"systemInstruction":{"parts":[{"text":"system alice@example.com"}]},
+		"contents":[
+			{"role":"user","parts":[{"text":"first alice@example.com"}]},
+			{"role":"model","parts":[
+				{"thought":true,"text":"reason alice@example.com","thoughtSignature":"alice@example.com"},
+				{"functionCall":{"name":"lookup","args":{"email":"alice@example.com"}}}
+			]},
+			{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"output":"tool alice@example.com","nested.value":{"contact:key":"alice@example.com"}}}}]}
+		],
+		"instances":[{"prompt":"image alice@example.com"}],
+		"labels":{"owner":"alice@example.com"},
+		"tools":[{"functionDeclarations":[{"name":"lookup","description":"alice@example.com"}]}]
+	}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+
+	redactedPaths := []string{
+		"systemInstruction.parts.0.text",
+		"contents.0.parts.0.text",
+		"contents.1.parts.0.text",
+		"contents.2.parts.0.functionResponse.response.output",
+		`contents.2.parts.0.functionResponse.response.nested\.value.contact:key`,
+		"instances.0.prompt",
+	}
+	for _, path := range redactedPaths {
+		value := gjson.GetBytes(got, path).String()
+		assert.NotContains(t, value, "alice@example.com", path)
+		assert.Contains(t, value, "[EMAIL]", path)
+	}
+
+	untouchedPaths := []string{
+		"contents.1.parts.0.thoughtSignature",
+		"contents.1.parts.1.functionCall.args.email",
+		"labels.owner",
+		"tools.0.functionDeclarations.0.description",
+	}
+	for _, path := range untouchedPaths {
+		assert.Equal(t, "alice@example.com", gjson.GetBytes(got, path).String(), path)
+	}
+	assert.True(t, strings.Contains(string(got), `"labels":{"owner":"alice@example.com"}`))
+}
+
+// TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope verifies both documented envelope spelling and snake-case system instructions use the same content allowlist.
+func TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope(t *testing.T) {
+	rawBody := []byte(`{"generate_content_request":{"system_instruction":{"parts":[{"text":"system alice@example.com"}]},"contents":[{"parts":[{"text":"user alice@example.com"}]}]}}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assert.Equal(t, "system [EMAIL]", gjson.GetBytes(got, "generate_content_request.system_instruction.parts.0.text").String())
+	assert.Equal(t, "user [EMAIL]", gjson.GetBytes(got, "generate_content_request.contents.0.parts.0.text").String())
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral verifies a normalized runtime mutation cannot silently leave Gemini content unredacted.
+func TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.Error(t, err)
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys verifies unsupported key mutation fails closed inside a function-result subtree.
+func TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"functionResponse":{"response":{"alice@example.com":"value"}}}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.ErrorContains(t, err, "unsupported JSON object key")
+}
 
 func TestCreateGenAIRerankRouteConfig(t *testing.T) {
 	route := createGenAIRerankRouteConfig("/genai")
@@ -75,6 +151,8 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, rawBody, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	assert.True(t, hasRewriter)
 }
 
 func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t *testing.T) {
@@ -96,6 +174,7 @@ func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t
 
 	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter))
 }
 
 func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testing.T) {
