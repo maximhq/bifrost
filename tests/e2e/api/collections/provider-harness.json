@@ -140135,7 +140135,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code < 400) {",
+                  "pm.test('Anthropic Responses breakpoint write: response is 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  var usage = pm.response.json().usage;",
                   "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
                   "  function num(v) { return typeof v === 'number' ? v : 0; }",
@@ -140191,7 +140192,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code < 400) {",
+                  "pm.test('Anthropic Responses breakpoint read: response is 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  var usage = pm.response.json().usage;",
                   "  function details(u) { return (u && (u.input_tokens_details || u.prompt_tokens_details)) || {}; }",
                   "  function num(v) { return typeof v === 'number' ? v : 0; }",
@@ -140242,7 +140244,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code < 400) {",
+                  "pm.test('Anthropic Responses breakpoint stream write: response is 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  pm.test('Anthropic Responses breakpoint stream write: SSE content-type', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream'); });",
                   "  function streamedUsage(text) {",
                   "    var usage = null;",
@@ -140311,7 +140314,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code < 400) {",
+                  "pm.test('Anthropic Responses breakpoint stream read: response is 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  pm.test('Anthropic Responses breakpoint stream read: SSE content-type', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream'); });",
                   "  function streamedUsage(text) {",
                   "    var usage = null;",
