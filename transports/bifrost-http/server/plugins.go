@@ -310,6 +310,13 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 
 // loadCustomPlugins loads plugins from PluginConfigs
 func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
+	// Count enabled, non-enterprise custom plugins that fail to load so the
+	// function can fail closed below instead of letting Bootstrap proceed with
+	// a required plugin silently absent. The aggregate error stays a count plus
+	// a generic message: it reaches main.go's top-level bootstrap log line,
+	// while the per-plugin status/log calls in the loop already carry the full
+	// detail (a plugin path or URL can itself be sensitive).
+	failureCount := 0
 	for _, cfg := range s.Config.PluginConfigs {
 		// Skip built-ins (already loaded)
 		if lib.IsBuiltinPlugin(cfg.Name) {
@@ -347,6 +354,7 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 			// Use cfg.Name since plugin may be nil when InstantiatePlugin returns an error
 			s.Config.UpdatePluginOverallStatus(cfg.Name, cfg.Name, schemas.PluginStatusError,
 				[]string{fmt.Sprintf("error loading plugin %s: %v", cfg.Name, err)}, []schemas.PluginType{})
+			failureCount++
 			continue
 		}
 
@@ -355,6 +363,7 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 			logger.Error("plugin %s instantiated but returned nil", cfg.Name)
 			s.Config.UpdatePluginOverallStatus(cfg.Name, cfg.Name, schemas.PluginStatusError,
 				[]string{fmt.Sprintf("plugin %s instantiated but returned nil", cfg.Name)}, []schemas.PluginType{})
+			failureCount++
 			continue
 		}
 
@@ -363,6 +372,9 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 		s.Config.SetPluginOrderInfo(plugin.GetName(), cfg.Placement, cfg.Order)
 		s.Config.UpdatePluginOverallStatus(plugin.GetName(), cfg.Name, schemas.PluginStatusActive,
 			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, InferPluginTypes(plugin))
+	}
+	if failureCount > 0 {
+		return fmt.Errorf("refusing to boot: %d enabled custom plugin(s) failed to load; see plugin status/logs", failureCount)
 	}
 	return nil
 }
