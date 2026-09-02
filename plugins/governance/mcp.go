@@ -78,7 +78,8 @@ func (acc *MCPToolAccumulator) addMCPConfig(cfg *configstoreTables.TableVirtualK
 	}
 }
 
-// AddVirtualMCP folds in an enabled Virtual MCP; a spec with no tool names means the whole client.
+// AddVirtualMCP folds in an enabled Virtual MCP. Each spec's tool names follow WhiteList semantics:
+// ["*"] grants the whole client, [] grants nothing, and a named list grants those tools.
 func (acc *MCPToolAccumulator) AddVirtualMCP(vmcp *configstoreTables.TableVirtualMCP) {
 	if vmcp == nil || !vmcp.Enabled {
 		return
@@ -87,10 +88,9 @@ func (acc *MCPToolAccumulator) AddVirtualMCP(vmcp *configstoreTables.TableVirtua
 		if spec.MCPClientID == "" {
 			continue
 		}
-		if len(spec.ToolNames) == 0 {
-			acc.GrantWholeClient(spec.MCPClientID)
-			continue
-		}
+		// Register the client even with an empty list, so it counts as configured and the
+		// allowed-by-default fallback can't reopen it.
+		acc.client(spec.MCPClientID)
 		for _, tool := range spec.ToolNames {
 			acc.GrantTool(spec.MCPClientID, tool)
 		}

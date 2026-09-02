@@ -33,7 +33,7 @@ func TestVirtualMCPToolAccess(t *testing.T) {
 	// The addressable vMCP "g" grants alpha read+write and every tool of beta.
 	assigned := configstoreTables.TableVirtualMCP{
 		Name: "grp", EndpointSlug: "g", Enabled: true,
-		ParsedTools: []configstoreTables.MCPToolSpec{spec("cA", "read", "write"), spec("cB")},
+		ParsedTools: []configstoreTables.MCPToolSpec{spec("cA", "read", "write"), spec("cB", grant.Wildcard)},
 	}
 
 	t.Run("a slug not recorded as addressable is refused", func(t *testing.T) {

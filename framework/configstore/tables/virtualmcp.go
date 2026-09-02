@@ -8,11 +8,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// MCPToolSpec is one entry in a Virtual MCP: a source client and the tools it
-// exposes. Empty ToolNames means all of the client's tools, current and future.
+// MCPToolSpec is one entry in a Virtual MCP: a source client and the tools it exposes.
 type MCPToolSpec struct {
-	MCPClientID string   `json:"mcp_client_id"` // source MCP client ID
-	ToolNames   []string `json:"tool_names"`    // specific tools; empty = all tools from the client
+	MCPClientID string `json:"mcp_client_id"` // source MCP client ID
+	// ToolNames follows WhiteList semantics: ["*"] = all tools from the client (incl. future),
+	// [] = no tools (deny-by-default), a named list = only those tools.
+	ToolNames []string `json:"tool_names"`
 }
 
 // TableVirtualMCP is a Virtual MCP server: a named bundle of tool specs from one
@@ -45,7 +46,7 @@ func (g *TableVirtualMCP) BeforeSave(tx *gorm.DB) error {
 	if g.ParsedTools != nil {
 		for i := range g.ParsedTools {
 			if g.ParsedTools[i].ToolNames == nil {
-				// Keep "all tools" as [] not null, for clean JSON downstream.
+				// Normalize nil to [] for clean JSON; both mean deny-by-default (no tools).
 				g.ParsedTools[i].ToolNames = []string{}
 			}
 		}

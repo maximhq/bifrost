@@ -1123,6 +1123,10 @@ func (m *MockConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmc
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error) {
+	return map[uint][]string{}, nil
+}
+
 func (m *MockConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	return nil
 }

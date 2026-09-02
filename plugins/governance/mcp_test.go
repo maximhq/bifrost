@@ -67,10 +67,16 @@ func TestPermitForVirtualKey_VirtualMCPsMirrorConfigs(t *testing.T) {
 		assert.Equal(t, map[string][]string{"cA": {"x", "y"}}, toolsByClient(permit.MCPPermits()))
 	})
 
-	t.Run("empty tool names grants the whole client as a wildcard", func(t *testing.T) {
+	t.Run("a wildcard tool name grants the whole client", func(t *testing.T) {
+		vk := buildVKNoMCPConfigs()
+		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", grant.Wildcard))}, names, nil)
+		assert.Equal(t, map[string][]string{"cB": {grant.Wildcard}}, toolsByClient(permit.MCPPermits()))
+	})
+
+	t.Run("empty tool names grant nothing (deny-by-default)", func(t *testing.T) {
 		vk := buildVKNoMCPConfigs()
 		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, nil)
-		assert.Equal(t, map[string][]string{"cB": {grant.Wildcard}}, toolsByClient(permit.MCPPermits()))
+		assert.Empty(t, permit.MCPPermits())
 	})
 
 	t.Run("a disabled virtual MCP contributes nothing", func(t *testing.T) {
@@ -92,6 +98,14 @@ func TestPermitForVirtualKey_VirtualMCPsMirrorConfigs(t *testing.T) {
 		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", "read"))}, names, map[string]string{"cB": "beta"})
 		assert.Equal(t, map[string][]string{"cB": {"read"}}, toolsByClient(permit.MCPPermits()),
 			"an assigned virtual MCP scopes an otherwise-open client, mirroring an explicit config")
+	})
+
+	t.Run("an empty tool list denies even an allowed-by-default client", func(t *testing.T) {
+		// cB is open to every key by default. An empty-tool spec must still scope it to nothing, not
+		// let the allowed-by-default fallback reopen it — the spec has to register cB as configured.
+		vk := buildVKNoMCPConfigs()
+		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, map[string]string{"cB": "beta"})
+		assert.Empty(t, permit.MCPPermits(), "an empty allow-list blocks the allowed-by-default wildcard")
 	})
 }
 

@@ -1545,10 +1545,8 @@ func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext
 			// Client no longer configured (or unnamed): nothing to serve for it.
 			continue
 		}
-		if len(spec.ToolNames) == 0 {
-			requested = append(requested, name+"-"+grant.Wildcard)
-			continue
-		}
+		// WhiteList semantics: ["*"] serves the whole client (name-*), [] serves nothing, a named list
+		// serves those tools. grant.Wildcard is "*", so the loop below produces name-* for the all case.
 		for _, tool := range spec.ToolNames {
 			if tool == "" {
 				continue
