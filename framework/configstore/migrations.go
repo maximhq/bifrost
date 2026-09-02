@@ -480,6 +480,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
 	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
 	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
+	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -515,6 +516,46 @@ func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddCompatAzureDeepseekColumn adds the compat_azure_deepseek column to
+// config_client.
+func migrationAddCompatAzureDeepseekColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_azure_deepseek_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatAzureDeepseek"); err != nil {
+				return fmt.Errorf("failed to add compat_azure_deepseek column: %w", err)
+			}
+
+			// The conversion was unconditional before this toggle existed, so existing
+			// deployments are backfilled to TRUE to keep the behaviour they have today.
+			// The column default stays FALSE, matching the other compat flags.
+			if err := tx.Exec("UPDATE config_client SET compat_azure_deepseek = TRUE").Error; err != nil {
+				return fmt.Errorf("failed to backfill compat_azure_deepseek: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_azure_deepseek"); err != nil {
+				return fmt.Errorf("failed to drop compat_azure_deepseek column: %w", err)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running compat_azure_deepseek migration: %s", err.Error())
 	}
 	return nil
 }
