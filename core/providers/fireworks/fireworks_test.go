@@ -430,7 +430,7 @@ func newTestFireworksProvider(t *testing.T, baseURL string) *fireworksprovider.F
 
 	provider, err := fireworksprovider.NewFireworksProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        baseURL,
+			BaseURL:                        schemas.NewSecretVar(baseURL),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, bifrost.NewNoOpLogger())

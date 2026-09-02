@@ -226,7 +226,7 @@ func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL := fmt.Sprintf("%s/cachedContents", provider.networkConfig.BaseURL)
+	requestURL := fmt.Sprintf("%s/cachedContents", provider.networkConfig.BaseURL.GetValue())
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
@@ -278,7 +278,7 @@ func (provider *GeminiProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL := fmt.Sprintf("%s/cachedContents", provider.networkConfig.BaseURL)
+	requestURL := fmt.Sprintf("%s/cachedContents", provider.networkConfig.BaseURL.GetValue())
 	queryArgs := url.Values{}
 	if request.PageSize > 0 {
 		queryArgs.Set("pageSize", strconv.Itoa(request.PageSize))
@@ -358,7 +358,7 @@ func (provider *GeminiProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -455,7 +455,7 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), name)
 	if len(updateMaskFields) > 0 {
 		requestURL += "?updateMask=" + strings.Join(updateMaskFields, ",")
 	}
@@ -542,7 +542,7 @@ func (provider *GeminiProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
