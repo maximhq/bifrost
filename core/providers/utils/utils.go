@@ -1062,6 +1062,8 @@ func filterSupportedAcceptEncodings(values []string, supportedEncodings map[stri
 // may call this: every other provider authenticates with its own configured credentials, so
 // forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
 // x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
+// Call it after SetExtraHeaders: a header already on the request — notably the provider's
+// configured network extra_headers — is never overwritten by the caller's copy.
 func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
 	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedBufferedContentEncodings)
 }
@@ -1093,6 +1095,13 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 		}
 		// Bifrost owns the body it sends, so a caller cannot override its content type.
 		if lower == "content-type" {
+			continue
+		}
+		// Never overwrite a header that is already on the request: SetExtraHeaders runs
+		// before this at every call site, so the provider's configured network extra_headers
+		// keep precedence over the caller's copy of the same header (#6587). PeekAll rather
+		// than Peek, so a configured header pinned to an empty value still counts as present.
+		if len(req.Header.PeekAll(k)) > 0 {
 			continue
 		}
 		if lower == "accept-encoding" {
