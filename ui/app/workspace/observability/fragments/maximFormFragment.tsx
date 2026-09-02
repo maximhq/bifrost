@@ -10,6 +10,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Eye, EyeOff, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 interface MaximFormFragmentProps {
 	initialConfig?: {
@@ -25,6 +26,7 @@ interface MaximFormFragmentProps {
 }
 
 export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: MaximFormFragmentProps) {
+	const { t } = useTranslation("observability");
 	const hasMaximAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
@@ -75,7 +77,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 										<div className="relative">
 											<Input
 												type={showApiKey ? "text" : "password"}
-												placeholder="Enter your Maxim API key"
+												placeholder={t("connectors.enterMaximApiKey")}
 												disabled={!hasMaximAccess}
 												{...field}
 												className="pr-10"
@@ -104,7 +106,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								<FormItem>
 									<FormLabel>Log Repository ID (Optional)</FormLabel>
 									<FormControl>
-										<Input placeholder="Enter log repository ID" disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
+										<Input placeholder={t("connectors.enterLogRepositoryId")} disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -168,8 +170,8 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								variant="outline"
 								onClick={onDelete}
 								disabled={isDeleting}
-								title="Delete connector"
-								aria-label="Delete connector"
+								title={t("connectors.deleteConnector")}
+								aria-label={t("connectors.deleteConnector")}
 							>
 								<Trash2 className="size-4" />
 							</Button>
@@ -195,17 +197,17 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty} isLoading={isSaving}>
-										Save Maxim Configuration
+										{t("connectors.saveMaxim")}
 									</Button>
 								</TooltipTrigger>
 								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty
-												? "No changes made and validation errors present"
+												? t("connectors.noChangesWithErrors")
 												: !form.formState.isDirty
-													? "No changes made"
-													: "Please fix validation errors"}
+													? t("connectors.noChanges")
+													: t("connectors.fixValidationErrors")}
 										</p>
 									</TooltipContent>
 								)}

@@ -8,6 +8,7 @@ import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
 import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
+import type { TFunction } from "i18next";
 
 // Helper function to validate status and return a safe Status value
 const getValidatedStatus = (status: string): Status => {
@@ -24,6 +25,7 @@ export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
 	hasDeleteAccess: boolean,
 	customAppIcons: Record<string, string> = {},
+	t: TFunction<"observability"> = ((k: string) => k) as TFunction<"observability">,
 ): ColumnDef<MCPToolLogEntry>[] => [
 	{
 		accessorKey: "status",
@@ -46,7 +48,7 @@ export const createMCPColumns = (
 		accessorKey: "timestamp",
 		header: ({ column }) => (
 			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
+				{t("labels.time")}
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
@@ -55,7 +57,7 @@ export const createMCPColumns = (
 			const timestamp = row.original.timestamp;
 			const date = timestamp ? new Date(timestamp) : null;
 			if (!date || !isValid(date)) {
-				return <div className="truncate text-xs">N/A</div>;
+				return <div className="truncate text-xs">{t("mcpLogs.detail.invalidDate")}</div>;
 			}
 			return (
 				<div className="flex flex-col leading-tight">
@@ -67,7 +69,7 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "tool_name",
-		header: "Tool Name",
+		header: t("labels.toolName"),
 		size: 300,
 		cell: ({ row }) => {
 			const toolName = row.getValue("tool_name") as string;
@@ -99,7 +101,7 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "server_label",
-		header: "Server",
+		header: t("labels.server"),
 		size: 150,
 		cell: ({ row }) => {
 			const serverLabel = row.original.source === "native" ? "Local" : (row.getValue("server_label") as string);
@@ -115,7 +117,7 @@ export const createMCPColumns = (
 	{
 		id: "app",
 		accessorKey: "app",
-		header: "App",
+		header: t("labels.app"),
 		size: 140,
 		cell: ({ row }) => {
 			const appKey = row.original.app || row.original.app_key;
@@ -133,7 +135,7 @@ export const createMCPColumns = (
 		accessorKey: "latency",
 		header: ({ column }) => (
 			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Latency
+				{t("labels.latency")}
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
@@ -148,7 +150,7 @@ export const createMCPColumns = (
 							? `${latency.toLocaleString()}ms`
 							: presentation.inspectionDuration != null
 								? `${presentation.inspectionDuration}ms`
-								: "Not recorded"}
+								: t("labels.nA")}
 					</span>
 					<span className="text-muted-foreground block text-xs">{presentation.durationLabel}</span>
 				</div>
@@ -157,17 +159,17 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "cost",
-		header: "Cost",
+		header: t("labels.cost"),
 		size: 120,
 		cell: ({ row }) => {
 			const cost = row.original.cost;
 			const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
-			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
+			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : t("labels.nA")}</div>;
 		},
 	},
 	{
 		id: "virtual_key",
-		header: "Virtual Key",
+		header: t("labels.virtualKey"),
 		size: 170,
 		cell: ({ row }) => {
 			const value = row.original.virtual_key?.name ?? row.original.virtual_key_name ?? row.original.virtual_key_id;
@@ -233,7 +235,7 @@ export const createMCPColumns = (
 							<div className="flex justify-center">
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("mcpLogs.logActions")} className="h-7 w-7">
 											<MoreHorizontal className="h-4 w-4" />
 										</Button>
 									</DropdownMenuTrigger>
@@ -248,7 +250,7 @@ export const createMCPColumns = (
 											}}
 										>
 											<Trash2 className="h-4 w-4" />
-											Delete
+											{t("labels.delete")}
 										</DropdownMenuItem>
 									</DropdownMenuContent>
 								</DropdownMenu>

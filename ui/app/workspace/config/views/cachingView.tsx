@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // The local cache plugin runs in one of two modes. Direct-only is purely
@@ -119,6 +120,7 @@ const validateForSave = (config: EditorCacheConfig, mode: CacheMode): string | n
 };
 
 export default function CachingView() {
+	const { t } = useTranslation("config");
 	const { data: bifrostConfig, isLoading: configLoading, error: configError } = useGetCoreConfigQuery({ fromDB: true });
 	const isVectorStoreEnabled = bifrostConfig?.is_cache_connected ?? false;
 
@@ -227,7 +229,7 @@ export default function CachingView() {
 					path: "",
 				}).unwrap();
 			}
-			toast.success(checked ? "Local cache enabled" : "Local cache disabled");
+			toast.success(checked ? t("caching.toastEnabled") : t("caching.toastDisabled"));
 		} catch (error) {
 			toast.error(`Failed to ${checked ? "enable" : "disable"} local cache: ${getErrorMessage(error)}`);
 		}
@@ -256,7 +258,7 @@ export default function CachingView() {
 			setCacheConfig(editor);
 			setServerCacheConfig(editor);
 			setMode(inferMode(editor));
-			toast.success("Cache configuration updated");
+			toast.success(t("caching.toastUpdated"));
 		} catch (error) {
 			toast.error(`Failed to update cache configuration: ${getErrorMessage(error)}`);
 		}
@@ -267,19 +269,11 @@ export default function CachingView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<PageTitle title="Local Cache">
-				Cache responses locally with two complementary lookup paths: <b>direct</b> hash matching for exact replays, and <b>semantic</b>{" "}
-				similarity search for related content. Send the <b>x-bf-cache-key</b> header to scope cached responses to a tenant or feature.{" "}
-				{!isVectorStoreEnabled && (
-					<span className="text-destructive font-medium">
-						Requires a vector store to be configured and enabled in <code>config.json</code>.
-					</span>
-				)}
-			</PageTitle>
+			<PageTitle title={t("caching.title")}>{t("caching.description")}</PageTitle>
 
 			{configError !== undefined && (
 				<div className="border-destructive/50 bg-destructive/10 rounded-sm border p-4">
-					<p className="text-destructive text-sm font-medium">Failed to load configuration</p>
+					<p className="text-destructive text-sm font-medium">{t("caching.failedToLoad")}</p>
 					<p className="text-muted-foreground mt-1 text-sm">
 						{getErrorMessage(configError) || "An unexpected error occurred. Please try again."}
 					</p>
@@ -300,7 +294,7 @@ export default function CachingView() {
 					<div className="flex items-center justify-between space-x-2">
 						<div className="space-y-0.5">
 							<label htmlFor="enable-caching" className="text-sm font-medium">
-								Enable Caching
+								{t("caching.enableCaching")}
 							</label>
 							<p className="text-muted-foreground text-sm">
 								Loads (or unloads) the plugin without a server restart. Configuration changes you make below mutate the live plugin in
@@ -333,7 +327,7 @@ export default function CachingView() {
 							<div className={cn("space-y-4", !cachingActive && "pointer-events-none opacity-50")} aria-disabled={!cachingActive}>
 								{/* Mode picker. Direct-only is first-class. */}
 								<div className="space-y-2">
-									<Label className="text-sm font-medium">Cache Mode</Label>
+									<Label className="text-sm font-medium">{t("caching.cacheMode")}</Label>
 									<Tabs value={mode} onValueChange={(v) => setMode(v as CacheMode)}>
 										<TabsList className="flex w-full justify-start">
 											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">
@@ -667,11 +661,11 @@ export default function CachingView() {
 												onClick={handleSave}
 												disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError) || !hasSettingsUpdateAccess}
 											>
-												{isSaving ? "Saving..." : "Save Changes"}
+												{isSaving ? t("saving") : t("saveChanges")}
 											</Button>
 										</span>
 									</TooltipTrigger>
-									{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+									{!hasSettingsUpdateAccess && <TooltipContent>{t("proxy.noPermission")}</TooltipContent>}
 								</Tooltip>
 							</div>
 						</>

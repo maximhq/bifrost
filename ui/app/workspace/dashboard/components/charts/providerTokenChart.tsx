@@ -11,11 +11,12 @@ import {
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
-	OTHER_SERIES_LABEL,
+	getOtherSeriesLabel,
 } from "../../utils/chartUtils";
 import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
 
 interface ProviderTokenChartProps {
 	data: ProviderTokenHistogramResponse | null;
@@ -44,7 +45,7 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
 								<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">
-									{isOther ? OTHER_SERIES_LABEL : provider}
+									{isOther ? getOtherSeriesLabel() : provider}
 								</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{formatCompactNumber(tokens)}</span>
@@ -141,7 +142,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 	}, [data, selectedProvider]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {

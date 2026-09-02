@@ -13,6 +13,7 @@ import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } fr
 import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/types/largePayload";
 import { Info, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import UserAgentMappingsView from "./userAgentMappingsView";
 
@@ -66,6 +67,7 @@ function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): 
 }
 
 export default function ClientSettingsView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
@@ -156,15 +158,15 @@ export default function ClientSettingsView() {
 				localLargePayloadConfig.max_payload_bytes < minBytes ||
 				localLargePayloadConfig.truncated_log_bytes < minBytes
 			) {
-				toast.error("All byte values must be at least 1024 (1 KB).");
+				toast.error(t("clientSettings.toastMinBytes"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.request_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the request threshold.");
+				toast.error(t("clientSettings.toastMaxVsRequest"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.response_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the response threshold.");
+				toast.error(t("clientSettings.toastMaxVsResponse"));
 				return;
 			}
 		}
@@ -175,7 +177,7 @@ export default function ClientSettingsView() {
 		// Save core config if changed
 		if (hasCoreConfigChanges) {
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configNotLoadedRefresh"));
 				return;
 			}
 			// Clean up empty strings from header filter config
@@ -191,7 +193,7 @@ export default function ClientSettingsView() {
 				await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
 				coreConfigSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save client config: ${getErrorMessage(error)}`);
+				toast.error(t("clientSettings.toastSaveClientFailed", { error: getErrorMessage(error) }));
 			}
 		}
 
@@ -201,15 +203,15 @@ export default function ClientSettingsView() {
 				await updateLargePayloadConfig(localLargePayloadConfig).unwrap();
 				largePayloadSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save large payload config: ${getErrorMessage(error)}`);
+				toast.error(t("clientSettings.toastSaveLargePayloadFailed", { error: getErrorMessage(error) }));
 			}
 		}
 
 		if (coreConfigSaved || largePayloadSaved) {
 			if (largePayloadSaved) {
-				toast.success("Settings updated. Large payload changes require a restart to apply.");
+				toast.success(t("clientSettings.toastSavedWithRestart"));
 			} else {
-				toast.success("Client settings updated successfully.");
+				toast.success(t("clientSettings.toastSaved"));
 			}
 		}
 	}, [
@@ -219,6 +221,7 @@ export default function ClientSettingsView() {
 		hasLargePayloadChanges,
 		localConfig,
 		localLargePayloadConfig,
+		t,
 		updateCoreConfig,
 		updateLargePayloadConfig,
 	]);
@@ -288,21 +291,19 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
+			<PageTitle title={t("clientSettings.title")}>{t("clientSettings.description")}</PageTitle>
 
 			<div className="space-y-4">
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-							Drop Excess Requests
+							{t("clientSettings.dropExcessRequests")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							If enabled, Bifrost will drop requests that exceed pool capacity.{" "}
+							{t("clientSettings.dropExcessRequestsHelp")}{" "}
 							{localConfig.drop_excess_requests && droppedRequests > 0 ? (
-								<span>
-									Have dropped <b>{droppedRequests} requests</b> since last restart.
-								</span>
+								<span>{t("clientSettings.droppedRequests", { count: droppedRequests })}</span>
 							) : (
 								<></>
 							)}
@@ -321,10 +322,10 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="disable-db-pings-in-health" className="text-sm font-medium">
-							Disable DB Pings in Health Check
+							{t("clientSettings.disableDbPings")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							If enabled, the /health endpoint will skip database connectivity checks and return OK immediately.
+							{t("clientSettings.disableDbPingsHelp")}
 						</p>
 					</div>
 					<Switch
@@ -340,10 +341,10 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">
-							Dump Errors in Console Logs
+							{t("clientSettings.dumpErrors")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.
+							{t("clientSettings.dumpErrorsHelp")}
 						</p>
 					</div>
 					<Switch
@@ -359,10 +360,10 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
-							Async Job Result TTL (seconds)
+							{t("clientSettings.asyncJobTtl")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.
+							{t("clientSettings.asyncJobTtlHelp")}
 						</p>
 					</div>
 					<Input
@@ -383,8 +384,8 @@ export default function ClientSettingsView() {
 			{/* Header Filter Section */}
 			<div className="space-y-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">Header Forwarding</h3>
-					<p className="text-muted-foreground text-sm">Control which extra headers are forwarded to LLM providers.</p>
+					<h3 className="text-lg font-semibold tracking-tight">{t("clientSettings.headerForwarding")}</h3>
+					<p className="text-muted-foreground text-sm">{t("clientSettings.headerForwardingHelp")}</p>
 				</div>
 
 				<Accordion type="multiple" className="w-full rounded-sm border px-4">
@@ -392,12 +393,12 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								About Header Forwarding
+								About {t("clientSettings.headerForwarding")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-3">
 							<div>
-								<p className="mb-2 font-medium">Two ways to forward headers:</p>
+								<p className="mb-2 font-medium">{t("clientSettings.twoWays")}</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
 										<span className="font-medium">Prefixed headers:</span> Use{" "}
@@ -457,13 +458,12 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								Security Note
+								{t("clientSettings.securityNote")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent>
 							<p className="text-sm">
-								Some headers are always blocked for security reasons regardless of configuration. These headers cannot be added to the
-								allowlist or denylist:
+								{t("clientSettings.securityNoteBody")}
 							</p>
 							<p className="text-muted-foreground mt-1 font-mono text-xs">
 								proxy-authorization, cookie, host, content-length, connection, transfer-encoding, x-api-key, x-goog-api-key, x-bf-api-key,
@@ -476,7 +476,7 @@ export default function ClientSettingsView() {
 				{/* Allowlist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Allowlist</h4>
+						<h4 className="text-sm font-medium">{t("clientSettings.allowlist")}</h4>
 						<p className="text-muted-foreground text-xs">
 							Headers to allow. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Any header
 							in this list can also be sent directly without the prefix.
@@ -487,7 +487,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. anthropic-*, custom-id"
+									placeholder={t("clientSettings.allowlistPlaceholder")}
 									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -512,7 +512,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddAllowlistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -520,7 +520,7 @@ export default function ClientSettingsView() {
 				{/* Denylist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Denylist</h4>
+						<h4 className="text-sm font-medium">{t("clientSettings.denylist")}</h4>
 						<p className="text-muted-foreground text-xs">
 							Headers to block. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Applies to
 							both prefixed and direct header forwarding.
@@ -531,7 +531,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-*"
+									placeholder={t("clientSettings.denylistPlaceholder")}
 									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -556,7 +556,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddDenylistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -574,7 +574,7 @@ export default function ClientSettingsView() {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<span>
-								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
+								<Button disabled>{isLoading ? t("saving") : t("saveChanges")}</Button>
 							</span>
 						</TooltipTrigger>
 						<TooltipContent>
@@ -583,7 +583,7 @@ export default function ClientSettingsView() {
 					</Tooltip>
 				) : (
 					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? t("saving") : t("saveChanges")}
 					</Button>
 				)}
 			</div>

@@ -3,6 +3,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { ModelProvider } from "@/lib/types/config";
 import { toast } from "sonner";
 import ProviderKeyForm from "../views/providerKeyForm";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	show: boolean;
@@ -13,14 +14,17 @@ interface Props {
 }
 
 export default function AddNewKeySheet({ show, onCancel, provider, keyId, providerName }: Props) {
+	const { t } = useTranslation("models");
 	const isEditing = keyId !== null;
 	const resolvedProviderName = (providerName ?? provider.name).toLowerCase();
 	const isVLLM = resolvedProviderName === "vllm";
 	const isOllamaOrSGL = resolvedProviderName === "ollama" || resolvedProviderName === "sgl";
-	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
-	const dialogTitle = isEditing ? `Edit ${entityLabel}` : `Add new ${entityLabel}`;
-	const successMessage = isEditing ? `${EntityLabel} updated successfully` : `${EntityLabel} added successfully`;
+	const entityLabelKey = isVLLM ? "entityModel" : isOllamaOrSGL ? "entityServer" : "entityKey";
+	const entityLabelCapKey = isVLLM ? "entityModelCap" : isOllamaOrSGL ? "entityServerCap" : "entityKeyCap";
+	const entityLabel = t(`providers.${entityLabelKey}`);
+	const EntityLabel = t(`providers.${entityLabelCapKey}`);
+	const dialogTitle = isEditing ? t("providers.editKeyEntity", { entity: entityLabel }) : t("providers.addKeyEntity", { entity: entityLabel });
+	const successMessage = isEditing ? t("providers.entityUpdated", { entity: EntityLabel }) : t("providers.entityAdded", { entity: EntityLabel });
 
 	return (
 		<Sheet

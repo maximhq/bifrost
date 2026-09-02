@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	className?: string;
@@ -13,6 +14,8 @@ interface Props {
 }
 
 export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle", testIdPrefix }: Props) {
+	const { t } = useTranslation("governance");
+
 	return (
 		<div className={cn("flex flex-col items-center gap-4 text-center", align === "middle" ? "justify-center" : "justify-start", className)}>
 			<div className="text-muted-foreground">{icon}</div>
@@ -22,24 +25,24 @@ export default function ContactUsView({ icon, title, description, className, rea
 				<div className="mx-auto flex flex-row items-center gap-2">
 					<Button
 						variant="outline"
-						aria-label="Read more about this feature (opens in new tab)"
+						aria-label={t("contactUs.readMoreAria")}
 						className="mx-auto mt-6"
 						data-testid={testIdPrefix ? `${testIdPrefix}-read-more` : undefined}
 						onClick={() => {
 							window.open(`${readmeLink}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
 					>
-						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+						{t("contactUs.readMore")} <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					<Button
 						className="mx-auto mt-6"
-						aria-label="Book a demo (opens Calendly in new tab)"
+						aria-label={t("contactUs.bookDemoAria")}
 						data-testid={testIdPrefix ? `${testIdPrefix}-book-demo` : undefined}
 						onClick={() => {
 							window.open("https://calendly.com/maximai/bifrost-demo?utm_source=bfd_ent", "_blank", "noopener,noreferrer");
 						}}
 					>
-						Book a demo
+						{t("contactUs.bookDemo")}
 					</Button>
 				</div>
 			</div>
