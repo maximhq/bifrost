@@ -215,7 +215,7 @@ The Responses API is native on Model Serving. On the Unity AI Gateway, which is 
 
 ### Provider-specific parameters
 
-Databricks accepts fields Bifrost does not model canonically, such as `service_tier` for priority pay-per-token inference and `reasoning_effort` for reasoning models. Send them as top-level fields and Bifrost forwards them:
+Databricks accepts fields Bifrost does not model canonically, such as `service_tier` for priority pay-per-token inference. Send them as top-level fields and Bifrost forwards them:
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -226,6 +226,25 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "service_tier": "priority"
   }'
 ```
+
+### Parameter support per model
+
+Bifrost's parameter set is wider than any single Databricks endpoint accepts, and both surfaces answer an unknown field with a 400 rather than ignoring it. Each optional parameter is therefore checked against the Bifrost datasheet record for the model behind the endpoint before the request goes out:
+
+| Parameter | Dropped when the datasheet says |
+| --- | --- |
+| `reasoning_effort` | the model does not take an effort label |
+| `temperature`, `top_p`, `top_k` | `supports_sampling_params: false` — the adaptive-thinking Claude endpoints reject them |
+| `tool_choice` | `supports_tool_choice: false` |
+| `parallel_tool_calls` | `supports_parallel_function_calling: false` |
+| `response_format` (`text.format` on Responses) | `supports_response_schema: false` |
+| `stop`, `presence_penalty`, `frequency_penalty` | the field is listed in `unsupported_fields` |
+
+A model the datasheet does not describe keeps every field except `reasoning_effort` — Databricks endpoint names are workspace-defined, so there is nothing to identify an unknown endpoint by, and a silent drop is worse than an upstream error you can read.
+
+`reasoning_effort` resolves through `unsupported_fields` → `supports_reasoning_effort` (or a published effort ladder) → a `reasoning_effort` entry in the row's parameters → the model reasons and is not Claude-family. Claude endpoints on Databricks reason through a thinking budget and reject an effort label, so it is dropped there. A requested effort is clamped onto the levels the model publishes.
+
+Anthropic-native fields — `context_management`, `cache_control`, `speed`, `inference_geo`, `task_budget`, `container`, `mcp_servers` — are always dropped, whatever the model. Both Databricks surfaces are OpenAI-shaped and reject them even on Claude endpoints.
 
 ### Provisioned throughput
 
