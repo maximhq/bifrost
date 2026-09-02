@@ -271,9 +271,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -577,9 +574,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -878,9 +872,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -1757,9 +1748,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -1811,9 +1799,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -1879,9 +1864,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -1945,9 +1927,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -2009,9 +1988,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -2116,9 +2092,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -2260,9 +2233,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -2750,9 +2720,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -3448,9 +3415,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -3713,9 +3677,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -3975,9 +3936,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -4184,9 +4142,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -4389,9 +4344,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -4482,9 +4434,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -4580,9 +4529,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -4804,9 +4750,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -5130,9 +5073,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -5194,9 +5134,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -6304,9 +6241,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -7235,9 +7169,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -7316,9 +7247,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -7401,9 +7329,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -7528,9 +7453,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -7592,9 +7514,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -7684,9 +7603,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -7758,9 +7674,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -7893,9 +7806,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -8032,9 +7942,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -8106,9 +8013,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -8218,9 +8122,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -8354,9 +8255,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -8442,9 +8340,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -8517,9 +8412,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -8687,9 +8579,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -8870,9 +8759,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9005,9 +8891,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9094,9 +8977,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -9247,9 +9127,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -9415,9 +9292,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9536,9 +9410,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9637,9 +9508,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9723,9 +9591,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9795,9 +9660,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -9871,9 +9733,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -9943,9 +9802,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -10019,9 +9875,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -10093,9 +9946,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -10165,9 +10015,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -10390,9 +10237,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -10833,9 +10677,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -10962,9 +10803,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11021,9 +10859,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11084,9 +10919,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11143,9 +10975,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11206,9 +11035,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11265,9 +11091,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11328,9 +11151,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11387,9 +11207,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11450,9 +11267,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11509,9 +11323,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11585,9 +11396,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11644,9 +11452,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11717,9 +11522,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -11776,9 +11578,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11852,9 +11651,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -11936,9 +11732,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -12007,9 +11800,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -12076,9 +11866,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -12417,9 +12204,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -12743,9 +12527,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -13044,9 +12825,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -13365,9 +13143,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -14277,9 +14052,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -14330,9 +14102,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -15227,9 +14996,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -15291,9 +15057,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -16224,9 +15987,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -16305,9 +16065,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -16390,9 +16147,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -16515,9 +16269,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -17625,9 +17376,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -17689,9 +17437,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -17773,9 +17518,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -17893,9 +17635,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18031,9 +17770,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18175,9 +17911,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18339,9 +18072,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -18393,9 +18123,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18469,9 +18196,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -18533,9 +18257,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18616,9 +18337,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -18689,9 +18407,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -18823,9 +18538,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -19177,9 +18889,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -19553,9 +19262,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -19691,9 +19397,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -19788,9 +19491,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -19923,9 +19623,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -20010,9 +19707,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -20084,9 +19778,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -20254,9 +19945,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -20433,9 +20121,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -20567,9 +20252,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -20655,9 +20337,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -20807,9 +20486,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -20972,9 +20648,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21092,9 +20765,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21192,9 +20862,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21275,9 +20942,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -21373,9 +21037,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21459,9 +21120,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21529,9 +21187,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21597,9 +21252,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21661,9 +21313,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -21742,9 +21391,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21819,9 +21465,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -21903,9 +21546,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -21972,9 +21612,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -22039,9 +21676,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -22281,9 +21915,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -22499,9 +22130,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -22680,9 +22308,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -22800,9 +22425,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -22912,9 +22534,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -23118,9 +22737,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -23318,9 +22934,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -23493,9 +23106,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -23672,9 +23282,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -23783,9 +23390,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -23942,9 +23546,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -24105,9 +23706,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -24281,9 +23879,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -24403,9 +23998,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -24478,9 +24070,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -24557,9 +24146,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -24632,9 +24218,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -24764,9 +24347,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -24846,9 +24426,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -24918,9 +24495,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -25086,9 +24660,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25234,9 +24805,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25364,9 +24932,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25428,9 +24993,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -25505,9 +25067,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25569,9 +25128,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -25637,9 +25193,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25699,9 +25252,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -25814,9 +25364,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25884,9 +25431,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -25946,9 +25490,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -26031,9 +25572,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -26091,9 +25629,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -26194,9 +25729,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -26271,9 +25803,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -26346,9 +25875,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -26522,9 +26048,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -26597,9 +26120,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -26675,9 +26195,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -26778,9 +26295,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -26853,9 +26367,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -27006,9 +26517,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -27080,9 +26588,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -27164,9 +26669,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -27256,9 +26758,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -27336,9 +26835,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -27410,9 +26906,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -27467,9 +26960,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -27533,9 +27023,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -27936,9 +27423,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -28000,9 +27484,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -28147,9 +27628,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -28211,9 +27689,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -28519,9 +27994,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -28564,9 +28036,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -28646,9 +28115,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -28855,9 +28321,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -28969,9 +28432,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29016,9 +28476,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29051,9 +28508,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -29110,9 +28564,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29164,9 +28615,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29210,9 +28658,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -29267,9 +28712,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29321,9 +28763,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -29380,9 +28819,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29437,9 +28873,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29482,9 +28915,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -29555,9 +28985,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29600,9 +29027,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -29649,9 +29073,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29696,9 +29117,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -29741,9 +29159,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -30044,9 +29459,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -30352,9 +29764,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -30418,9 +29827,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -30472,9 +29878,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -31351,9 +30754,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -31415,9 +30815,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -31517,9 +30914,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -31661,9 +31055,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -31870,9 +31261,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -31942,9 +31330,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -32021,9 +31406,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -32098,9 +31480,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -32173,9 +31552,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -32347,9 +31723,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -32750,9 +32123,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -32816,9 +32186,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -32880,9 +32247,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -33183,9 +32547,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -33491,9 +32852,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -33557,9 +32915,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -33611,9 +32966,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -34490,9 +33842,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -34554,9 +33903,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -34656,9 +34002,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -34800,9 +34143,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -35009,9 +34349,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -35123,9 +34460,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -35195,9 +34529,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -35274,9 +34605,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -35351,9 +34679,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -35426,9 +34751,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -35600,9 +34922,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -36003,9 +35322,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -36069,9 +35385,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -36133,9 +35446,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -36436,9 +35746,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -36744,9 +36051,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -36810,9 +36114,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -36864,9 +36165,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -37743,9 +37041,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -37807,9 +37102,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -37909,9 +37201,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -38053,9 +37342,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -38262,9 +37548,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -38334,9 +37617,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -38413,9 +37693,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -38490,9 +37767,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -38565,9 +37839,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -38739,9 +38010,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -39142,9 +38410,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -39206,9 +38471,6 @@
         "security": [
           {
             "BearerAuth": []
-          },
-          {
-            "BasicAuth": []
           },
           {
             "VirtualKeyAuth": []
@@ -39274,9 +38536,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -39289,10 +38548,11 @@
       "get": {
         "operationId": "getHealth",
         "summary": "Health check",
-        "description": "Returns the health status of the Bifrost server. Checks connectivity to config store,\nlog store, and vector store if configured.\n",
+        "description": "Returns the health status of the Bifrost server. Checks connectivity to config store,\nlog store, and vector store if configured.\nUnauthenticated by design - `/health` is in the auth middleware's system whitelist.\n",
         "tags": [
           "Health"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Server is healthy",
@@ -39342,6 +38602,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39387,6 +38650,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39427,15 +38693,11 @@
       "get": {
         "operationId": "getVersion",
         "summary": "Get version",
-        "description": "Returns the current Bifrost version information.",
+        "description": "Returns the current Bifrost version information.\nUnauthenticated by design - `/api/version` is in the auth middleware's system whitelist.\n",
         "tags": [
           "Configuration"
         ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -39461,6 +38723,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39600,6 +38865,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39647,6 +38915,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39731,6 +39002,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -39943,6 +39217,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40132,6 +39409,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40304,6 +39584,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40367,6 +39650,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40472,6 +39758,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40546,6 +39835,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40662,6 +39954,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -40771,6 +40066,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41003,6 +40301,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41188,6 +40489,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41251,6 +40555,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41305,6 +40612,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41416,6 +40726,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41590,6 +40903,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41704,6 +41020,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41787,6 +41106,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -41909,6 +41231,9 @@
             "ManagementBearerAuth": []
           },
           {
+            "BasicAuth": []
+          },
+          {
             "SessionCookieAuth": []
           }
         ],
@@ -41989,6 +41314,9 @@
             "ManagementBearerAuth": []
           },
           {
+            "BasicAuth": []
+          },
+          {
             "SessionCookieAuth": []
           }
         ],
@@ -42043,6 +41371,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42088,6 +41419,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42156,6 +41490,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42232,6 +41569,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42288,6 +41628,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42356,6 +41699,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42432,6 +41778,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42519,6 +41868,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42604,6 +41956,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42679,6 +42034,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42736,6 +42094,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42825,6 +42186,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -42938,6 +42302,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43059,6 +42426,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "parameters": [
@@ -43144,6 +42514,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43182,6 +42555,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43227,6 +42603,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43296,6 +42675,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43353,6 +42735,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43429,6 +42814,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43507,6 +42895,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -44133,9 +43524,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -44252,6 +43640,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45224,6 +44615,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45485,6 +44879,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45541,6 +44938,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45599,6 +44999,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45658,6 +45061,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45737,6 +45143,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45806,6 +45215,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -45916,6 +45328,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46009,6 +45424,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46091,6 +45509,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46149,6 +45570,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46210,6 +45634,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46281,6 +45708,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46357,6 +45787,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46441,6 +45874,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46502,6 +45938,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46570,6 +46009,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46738,6 +46180,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46796,6 +46241,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -46948,6 +46396,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47003,6 +46454,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47043,7 +46497,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required. The virtual key\nvalue itself is the credential, sent as `x-bf-vk` (any value) or, with the `sk-bf-`\nprefix required, as `Authorization: Bearer`, `x-api-key`, `x-goog-api-key` or `api-key`.\nAdmin/session tokens and management API keys do not authenticate here.\n",
         "tags": [
           "Governance"
         ],
@@ -47052,10 +46506,16 @@
             "VirtualKeyAuth": []
           },
           {
-            "BearerAuth": []
+            "VirtualKeyBearerAuth": []
           },
           {
-            "ApiKeyAuth": []
+            "VirtualKeyApiKeyAuth": []
+          },
+          {
+            "VirtualKeyGoogleAuth": []
+          },
+          {
+            "VirtualKeyAzureAuth": []
           }
         ],
         "responses": {
@@ -47128,6 +46588,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47202,6 +46665,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47268,6 +46734,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47403,6 +46872,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47478,6 +46950,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47541,6 +47016,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47732,6 +47210,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47783,6 +47264,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47829,6 +47313,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47874,6 +47361,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -47941,6 +47431,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48012,6 +47505,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48078,6 +47574,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48141,6 +47640,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48216,6 +47718,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48267,6 +47772,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48305,6 +47813,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48350,6 +47861,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48417,6 +47931,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48488,6 +48005,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48554,6 +48074,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48617,6 +48140,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48676,6 +48202,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48756,6 +48285,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48867,6 +48399,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -48950,6 +48485,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49057,6 +48595,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49148,6 +48689,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49241,6 +48785,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49358,6 +48905,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49451,6 +49001,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49556,6 +49109,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49720,6 +49276,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49855,6 +49414,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -49936,6 +49498,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50026,6 +49591,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50077,6 +49645,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50115,6 +49686,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50163,6 +49737,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50200,6 +49777,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "parameters": [
@@ -50303,6 +49883,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50361,6 +49944,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50432,6 +50018,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50498,6 +50087,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50545,6 +50137,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50603,6 +50198,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50669,6 +50267,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50784,6 +50385,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50829,6 +50433,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50897,6 +50504,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -50963,6 +50573,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51006,6 +50619,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51126,6 +50742,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51232,6 +50851,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51361,6 +50983,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51469,6 +51094,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51545,6 +51173,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51641,6 +51272,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51702,6 +51336,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51762,6 +51399,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51822,6 +51462,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -51923,6 +51566,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -52643,6 +52289,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -53046,6 +52695,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -53800,6 +53452,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -54204,6 +53859,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -54268,6 +53926,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -54661,6 +54322,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55075,6 +54739,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55532,6 +55199,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55660,6 +55330,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55741,6 +55414,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55801,6 +55477,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -55898,6 +55577,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56016,6 +55698,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56134,6 +55819,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56232,6 +55920,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56337,6 +56028,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56436,6 +56130,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56519,6 +56216,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56600,6 +56300,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56680,6 +56383,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56741,6 +56447,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56935,6 +56644,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -56989,6 +56701,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57035,6 +56750,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57113,6 +56831,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57167,6 +56888,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57213,6 +56937,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57265,6 +56992,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57388,6 +57118,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57497,6 +57230,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57629,6 +57365,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57740,6 +57479,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57819,6 +57561,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57918,6 +57663,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -57982,6 +57730,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58045,6 +57796,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58108,6 +57862,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58221,6 +57978,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58436,6 +58196,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58628,6 +58391,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58803,6 +58569,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58869,6 +58638,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -58977,6 +58749,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59054,6 +58829,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59173,6 +58951,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59251,6 +59032,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59365,6 +59149,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59567,6 +59354,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59644,6 +59434,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59720,6 +59513,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59800,6 +59596,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59875,6 +59674,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -59948,6 +59750,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -60065,6 +59870,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -60151,6 +59959,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -60245,6 +60056,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -60968,6 +60782,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -61374,6 +61191,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -62131,6 +61951,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -62538,6 +62361,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -62605,6 +62431,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -63001,6 +62830,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -63418,6 +63250,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -63878,6 +63713,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64009,6 +63847,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64093,6 +63934,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64156,6 +64000,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64256,6 +64103,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64377,6 +64227,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64498,6 +64351,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64599,6 +64455,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64699,6 +64558,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64783,6 +64645,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64869,6 +64734,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -64936,6 +64804,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65034,6 +64905,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65117,6 +64991,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65427,6 +65304,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65499,6 +65379,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65614,6 +65497,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65688,6 +65574,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -65762,6 +65651,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66081,6 +65973,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66156,6 +66051,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66274,6 +66172,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66351,6 +66252,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66428,6 +66332,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66518,6 +66425,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66749,6 +66659,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -66893,6 +66806,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -67120,6 +67036,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -67266,6 +67185,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -67317,6 +67239,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -67602,6 +67527,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -67901,6 +67829,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68077,6 +68008,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68128,6 +68062,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68214,6 +68151,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68259,6 +68199,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68317,6 +68260,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68388,6 +68334,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68454,6 +68403,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68501,6 +68453,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68714,6 +68669,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68850,6 +68808,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -68995,6 +68956,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69041,6 +69005,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69100,6 +69067,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69172,6 +69142,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69239,6 +69212,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69287,6 +69263,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69501,6 +69480,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69638,6 +69620,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -69959,6 +69944,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70014,6 +70002,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70072,6 +70063,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70162,6 +70156,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70268,6 +70265,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70492,6 +70492,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70767,6 +70770,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -70994,6 +71000,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -71221,6 +71230,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -71453,6 +71465,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -71696,6 +71711,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -71927,6 +71945,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -72158,6 +72179,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -72401,6 +72425,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -72665,6 +72692,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -72924,6 +72954,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -73194,6 +73227,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -73303,6 +73339,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -73337,6 +73376,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -73656,6 +73698,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -74035,6 +74080,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -74786,6 +74834,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -74863,6 +74914,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75132,6 +75186,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75337,6 +75394,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75395,6 +75455,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75640,6 +75703,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75706,6 +75772,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -75865,6 +75934,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76028,6 +76100,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76182,6 +76257,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76251,6 +76329,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76341,6 +76422,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76429,6 +76513,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76534,6 +76621,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76630,6 +76720,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76687,6 +76780,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -76982,6 +77078,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -77275,6 +77374,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -77585,6 +77687,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -77876,6 +77981,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -77934,6 +78042,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78082,6 +78193,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78199,6 +78313,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78314,6 +78431,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78372,6 +78492,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78525,6 +78648,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78645,6 +78771,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78802,6 +78931,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78920,6 +79052,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -78996,6 +79131,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79134,6 +79272,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79250,6 +79391,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79308,6 +79452,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79345,6 +79492,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79390,6 +79540,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79495,6 +79648,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79540,6 +79696,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79607,6 +79766,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79683,6 +79845,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79749,6 +79914,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79862,6 +80030,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -79930,6 +80101,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -80237,6 +80411,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -80295,6 +80472,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -80348,6 +80528,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -80400,13 +80583,45 @@
       "get": {
         "operationId": "websocketConnect",
         "summary": "WebSocket connection",
-        "description": "Upgrades to a WebSocket connection for real-time updates.\nServer pushes log events, MCP log events, and store update notifications.\nHeartbeat pings are sent every 30 seconds.\n",
+        "description": "Upgrades to a WebSocket connection for real-time updates.\nServer pushes log events, MCP log events, and store update notifications.\nHeartbeat pings are sent every 30 seconds.\n\nBrowsers cannot set an `Authorization` header on a WebSocket handshake, so this\nendpoint additionally accepts a single-use `ticket` query parameter obtained from\n`POST /api/session/ws-ticket`, or the HTTPOnly `token` session cookie.\n",
         "tags": [
           "Infrastructure"
+        ],
+        "parameters": [
+          {
+            "name": "ticket",
+            "in": "query",
+            "required": false,
+            "description": "Single-use WebSocket ticket from `POST /api/session/ws-ticket`. Use this when an\n`Authorization` header cannot be set (browser WebSocket clients).\n",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "SessionCookieAuth": []
+          }
         ],
         "responses": {
           "101": {
             "description": "WebSocket upgrade successful"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -80503,9 +80718,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -80537,9 +80749,6 @@
             "BearerAuth": []
           },
           {
-            "BasicAuth": []
-          },
-          {
             "VirtualKeyAuth": []
           },
           {
@@ -80552,9 +80761,17 @@
       "get": {
         "operationId": "getMetrics",
         "summary": "Prometheus metrics",
-        "description": "Returns Prometheus-formatted metrics for monitoring.",
+        "description": "Returns Prometheus-formatted metrics for monitoring.\nRegistered behind the management auth middleware chain, so a scraper must present\nmanagement credentials (or the route must be added to `client_config.whitelisted_routes`).\n",
         "tags": [
           "Infrastructure"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -80648,6 +80865,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       },
@@ -80703,6 +80923,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -80754,6 +80977,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       },
@@ -80824,6 +81050,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       },
@@ -80873,6 +81102,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -80925,6 +81157,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -80987,6 +81222,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -81055,6 +81293,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -81123,6 +81364,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -81203,6 +81447,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       },
@@ -81268,6 +81515,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ]
       }
@@ -81283,18 +81533,18 @@
       "ManagementBearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.\nVirtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.\n"
+        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header\nwith `Bearer <token>`, where `<token>` is one of:\n\n- a Bifrost management API key,\n- a dashboard session token issued by `POST /api/session/login`,\n- base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).\n\nVirtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -\nthe sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.\n"
       },
       "BasicAuth": {
         "type": "http",
         "scheme": "basic",
-        "description": "Basic authentication using username and password.\n"
+        "description": "Basic authentication using the Bifrost admin username and password\n(`auth_config.admin_username` / `auth_config.admin_password`).\nAccepted on management APIs (`/api/*`, `/metrics`, `/ws`) only - the inference\nmiddleware never validates Basic credentials.\n"
       },
       "VirtualKeyAuth": {
         "type": "apiKey",
         "in": "header",
         "name": "x-bf-vk",
-        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).\nExample: `sk-bf-*` prefixed keys.\n"
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single\nexception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.\nExample: `sk-bf-*` prefixed keys.\n"
       },
       "ApiKeyAuth": {
         "type": "apiKey",
@@ -81302,11 +81552,34 @@
         "name": "x-api-key",
         "description": "API key authentication via the `x-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
       },
+      "VirtualKeyBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Virtual key passed as a bearer token. The value MUST be an `sk-bf-` prefixed Bifrost\nvirtual key - provider API keys and Bifrost management/session tokens are not accepted\non endpoints that use this scheme.\n"
+      },
+      "VirtualKeyApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "Virtual key passed via the `x-api-key` header. The value MUST be `sk-bf-` prefixed;\nprovider API keys are not accepted on endpoints that use this scheme.\n"
+      },
+      "VirtualKeyGoogleAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-goog-api-key",
+        "description": "Virtual key passed via the Google GenAI `x-goog-api-key` header. The value MUST be\n`sk-bf-` prefixed.\n"
+      },
+      "VirtualKeyAzureAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "api-key",
+        "description": "Virtual key passed via the Azure-style `api-key` header. The value MUST be\n`sk-bf-` prefixed.\n"
+      },
       "SessionCookieAuth": {
         "type": "apiKey",
         "in": "cookie",
         "name": "token",
-        "description": "Dashboard session authentication via the HTTPOnly `token` cookie that is\nset by `POST /api/session/login`. Used by the Bifrost UI for same-origin\nrequests in place of an `Authorization` header. Accepted on session\nendpoints (`logout`, `ws-ticket`) as an alternative to the management API key.\n"
+        "description": "Dashboard session authentication via the HTTPOnly `token` cookie that is\nset by `POST /api/session/login`. Used by the Bifrost UI for same-origin\nrequests in place of an `Authorization` header, and honoured as a fallback\non every `/api/*` management route when no `Authorization` header is sent.\nIt is listed explicitly only on the endpoints where a non-browser client\nrealistically uses it (`/api/session/logout`, `/api/session/ws-ticket`, `/ws`);\nelsewhere prefer `ManagementBearerAuth`.\n"
       }
     },
     "parameters": {
