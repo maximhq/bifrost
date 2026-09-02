@@ -479,10 +479,18 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
+	// Match on the BASE provider, not the key the request arrived under. A custom
+	// provider reports its own name ("my-openai"), which no case in either predicate
+	// knows, so gating on the unresolved key sends every such request down the default
+	// branch: the caller's cache_control is stripped by the serializer with nothing put
+	// in its place, and the request silently falls back to implicit caching - the exact
+	// billing profile #6180 exists to escape. The injector resolves the same way in
+	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
+	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
-	if responsesUsesPromptCacheBreakpoints(bifrostReq.Provider, capModel) {
+	if responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel) {
 		applyResponsesCacheBreakpoints(messages)
-		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(bifrostReq.Provider, capModel) &&
+		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
 			responsesHasPromptCacheBreakpoint(messages)
 	}
 
