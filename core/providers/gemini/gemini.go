@@ -285,11 +285,16 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
+	requestForGemini, normalizeErr := geminiChatRequestWithNormalizedImageURLs(ctx, request)
+	if normalizeErr != nil {
+		return nil, geminiImageInliningError("failed to normalize image URLs for gemini", normalizeErr)
+	}
+
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
-		request,
+		requestForGemini,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(ctx, request)
+			return ToGeminiChatCompletionRequest(ctx, requestForGemini)
 		})
 	if err != nil {
 		return nil, err
@@ -345,11 +350,16 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, err
 	}
 
+	requestForGemini, normalizeErr := geminiChatRequestWithNormalizedImageURLs(ctx, request)
+	if normalizeErr != nil {
+		return nil, geminiImageInliningError("failed to normalize image URLs for gemini", normalizeErr)
+	}
+
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
-		request,
+		requestForGemini,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiChatCompletionRequest(ctx, request)
+			reqBody, err := ToGeminiChatCompletionRequest(ctx, requestForGemini)
 			if err != nil {
 				return nil, err
 			}
@@ -649,6 +659,11 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	requestForGemini, normalizeErr := geminiResponsesRequestWithNormalizedImageURLs(ctx, request)
+	if normalizeErr != nil {
+		return nil, geminiImageInliningError("failed to normalize image URLs for gemini", normalizeErr)
+	}
+
 	// Check for large payload streaming mode (enterprise-only feature)
 	// In large payload mode, the request body streams directly from the client — skip body conversion
 	var bodyReader io.Reader
@@ -669,9 +684,9 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		var err *schemas.BifrostError
 		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
-			request,
+			requestForGemini,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := ToGeminiResponsesRequest(ctx, request)
+				reqBody, err := ToGeminiResponsesRequest(ctx, requestForGemini)
 				if err != nil {
 					return nil, err
 				}
@@ -855,11 +870,16 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return nil, err
 	}
 
+	requestForGemini, normalizeErr := geminiResponsesRequestWithNormalizedImageURLs(ctx, request)
+	if normalizeErr != nil {
+		return nil, geminiImageInliningError("failed to normalize image URLs for gemini", normalizeErr)
+	}
+
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
-		request,
+		requestForGemini,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiResponsesRequest(ctx, request)
+			reqBody, err := ToGeminiResponsesRequest(ctx, requestForGemini)
 			if err != nil {
 				return nil, err
 			}
@@ -3940,12 +3960,17 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		bifrostErr *schemas.BifrostError
 	)
 	if !isLargePayload {
+		requestForGemini, normalizeErr := geminiResponsesRequestWithNormalizedImageURLs(ctx, request)
+		if normalizeErr != nil {
+			return nil, geminiImageInliningError("failed to normalize image URLs for gemini", normalizeErr)
+		}
+
 		// Build JSON body from Bifrost request for normal path.
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
-			request,
+			requestForGemini,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToGeminiResponsesRequest(ctx, request)
+				return ToGeminiResponsesRequest(ctx, requestForGemini)
 			},
 		)
 		if bifrostErr != nil {
