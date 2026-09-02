@@ -738,6 +738,7 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 15,
+        "send_all_conversation_turns": false,
         "max_turns_to_send": 8,
         "evaluation_mode": "per_turn",
         "stream_replay_event_interval_ms": 25,
@@ -783,12 +784,13 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
 | `apply_to` | Yes | `"input"`, `"output"`, or `"both"`. For MCP rules, input is the tool arguments and output is the tool result |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | Rule timeout in seconds |
-| `max_turns_to_send` | No | Number of historical conversation turns to send to the guardrail provider; the latest message is always included. `0` sends all turns |
+| `send_all_conversation_turns` | No | `true` sends all input conversation turns. When `false`, `max_turns_to_send` selects the current input plus preceding turns. Omit it to preserve legacy behavior (`0` sends all; a positive value limits history). |
+| `max_turns_to_send` | No | Used when `send_all_conversation_turns` is `false`: number of preceding conversation turns to include. `0` sends only the current input. |
 | `evaluation_mode` | No | `bundled` (default) sends all selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
 | `stream_replay_event_interval_ms` | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
 
-`max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
+`send_all_conversation_turns`, `max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 
 ---
 
@@ -857,6 +859,7 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
         "apply_to": "both",
         "sampling_rate": 100,
         "timeout": 15,
+        "send_all_conversation_turns": false,
         "max_turns_to_send": 8,
         "evaluation_mode": "per_turn",
         "stream_replay_event_interval_ms": 25,

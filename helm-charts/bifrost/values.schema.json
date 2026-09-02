@@ -3177,10 +3177,14 @@
                     "minimum": 0,
                     "description": "Timeout in seconds for rule execution"
                   },
+                  "send_all_conversation_turns": {
+                    "type": "boolean",
+                    "description": "Whether to send all input conversation turns to the guardrail provider. When false, max_turns_to_send selects the current input plus preceding turns. Omit this field to preserve legacy behavior."
+                  },
                   "max_turns_to_send": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
+                    "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
                   "evaluation_mode": {
                     "type": "string",
