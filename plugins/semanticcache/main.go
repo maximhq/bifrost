@@ -198,22 +198,27 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	"cache_key": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The cache key from the request",
+		Filterable:  true,
 	},
 	"provider": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The provider used for the request",
+		Filterable:  true,
 	},
 	"model": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The model used for the request",
+		Filterable:  true,
 	},
 	"params_hash": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The hash of the parameters used for the request",
+		Filterable:  true,
 	},
 	"from_bifrost_semantic_cache_plugin": {
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
+		Filterable:  true,
 	},
 }
 
