@@ -811,3 +811,62 @@ func TestSecretVar_MarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+// TestSecretVar_ShouldPreserveStoredSentinelOnly covers issue #6413: a real
+// password that happens to match the 4-chars + 24-asterisks + 4-chars masking
+// shape must be treated as a new credential, while the fixed sentinels and
+// empty values still mean "keep the stored one".
+func TestSecretVar_ShouldPreserveStoredSentinelOnly(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *SecretVar
+		expected bool
+	}{
+		{name: "nil receiver", input: nil, expected: true},
+		{name: "empty value", input: &SecretVar{Val: ""}, expected: true},
+		{name: "redacted sentinel", input: &SecretVar{Val: "<redacted>"}, expected: true},
+		{name: "uppercase sentinel", input: &SecretVar{Val: "<REDACTED>"}, expected: true},
+		{name: "bracket sentinel", input: &SecretVar{Val: "[REDACTED]"}, expected: true},
+		{
+			name:     "valid password matching mask pattern (#6413)",
+			input:    &SecretVar{Val: "Aa1b************************cdef"},
+			expected: false,
+		},
+		{name: "plain new password", input: &SecretVar{Val: "S3cure!Password"}, expected: false},
+		{
+			name:     "env reference is intentional",
+			input:    &SecretVar{Val: "resolved", ref: "env.PW", SecretType: SecretTypeEnv},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.input.ShouldPreserveStoredSentinelOnly(); got != tt.expected {
+				t.Errorf("ShouldPreserveStoredSentinelOnly() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSecretVar_IsRedactionSentinel pins the sentinel-only classifier: it must
+// not match the positional 4+24+4 asterisk mask that IsRedacted matches.
+func TestSecretVar_IsRedactionSentinel(t *testing.T) {
+	maskShaped := &SecretVar{Val: "Aa1b************************cdef"}
+	if maskShaped.IsRedactionSentinel() {
+		t.Error("mask-shaped value must not be classified as a sentinel")
+	}
+	if !maskShaped.IsRedacted() {
+		t.Error("sanity: IsRedacted still matches the positional mask")
+	}
+	if !(&SecretVar{Val: "<redacted>"}).IsRedactionSentinel() {
+		t.Error("<redacted> must be a sentinel")
+	}
+	if !(&SecretVar{Val: "test", ref: "env.K", SecretType: SecretTypeEnv}).IsRedactionSentinel() {
+		t.Error("secret refs are externally-resolved and count as sentinel-redacted")
+	}
+	var nilVar *SecretVar
+	if nilVar.IsRedactionSentinel() {
+		t.Error("nil receiver must not be a sentinel")
+	}
+}
