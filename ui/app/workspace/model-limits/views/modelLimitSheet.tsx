@@ -367,9 +367,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 						<div className="space-y-3">
 							<Label className="text-sm font-medium">Rate Limits</Label>
-							{modelConfig.rate_limit?.token_max_limit || modelConfig.rate_limit?.request_max_limit ? (
+							{modelConfig.rate_limit?.token_max_limit != null || modelConfig.rate_limit?.request_max_limit != null ? (
 								<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
-									{modelConfig.rate_limit?.token_max_limit ? (
+									{modelConfig.rate_limit?.token_max_limit != null ? (
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">Tokens</p>
 											<p className="text-sm font-medium">
@@ -379,7 +379,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</p>
 										</div>
 									) : null}
-									{modelConfig.rate_limit?.request_max_limit ? (
+									{modelConfig.rate_limit?.request_max_limit != null ? (
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">Requests</p>
 											<p className="text-sm font-medium">
@@ -533,7 +533,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</FormControl>
 											<SelectContent>
 												{getModelLimitScopes()
-													.filter((option) => !option.readOnly && option.creatable !== false)
+													// Always keep the currently selected option in the list, even if it's
+													// readOnly/non-creatable — otherwise editing an existing row whose scope
+													// isn't creatable (e.g. a legacy scope=user row) has no matching
+													// SelectItem for its value, and the trigger can render blank.
+													.filter((option) => option.value === field.value || (!option.readOnly && option.creatable !== false))
 													.map((option) => (
 														<SelectItem key={option.value} value={option.value}>
 															{option.label}

@@ -3247,7 +3247,7 @@ type ScopedID struct {
 // ExtraScopedIDsResolver returns additional (scope, scope_id) pairs to check for
 // model-config-based budgets/rate-limits on a request, given its virtual key and
 // user IDs. Lets downstream consumers (e.g. enterprise access profiles) graft
-// extra scopes onto CollectModelScopedGovernanceIDs's built-in global/user/
+// extra scopes onto CollectModelScopedGovernanceIDs's built-in global/
 // virtual_key set without this package needing to know their scope semantics.
 // Must be fast and non-blocking (in-memory only) — called on every request.
 //
@@ -4442,6 +4442,12 @@ func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitSco
 		vkID = permit.ID()
 	}
 	for _, extra := range collectExtraScopedIDs(ctx, vkID, userID) {
+		// An empty Kind is a legitimate value for a batch-only caller (see ScopedID's
+		// doc comment), but this is the request-time path: a blank holder kind here
+		// would let a refusal name an empty holder. Skip rather than propagate it.
+		if extra.Kind == "" {
+			continue
+		}
 		scopes = append(scopes, limitScope{
 			name: extra.Scope,
 			id:   extra.ScopeID,
