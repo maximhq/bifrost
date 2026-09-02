@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"math"
+	"os"
 	"strings"
 	"testing"
 
@@ -1111,7 +1112,7 @@ func TestResponsesToolMCPApprovalSetting_MarshalJSON_Deterministic(t *testing.T)
 // round-trip correctly through JSON marshaling (used by config.json).
 func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	nc := NetworkConfig{
-		BaseURL:                        "https://example.com",
+		BaseURL:                        NewSecretVar("https://example.com"),
 		DefaultRequestTimeoutInSeconds: 60,
 		MaxRetries:                     3,
 		InsecureSkipVerify:             true,
@@ -1179,6 +1180,104 @@ func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	cfgOverflow := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: HTTP2PingIntervalUpperBoundSeconds + 1}}
 	cfgOverflow.CheckAndSetDefaults()
 	assert.Equal(t, HTTP2PingIntervalUpperBoundSeconds, cfgOverflow.NetworkConfig.HTTP2PingIntervalInSeconds)
+}
+
+// TestNetworkConfig_BaseURLSecretRef covers base_url's SecretVar handling: a plain
+// literal round-trips as itself; an absent base_url stays nil and is omitted; an env.
+// reference resolves at decode, keeps its reference, and round-trips as the reference
+// (never the resolved URL); and unset, empty, whitespace-only, and unresolvable vault.
+// references fail loud instead of dialing an empty host.
+func TestNetworkConfig_BaseURLSecretRef(t *testing.T) {
+	t.Run("plain literal is passed through unchanged and round-trips as itself", func(t *testing.T) {
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"base_url":"https://api.example.com"}`), &nc))
+		assert.Equal(t, "https://api.example.com", nc.BaseURL.GetValue())
+		assert.False(t, nc.BaseURL.IsFromSecret())
+
+		out, err := json.Marshal(nc)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), `"base_url":"https://api.example.com"`)
+	})
+
+	t.Run("absent base_url stays nil, reads as empty, and is omitted on output", func(t *testing.T) {
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"max_retries":1}`), &nc))
+		assert.Nil(t, nc.BaseURL)
+		assert.Empty(t, nc.BaseURL.GetValue())
+
+		out, err := json.Marshal(nc)
+		require.NoError(t, err)
+		assert.NotContains(t, string(out), "base_url")
+	})
+
+	t.Run("env. reference resolves through SecretVar and keeps its reference", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_BASE_URL", "https://resolved.example.com")
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL"}`), &nc))
+		assert.Equal(t, "https://resolved.example.com", nc.BaseURL.GetValue())
+		assert.True(t, nc.BaseURL.IsFromEnv())
+		assert.Equal(t, "env.BIFROST_TEST_BASE_URL", nc.BaseURL.GetRawRef())
+	})
+
+	t.Run("env. reference round-trips as the reference, never the resolved URL", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_BASE_URL", "https://resolved.example.com")
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL"}`), &nc))
+
+		out, err := json.Marshal(nc)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), `"base_url":"env.BIFROST_TEST_BASE_URL"`)
+		assert.NotContains(t, string(out), "resolved.example.com")
+
+		// A second decode of the emitted JSON resolves again, so config-store persistence
+		// and API responses stay reference-shaped while the runtime value stays dialable.
+		var again NetworkConfig
+		require.NoError(t, json.Unmarshal(out, &again))
+		assert.Equal(t, "https://resolved.example.com", again.BaseURL.GetValue())
+	})
+
+	t.Run("surrounding whitespace in a resolved reference is trimmed", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_BASE_URL_PADDED", " https://resolved.example.com\n")
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL_PADDED"}`), &nc))
+		assert.Equal(t, "https://resolved.example.com", nc.BaseURL.GetValue())
+	})
+
+	t.Run("unset env. reference is a fail-loud config error, never an empty dial", func(t *testing.T) {
+		const key = "BIFROST_TEST_BASE_URL_DEFINITELY_UNSET"
+		// t.Setenv registers restoration of the host's prior state; the explicit Unsetenv
+		// makes the test independent of whatever the host environment carries.
+		t.Setenv(key, "placeholder")
+		require.NoError(t, os.Unsetenv(key))
+
+		var nc NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"env.`+key+`"}`), &nc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "env."+key)
+		assert.Nil(t, nc.BaseURL)
+	})
+
+	t.Run("empty env. reference is also a fail-loud config error", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_BASE_URL_EMPTY", "")
+		var nc NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL_EMPTY"}`), &nc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "env.BIFROST_TEST_BASE_URL_EMPTY")
+	})
+
+	t.Run("whitespace-only env. reference is treated as empty", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_BASE_URL_BLANK", "   ")
+		var nc NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL_BLANK"}`), &nc)
+		require.Error(t, err)
+	})
+
+	t.Run("unresolvable vault. reference is a fail-loud config error", func(t *testing.T) {
+		var nc NetworkConfig
+		err := json.Unmarshal([]byte(`{"base_url":"vault.bifrost/test/definitely-missing"}`), &nc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "vault.bifrost/test/definitely-missing")
+	})
 }
 
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type

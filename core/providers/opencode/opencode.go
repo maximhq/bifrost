@@ -5,7 +5,6 @@ package opencode
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -67,10 +66,7 @@ func newOpencodeProvider(
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = defaultBaseURL
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, defaultBaseURL)
 
 	return &opencodeProvider{
 		providerKey:             providerKey,
@@ -95,7 +91,7 @@ func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schema
 		ctx,
 		p.client,
 		request,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		p.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		p.networkConfig.ExtraHeaders,
 		p.providerKey,
@@ -119,7 +115,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		p.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		p.networkConfig.ExtraHeaders,
@@ -138,7 +134,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		p.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		p.networkConfig.ExtraHeaders,
@@ -171,7 +167,7 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		p.client,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		p.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		p.networkConfig.ExtraHeaders,
@@ -201,7 +197,7 @@ func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHook
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		p.streamingClient,
-		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		p.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		p.networkConfig.ExtraHeaders,

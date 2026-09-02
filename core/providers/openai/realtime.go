@@ -22,7 +22,7 @@ func (provider *OpenAIProvider) SupportsRealtimeAPI() bool {
 
 // RealtimeWebSocketURL returns the WSS URL for the OpenAI Realtime API.
 func (provider *OpenAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
-	base := provider.networkConfig.BaseURL
+	base := provider.networkConfig.BaseURL.GetValue()
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	if intent != "" {

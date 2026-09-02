@@ -2922,7 +2922,7 @@ func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) configstor
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+			BaseURL: schemas.NewSecretVar(baseURL),
 		},
 	}
 }
@@ -2932,7 +2932,7 @@ func makeProviderConfigWithMultipleKeys(keys []schemas.Key, baseURL string) conf
 	return configstore.ProviderConfig{
 		Keys: keys,
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+			BaseURL: schemas.NewSecretVar(baseURL),
 		},
 	}
 }
@@ -3580,7 +3580,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3601,7 +3601,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "different-id", Name: "different-name", Value: *schemas.NewSecretVar("different-value"), Weight: 2}, // Keys should NOT affect hash
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3621,7 +3621,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://different-api.example.com", // Different base URL
+			BaseURL: schemas.NewSecretVar("https://different-api.example.com"), // Different base URL
 		},
 		SendBackRawResponse: true,
 	}
@@ -3651,7 +3651,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: false, // Different SendBackRawResponse
 	}
@@ -3671,7 +3671,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: true,
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
@@ -3695,7 +3695,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: true,
 		ProxyConfig: &schemas.ProxyConfig{
@@ -3719,7 +3719,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: true,
 		CustomProviderConfig: &schemas.CustomProviderConfig{
@@ -4067,7 +4067,7 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4084,7 +4084,7 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-different"), Weight: 1}, // DB may have different key value (edited via dashboard)
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Same hash as file
@@ -4118,7 +4118,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v2", // Changed URL
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v2"), // Changed URL
 		},
 		SendBackRawResponse: true, // Changed setting
 	}
@@ -4137,7 +4137,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 			{ID: "key-2", Name: "dashboard-added-key", Value: *schemas.NewSecretVar("sk-dashboard"), Weight: 1}, // Key added via dashboard
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com", // Old URL
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"), // Old URL
 		},
 		SendBackRawResponse: false, // Old setting
 		ConfigHash:          "old-different-hash",
@@ -4185,8 +4185,8 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 	// Verify file config is now used
 	resultConfig := providersInConfigStore[schemas.OpenAI]
 
-	if resultConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
-		t.Errorf("Expected file BaseURL, got %s", resultConfig.NetworkConfig.BaseURL)
+	if resultConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
+		t.Errorf("Expected file BaseURL, got %s", resultConfig.NetworkConfig.BaseURL.GetValue())
 	}
 
 	if !resultConfig.SendBackRawResponse {
@@ -4225,7 +4225,7 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 			{ID: "key-1", Name: "dashboard-provider-key", Value: *schemas.NewSecretVar("sk-dashboard-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.custom-provider.com",
+			BaseURL: schemas.NewSecretVar("https://api.custom-provider.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -4288,7 +4288,7 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4311,7 +4311,7 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4344,7 +4344,7 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4358,7 +4358,7 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-dashboard-modified-456"), Weight: 1}, // Modified via dashboard
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Hash based on provider config, not keys
@@ -4374,7 +4374,7 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4413,7 +4413,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 	configWithNetwork := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4502,7 +4502,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 	configAllFields := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
@@ -4664,7 +4664,7 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	baseConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4675,7 +4675,7 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	configChangedURL := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.different.com", // Changed
+			BaseURL: schemas.NewSecretVar("https://api.different.com"), // Changed
 		},
 		SendBackRawResponse: false,
 	}
@@ -4690,7 +4690,7 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	configWithHeaders := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			ExtraHeaders: map[string]string{
 				"X-Custom-Header": "value",
 			},
@@ -4741,7 +4741,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	originalConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			ExtraHeaders: map[string]string{
 				"X-Custom": "value",
 			},
@@ -4784,7 +4784,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	configNoConcurrency := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			ExtraHeaders: map[string]string{
 				"X-Custom": "value",
 			},
@@ -4807,7 +4807,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	configNoProxy := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			ExtraHeaders: map[string]string{
 				"X-Custom": "value",
 			},
@@ -4830,7 +4830,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	configNoRawResponse := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			ExtraHeaders: map[string]string{
 				"X-Custom": "value",
 			},
@@ -4856,7 +4856,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	configNoHeaders := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.example.com",
+			BaseURL: schemas.NewSecretVar("https://api.example.com"),
 			// ExtraHeaders removed
 		},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
@@ -5001,7 +5001,7 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	baseConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:                        "https://api.example.com",
+			BaseURL:                        schemas.NewSecretVar("https://api.example.com"),
 			DefaultRequestTimeoutInSeconds: 30,
 			MaxRetries:                     3,
 		},
@@ -5013,7 +5013,7 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	configNoTimeout := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:                        "https://api.example.com",
+			BaseURL:                        schemas.NewSecretVar("https://api.example.com"),
 			DefaultRequestTimeoutInSeconds: 0, // Removed/default
 			MaxRetries:                     3,
 		},
@@ -5029,7 +5029,7 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	configNoRetries := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:                        "https://api.example.com",
+			BaseURL:                        schemas.NewSecretVar("https://api.example.com"),
 			DefaultRequestTimeoutInSeconds: 30,
 			MaxRetries:                     0, // Removed/default
 		},
@@ -5045,7 +5045,7 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	configDifferentTimeout := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:                        "https://api.example.com",
+			BaseURL:                        schemas.NewSecretVar("https://api.example.com"),
 			DefaultRequestTimeoutInSeconds: 60, // Changed from 30
 			MaxRetries:                     3,
 		},
@@ -5064,7 +5064,7 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	initialConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-initial-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -5083,8 +5083,8 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	newFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v2", // Changed!
-			MaxRetries: 5,                           // Added!
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v2"), // Changed!
+			MaxRetries: 5,                                                 // Added!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -5111,7 +5111,7 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	if updatedDBConfig.ConfigHash != newFileHash {
 		t.Error("Expected DB to be updated with new hash")
 	}
-	if updatedDBConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+	if updatedDBConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
 		t.Error("Expected DB to have new BaseURL from file")
 	}
 	if !updatedDBConfig.SendBackRawResponse {
@@ -5124,7 +5124,7 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	sameFileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v2",
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v2"),
 			MaxRetries: 5,
 		},
 		SendBackRawResponse: true,
@@ -5150,7 +5150,7 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 
 	// === STEP 5: Verify DB wasn't modified (still has step 3 values) ===
 	finalDBConfig := providersInDB[schemas.OpenAI]
-	if finalDBConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+	if finalDBConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
 		t.Error("DB should still have v2 URL")
 	}
 	if finalDBConfig.NetworkConfig.MaxRetries != 5 {
@@ -5172,7 +5172,7 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 	config1 := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.v1.com",
+			BaseURL: schemas.NewSecretVar("https://api.v1.com"),
 		},
 	}
 	hash1, _ := config1.GenerateConfigHash("openai")
@@ -5189,7 +5189,7 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 	config2 := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v2"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.v2.com", // Changed
+			BaseURL: schemas.NewSecretVar("https://api.v2.com"), // Changed
 		},
 	}
 	hash2, _ := config2.GenerateConfigHash("openai")
@@ -5209,8 +5209,8 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 	config3 := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.v3.com", // Changed again
-			MaxRetries: 3,                    // Added
+			BaseURL:    schemas.NewSecretVar("https://api.v3.com"), // Changed again
+			MaxRetries: 3,                                          // Added
 		},
 		SendBackRawResponse: true, // Added
 	}
@@ -5231,7 +5231,7 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 	config4 := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.v3.com",
+			BaseURL:    schemas.NewSecretVar("https://api.v3.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: true,
@@ -5250,7 +5250,7 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 	config5 := configstore.ProviderConfig{
 		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.v1.com",
+			BaseURL: schemas.NewSecretVar("https://api.v1.com"),
 		},
 	}
 	hash5, _ := config5.GenerateConfigHash("openai")
@@ -5298,7 +5298,7 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v1",
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v1"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -5322,8 +5322,8 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v2", // CHANGED!
-			MaxRetries: 5,                           // CHANGED!
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v2"), // CHANGED!
+			MaxRetries: 5,                                                 // CHANGED!
 		},
 		SendBackRawResponse: true, // CHANGED!
 	}
@@ -5369,7 +5369,7 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	}
 
 	// Verify provider config is updated
-	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+	if updatedConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
 		t.Error("Expected BaseURL to be updated from file")
 	}
 	if updatedConfig.NetworkConfig.MaxRetries != 5 {
@@ -5397,7 +5397,7 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v1",
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v1"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -5421,8 +5421,8 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v1", // SAME
-			MaxRetries: 3,                           // SAME
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
+			MaxRetries: 3,                                                 // SAME
 		},
 		SendBackRawResponse: false, // SAME
 	}
@@ -5457,7 +5457,7 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	}
 
 	// Verify provider config is preserved
-	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v1" {
+	if updatedConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v1" {
 		t.Error("Expected BaseURL to be preserved from DB")
 	}
 	if updatedConfig.NetworkConfig.MaxRetries != 3 {
@@ -5499,7 +5499,7 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -5521,8 +5521,8 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://api.openai.com/v2", // CHANGED
-			MaxRetries: 5,                           // ADDED
+			BaseURL:    schemas.NewSecretVar("https://api.openai.com/v2"), // CHANGED
+			MaxRetries: 5,                                                 // ADDED
 		},
 		SendBackRawResponse: true, // CHANGED
 	}
@@ -5549,7 +5549,7 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	updatedConfig.ConfigHash = fileProviderHash
 
 	// Verify both provider and keys are updated
-	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+	if updatedConfig.NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
 		t.Error("Expected BaseURL to be updated")
 	}
 	if !updatedConfig.SendBackRawResponse {
@@ -5580,7 +5580,7 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -5603,7 +5603,7 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 		SendBackRawResponse: false, // SAME
 	}
@@ -5651,7 +5651,7 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 	}
 	dbProviderHash, _ := dbConfig.GenerateConfigHash("openai")
@@ -5673,7 +5673,7 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{fileKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 	}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
@@ -5767,7 +5767,7 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 	}
 	dbProviderHash, _ := dbConfig.GenerateConfigHash("openai")
@@ -5792,7 +5792,7 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{fileKey1, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 	}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
@@ -5896,7 +5896,7 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{dbKey1, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 	}
 	dbProviderHash, _ := dbConfig.GenerateConfigHash("openai")
@@ -5914,7 +5914,7 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{fileKey1}, // Dashboard key NOT here
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 	}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
@@ -6021,7 +6021,7 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{unchangedKey, changedKey, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 	}
 	dbProviderHash, _ := dbConfig.GenerateConfigHash("openai")
@@ -6054,7 +6054,7 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{fileUnchangedKey, fileChangedKey, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 	}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
@@ -6181,7 +6181,7 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	dbConfig := configstore.ProviderConfig{
 		Keys: dbKeys,
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"),
 		},
 	}
 	dbProviderHash, _ := dbConfig.GenerateConfigHash("openai")
@@ -6197,7 +6197,7 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	fileConfig := configstore.ProviderConfig{
 		Keys: fileKeys,
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.openai.com/v1", // SAME
+			BaseURL: schemas.NewSecretVar("https://api.openai.com/v1"), // SAME
 		},
 	}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
@@ -6332,7 +6332,7 @@ func TestProviderHashComparison_NewProvider(t *testing.T) {
 			{ID: "key-1", Name: "anthropic-key", Value: *schemas.NewSecretVar("sk-ant-123"), Weight: 1},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.anthropic.com",
+			BaseURL: schemas.NewSecretVar("https://api.anthropic.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -6927,7 +6927,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	initialConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{initialAzureKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -6961,7 +6961,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	dbConfigAfterDashboardEdit := configstore.ProviderConfig{
 		Keys: []schemas.Key{dashboardEditedKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          initialProviderHash, // Provider hash unchanged (only key value changed)
@@ -6991,7 +6991,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -7027,7 +7027,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://new-azure.openai.azure.com/openai", // Changed!
+			BaseURL: schemas.NewSecretVar("https://new-azure.openai.azure.com/openai"), // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -7094,8 +7094,8 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	finalConfig := providersInDB["azure"]
 
 	// Verify provider config updated
-	if finalConfig.NetworkConfig.BaseURL != "https://new-azure.openai.azure.com/openai" {
-		t.Errorf("Expected updated BaseURL, got %s", finalConfig.NetworkConfig.BaseURL)
+	if finalConfig.NetworkConfig.BaseURL.GetValue() != "https://new-azure.openai.azure.com/openai" {
+		t.Errorf("Expected updated BaseURL, got %s", finalConfig.NetworkConfig.BaseURL.GetValue())
 	}
 	if !finalConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be true")
@@ -7137,7 +7137,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	initialConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{initialBedrockKey},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -7197,7 +7197,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -7237,8 +7237,8 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
-			MaxRetries: 5,                                                 // Changed!
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-west-2.amazonaws.com"), // Changed!
+			MaxRetries: 5,                                                                       // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -7292,8 +7292,8 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	finalConfig := providersInDB["bedrock"]
 
 	// Verify provider config updated
-	if finalConfig.NetworkConfig.BaseURL != "https://bedrock-runtime.us-west-2.amazonaws.com" {
-		t.Errorf("Expected updated BaseURL, got %s", finalConfig.NetworkConfig.BaseURL)
+	if finalConfig.NetworkConfig.BaseURL.GetValue() != "https://bedrock-runtime.us-west-2.amazonaws.com" {
+		t.Errorf("Expected updated BaseURL, got %s", finalConfig.NetworkConfig.BaseURL.GetValue())
 	}
 	if finalConfig.NetworkConfig.MaxRetries != 5 {
 		t.Errorf("Expected MaxRetries to be 5, got %d", finalConfig.NetworkConfig.MaxRetries)
@@ -7365,7 +7365,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-west-2.amazonaws.com"),
 			MaxRetries: 5,
 		},
 		SendBackRawResponse: true,
@@ -7405,7 +7405,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -7473,7 +7473,7 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -7540,7 +7540,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -7568,7 +7568,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://myazure.openai.azure.com/openai", // Same
+			BaseURL: schemas.NewSecretVar("https://myazure.openai.azure.com/openai"), // Same
 		},
 		SendBackRawResponse: false, // Same
 	}
@@ -7626,7 +7626,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -7656,8 +7656,8 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com", // Same
-			MaxRetries: 3,                                                 // Same
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"), // Same
+			MaxRetries: 3,                                                                       // Same
 		},
 		SendBackRawResponse: false, // Same
 	}
@@ -7715,7 +7715,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://old-azure.openai.azure.com/openai",
+			BaseURL: schemas.NewSecretVar("https://old-azure.openai.azure.com/openai"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -7742,7 +7742,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://NEW-azure.openai.azure.com/openai", // Changed!
+			BaseURL: schemas.NewSecretVar("https://NEW-azure.openai.azure.com/openai"), // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -7798,7 +7798,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-east-1.amazonaws.com"),
 			MaxRetries: 3,
 		},
 		SendBackRawResponse: false,
@@ -7829,8 +7829,8 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
-			MaxRetries: 5,                                                 // Changed!
+			BaseURL:    schemas.NewSecretVar("https://bedrock-runtime.us-west-2.amazonaws.com"), // Changed!
+			MaxRetries: 5,                                                                       // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -8915,8 +8915,8 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	}
 
 	// Verify the new BaseURL is in memory
-	if config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL != "https://api.openai.com/v2" {
-		t.Errorf("Expected BaseURL to be updated, got %s", config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL)
+	if config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL.GetValue() != "https://api.openai.com/v2" {
+		t.Errorf("Expected BaseURL to be updated, got %s", config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL.GetValue())
 	}
 }
 
@@ -8950,7 +8950,7 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 			},
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: "https://api.anthropic.com",
+			BaseURL: schemas.NewSecretVar("https://api.anthropic.com"),
 		},
 	}
 	anthropicHash, _ := anthropicConfig.GenerateConfigHash("anthropic")
@@ -9017,7 +9017,7 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 			Value:  *schemas.NewSecretVar("sk-anthropic-123"),
 			Weight: 1,
 		}},
-		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.anthropic.com")},
 	}
 	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders))
 	config1.Close(ctx)
@@ -9106,7 +9106,7 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9141,7 +9141,7 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9191,7 +9191,7 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "file-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9258,7 +9258,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9284,7 +9284,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-modified-456"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/v2"}, // Changed to trigger hash mismatch
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com/v2")}, // Changed to trigger hash mismatch
 		},
 	}
 	configData2 := makeConfigDataWithProvidersAndDir(providers2, tempDir)
@@ -9318,7 +9318,7 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 				{ID: keyID1, Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 				{ID: keyID2, Name: "key-2", Value: *schemas.NewSecretVar("sk-key2-456"), Weight: 2},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9766,7 +9766,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10099,7 +10099,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 
@@ -10361,7 +10361,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				{ID: keyID2, Name: "openai-key-2", Value: *schemas.NewSecretVar("sk-openai-456"), Weight: 2},
 			},
 			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.openai.com",
+				BaseURL: schemas.NewSecretVar("https://api.openai.com"),
 			},
 			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 				Concurrency: 10,
@@ -10373,7 +10373,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
 			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.anthropic.com",
+				BaseURL: schemas.NewSecretVar("https://api.anthropic.com"),
 			},
 		},
 	}
@@ -10536,7 +10536,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.anthropic.com")},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10570,7 +10570,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"}, // Unchanged
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.anthropic.com")}, // Unchanged
 		},
 	}
 	vks2 := []tables.TableVirtualKey{
@@ -10626,7 +10626,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -16452,12 +16452,12 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	// Test case 1: NetworkConfig
 	t.Run("NetworkConfig_GORMRoundTrip", func(t *testing.T) {
 		networkConfig := &schemas.NetworkConfig{
-			BaseURL:                        "https://api.custom.com",
+			BaseURL:                        schemas.NewSecretVar("https://api.custom.com"),
 			DefaultRequestTimeoutInSeconds: 300,
 		}
 
 		providerToSave := tables.TableProvider{
-			Name:                networkConfig.BaseURL, // Use unique name
+			Name:                networkConfig.BaseURL.GetValue(), // Use unique name
 			NetworkConfig:       networkConfig,
 			SendBackRawResponse: true,
 		}
