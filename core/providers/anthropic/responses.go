@@ -4968,8 +4968,42 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		if i == len(bifrostMessages)-1 {
 			return true
 		}
-		next := bifrostMessages[i+1]
-		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+		// The "followed by an assistant turn" clause is evaluated against the next
+		// ROLE-BEARING message. Roleless reasoning and function_call items are
+		// intermediate representations of the adjacent assistant turn — Anthropic's
+		// own wire carries thinking and tool_use INSIDE the assistant message, and
+		// the egress below regroups these fragments into it — so they are skipped.
+		// Failing on them was a false negative that forced the fallback (hoist or
+		// inline) for exactly the thinking-replay shape every extended-thinking
+		// conversation produces on replay. A function_call fragment settles the
+		// clause affirmatively only when it carries a tool payload — a payload-less
+		// one emits no tool_use (convertBifrostFunctionCallToAnthropicToolUse
+		// returns nil), leaving the system turn followed by user turns, the exact
+		// 400 shape this gate exists to avoid. A roleless function_call_output with
+		// no function_call ahead of it is the USER side of a tool exchange (it
+		// regroups into a user turn), so it — and any other roleless shape,
+		// including the assistant-side item types not handled below (computer_call,
+		// mcp_call, web_search_call, ...) — fails the clause. That fallthrough is
+		// the safe, conservative direction: the caller falls back to inlining.
+		for j := i + 1; j < len(bifrostMessages); j++ {
+			next := bifrostMessages[j]
+			if next.Role != nil {
+				return *next.Role == schemas.ResponsesInputMessageRoleAssistant
+			}
+			if next.Type == nil {
+				return false
+			}
+			switch *next.Type {
+			case schemas.ResponsesMessageTypeFunctionCall:
+				return next.ResponsesToolMessage != nil
+			case schemas.ResponsesMessageTypeReasoning:
+				continue
+			}
+			return false
+		}
+		// Only reasoning fragments followed the system turn; they regroup into
+		// an assistant message, satisfying the clause.
+		return true
 	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user
