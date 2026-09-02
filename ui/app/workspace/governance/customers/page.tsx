@@ -6,12 +6,14 @@ import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery } from "@/lib/s
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function GovernanceCustomersPage() {
+	const { t } = useTranslation("governance");
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
@@ -78,10 +80,10 @@ export default function GovernanceCustomersPage() {
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
 		if (teamsError && customersError) {
-			toast.error("Failed to load governance data.");
+			toast.error(t("customers.loadGovernanceFailed"));
 		} else {
-			if (teamsError) toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
-			if (customersError) toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
+			if (teamsError) toast.error(t("teams.loadFailed", { message: getErrorMessage(teamsError) }));
+			if (customersError) toast.error(t("customers.loadFailed", { message: getErrorMessage(customersError) }));
 		}
 	}, [teamsError, customersError]);
 

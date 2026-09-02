@@ -1,5 +1,6 @@
 // Chart utility functions for the dashboard
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import i18n from "@/lib/i18n";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -67,17 +68,17 @@ export function getModelColor(index: number): string {
 // the legend already says "+N more", so the data path follows the palette.
 export const TOP_SERIES_LIMIT = MODEL_COLORS.length;
 export const OTHER_SERIES_KEY = "__other__";
-export const OTHER_SERIES_LABEL = "Other";
+export const getOtherSeriesLabel = (): string => i18n.t("labels.other", { ns: "observability" });
 export const OTHER_SERIES_COLOR = "#94a3b8"; // slate-400
 
-export const UNNAMED_MODEL_LABEL = "(unnamed)";
+export const getUnnamedModelLabel = (): string => i18n.t("labels.unnamed", { ns: "observability" });
 
 // Resolves a raw model value to its display label: the canonical model name
 // when one is known (e.g. Bedrock inference-profile IDs mapped via key
 // aliases), the raw value otherwise.
 export function displayModelLabel(model: string, labels?: Record<string, string>): string {
-	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
-	if (model === "") return UNNAMED_MODEL_LABEL;
+	if (model === OTHER_SERIES_KEY) return getOtherSeriesLabel();
+	if (model === "") return getUnnamedModelLabel();
 	return labels?.[model] ?? model;
 }
 

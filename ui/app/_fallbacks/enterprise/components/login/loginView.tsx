@@ -1,3 +1,4 @@
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,28 +8,11 @@ import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/reac
 import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
-
-const externalLinks = [
-	{
-		title: "Discord Server",
-		url: "https://discord.gg/exN5KAydbU",
-		icon: DiscordLogoIcon,
-	},
-	{
-		title: "GitHub Repository",
-		url: "https://github.com/maximhq/bifrost",
-		icon: GithubLogoIcon,
-	},
-	{
-		title: "Full Documentation",
-		url: "https://docs.getbifrost.ai",
-		icon: BooksIcon,
-		strokeWidth: 1,
-	},
-];
+import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 export default function LoginView() {
+	const { t } = useTranslation("login");
 	const { resolvedTheme } = useTheme();
 	const [mounted, setMounted] = useState(false);
 	const [username, setUsername] = useState("");
@@ -42,6 +26,28 @@ export default function LoginView() {
 	useEffect(() => {
 		setMounted(true);
 	}, []);
+
+	const externalLinks = useMemo(
+		() => [
+			{
+				title: t("discord"),
+				url: "https://discord.gg/exN5KAydbU",
+				icon: DiscordLogoIcon,
+			},
+			{
+				title: t("github"),
+				url: "https://github.com/maximhq/bifrost",
+				icon: GithubLogoIcon,
+			},
+			{
+				title: t("docs"),
+				url: "https://docs.getbifrost.ai",
+				icon: BooksIcon,
+				strokeWidth: 1,
+			},
+		],
+		[t],
+	);
 
 	const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
 		setIsLoading(true);
@@ -61,7 +67,10 @@ export default function LoginView() {
 	const { logoSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	return (
-		<div className="flex min-h-screen items-center justify-center p-4">
+		<div className="relative flex min-h-screen items-center justify-center p-4">
+			<div className="absolute top-4 right-4">
+				<LanguageSwitcher />
+			</div>
 			<div className="w-full max-w-md">
 				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 					{/* Logo */}
@@ -70,8 +79,8 @@ export default function LoginView() {
 					</div>
 
 					<div className="space-y-2 text-center">
-						<h1 className="text-foreground text-lg font-semibold">Welcome back</h1>
-						<p className="text-muted-foreground text-sm">Sign in to your account to continue</p>
+						<h1 className="text-foreground text-lg font-semibold">{t("welcomeBack")}</h1>
+						<p className="text-muted-foreground text-sm">{t("welcomeSubtitle")}</p>
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
@@ -79,12 +88,12 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="username" className="text-sm font-medium">
-								Username
+								{t("username")}
 							</Label>
 							<Input
 								id="username"
 								type="text"
-								placeholder="Enter your username"
+								placeholder={t("usernamePlaceholder")}
 								value={username}
 								onChange={(e) => setUsername(e.target.value)}
 								required
@@ -95,13 +104,13 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="password" className="text-sm font-medium">
-								Password
+								{t("password")}
 							</Label>
 							<div className="relative">
 								<Input
 									id="password"
 									type={showPassword ? "text" : "password"}
-									placeholder="Enter your password"
+									placeholder={t("passwordPlaceholder")}
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									required
@@ -112,7 +121,7 @@ export default function LoginView() {
 									type="button"
 									onClick={() => setShowPassword(!showPassword)}
 									className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
-									aria-label={showPassword ? "Hide password" : "Show password"}
+									aria-label={showPassword ? t("hidePassword") : t("showPassword")}
 								>
 									{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
 								</button>
@@ -120,7 +129,7 @@ export default function LoginView() {
 						</div>
 
 						<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
-							{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
+							{isLoading || isLoggingIn ? t("signingIn") : t("signIn")}
 						</Button>
 					</form>
 

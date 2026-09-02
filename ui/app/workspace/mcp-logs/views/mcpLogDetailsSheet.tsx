@@ -35,6 +35,7 @@ import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 
 interface MCPLogDetailSheetProps {
 	log: MCPToolLogEntry | null;
@@ -94,6 +95,7 @@ export function MCPLogDetailSheet({
 	hasPrev = false,
 	hasNext = false,
 }: MCPLogDetailSheetProps) {
+	const { t } = useTranslation("observability");
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 	const [dropdownOpen, setDropdownOpen] = useState(false);
 	const [showRevealedValues, setShowRevealedValues] = useState(false);
@@ -232,7 +234,7 @@ export function MCPLogDetailSheet({
 											setDeleteDialogOpen(false);
 											onOpenChange(false);
 										} catch (err) {
-											const errorMessage = err instanceof Error ? err.message : "Failed to delete log";
+											const errorMessage = err instanceof Error ? err.message : t("mcpLogs.detail.deleteFailed");
 											toast.error(errorMessage);
 											// Keep dialog open on error so user can see the error and retry
 										}
@@ -246,40 +248,40 @@ export function MCPLogDetailSheet({
 				</SheetHeader>
 				<div className="space-y-4 rounded-sm border px-4 py-4 md:px-6">
 					<div className="space-y-4">
-						<BlockHeader title="Timings" />
+						<BlockHeader title={t("mcpLogs.detail.timings")} />
 						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
-								label="Start Timestamp"
+								label={t("mcpLogs.detail.startTimestamp")}
 								value={
 									isValid(new Date(displayLog.timestamp))
 										? format(new Date(displayLog.timestamp), "yyyy-MM-dd hh:mm:ss aa")
-										: "Invalid date"
+										: t("mcpLogs.detail.invalidDate")
 								}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="End Timestamp"
+								label={t("mcpLogs.detail.endTimestamp")}
 								value={
 									isValid(new Date(displayLog.timestamp))
 										? format(addMilliseconds(new Date(displayLog.timestamp), displayLog.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
-										: "Invalid date"
+										: t("mcpLogs.detail.invalidDate")
 								}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="Latency"
+								label={t("mcpLogs.detail.latency")}
 								value={displayLog.latency ? `${displayLog.latency.toFixed(2)}ms` : "NA"}
 							/>
 						</div>
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
-						<BlockHeader title="Request Details" />
+						<BlockHeader title={t("mcpLogs.detail.requestDetails")} />
 						<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="col-span-2 w-full"
-								label="Tool Name"
+								label={t("mcpLogs.detail.toolName")}
 								value={
 									<Link
 										to="/workspace/mcp-logs"
@@ -293,7 +295,7 @@ export function MCPLogDetailSheet({
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="Server"
+								label={t("mcpLogs.detail.server")}
 								value={
 									displayLog.server_label ? (
 										<Link
@@ -313,7 +315,7 @@ export function MCPLogDetailSheet({
 							{displayLog.virtual_key && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Virtual Key"
+									label={t("mcpLogs.detail.virtualKey")}
 									value={
 										<Link
 											to="/workspace/governance/virtual-keys"
@@ -329,7 +331,7 @@ export function MCPLogDetailSheet({
 							{displayLog.llm_request_id && (
 								<LogEntryDetailsView
 									className="col-span-3 w-full"
-									label="LLM Request ID"
+									label={t("mcpLogs.detail.llmRequestId")}
 									value={
 										<Link
 											to="/workspace/logs"
@@ -399,7 +401,7 @@ export function MCPLogDetailSheet({
 						{/* Metadata */}
 						{displayLog.metadata && Object.keys(displayLog.metadata).length > 0 && (
 							<div className="space-y-4 rounded-sm border px-4 py-4 md:px-6">
-								<BlockHeader title="Metadata" />
+								<BlockHeader title={t("mcpLogs.detail.metadata")} />
 								<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 									{Object.entries(displayLog.metadata).map(([key, value]) => (
 										<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />

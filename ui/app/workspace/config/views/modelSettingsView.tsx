@@ -12,6 +12,7 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface ModelSettingsFormData {
@@ -37,6 +38,7 @@ function toSyncMinutes(intervalSeconds: number | undefined): number {
 }
 
 export default function ModelSettingsView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const frameworkConfig = bifrostConfig?.framework_config;
@@ -114,7 +116,7 @@ export default function ModelSettingsView() {
 					routing_chain_max_depth: data.routing_chain_max_depth,
 				},
 			}).unwrap();
-			toast.success("Model settings updated successfully.");
+			toast.success(t("modelSettings.toastSaved"));
 			reset(data);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -124,7 +126,7 @@ export default function ModelSettingsView() {
 	const handleForceSync = async () => {
 		try {
 			await forcePricingSync().unwrap();
-			toast.success("Pricing synced successfully.");
+			toast.success(t("modelSettings.toastSynced"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -133,14 +135,13 @@ export default function ModelSettingsView() {
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="model-settings-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-				<PageTitle title="Model Settings">Configure pricing and routing behaviour.</PageTitle>
+				<PageTitle title={t("modelSettings.title")}>{t("modelSettings.description")}</PageTitle>
 
 				<div className="space-y-4">
-					{/* Pricing Datasheet URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.pricingUrlHelp")}</p>
 						</div>
 						<Input
 							id="pricing-datasheet-url"
@@ -165,11 +166,10 @@ export default function ModelSettingsView() {
 						{errors.pricing_datasheet_url && <p className="text-destructive text-sm">{errors.pricing_datasheet_url.message}</p>}
 					</div>
 
-					{/* Model Parameters URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom model parameters datasheet. Leave empty to use default.</p>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.modelParamsUrlHelp")}</p>
 						</div>
 						<Input
 							id="model-parameters-url"
@@ -197,8 +197,8 @@ export default function ModelSettingsView() {
 					{/* Pricing Sync Interval */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-sync-interval">Pricing Sync Interval (hours)</Label>
-							<p className="text-muted-foreground text-sm">How often to sync pricing data from the datasheet URL.</p>
+							<Label htmlFor="pricing-sync-interval">{t("modelSettings.pricingSyncInterval")}</Label>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.pricingSyncIntervalHelp")}</p>
 						</div>
 						<Input
 							id="pricing-sync-interval"
@@ -218,7 +218,7 @@ export default function ModelSettingsView() {
 					{/* Model Discovery Interval */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="live-models-sync-interval">Model Discovery Interval (minutes)</Label>
+							<Label htmlFor="live-models-sync-interval">{t("modelSettings.modelDiscoveryInterval")}</Label>
 							<p className="text-muted-foreground text-sm">
 								How often each provider&apos;s model list is re-fetched in the background, so models a provider starts serving become
 								available without a restart. Set to 0 to turn it off and refresh only from the Providers page.
@@ -252,7 +252,6 @@ export default function ModelSettingsView() {
 						)}
 					</div>
 
-					{/* Routing Chain Max Depth */}
 					<div className="flex items-center justify-between rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="routing-chain-max-depth">Routing Chain Max Depth</Label>
@@ -287,7 +286,7 @@ export default function ModelSettingsView() {
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="model-settings-save-btn">
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? t("saving") : t("saveChanges")}
 					</Button>
 				</div>
 			</form>

@@ -6,6 +6,7 @@ import { getErrorMessage, useGetTeamsQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
@@ -16,6 +17,7 @@ const PAGE_SIZE = 25;
 // (`virtual_key_count`), so neither needs its own unpaginated list request; the
 // customer picker in the sheet fetches its own page on open.
 export function TeamsView() {
+	const { t } = useTranslation("governance");
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 
@@ -65,7 +67,7 @@ export function TeamsView() {
 		const errorKey = `${!!teamsError}`;
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
-		toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
+		toast.error(t("teams.loadFailed", { message: getErrorMessage(teamsError) }));
 	}, [teamsError]);
 
 	if (teamsLoading) {
