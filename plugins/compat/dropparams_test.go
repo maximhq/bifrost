@@ -144,6 +144,63 @@ func TestDropUnsupportedParams_MaxOutputTokensSurgical(t *testing.T) {
 	}
 }
 
+// TestDropUnsupportedParams_BedrockSignaturePreservedForAliasedAnthropicModel
+// guards against a routing rule (or virtual model alias) rewriting the
+// request model to a bare name like "haiku" that doesn't literally contain
+// "claude"/"anthropic.": the Bedrock responses-compat pass must resolve the
+// canonical model before deciding the target is non-Anthropic, or it wrongly
+// strips the signature off a real Anthropic thinking block and leaves the
+// model requiring a signature it no longer has.
+func TestDropUnsupportedParams_BedrockSignaturePreservedForAliasedAnthropicModel(t *testing.T) {
+	req := newResponsesRequest(schemas.Bedrock, "haiku", nil)
+	req.ResponsesRequest.Input = []schemas.ResponsesMessage{
+		{
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Signature: schemas.Ptr("sig-123")},
+				},
+			},
+		},
+	}
+
+	ctx := newTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Config: &schemas.AliasConfig{ModelID: "anthropic.claude-haiku-4-5-v1:0"},
+	})
+
+	dropUnsupportedParams(ctx, req, nil)
+
+	got := req.ResponsesRequest.Input[0].Content.ContentBlocks[0].Signature
+	if got == nil || *got != "sig-123" {
+		t.Errorf("signature = %v, want preserved (sig-123)", got)
+	}
+}
+
+// TestDropUnsupportedParams_AzureModelRouterSummaryAliased guards against a
+// routing rule (or virtual model alias) rewriting the request model to a bare
+// alias like "myrouter" that doesn't literally contain "model-router": the
+// reasoning.summary override must still be dropped down to Azure model-router's
+// "auto"-only support once the alias resolves to the real deployment.
+func TestDropUnsupportedParams_AzureModelRouterSummaryAliased(t *testing.T) {
+	req := newResponsesRequest(schemas.Azure, "myrouter", &schemas.ResponsesParameters{
+		Reasoning: &schemas.ResponsesParametersReasoning{Summary: schemas.Ptr("detailed")},
+	})
+
+	ctx := newTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Config: &schemas.AliasConfig{ModelID: "model-router"},
+	})
+
+	dropped := dropUnsupportedParams(ctx, req, []string{"reasoning"})
+
+	if req.ResponsesRequest.Params.Reasoning.Summary != nil {
+		t.Errorf("reasoning.summary = %v, want dropped for model-router", *req.ResponsesRequest.Params.Reasoning.Summary)
+	}
+	if !slices.Contains(dropped, "reasoning.summary") {
+		t.Errorf("reasoning.summary not reported in dropped=%v, want present", dropped)
+	}
+}
+
 // TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged guards the
 // pre-existing chat-branch behaviour that the Responses fix mirrors.
 func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {

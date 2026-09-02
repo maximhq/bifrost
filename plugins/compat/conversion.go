@@ -5,22 +5,22 @@ import (
 )
 
 // applyParameterConversion rewrites request fields in place for provider compatibility.
-func applyParameterConversion(req *schemas.BifrostRequest) {
+func applyParameterConversion(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	if req == nil {
 		return
 	}
 	if req.ResponsesRequest != nil {
-		flattenNamespaceTools(req.ResponsesRequest)
+		flattenNamespaceTools(ctx, req.ResponsesRequest)
 	}
 }
 
 // flattenNamespaceTools expands namespace scoped tools into a flat list of tools.
-func flattenNamespaceTools(req *schemas.BifrostResponsesRequest) {
+func flattenNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) {
 	if req == nil || req.Params == nil {
 		return
 	}
 	// ignore openai models or azure hosted openai models
-	if req.Provider == schemas.OpenAI || (req.Provider == schemas.Azure && !schemas.IsAnthropicModel(req.Model)) {
+	if req.Provider == schemas.OpenAI || (req.Provider == schemas.Azure && !schemas.IsAnthropicModelFamily(ctx, req.Model)) {
 		return
 	}
 	hasNamespace := false

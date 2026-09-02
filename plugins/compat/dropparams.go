@@ -176,7 +176,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
 			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
-				schemas.IsAzureModelRouter(req.ResponsesRequest.Model) {
+				schemas.IsAzureModelRouterFamily(ctx, req.ResponsesRequest.Model) {
 				// model-router only supports "auto" summary
 				params.Reasoning.Summary = nil
 				dropped = append(dropped, "reasoning.summary")
@@ -217,7 +217,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	}
 
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Input != nil {
-		if req.ResponsesRequest.Provider == schemas.Bedrock && !schemas.IsAnthropicModel(req.ResponsesRequest.Model) {
+		if req.ResponsesRequest.Provider == schemas.Bedrock && !schemas.IsAnthropicModelFamily(ctx, req.ResponsesRequest.Model) {
 			droppedKeys := applyBedrockResponsesCompatibility(req.ResponsesRequest)
 			dropped = append(dropped, droppedKeys...)
 		}

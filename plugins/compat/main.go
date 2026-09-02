@@ -162,7 +162,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	if (shouldConvertParamsOverride && shouldConvertParamsOverrideEnabled) || p.config.ShouldConvertParams {
-		applyParameterConversion(modifiedReq)
+		applyParameterConversion(ctx, modifiedReq)
 	}
 
 	return modifiedReq, nil, nil
