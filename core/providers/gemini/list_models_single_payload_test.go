@@ -41,7 +41,7 @@ func TestListModelsByKey_ParsesSingleModelPayload(t *testing.T) {
 	defer ts.Close()
 
 	provider := NewGeminiProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(ts.URL)},
 	}, testNoopLogger{})
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

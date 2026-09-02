@@ -62,7 +62,7 @@ func completeSSEServer(t *testing.T, body string) *httptest.Server {
 
 func newStreamTestProvider(baseURL string) *OpenAIProvider {
 	return NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, testNoopLogger{})
 }
 
@@ -393,7 +393,7 @@ func TestResponsesStreamFallbackNullDeltaFinishStillCompletes(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			AllowedRequests: &schemas.AllowedRequests{
 				ChatCompletionStream: true,

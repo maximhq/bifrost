@@ -55,10 +55,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.mistral.ai"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.mistral.ai")
 
 	return &MistralProvider{
 		logger:               logger,
@@ -88,7 +85,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -178,7 +175,7 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		provider.normalizeChatRequestForConversion(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -200,7 +197,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/chat/completions",
 		provider.normalizeChatRequestForConversion(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -251,7 +248,7 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -299,7 +296,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	// Set extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	if key.Value.GetValue() != "" {
@@ -430,7 +427,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
 
 	// Set headers
 	for headerKey, value := range headers {
@@ -677,7 +674,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	// Set extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/ocr"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/ocr"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {

@@ -19,7 +19,7 @@ func (provider *ElevenlabsProvider) SupportsRealtimeAPI() bool {
 // The model parameter is used as the agent_id query parameter.
 // Format: wss://api.elevenlabs.io/v1/convai/conversation?agent_id=<model>
 func (provider *ElevenlabsProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
-	base := provider.networkConfig.BaseURL
+	base := provider.networkConfig.BaseURL.GetValue()
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	return base + "/v1/convai/conversation?agent_id=" + model
