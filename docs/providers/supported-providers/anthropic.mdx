@@ -179,6 +179,17 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 
 Anthropic also accepts a top-level `"cache_control": {"type": "ephemeral"}` object on `/anthropic/v1/messages` requests to enable automatic prompt caching, and Bifrost now forwards that directive through unchanged.
 
+### Auto-inject cache breakpoints
+
+Agentic clients such as Codex send no cache markers, so nothing is cached and every
+turn pays full price for a prompt that barely changed. Bifrost can add the marker for
+them: set `prompt_cache.auto_inject` on the provider and the first cacheable block is
+marked automatically.
+
+Claude is the primary case, and everything on this page about `cache_control` applies
+to injected markers too. See [Prompt caching](/features/prompt-caching) for the configuration,
+the injection point syntax, and the per-request override.
+
 ### Cache Control
 
 Cache directives can be added to system messages, user messages, and tool definitions to enable prompt caching:
