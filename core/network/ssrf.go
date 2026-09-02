@@ -15,6 +15,19 @@ import (
 // IsPrivate() does not cover it.
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
+// teredo is the RFC 4380 Teredo tunnelling prefix. Note the /32: only
+// 2001:0000::/32 is Teredo, so ordinary global unicast under 2001::/16 (e.g.
+// 2001:4860::/32) is untouched.
+//
+// Rejected wholesale rather than unwrapped-and-reclassified the way 6to4 and
+// NAT64 are, for two reasons. Teredo carries two IPv4 addresses - the client's
+// in bits 96-127 (obfuscated by XOR with 0xFFFFFFFF) and the relay server's in
+// bits 32-63 - so reclassifying on one still leaves the other attacker-chosen.
+// And unlike 6to4, Teredo has no legitimate server-to-server use: it is a
+// consumer NAT-traversal mechanism, deprecated and off by default on modern
+// systems, so nothing is lost by refusing the range outright.
+var teredo = netip.MustParsePrefix("2001:0000::/32")
+
 // IsPublicIP reports whether ip is safe to dial from server-side code that
 // fetches user-controlled URLs: not loopback, private, CGNAT, link-local,
 // unique-local, site-local, multicast, broadcast, or unspecified. IPv6 forms
@@ -53,6 +66,13 @@ func IsPublicIP(ip net.IP) bool {
 	if addr.Is6() {
 		b := addr.As16()
 		if b[0] == 0xfe && (b[1]&0xc0) == 0xc0 {
+			return false
+		}
+		// Teredo. Checked after the transition unwrap above so a Teredo address
+		// is judged as itself: none of the stdlib predicates match it, and its
+		// embedded IPv4 is obfuscated, so without this an internal target
+		// wrapped as 2001:0000:...:5601:5601 reads as ordinary global unicast.
+		if teredo.Contains(addr) {
 			return false
 		}
 	}

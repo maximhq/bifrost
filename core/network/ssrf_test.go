@@ -54,6 +54,20 @@ func TestIsPublicIP(t *testing.T) {
 
 		// Deprecated IPv6 site-local (RFC 3879).
 		{"site-local fec0::/10", "fec0::1", false},
+
+		// Teredo (RFC 4380). The whole 2001:0000::/32 prefix is refused: the
+		// embedded client IPv4 is XOR-obfuscated so none of the stdlib
+		// predicates see through it, and the address carries a second,
+		// separately attacker-chosen relay IPv4 in bits 32-63.
+		// 2001:0000:4136:e378:8000:63bf:5601:5601 obfuscates 169.254.169.254
+		// (0xa9fea9fe ^ 0xffffffff = 0x56015601) as the client address.
+		{"teredo-wrapped IMDS", "2001:0000:4136:e378:8000:63bf:5601:5601", false},
+		{"teredo prefix low", "2001:0::1", false},
+		{"teredo prefix high", "2001:0:ffff:ffff:ffff:ffff:ffff:ffff", false},
+		// The block is a /32, not a /16: ordinary global unicast that merely
+		// starts with 2001: must stay reachable.
+		{"global unicast 2001:4860 (Google) stays public", "2001:4860:4860::8888", true},
+		{"global unicast 2001:1:: stays public", "2001:1::1", true},
 	}
 
 	for _, tt := range tests {
