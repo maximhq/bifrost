@@ -3100,3 +3100,62 @@ func TestMigrationAddBatchJobsAttributionColumns(t *testing.T) {
 	// Migrations are re-run on every boot; the second pass must be a no-op.
 	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
 }
+
+// TestMigrationMarkSecretRefOauthConfigsEncrypted covers the backfill for rows
+// stored before TableOauthConfig.BeforeSave stamped encryption_status
+// unconditionally. Such a row (client_secret holding an env/vault reference,
+// status left 'plain_text') makes EncryptPlaintextRows select, save and
+// re-select it forever, so an affected deployment cannot boot far enough to
+// repair itself — hence a migration.
+//
+// The discrimination is the point: secret references get relabelled, genuine
+// plaintext literals must be left for the (now-fixed) encryption pass. Marking
+// a literal 'encrypted' would strand a real secret in the clear.
+func TestMigrationMarkSecretRefOauthConfigsEncrypted(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	seed := func(id, secret, status string) {
+		require.NoError(t, db.Exec(
+			`INSERT INTO oauth_configs (id, client_secret, redirect_uri, status, encryption_status, created_at, updated_at)
+			 VALUES (?, ?, 'https://example.com/cb', 'pending', ?, ?, ?)`,
+			id, secret, status, now, now).Error)
+	}
+	seed("env-ref", "env.MCP_OAUTH_CLIENT_SECRET", "plain_text")
+	seed("vault-ref", "vault.secret/mcp/oauth#client_secret", "plain_text")
+	seed("empty-status-ref", "env.OTHER_SECRET", "")
+	seed("literal", "a-real-plaintext-secret", "plain_text")
+	seed("already-encrypted", "env.THIRD_SECRET", "encrypted")
+
+	require.NoError(t, migrationMarkSecretRefOauthConfigsEncrypted(ctx, db, testMigrationLogger))
+
+	status := func(id string) string {
+		var s string
+		require.NoError(t, db.Raw(`SELECT encryption_status FROM oauth_configs WHERE id = ?`, id).Scan(&s).Error)
+		return s
+	}
+	assert.Equal(t, "encrypted", status("env-ref"), "env reference must be relabelled")
+	assert.Equal(t, "encrypted", status("vault-ref"), "vault reference must be relabelled")
+	assert.Equal(t, "encrypted", status("empty-status-ref"), "empty status counts as unencrypted")
+	assert.Equal(t, "plain_text", status("literal"),
+		"a real plaintext literal must stay plain_text so the encryption pass still encrypts it")
+	assert.Equal(t, "encrypted", status("already-encrypted"), "untouched")
+
+	// No secret value may be altered — the migration only corrects a label.
+	var storedRef string
+	require.NoError(t, db.Raw(`SELECT client_secret FROM oauth_configs WHERE id = ?`, "env-ref").Scan(&storedRef).Error)
+	assert.Equal(t, "env.MCP_OAUTH_CLIENT_SECRET", storedRef)
+	var storedLiteral string
+	require.NoError(t, db.Raw(`SELECT client_secret FROM oauth_configs WHERE id = ?`, "literal").Scan(&storedLiteral).Error)
+	assert.Equal(t, "a-real-plaintext-secret", storedLiteral)
+
+	// Idempotent, and a no-op on a table that does not exist yet.
+	require.NoError(t, migrationMarkSecretRefOauthConfigsEncrypted(ctx, db, testMigrationLogger))
+	assert.Equal(t, "plain_text", status("literal"))
+
+	fresh := setupTestDB(t)
+	require.NoError(t, migrationMarkSecretRefOauthConfigsEncrypted(ctx, fresh, testMigrationLogger),
+		"must be a no-op when oauth_configs is absent")
+}

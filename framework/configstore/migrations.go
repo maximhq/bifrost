@@ -475,6 +475,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ultrafast_pricing_columns"}, run: migrationAddUltrafastPricingColumns},
 	{IDs: []string{"add_image_size_quality_pricing_columns"}, run: migrationAddImageSizeQualityPricingColumns},
 	{IDs: []string{"add_batch_jobs_attribution_columns"}, run: migrationAddBatchJobsAttributionColumns},
+	{IDs: []string{"mark_secret_ref_oauth_configs_encrypted"}, run: migrationMarkSecretRefOauthConfigsEncrypted},
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
@@ -12334,6 +12335,65 @@ func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+
+// migrationMarkSecretRefOauthConfigsEncrypted repairs oauth_configs rows that
+// EncryptPlaintextRows can never finish processing.
+//
+// EncryptPlaintextRows selects on a non-empty client_secret, which an
+// env/vault reference satisfies. TableOauthConfig.BeforeSave used to set
+// encryption_status only inside its `!IsFromSecret()` guard, so saving such a
+// row left the status at 'plain_text' and the batch loop re-selected the same
+// rows forever — startup hung before the config store was ready, spinning CPU
+// with nothing logged. The hook now always stamps the status when encryption
+// is enabled; this backfills rows already stored the old way, since an
+// affected deployment cannot boot far enough to fix itself.
+//
+// Scope is deliberately narrow: only rows whose client_secret is a secret
+// reference. A genuine plaintext literal still needs encrypting, and the
+// fixed pass handles it on the next boot — marking those 'encrypted' here
+// would strand a real secret in the clear while claiming otherwise.
+//
+// Pure DML, and this runs whether or not encryption is enabled: the stored
+// status is wrong either way, and an operator who enables encryption later
+// would otherwise hit the same hang on that first restart.
+func migrationMarkSecretRefOauthConfigsEncrypted(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mark_secret_ref_oauth_configs_encrypted"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable("oauth_configs") {
+				return nil
+			}
+			// Targeted UPDATE rather than a read-modify-write: no column is
+			// re-encrypted, only the status label is corrected, so there is
+			// nothing for the model hooks to do. This also keeps the
+			// statement independent of the struct's current column set, which
+			// a SELECT * would not be.
+			res := tx.Table("oauth_configs").
+				Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '')",
+					encryptionStatusPlainText).
+				Where("client_secret LIKE 'env.%' OR client_secret LIKE 'vault.%'").
+				Update("encryption_status", encryptionStatusEncrypted)
+			if res.Error != nil {
+				return fmt.Errorf("mark secret-ref oauth_configs encrypted: %w", res.Error)
+			}
+			if res.RowsAffected > 0 {
+				logger.Info("[configstore] %s: corrected %d oauth_configs row(s) whose client_secret is a secret reference", migrationName, res.RowsAffected)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Not reversible in a meaningful way: the pre-migration status was
+			// wrong, and restoring it would reintroduce the startup hang. The
+			// rows are otherwise untouched, so there is nothing to undo.
+			return nil
+		},
+	})
+}
+  
 // migrationDropLegacyOauthUserFKConstraints drops the real foreign key constraints
 // GORM created on oauth_user_tokens and oauth_user_sessions for their MCPClient and
 // VirtualKey preload relations. Both relations were always meant to be display-only
