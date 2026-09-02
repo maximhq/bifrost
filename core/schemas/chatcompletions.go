@@ -1578,6 +1578,22 @@ func (cm ChatAssistantMessage) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatAssistantMessage.
+//
+// Replayed reasoning arrives under three spellings and all three are accepted, in this
+// precedence order:
+//
+//  1. reasoning_content  (xAI/DeepSeek, and OpenRouter's documented alias)
+//  2. reasoning          (OpenAI/OpenRouter native field)
+//  3. the first reasoning_details entry carrying text
+//
+// Tier 3 is what makes the native /v1/chat/completions surface round-trip reasoning at all.
+// That surface parses the body straight into ChatMessage, so the OpenAI-wire normalizer
+// (openai.ConvertOpenAIMessagesToBifrostMessages) never runs; without this fold a caller that
+// replays reasoning_details[].text - which is exactly what Bifrost itself emits on the
+// response - leaves Reasoning nil, and ConvertBifrostMessagesToOpenAIMessages (which carries
+// reasoning outbound only as reasoning_content, since ReasoningDetails is inbound-only there)
+// then drops the whole chain of thought before it reaches the model.
+//
 // If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
 // ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
 func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
@@ -1601,10 +1617,24 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	// Copy decoded data back into the original type
 	*cm = ChatAssistantMessage(aux.Alias)
 
-	// Map xAI's reasoning_content to Bifrost's Reasoning field
-	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
-	if aux.ReasoningContent != nil && cm.Reasoning == nil {
+	// Map xAI's reasoning_content onto Bifrost's Reasoning field. It takes precedence over
+	// the reasoning field when a client sends both, matching the precedence
+	// ConvertOpenAIMessagesToBifrostMessages applies on the OpenAI-integration surface -
+	// without this, the two entry surfaces would disagree on which spelling wins.
+	if aux.ReasoningContent != nil {
 		cm.Reasoning = aux.ReasoningContent
+	}
+
+	// Fall back to plaintext carried by a structured detail. Only Text counts: a summary is
+	// a derived digest and a signature/encrypted entry carries no readable chain of thought,
+	// so neither may be passed off as reasoning text.
+	if cm.Reasoning == nil {
+		for _, detail := range cm.ReasoningDetails {
+			if detail.Text != nil && *detail.Text != "" {
+				cm.Reasoning = detail.Text
+				break
+			}
+		}
 	}
 
 	// If Reasoning is present and there are no reasoning_details,
@@ -1783,8 +1813,14 @@ func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
-// If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
-// ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
+// Accepts the same three reasoning spellings as ChatAssistantMessage.UnmarshalJSON, in the
+// same precedence, and folds the first text-bearing reasoning_details entry into Reasoning.
+//
+// The fold matters on the way in as well as out: a stream whose upstream replays reasoning
+// as reasoning_details must still expose a plain Reasoning string, because every downstream
+// consumer that gates on reasoning reads that field. If Reasoning is non-nil and
+// ReasoningDetails is nil/empty, it adds a single ChatReasoningDetails entry of type
+// "reasoning.text" with the text set to Reasoning.
 func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 	// Alias to avoid infinite recursion
 	type Alias ChatStreamResponseChoiceDelta
@@ -1802,10 +1838,21 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 	// Copy decoded data back into the original type
 	*d = ChatStreamResponseChoiceDelta(aux.Alias)
 
-	// Map xAI's reasoning_content to Bifrost's Reasoning field
-	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
-	if aux.ReasoningContent != nil && d.Reasoning == nil {
+	// Map xAI's reasoning_content onto Bifrost's Reasoning field, with the same precedence
+	// ChatAssistantMessage.UnmarshalJSON applies.
+	if aux.ReasoningContent != nil {
 		d.Reasoning = aux.ReasoningContent
+	}
+
+	// Fall back to plaintext carried by a structured detail (Text only - see the note on
+	// ChatAssistantMessage.UnmarshalJSON for why summary/signature/encrypted are excluded).
+	if d.Reasoning == nil {
+		for _, detail := range d.ReasoningDetails {
+			if detail.Text != nil && *detail.Text != "" {
+				d.Reasoning = detail.Text
+				break
+			}
+		}
 	}
 
 	// If Reasoning is present and there are no reasoning_details,
