@@ -85,8 +85,13 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Build URL using centralized URL construction
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	// Build URL using centralized URL construction, honoring custom provider RequestPathOverrides
+	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, "/v1/models", provider.customProviderConfig, schemas.ListModelsRequest)
+	if isCompleteURL {
+		req.SetRequestURI(requestPath)
+	} else {
+		req.SetRequestURI(provider.networkConfig.BaseURL + requestPath)
+	}
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
