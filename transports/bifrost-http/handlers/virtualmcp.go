@@ -65,14 +65,13 @@ type VirtualMCPResponse struct {
 	UpdatedAt     string                          `json:"updated_at"`
 }
 
-func (h *VirtualMCPHandler) toResponse(ctx context.Context, def *configstoreTables.TableVirtualMCP) VirtualMCPResponse {
+// toResponse builds the API shape from a definition and its assigned virtual keys. vkIDs are passed in
+// rather than loaded here: the list batch-loads them for the whole page in one query, while the
+// single-definition paths load them via withVKs.
+func (h *VirtualMCPHandler) toResponse(def *configstoreTables.TableVirtualMCP, vkIDs []string) VirtualMCPResponse {
 	tools := def.ParsedTools
 	if tools == nil {
 		tools = []configstoreTables.MCPToolSpec{}
-	}
-	vkIDs, err := h.store.ConfigStore.GetVirtualKeyIDsForVirtualMCP(ctx, def.ID)
-	if err != nil {
-		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
 	}
 	if vkIDs == nil {
 		vkIDs = []string{}
@@ -88,6 +87,18 @@ func (h *VirtualMCPHandler) toResponse(ctx context.Context, def *configstoreTabl
 		CreatedAt:     def.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:     def.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+}
+
+// withVKs builds the response with the definition's assigned virtual keys loaded (one query). The list
+// path uses toResponse(def, nil) instead, since it does not show per-row assignment.
+// withVKs returns the lookup error rather than a stale-empty list: get/update feed the edit sheet,
+// where empty-on-error would make a save detach real assignments. (The list path degrades instead.)
+func (h *VirtualMCPHandler) withVKs(ctx context.Context, def *configstoreTables.TableVirtualMCP) (VirtualMCPResponse, error) {
+	vkIDs, err := h.store.ConfigStore.GetVirtualKeyIDsForVirtualMCP(ctx, def.ID)
+	if err != nil {
+		return VirtualMCPResponse{}, err
+	}
+	return h.toResponse(def, vkIDs), nil
 }
 
 // validateToolSpecs rejects specs whose MCP client is not configured. Tool names are not checked
@@ -138,9 +149,19 @@ func (h *VirtualMCPHandler) listVirtualMCPs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+	ids := make([]uint, len(defs))
+	for i := range defs {
+		ids[i] = defs[i].ID
+	}
+	// One batch query for all VK assignments on the page (not an N+1), so the list can show "Assigned to".
+	vkIDsByVMCP, err := h.store.ConfigStore.GetVirtualKeyIDsForVirtualMCPs(ctx, ids)
+	if err != nil {
+		h.logger.Error("failed to load VK assignments for virtual MCPs: %v", err)
+		vkIDsByVMCP = map[uint][]string{}
+	}
 	responses := make([]VirtualMCPResponse, len(defs))
 	for i := range defs {
-		responses[i] = h.toResponse(ctx, &defs[i])
+		responses[i] = h.toResponse(&defs[i], vkIDsByVMCP[defs[i].ID])
 	}
 	SendJSON(ctx, map[string]any{
 		"virtual_mcps": responses,
@@ -161,7 +182,13 @@ func (h *VirtualMCPHandler) getVirtualMCP(ctx *fasthttp.RequestCtx) {
 		h.sendLookupError(ctx, err)
 		return
 	}
-	SendJSON(ctx, map[string]any{"virtual_mcp": h.toResponse(ctx, def)})
+	resp, err := h.withVKs(ctx, def)
+	if err != nil {
+		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		return
+	}
+	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
 func (h *VirtualMCPHandler) createVirtualMCP(ctx *fasthttp.RequestCtx) {
@@ -200,7 +227,7 @@ func (h *VirtualMCPHandler) createVirtualMCP(ctx *fasthttp.RequestCtx) {
 	}
 	h.refreshDefinition(ctx, def.ID)
 	ctx.SetStatusCode(fasthttp.StatusCreated)
-	SendJSON(ctx, map[string]any{"virtual_mcp": h.toResponse(ctx, def)})
+	SendJSON(ctx, map[string]any{"virtual_mcp": h.toResponse(def, nil)})
 }
 
 func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
@@ -245,7 +272,13 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshDefinition(ctx, def.ID)
-	SendJSON(ctx, map[string]any{"virtual_mcp": h.toResponse(ctx, def)})
+	resp, err := h.withVKs(ctx, def)
+	if err != nil {
+		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		return
+	}
+	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
 func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
@@ -290,6 +323,10 @@ func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := h.store.ConfigStore.AttachVirtualMCPToVirtualKey(ctx, id, vkID); err != nil {
+		if errors.Is(err, configstore.ErrVirtualKeyAccessProfileManaged) {
+			SendError(ctx, fasthttp.StatusConflict, "this virtual key is managed by an access profile; assign the Virtual MCP through that access profile instead")
+			return
+		}
 		h.logger.Error("failed to attach virtual MCP %d to VK %s: %v", id, vkID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
