@@ -1144,7 +1144,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A caller can ask for the holder's usage not to be counted, leaving what the deployment and the
 	// user answer to still counted.
 	skipHolderUsage := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking)
-	if requestedModel != "" {
+	// A passthrough call is charged when the provider reported something billable on it, whether or
+	// not a model was ever named. A Vertex custom endpoint names one nowhere — not in the path, which
+	// carries an endpoint id, and not in the body — yet the limits it answers to were settled on its
+	// grant before the call, and the holder's own limits never depended on a model to begin with:
+	// HolderLimits takes no model at all.
+	//
+	// Reported usage, rather than the request type, is what admits it. The raw routes carry metadata
+	// traffic too — a file retrieve, a job status poll — and those spend nothing, so counting them
+	// would make polling consume a caller's request allowance for nothing. Charging what was measured
+	// keeps the two apart without this having to know one provider's route shapes from another's.
+	chargeablePassthrough := result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil
+	if requestedModel != "" || chargeablePassthrough {
 		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
