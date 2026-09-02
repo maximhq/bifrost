@@ -58,7 +58,7 @@ func TestTranscription_DiarizedJSON_StringSegmentID(t *testing.T) {
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 30,
 		},
 	}, &testLogger{})
@@ -147,7 +147,7 @@ func TestTranscription_DiarizedJSON_OmitsAbsentDurationAndTask(t *testing.T) {
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 30,
 		},
 	}, &testLogger{})
@@ -215,7 +215,7 @@ func TestTranscription_VerboseJSON_StillWorks(t *testing.T) {
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 30,
 		},
 	}, &testLogger{})

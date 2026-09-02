@@ -51,7 +51,7 @@ func TestChatCompletionNormalizesUsage(t *testing.T) {
 	provider := &XAIProvider{
 		client: &fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second},
 		networkConfig: schemas.NetworkConfig{
-			BaseURL: server.URL,
+			BaseURL: schemas.NewSecretVar(server.URL),
 		},
 		logger: streamCostTestLogger{},
 	}
@@ -110,7 +110,7 @@ func TestChatCompletionStreamNormalizesUsageAndPreservesProviderReportedCost(t *
 		client:          client,
 		streamingClient: client,
 		networkConfig: schemas.NetworkConfig{
-			BaseURL: server.URL,
+			BaseURL: schemas.NewSecretVar(server.URL),
 		},
 		logger: streamCostTestLogger{},
 	}
@@ -191,7 +191,7 @@ func TestResponsesStreamPreservesProviderReportedCost(t *testing.T) {
 		client:          client,
 		streamingClient: client,
 		networkConfig: schemas.NetworkConfig{
-			BaseURL: server.URL,
+			BaseURL: schemas.NewSecretVar(server.URL),
 		},
 		logger: streamCostTestLogger{},
 	}
