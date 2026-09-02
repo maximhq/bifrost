@@ -280,3 +280,57 @@ func isValidHostnameLiteral(s string) bool {
 	}
 	return true
 }
+
+// PrivateNetworkDialContext returns a DialContext that, unlike
+// SSRFSafeDialContext, permits loopback, RFC1918/unique-local, and CGNAT
+// destinations. It still blocks link-local addresses (including the
+// 169.254.169.254 cloud metadata endpoint) and unspecified addresses, which
+// have no legitimate destination under any deployment topology. Same
+// DNS-rebinding protection as SSRFSafeDialContext: resolves once and dials
+// the validated IP directly.
+//
+// Use this only for features where connecting to a self-hosted or
+// private-network target is the primary, documented use case (e.g. an MCP
+// server running on the same host or inside the same private network) AND
+// that capability is already gated by genuine authentication elsewhere - this
+// function is a defense-in-depth backstop against link-local/metadata
+// targets, not an authorization check.
+func PrivateNetworkDialContext(dialTimeout time.Duration) func(ctx context.Context, netw, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: dialTimeout}
+	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dial address %q: %w", addr, err)
+		}
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+		}
+		for _, ip := range ips {
+			if ip.IsUnspecified() {
+				return nil, fmt.Errorf("blocked connection to unspecified address %s (host %s)", ip, host)
+			}
+			if IsLinkLocal(ip) {
+				return nil, fmt.Errorf("blocked connection to link-local address %s (host %s)", ip, host)
+			}
+		}
+		// Every address resolved above passed the policy, so trying them in
+		// turn is no weaker than dialing just the first: nothing outside this
+		// one validated set is ever dialed, which is what defeats rebinding.
+		// Pinning ips[0] instead would break the feature's primary documented
+		// target: "localhost" resolves to [::1, 127.0.0.1] on a dual-stack
+		// host, and an MCP server bound only to IPv4 is unreachable at ::1.
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, netw, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+}

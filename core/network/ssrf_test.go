@@ -351,3 +351,79 @@ func TestSSRFSafeDialContextWithAllowlist_NilAllowlistMatchesPlainDialContext(t 
 		t.Fatalf("expected blocked-connection error, got %v", err)
 	}
 }
+
+func TestPrivateNetworkDialContextBlocksLinkLocal(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected blocked link-local error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextBlocksUnspecified(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "0.0.0.0:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
+		t.Fatalf("expected blocked unspecified error, got %v", err)
+	}
+}
+
+// TestPrivateNetworkDialContextAllowsLoopback locks in the deliberate
+// difference from SSRFSafeDialContext: a self-hosted MCP server on the same
+// host is the documented primary use case, so loopback must stay dialable.
+func TestPrivateNetworkDialContextAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+
+	dial := PrivateNetworkDialContext(time.Second)
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("expected loopback dial to succeed, got %v", err)
+	}
+	conn.Close()
+}
+
+// TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses locks in the
+// multi-address behavior the MCP feature depends on: "localhost" resolves to
+// [::1, 127.0.0.1] on a dual-stack host, and an MCP server bound only to IPv4
+// must still be reachable. Pinning the first resolved address would make the
+// documented http://localhost:PORT/mcp target undialable.
+func TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses(t *testing.T) {
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", "localhost")
+	if err != nil || len(ips) < 2 {
+		t.Skipf("localhost does not resolve to multiple addresses here (%v, err=%v)", ips, err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to split listener address: %v", err)
+	}
+
+	dial := PrivateNetworkDialContext(2 * time.Second)
+	conn, err := dial(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("expected dial to fall back to the reachable resolved address, got %v", err)
+	}
+	conn.Close()
+}
