@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 )
 
@@ -58,8 +59,10 @@ const (
 //   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
-	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama).
+	// Accepts a plain URL or a SecretVar reference ("env.VAR" / "vault.path"), like CACertPEM and
+	// ProxyConfig.URL; read the dialable URL with BaseURL.GetValue().
+	BaseURL                        *SecretVar        `json:"base_url,omitempty"`                       // Base URL for the provider (optional, supports env.*)
 	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
 	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
 	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
@@ -76,7 +79,9 @@ type NetworkConfig struct {
 	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
 
-// UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
+// UnmarshalJSON customizes JSON unmarshaling for NetworkConfig. base_url accepts
+// a plain URL or a SecretVar reference ("env.VAR" / "vault.path"); a reference that
+// resolves to an empty value is an error.
 //
 // RetryBackoffInitial and RetryBackoffMax accept two formats:
 //   - Duration string (preferred): "500ms", "5s", "1m" — parsed via time.ParseDuration
@@ -85,7 +90,7 @@ type NetworkConfig struct {
 func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
-		BaseURL                        string            `json:"base_url,omitempty"`
+		BaseURL                        *SecretVar        `json:"base_url,omitempty"`
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
@@ -108,6 +113,21 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	// Copy all non-duration fields
+	// base_url accepts the same SecretVar reference forms ("env.VAR", "vault.path") already
+	// supported for ca_cert_pem, proxy.url, and the Ollama/SGL key URLs, so an upstream URL
+	// never has to be committed in plaintext. SecretVar.UnmarshalJSON performs the lookup and
+	// retains the reference, so MarshalJSON round-trips "env.VAR" rather than the resolved URL.
+	//
+	// A reference that resolves to an empty value is a fail-loud config error rather than a
+	// silent empty string (the fail-closed stance ConfigureTLS takes for ca_cert_pem): a
+	// misconfigured Key fails closed upstream with a 401, but a misconfigured base_url would
+	// otherwise be dialed as an empty host.
+	if alias.BaseURL != nil && alias.BaseURL.IsFromSecret() {
+		alias.BaseURL.Val = strings.TrimSpace(alias.BaseURL.Val)
+		if alias.BaseURL.Val == "" {
+			return fmt.Errorf("network_config.base_url references %q but it resolved to an empty value", alias.BaseURL.GetRawRef())
+		}
+	}
 	nc.BaseURL = alias.BaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
@@ -174,9 +194,10 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
-// MarshalJSON customizes JSON marshaling for NetworkConfig.
-// RetryBackoffInitial and RetryBackoffMax are converted from time.Duration (nanoseconds)
-// to milliseconds (integers) in JSON.
+// MarshalJSON customizes JSON marshaling for NetworkConfig. base_url and ca_cert_pem
+// are emitted in their SecretVar wire form (the "env.VAR"/"vault.path" reference when
+// configured as one, never the resolved value). RetryBackoffInitial and RetryBackoffMax
+// are converted from time.Duration (nanoseconds) to milliseconds (integers) in JSON.
 func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
@@ -198,7 +219,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	}
 
 	alias := NetworkConfigAlias{
-		BaseURL:                        nc.BaseURL,
+		BaseURL:                        SecretVarAsString(nc.BaseURL),
 		ExtraHeaders:                   nc.ExtraHeaders,
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
