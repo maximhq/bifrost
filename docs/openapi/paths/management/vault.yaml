@@ -23,6 +23,7 @@ flush-cache:
       - Vault
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Vault cache flushed successfully

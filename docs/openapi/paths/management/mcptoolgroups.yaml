@@ -31,6 +31,7 @@ mcp-tool-groups:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -65,6 +66,7 @@ mcp-tool-groups:
             $ref: '../../schemas/management/mcptoolgroups.yaml#/CreateMCPToolGroupRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Group created
@@ -98,6 +100,7 @@ mcp-tool-groups-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -139,6 +142,7 @@ mcp-tool-groups-by-id:
             $ref: '../../schemas/management/mcptoolgroups.yaml#/UpdateMCPToolGroupRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Group updated
@@ -174,6 +178,7 @@ mcp-tool-groups-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Group deleted

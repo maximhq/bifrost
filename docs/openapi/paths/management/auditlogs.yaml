@@ -181,6 +181,7 @@ audit-logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -228,6 +229,7 @@ audit-logs-filterdata:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -304,6 +306,7 @@ audit-logs-export:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: A streamed export of the matching audit logs.
@@ -345,6 +348,7 @@ audit-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -385,6 +389,7 @@ audit-logs-verify:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response

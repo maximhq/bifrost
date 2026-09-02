@@ -175,12 +175,48 @@ def test_legacy_aliases_mount_legacy_fragments():
     )
 
 
+def test_every_operation_declares_security():
+    """Every mounted operation must declare its own `security`.
+
+    The root `security` block is a fail-closed fallback, not a default to lean on: an
+    operation that omits `security` silently advertises the root's inference-shaped
+    credentials, which is how `/health`, `/metrics` and `/ws` drifted. `security: []`
+    is a valid, meaningful declaration (genuinely public endpoints); absence is not.
+    """
+    methods = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
+    missing: list[str] = []
+    for template, item in sorted(paths.items()):
+        if not isinstance(item, dict):
+            continue
+        ref = item.get("$ref")
+        if not ref:
+            continue
+        file_part, _, pointer = ref.partition("#/")
+        source = (HERE / file_part.lstrip("./")).resolve()
+        if not source.exists():
+            continue  # test_every_mounted_fragment_exists owns this failure
+        resolved = resolve_pointer(load(source) or {}, pointer_tokens(pointer)) or {}
+        for method, operation in resolved.items():
+            if method not in methods or not isinstance(operation, dict):
+                continue
+            # A legacy alias is a $ref to a real operation and inherits its security.
+            if "$ref" in operation:
+                continue
+            if "security" not in operation:
+                missing.append(f"{method.upper()} {template} ({file_part}#/{pointer})")
+    assert not missing, (
+        "operation does not declare `security` and falls through to the root default:\n    "
+        + "\n    ".join(missing)
+    )
+
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
 check("no fragment is defined but never used", test_no_orphaned_fragments)
 check("no operationId is claimed by two mounted operations", test_duplicate_operation_ids)
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
+check("every operation declares its own security", test_every_operation_declares_security)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

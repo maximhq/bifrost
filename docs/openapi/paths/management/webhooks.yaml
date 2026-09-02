@@ -50,6 +50,7 @@ webhooks:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
   post:
     operationId: createWebhookEndpoint
     summary: Create a webhook endpoint
@@ -78,6 +79,7 @@ webhooks:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 webhooks-by-id:
   get:
@@ -100,6 +102,7 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
   put:
     operationId: updateWebhookEndpoint
     summary: Update a webhook endpoint
@@ -131,6 +134,7 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
   delete:
     operationId: deleteWebhookEndpoint
     summary: Delete a webhook endpoint
@@ -151,6 +155,7 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 webhooks-rotate-secret:
   post:
@@ -177,6 +182,7 @@ webhooks-rotate-secret:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 webhooks-test:
   post:
@@ -208,6 +214,7 @@ webhooks-test:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 webhooks-deliveries:
   get:
@@ -245,6 +252,7 @@ webhooks-deliveries:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 webhooks-deliveries-redeliver:
   post:
@@ -281,6 +289,7 @@ webhooks-deliveries-redeliver:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
 
 components:
   parameters:

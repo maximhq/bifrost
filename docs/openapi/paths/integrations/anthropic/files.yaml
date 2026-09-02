@@ -41,7 +41,6 @@ files:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   get:
@@ -90,7 +89,6 @@ files:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 files-content:
@@ -160,7 +158,6 @@ files-content:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 files-by-id:
@@ -204,6 +201,5 @@ files-by-id:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

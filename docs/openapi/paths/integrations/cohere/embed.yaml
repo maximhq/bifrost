@@ -35,6 +35,5 @@ embed:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

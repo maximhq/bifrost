@@ -128,6 +128,7 @@ logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -154,6 +155,7 @@ logs:
             $ref: '../../schemas/management/logging.yaml#/DeleteLogsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Logs deleted successfully
@@ -268,6 +270,7 @@ logs-stats:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -289,6 +292,7 @@ logs-dropped:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -306,6 +310,7 @@ logs-filterdata:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -332,6 +337,7 @@ logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -387,6 +393,7 @@ logs-histogram:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -427,6 +434,7 @@ logs-histogram-tokens:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -467,6 +475,7 @@ logs-histogram-cost:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -507,6 +516,7 @@ logs-histogram-models:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -547,6 +557,7 @@ logs-histogram-latency:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -587,6 +598,7 @@ logs-histogram-cost-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -627,6 +639,7 @@ logs-histogram-tokens-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -667,6 +680,7 @@ logs-histogram-latency-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -890,6 +904,7 @@ logs-recalculate-cost:
             $ref: '../../schemas/management/logging.yaml#/RecalculateCostRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '202':
         description: Cost recalculation job accepted
@@ -931,6 +946,7 @@ logs-recalculate-cost-status:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Recalculation job status
@@ -1044,6 +1060,7 @@ mcp-logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1070,6 +1087,7 @@ mcp-logs:
             $ref: '../../schemas/management/logging.yaml#/DeleteMCPLogsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP tool logs deleted successfully
@@ -1098,6 +1116,7 @@ mcp-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP tool log found
@@ -1175,6 +1194,7 @@ mcp-logs-stats:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1196,6 +1216,7 @@ mcp-logs-filterdata:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1244,6 +1265,7 @@ logs-sessions-by-id:
           default: asc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session logs retrieved successfully
@@ -1272,6 +1294,7 @@ logs-sessions-summary-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session summary retrieved successfully
@@ -1327,6 +1350,7 @@ logs-rankings:
       - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Model rankings retrieved successfully
@@ -1401,6 +1425,7 @@ logs-dashboard:
       - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dashboard data retrieved successfully
@@ -1450,6 +1475,7 @@ logs-histogram-cost-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension cost histogram retrieved successfully
@@ -1498,6 +1524,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension token histogram retrieved successfully
@@ -1546,6 +1573,7 @@ logs-histogram-latency-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension latency histogram retrieved successfully
@@ -1620,6 +1648,7 @@ mcp-logs-histogram:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP histogram retrieved successfully
@@ -1694,6 +1723,7 @@ mcp-logs-histogram-cost:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP cost histogram retrieved successfully
@@ -1768,6 +1798,7 @@ mcp-logs-histogram-top-tools:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP top tools retrieved successfully
