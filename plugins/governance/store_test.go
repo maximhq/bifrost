@@ -23,7 +23,7 @@ func TestLocalGovernanceStore_GetGovernanceUsageDataExcludesUnrelatedState(t *te
 		},
 		Budgets:    []configstoreTables.TableBudget{{ID: "budget1"}},
 		RateLimits: []configstoreTables.TableRateLimit{{ID: "rate-limit1"}},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	data := store.GetGovernanceUsageData(context.Background())
@@ -2009,4 +2009,103 @@ func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
 
 		assert.Equal(t, 90.0, status.BudgetPercentUsed)
 	})
+}
+
+// TestGovernanceStore_RevokeRotationGraceInMemory covers the in-memory half of
+// setting vk_rotation_cooldown to 0: every retired value stops authenticating at
+// once, without a database read per key. The sweep is what a cluster peer runs
+// when it receives the single revoke message, so it has to be correct on its own.
+func TestGovernanceStore_RevokeRotationGraceInMemory(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+
+	graced := buildVirtualKey("vk-graced", "sk-bf-graced-old", "Graced VK", true)
+	plain := buildVirtualKey("vk-plain", "sk-bf-plain", "Never Rotated VK", true)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*graced, *plain},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	exp := now.Add(time.Hour)
+	rotated := *graced
+	rotated.Value = *schemas.NewSecretVar("sk-bf-graced-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-graced-old")
+	rotated.PreviousValueExpiresAt = &exp
+	rotated.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+
+	// The hour-long window is live, so the retired value authenticates.
+	_, found := store.GetVirtualKey(ctx, "sk-bf-graced-old")
+	require.True(t, found, "grace value must authenticate before the revocation")
+
+	revoked := store.RevokeRotationGraceInMemory(ctx)
+	assert.Equal(t, []string{"vk-graced"}, revoked, "only keys holding a retired value are reported")
+
+	_, found = store.GetVirtualKey(ctx, "sk-bf-graced-old")
+	assert.False(t, found, "retired value must stop authenticating immediately")
+
+	current, found := store.GetVirtualKey(ctx, "sk-bf-graced-new")
+	require.True(t, found, "the current value must keep authenticating")
+	assert.Equal(t, "vk-graced", current.ID)
+	assert.False(t, current.PreviousValue.IsSet(), "grace state must be gone from the cached object")
+	assert.Nil(t, current.PreviousValueExpiresAt)
+
+	byID, found := store.GetVirtualKeyByID(ctx, "vk-graced")
+	require.True(t, found, "the ID index must survive the sweep")
+	assert.False(t, byID.PreviousValue.IsSet())
+
+	untouched, found := store.GetVirtualKey(ctx, "sk-bf-plain")
+	require.True(t, found, "a key that never rotated must be unaffected")
+	assert.Equal(t, "vk-plain", untouched.ID)
+
+	// Idempotent: nothing left to revoke.
+	assert.Empty(t, store.RevokeRotationGraceInMemory(ctx))
+}
+
+// TestGovernanceStore_RevokeRotationGraceInMemory_KeepsOtherKeysCurrentValue is
+// the sharp edge of the sweep. The previous-value hash index is non-unique, so
+// one key's retired value can be another key's live credential. Revoking must
+// drop the alias only where it still belongs to the rotated key, otherwise it
+// would deauthenticate an unrelated key that never rotated at all.
+func TestGovernanceStore_RevokeRotationGraceInMemory_KeepsOtherKeysCurrentValue(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+	const shared = "sk-bf-shared-value"
+
+	vkA := buildVirtualKey("vk-a", shared, "Rotating VK", true)
+	vkB := buildVirtualKey("vk-b", "sk-bf-b-original", "Owner VK", true)
+	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vkA, *vkB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	exp := now.Add(time.Hour)
+	rotatedA := *vkA
+	rotatedA.Value = *schemas.NewSecretVar("sk-bf-a-new")
+	rotatedA.PreviousValue = *schemas.NewSecretVar(shared)
+	rotatedA.PreviousValueExpiresAt = &exp
+	rotatedA.RotatedAt = &now
+	store.UpdateVirtualKeyInMemory(ctx, &rotatedA, nil, nil, nil)
+
+	// VK-B then claims that same value as its CURRENT credential.
+	claimedB := *vkB
+	claimedB.Value = *schemas.NewSecretVar(shared)
+	store.UpdateVirtualKeyInMemory(ctx, &claimedB, nil, nil, nil)
+
+	owner, found := store.GetVirtualKey(ctx, shared)
+	require.True(t, found)
+	require.Equal(t, "vk-b", owner.ID, "current ownership wins over a grace alias")
+
+	store.RevokeRotationGraceInMemory(ctx)
+
+	owner, found = store.GetVirtualKey(ctx, shared)
+	require.True(t, found, "revoking VK-A's grace must not deauthenticate VK-B")
+	assert.Equal(t, "vk-b", owner.ID)
+
+	aNew, found := store.GetVirtualKey(ctx, "sk-bf-a-new")
+	require.True(t, found)
+	assert.Equal(t, "vk-a", aNew.ID)
+	assert.False(t, aNew.PreviousValue.IsSet())
 }

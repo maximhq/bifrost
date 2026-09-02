@@ -3806,6 +3806,46 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	return nil
 }
 
+// RevokeVirtualKeyRotationGrace clears the rotation grace-period columns from
+// every virtual key that still carries one, returning the affected IDs.
+//
+// Auth reads the stamped previous_value_expires_at, never the live
+// vk_rotation_cooldown, so dropping the cooldown to zero cannot retire an
+// in-flight window on its own - the retired values keep authenticating until
+// their original expiry. This is the write that makes "0 means the old value
+// stops working immediately" true for windows that are already open.
+//
+// Rows are selected on previous_value_expires_at IS NOT NULL (the column
+// HasActivePreviousValue requires) rather than on the expiry being in the
+// future, so already-expired leftovers are swept in the same pass. Hooks are
+// skipped: this is a targeted column write on rows that are not loaded, and
+// BeforeSave would otherwise run against a zero-valued model.
+//
+// Deliberately unscoped (DB(), not ScopedDB): vk_rotation_cooldown is a global
+// setting, so the revocation it triggers has to cover every key. Running this
+// through the caller's DAC scope would revoke only the keys that caller can
+// see and silently leave the rest authenticating their retired values.
+func (s *RDBConfigStore) RevokeVirtualKeyRotationGrace(ctx context.Context) (int64, error) {
+	// Single statement on purpose. Selecting the ids first and updating that
+	// list second leaves a window in which a rotation commits new grace state
+	// between the two: its key is absent from the list, so the revocation
+	// reports success while that retired value stays valid for its full
+	// window. Matching rows in the UPDATE itself closes that window.
+	result := s.DB().WithContext(ctx).
+		Session(&gorm.Session{SkipHooks: true}).
+		Model(&tables.TableVirtualKey{}).
+		Where("previous_value_expires_at IS NOT NULL").
+		Updates(map[string]any{
+			"previous_value":            "",
+			"previous_value_hash":       "",
+			"previous_value_expires_at": nil,
+		})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
 // GetKeysByIDs retrieves multiple keys by their IDs
 func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error) {
 	if len(ids) == 0 {

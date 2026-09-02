@@ -327,6 +327,13 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	// RevokeVirtualKeyRotationGrace clears the rotation grace-period state from
+	// every virtual key that still carries one, returning the number of rows
+	// changed. Used when the configured vk_rotation_cooldown drops to zero: the
+	// stamped expiry is what auth reads, so an in-flight window survives the
+	// config change until it is cleared here. In-memory copies are refreshed
+	// separately via GovernanceStore.RevokeRotationGraceInMemory.
+	RevokeVirtualKeyRotationGrace(ctx context.Context) (int64, error)
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)

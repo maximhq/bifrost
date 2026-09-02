@@ -1002,6 +1002,10 @@ func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ..
 	return nil
 }
 
+func (m *MockConfigStore) RevokeVirtualKeyRotationGrace(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	return nil, nil
 }

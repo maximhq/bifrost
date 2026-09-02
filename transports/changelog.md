@@ -1,3 +1,4 @@
 ## ✨ Features
 
+- **Virtual Key Rotation Cooldown** - Saving `vk_rotation_cooldown` as 0 (or an empty duration) now retires every in-flight grace window immediately, in the database and in memory, matching what the security settings copy promises. The revocation is one bulk UPDATE plus one in-memory sweep regardless of how many keys hold a retired value; in a cluster it propagates as a single `revoke_rotation_grace` virtual key message, since peers share the database and only need to refresh memory. A non-zero change still applies only to future rotations.
 - **Virtual Key Rotation Cooldown** - New `client.vk_rotation_cooldown` setting (duration string, e.g. "5m"): after a rotation the previous key value keeps authenticating until the grace window expires. config.json VK sync now treats a changed value as an explicit rotation (with console warning) and recognizes the previously rotated-out value as "no change".

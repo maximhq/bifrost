@@ -436,8 +436,8 @@ export default function SecurityView() {
 						</label>
 						<p className="text-muted-foreground text-sm">
 							After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new
-							key. Use a duration like <b>30s</b>, <b>5m</b>, or <b>1h</b>. Leave empty (or 0) to have the old value stop working
-							immediately. Maximum 30 days.
+							key. Use a duration like <b>30s</b>, <b>5m</b>, or <b>1h</b>; a new duration applies to future rotations. Leave empty (or
+							0) to have the old value stop working immediately, which also ends any grace period already in progress. Maximum 30 days.
 						</p>
 					</div>
 					<Input
