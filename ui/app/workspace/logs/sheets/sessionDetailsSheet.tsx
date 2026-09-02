@@ -15,6 +15,7 @@ import { format } from "date-fns";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { LogMessageCell } from "../views/columns";
 
 const SESSION_LOG_PAGE_SIZE = 500;
@@ -62,6 +63,7 @@ export function SessionDetailsSheet({
 	onLogClick,
 	onFilterByParentRequestId,
 }: SessionDetailsSheetProps) {
+	const { t } = useTranslation("observability");
 	const [triggerGetSession] = useLazyGetLogSessionByIdQuery();
 	const [sessionLogs, setSessionLogs] = useState<LogEntry[]>([]);
 	const [loadingSession, setLoadingSession] = useState(false);
@@ -80,34 +82,34 @@ export function SessionDetailsSheet({
 	const summaryCards: SummaryCard[] = useMemo(
 		() => [
 			{
-				label: "Logs",
+				label: t("logs.session.logs"),
 				value: (sessionSummary?.count || 0).toLocaleString(),
 				helper: sessionSummary && sessionLogs.length < sessionSummary.count ? `(${sessionLogs.length.toLocaleString()} loaded)` : undefined,
 			},
 			{
-				label: "Total Cost",
+				label: t("logs.session.totalCost"),
 				value: `$${(sessionSummary?.total_cost || 0).toFixed(4)}`,
 			},
 			{
-				label: "Total Tokens",
+				label: t("logs.session.totalTokens"),
 				value: (sessionSummary?.total_tokens || 0).toLocaleString(),
 			},
 			{
-				label: "Started",
-				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
+				label: t("logs.session.started"),
+				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : t("labels.nA"),
 				size: "sm",
 			},
 			{
-				label: "Latest Update",
-				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
+				label: t("logs.session.latestUpdate"),
+				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : t("labels.nA"),
 				size: "sm",
 			},
 			{
-				label: "Duration",
+				label: t("logs.session.duration"),
 				value: formatDurationFromMs(sessionSummary?.duration_ms),
 			},
 		],
-		[sessionSummary, sessionLogs.length],
+		[sessionSummary, sessionLogs.length, t],
 	);
 
 	const sortSessionLogs = useCallback(
@@ -130,7 +132,7 @@ export function SessionDetailsSheet({
 					pagination: { limit: SESSION_LOG_PAGE_SIZE, offset, order: sortOrder },
 				});
 				if (result.error) {
-					toast.error("Failed to load session logs", {
+					toast.error(t("logs.session.loadFailed"), {
 						description: getErrorMessage(result.error),
 					});
 					return;
@@ -209,7 +211,7 @@ export function SessionDetailsSheet({
 							onClick={() => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
 						>
 							{sortOrder === "asc" ? <ArrowUp className="mr-2 h-4 w-4" /> : <ArrowDown className="mr-2 h-4 w-4" />}
-							{sortOrder === "asc" ? "Earliest first" : "Latest first"}
+							{sortOrder === "asc" ? t("logs.session.earliestFirst") : t("logs.session.latestFirst")}
 						</Button>
 					</div>
 				</div>
@@ -294,7 +296,7 @@ export function SessionDetailsSheet({
 												{log.provider as ProviderName}
 											</Badge>
 										</TableCell>
-										<TableCell className="max-w-[140px] truncate font-mono text-xs">{log.model || "N/A"}</TableCell>
+										<TableCell className="max-w-[140px] truncate font-mono text-xs">{log.model || t("labels.nA")}</TableCell>
 									</TableRow>
 								))
 							) : (

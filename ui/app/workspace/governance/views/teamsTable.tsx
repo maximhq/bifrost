@@ -26,6 +26,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
@@ -50,6 +51,8 @@ function TeamActionsMenu({
 	onEdit: (team: Team) => void;
 	onDelete: (teamId: string) => void;
 }) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -79,12 +82,12 @@ function TeamActionsMenu({
 						}}
 					>
 						<Edit className="h-4 w-4" />
-						Edit
+						{t("teams.actions.edit")}
 					</DropdownMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
 						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
-							View logs
+							{t("teams.actions.viewLogs")}
 						</Link>
 					</DropdownMenuItem>
 					<DropdownMenuItem
@@ -99,23 +102,22 @@ function TeamActionsMenu({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
+						{t("teams.actions.delete")}
 					</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Team</AlertDialogTitle>
+						<AlertDialogTitle>{t("teams.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action
-							cannot be undone.
+							{t("teams.deleteDescription", { name: team.name })}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? t("teams.deleting") : t("teams.actions.delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -153,6 +155,8 @@ export default function TeamsTable({
 	onTeamSelect,
 	onDialogClose,
 }: TeamsTableProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const showTeamSheet = selectedTeamId !== null && selectedTeamId !== "";
 	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
@@ -173,7 +177,7 @@ export default function TeamsTable({
 	const handleDelete = async (teamId: string) => {
 		try {
 			await deleteTeam(teamId).unwrap();
-			toast.success("Team deleted successfully");
+			toast.success(t("teams.deleted"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -196,7 +200,7 @@ export default function TeamsTable({
 	// via a correlated subquery, so neither needs a client-side join.
 	const getCustomerName = (team: Team) => {
 		if (!team.customer_id) return "-";
-		return team.customer?.name ?? "Unknown Customer";
+		return team.customer?.name ?? t("teams.unknownCustomer");
 	};
 
 	const hasActiveFilters = debouncedSearch;
@@ -209,7 +213,7 @@ export default function TeamsTable({
 	// Hoisted above the empty/populated branch: PageTitle draws nothing inline,
 	// and leaving it out of either branch drops the topbar to the route-derived
 	// fallback.
-	const pageTitle = <PageTitle title="Teams">Organize users into teams with shared budgets and access controls.</PageTitle>;
+	const pageTitle = <PageTitle title={t("teams.title")}>{t("teams.description")}</PageTitle>;
 
 	// True empty state: no teams at all (not just filtered to zero). Rendered as a
 	// branch *inside* the tree rather than an early return with a different shape,
@@ -234,8 +238,8 @@ export default function TeamsTable({
 							<div className="relative max-w-sm flex-1">
 								<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 								<Input
-									aria-label="Search teams by name"
-									placeholder="Search by name..."
+									aria-label={t("teams.searchAria")}
+									placeholder={t("teams.searchPlaceholder")}
 									value={search}
 									onChange={(e) => onSearchChange(e.target.value)}
 									className="pl-9"
@@ -244,7 +248,7 @@ export default function TeamsTable({
 							</div>
 							<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
 								<Plus className="h-4 w-4" />
-								Add Team
+								{t("teams.add")}
 							</Button>
 						</div>
 
@@ -252,11 +256,11 @@ export default function TeamsTable({
 							<Table className="min-w-[1100px]" containerClassName="h-full">
 								<TableHeader className="bg-background sticky top-0">
 									<TableRow>
-										<TableHead>Name</TableHead>
-										<TableHead>Customer</TableHead>
-										<TableHead>Budget</TableHead>
-										<TableHead>Rate Limit</TableHead>
-										<TableHead>Virtual Keys</TableHead>
+										<TableHead>{t("teams.columns.name")}</TableHead>
+										<TableHead>{t("teams.columns.customer")}</TableHead>
+										<TableHead>{t("teams.columns.budget")}</TableHead>
+										<TableHead>{t("teams.columns.rateLimit")}</TableHead>
+										<TableHead>{t("teams.columns.virtualKeys")}</TableHead>
 										<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 									</TableRow>
 								</TableHeader>
@@ -264,7 +268,7 @@ export default function TeamsTable({
 									{teams.length === 0 ? (
 										<TableRow>
 											<TableCell colSpan={6} className="h-24 text-center">
-												<span className="text-muted-foreground text-sm">No matching teams found.</span>
+												<span className="text-muted-foreground text-sm">{t("teams.noMatch")}</span>
 											</TableCell>
 										</TableRow>
 									) : (
@@ -308,7 +312,7 @@ export default function TeamsTable({
 															<span className="truncate font-medium">{team.name}</span>
 															{isExhausted && (
 																<Badge variant="destructive" className="w-fit text-xs">
-																	Limit Reached
+																	{t("teams.limitReached")}
 																</Badge>
 															)}
 														</div>

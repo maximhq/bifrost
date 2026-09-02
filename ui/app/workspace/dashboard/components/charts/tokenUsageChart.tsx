@@ -6,6 +6,7 @@ import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/
 import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
 
 interface TokenUsageChartProps {
 	data: TokenHistogramResponse | null;
@@ -71,7 +72,7 @@ function TokenUsageChartImpl({ data, chartType, startTime, endTime }: TokenUsage
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {

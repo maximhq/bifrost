@@ -1,0 +1,244 @@
+{
+	"common": {
+		"readMore": "了解更多",
+		"readMoreAria": "了解此功能详情（在新标签页打开）",
+		"filters": "筛选",
+		"hideFilters": "隐藏筛选",
+		"reset": "重置",
+		"noResults": "无结果",
+		"page": "页",
+		"previousPage": "上一页",
+		"nextPage": "下一页",
+		"ofEntries": "第 {{from}}-{{to}} 条，共 {{total}} 条",
+		"ofPages": "/ {{total}}",
+		"enabled": "已启用",
+		"disabled": "已禁用",
+		"success": "成功",
+		"library": "库",
+		"status": "状态",
+		"state": "运行状态",
+		"name": "名称",
+		"type": "类型",
+		"created": "创建时间",
+		"revoke": "撤销",
+		"continue": "继续"
+	},
+	"registry": {
+		"title": "MCP 服务器目录",
+		"description": "管理可连接到 MCP Tools 端点的服务器。",
+		"emptyTitle": "MCP 服务器将工具与上下文接入网关",
+		"emptyDescription": "添加 MCP 服务器以向 MCP Tools 端点暴露工具和资源。可配置连接类型、鉴权以及启用的工具。",
+		"addServer": "添加 MCP 服务器",
+		"addServerAria": "添加你的第一台 MCP 服务器",
+		"browseLibrary": "浏览库",
+		"browseLibraryAria": "浏览 MCP 服务器库",
+		"readMoreAria": "了解 MCP 服务器（在新标签页打开）",
+		"searchPlaceholder": "按名称搜索…",
+		"searchAria": "按名称搜索 MCP 服务器",
+		"newServer": "新建 MCP 服务器",
+		"libraryAria": "MCP 服务器库",
+		"actionsAria": "MCP 服务器操作",
+		"noMatch": "没有匹配的 MCP 服务器。",
+		"removeTitle": "移除 MCP 服务器",
+		"removeDescription": "确定要移除 MCP 服务器 {{name}} 吗？之后需要重新连接该服务器才能继续使用。",
+		"columns": {
+			"name": "名称",
+			"endpoint": "端点",
+			"connectionType": "连接类型",
+			"authType": "鉴权类型",
+			"authScope": "鉴权范围",
+			"codeMode": "代码模式",
+			"vkAccess": "访问",
+			"enabledTools": "已启用工具",
+			"autoExecuteTools": "自动执行工具",
+			"state": "运行状态",
+			"status": "状态",
+			"access": "访问"
+		},
+		"actions": {
+			"edit": "编辑",
+			"authorize": "授权",
+			"reconnect": "重新连接",
+			"reauthorize": "重新授权",
+			"refreshAdminCredential": "刷新管理员凭证",
+			"reverifyAsMe": "以我的身份重新验证",
+			"delete": "删除"
+		},
+		"toast": {
+			"reconnected": "已重新连接",
+			"reconnectedDesc": "客户端 {{name}} 已成功重新连接。",
+			"authorizationFailed": "授权失败",
+			"reauthorizationFailed": "重新授权失败",
+			"verified": "已验证",
+			"verificationFailed": "验证失败",
+			"deleted": "已删除",
+			"deletedDesc": "客户端 {{name}} 已成功移除。",
+			"alreadyVerified": "已验证",
+			"serverEnabled": "服务器已启用",
+			"serverDisabled": "服务器已禁用",
+			"adminCredentialRefreshed": "管理员发现凭证已刷新。",
+			"reauthorized": "MCP 客户端已重新授权",
+			"unexpectedResponse": "服务器返回异常，请重试。"
+		},
+		"filter": {
+			"connectionType": "连接类型",
+			"authType": "鉴权类型",
+			"state": "运行状态",
+			"codeMode": "代码模式",
+			"status": "状态",
+			"vkAccess": "访问",
+			"searchVirtualKeys": "搜索虚拟密钥",
+			"healthy": "健康",
+			"unstable": "不稳定",
+			"none": "无",
+			"headers": "请求头",
+			"perUserOauth": "每用户 OAuth",
+			"perUserHeaders": "每用户请求头",
+			"tokenExchange": "令牌交换",
+			"allVirtualKeys": "全部虚拟密钥",
+			"access": "访问",
+			"allowedByDefault": "默认允许"
+		},
+		"verify": {
+			"verifyAsMe": "以我的身份验证",
+			"reverifyAsMe": "以我的身份重新验证",
+			"establishTitle": "使用你的身份建立 Bifrost 的发现凭证。",
+			"renewTitle": "使用你的身份续期 Bifrost 自身的发现凭证。",
+			"exchangeBody": "这将用你已登录的身份去{{action}} Bifrost 对 {{name}} 的发现凭证。",
+			"establish": "建立",
+			"renew": "续期",
+			"pendingHint": "该凭证仅用于定期拉取此服务器的工具列表，不用于真实用户请求；用户请求的令牌会在每次请求时自动交换。",
+			"renewHint": "该凭证仅用于定期拉取此服务器的工具列表，不用于真实用户请求；用户请求的令牌会在每次请求时自动交换。仅当凭证徽章显示已过期时才需要此操作，但随时运行都是安全的。",
+			"verifying": "验证中…"
+		},
+		"serverFilter": "服务器筛选",
+		"seeAllConnectionStates": "查看全部连接状态"
+	},
+	"library": {
+		"title": "MCP 服务器库",
+		"description": "从已同步的目录浏览并安装 MCP 服务器。",
+		"searchPlaceholder": "搜索服务器…",
+		"addToLibrary": "添加到库",
+		"configureSync": "配置同步",
+		"settings": "设置",
+		"grid": "网格",
+		"table": "表格",
+		"gridView": "网格视图",
+		"tableView": "表格视图",
+		"viewModeAria": "库视图模式"
+	},
+	"sessions": {
+		"title": "MCP 鉴权会话",
+		"description": "为 MCP 服务器存储的每用户凭证（OAuth 令牌与已提交请求头），以及进行中的鉴权流程。",
+		"loadFailed": "加载 MCP 会话失败：{{message}}",
+		"searchPlaceholder": "搜索 MCP、用户、虚拟密钥、会话…",
+		"searchAria": "搜索会话",
+		"actionsAria": "MCP 会话操作",
+		"noMatch": "没有符合筛选条件的会话。",
+		"empty": "暂无会话。当推理请求或 MCP 网关调用触发每用户鉴权（OAuth 或请求头提交）时，会话会出现在此。",
+		"columns": {
+			"mcpServer": "MCP 服务器",
+			"type": "类型",
+			"boundTo": "绑定到",
+			"status": "状态",
+			"accessTokenExpiry": "访问令牌过期",
+			"created": "创建时间"
+		},
+		"tooltips": {
+			"type": "OAuth：每用户 OAuth 凭证，可能是已完成登录后的已存令牌，或进行中的登录流程。Headers：每用户请求头值（API 密钥 / 签名令牌），可能是已存储或待提交。",
+			"boundTo": "此凭证绑定的身份：终端用户（经 SSO）、虚拟密钥（使用该 VK 的任何人共享），或客户端签发的会话 ID（通过 x-bf-mcp-session-id 请求头声明）。",
+			"status": "活跃：凭证有效可用。待处理：OAuth 流程进行中，用户需完成登录。需重新鉴权：上游凭证已过期或在提供方被撤销，用户需重新连接。需更新：管理员更改了所需请求头键，用户需重新提交。孤立：用户失去对此 MCP 的访问（例如访问配置变更）；凭证会保留，访问恢复后自动变为活跃。",
+			"accessTokenExpiry": "当前访问令牌的过期时间。Bifrost 会在下次请求时用刷新令牌自动刷新，因此过期后的活跃行会在使用时静默签发新令牌。请求头行没有上游过期时间；其值在撤销或 schema 变更前一直有效。"
+		},
+		"status": {
+			"active": "活跃",
+			"orphaned": "孤立",
+			"needsReauth": "需重新鉴权",
+			"needsUpdate": "需更新",
+			"pending": "待处理"
+		},
+		"kind": {
+			"oauth": "OAuth",
+			"headers": "请求头"
+		},
+		"binding": {
+			"sessionBound": "会话绑定"
+		},
+		"actions": {
+			"reauthenticate": "重新鉴权",
+			"completeAuth": "完成鉴权",
+			"triggerReauth": "触发请求以重新鉴权",
+			"revoke": "撤销",
+			"updateValues": "更新值",
+			"editValues": "编辑值"
+		},
+		"revokeHeaderTitle": "撤销这些已存储的请求头值？",
+		"revokeHeaderDescription": "Bifrost 将移除此绑定的已存凭证值。没有可在上游撤销的令牌；用户需重新提交请求头值才能再次使用此 MCP。",
+		"revokeSessionTitle": "撤销此 MCP 会话？",
+		"revokeSessionDescription": "Bifrost 将移除此绑定的已存凭证。上游 OAuth 令牌不会在提供方处撤销；它会保持游离并自然过期。使用此绑定的任何人需重新鉴权以获取新令牌。",
+		"toast": {
+			"reauthFailed": "重新鉴权失败",
+			"headerRevoked": "请求头值已撤销",
+			"sessionRevoked": "会话已撤销",
+			"headerRevokeFailed": "撤销请求头值失败",
+			"sessionRevokeFailed": "撤销会话失败"
+		},
+		"filter": {
+			"type": "类型",
+			"status": "状态",
+			"identity": "身份",
+			"mcpServer": "MCP 服务器",
+			"virtualKey": "虚拟密钥",
+			"users": "用户",
+			"searchMcpServers": "搜索 MCP 服务器",
+			"searchVirtualKeys": "搜索虚拟密钥",
+			"searchUsers": "按姓名或邮箱搜索",
+			"user": "用户",
+			"virtualKeyOption": "虚拟密钥",
+			"session": "会话"
+		}
+	},
+	"oauthGrants": {
+		"title": "OAuth 授权",
+		"description": "通过 OAuth 同意流程连接的 MCP 客户端所持有的活跃下游授权。",
+		"searchPlaceholder": "搜索客户端、身份…",
+		"searchAria": "搜索授权",
+		"loadFailed": "加载 OAuth 授权失败：{{message}}",
+		"grantRevoked": "授权已撤销",
+		"revokeFailed": "撤销授权失败",
+		"noMatch": "没有符合筛选条件的授权。",
+		"columns": {
+			"client": "客户端",
+			"boundTo": "绑定到",
+			"accessTokenExpiry": "访问令牌过期",
+			"created": "创建时间",
+			"lastUsed": "最近使用"
+		},
+		"tooltips": {
+			"boundTo": "此授权绑定的身份：终端用户（经 SSO）、虚拟密钥（使用该 VK 的任何人共享），或匿名会话。这决定了在此授权下可访问哪些上游每用户 OAuth 会话。",
+			"accessTokenExpiry": "当前 JWT 访问令牌的过期时间。MCP 客户端会用刷新令牌静默刷新，因此过期后的活跃授权会在下次请求时自动签发新令牌。",
+			"lastUsed": "此授权最近一次刷新访问令牌的时间。MCP 客户端会在令牌临近过期时刷新，因此这反映授权的最近活动。自授权后从未刷新的授权会回退显示创建时间。"
+		},
+		"refreshesOnNextUse": "下次使用时刷新",
+		"unknown": "未知",
+		"revokeTitle": "撤销此 OAuth 授权？",
+		"revokeDescription": "此授权的刷新令牌会立即停止轮换，MCP 客户端无法再续期访问。其当前访问令牌是短期 JWT，在过期前仍可在 /mcp 端点使用（默认 10 分钟），之后客户端会被完全切断，须通过 OAuth 同意流程重新连接。",
+		"filter": {
+			"identity": "身份",
+			"virtualKey": "虚拟密钥",
+			"users": "用户",
+			"searchVirtualKeys": "搜索虚拟密钥",
+			"searchUsers": "按姓名或邮箱搜索"
+		}
+	},
+	"toolGroups": {
+		"title": "MCP 工具组",
+		"description": "为 MCP 服务器配置工具组，以组织并治理工具。",
+		"unlockTitle": "解锁 MCP 工具组",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。为 MCP 服务器配置工具组，以便在组织内组织并治理 MCP 工具。"
+	},
+	"authConfig": {
+		"unlockTitle": "解锁 MCP 鉴权配置",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。为 MCP 服务器配置鉴权以保护 MCP 连接。"
+	}
+}

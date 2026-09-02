@@ -54,6 +54,7 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { PAGE_SIZE, formatDateShort, useDebouncedValue } from "./helpers";
 
@@ -62,6 +63,7 @@ const SKILLS_REPOSITORY_DOCS_URL = "https://docs.getbifrost.ai/features/skills-r
 // ---------- MarketplacePopover ----------
 
 function MarketplacePopover() {
+	const { t } = useTranslation("config");
 	const [copiedKey, setCopiedKey] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
 	const marketplaceBaseUrl = `${getExampleBaseUrl()}/api`;
@@ -93,20 +95,20 @@ function MarketplacePopover() {
 			.then(() => {
 				setCopiedKey(key);
 				setOpen(false);
-				toast.success("Copied to clipboard");
+				toast.success(t("skillsRepo.copied"));
 				setTimeout(() => setCopiedKey(null), 2000);
 			})
 			.catch(() => {
-				toast.error("Failed to copy to clipboard");
+				toast.error(t("skillsRepo.copyFailed"));
 			});
 	};
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" title="Register as Marketplace" aria-label="Register as Marketplace">
+				<Button variant="outline" size="sm" title={t("skillsRepo.registerMarketplace")} aria-label={t("skillsRepo.registerMarketplace")}>
 					<Package className="h-3.5 w-3.5" />
-					<span className="hidden md:inline">Register as Marketplace</span>
+					<span className="hidden md:inline">{t("skillsRepo.registerMarketplace")}</span>
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-[calc(100vw-2rem)] max-w-md p-0 md:w-auto">
@@ -192,6 +194,7 @@ function SkillActionsMenu({
 	onEdit: (id: string) => void;
 	onDelete: (id: string) => Promise<void>;
 }) {
+	const { t } = useTranslation("config");
 	const [isOpen, setIsOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const [isDownloading, setIsDownloading] = useState(false);
@@ -211,7 +214,7 @@ function SkillActionsMenu({
 			link.click();
 			document.body.removeChild(link);
 		} catch {
-			toast.error("Failed to download skill");
+			toast.error(t("skillsRepo.downloadFailed"));
 		} finally {
 			if (url) URL.revokeObjectURL(url);
 			setIsDownloading(false);
@@ -244,7 +247,7 @@ function SkillActionsMenu({
 						}}
 					>
 						{isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-						{isDownloading ? "Downloading..." : "Download ZIP"}
+						{isDownloading ? t("skillsRepo.downloading") : t("skillsRepo.downloadZip")}
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
@@ -276,10 +279,10 @@ function SkillActionsMenu({
 						<AlertDialogAction data-testid="skill-delete-confirm-btn" onClick={() => onDelete(skill.id)} disabled={isDeleting}>
 							{isDeleting ? (
 								<>
-									<Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
+									<Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("skillsRepo.deleting")}
 								</>
 							) : (
-								"Delete skill"
+								t("skillsRepo.deleteSkill")
 							)}
 						</AlertDialogAction>
 					</AlertDialogFooter>
@@ -298,6 +301,7 @@ export function SkillsListView({
 	onSelectSkill: (id: string, edit?: boolean) => void;
 	onCreateNew: () => void;
 }) {
+	const { t } = useTranslation("config");
 	const hasCreateAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Create);
 	const hasEditAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Delete);
@@ -344,9 +348,9 @@ export function SkillsListView({
 	const handleDeleteSkill = async (id: string) => {
 		try {
 			await deleteSkill(id).unwrap();
-			toast.success("Skill deleted");
+			toast.success(t("skillsRepo.toastDeleted"));
 		} catch (err: unknown) {
-			toast.error("Failed to delete skill", {
+			toast.error(t("skillsRepo.toastDeleteFailed"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -355,10 +359,10 @@ export function SkillsListView({
 	const handleBumpAllSkillsVersion = async (bump: AllSkillsVersionBump) => {
 		try {
 			const result = await bumpAllSkillsVersion({ bump }).unwrap();
-			toast.success(`All-skills version bumped to ${result.version}`);
+			toast.success(t("skillsRepo.toastBumpSuccess", { version: result.version }));
 			refetchAllSkillsVersion();
 		} catch (err: unknown) {
-			toast.error("Failed to bump all-skills version", {
+			toast.error(t("skillsRepo.toastBumpFailed"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -390,7 +394,7 @@ export function SkillsListView({
 					<BookOpenText className="h-24 w-24" strokeWidth={1} />
 				</div>
 				<div className="flex flex-col gap-1">
-					<h1 className="text-muted-foreground text-xl font-medium">Create, version, and share Agent Skills from Bifrost</h1>
+					<h1 className="text-muted-foreground text-xl font-medium">{t("skillsRepo.title")}</h1>
 					<div className="text-muted-foreground mx-auto mt-2 max-w-xl text-sm font-normal">
 						Manage SKILL.md instructions and supporting files in one place, publish immutable versions, and expose them as installable
 						plugins for Claude Code, Codex, and other skill-aware clients.
@@ -404,12 +408,12 @@ export function SkillsListView({
 								window.open(`${SKILLS_REPOSITORY_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 							}}
 						>
-							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+							{t("enterprise.readMore")} <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Add your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
+							<Button aria-label={t("skillsRepo.createFirstAria")} data-testid="skill-create-btn" onClick={onCreateNew}>
 								<Plus className="h-4 w-4" />
-								Add Skill
+								{t("skillsRepo.createSkill")}
 							</Button>
 						)}
 					</div>
@@ -423,15 +427,15 @@ export function SkillsListView({
 			{/* Header */}
 			{/* Search + All-skills version + Actions */}
 			<div className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-center">
-				<PageTitle title="Skills Repository" beta>
-					Manage Agent Skills for distribution to AI coding assistants
+				<PageTitle title={t("skillsRepo.title")} beta>
+					{t("skillsRepo.description")}
 				</PageTitle>
 				<div className="relative w-full flex-1 md:max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						data-testid="skill-search-input"
-						aria-label="Search skills by name"
-						placeholder="Search skills..."
+						aria-label={t("skillsRepo.searchAria")}
+						placeholder={t("skillsRepo.searchPlaceholder")}
 						value={search}
 						onChange={(e) => {
 							setSearch(e.target.value);
@@ -498,9 +502,9 @@ export function SkillsListView({
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<span tabIndex={0}>
-										<Button variant="outline" size="sm" disabled title="Register as Marketplace" aria-label="Register as Marketplace">
+										<Button variant="outline" size="sm" disabled title={t("skillsRepo.registerMarketplace")} aria-label={t("skillsRepo.registerMarketplace")}>
 											<Package className="h-3.5 w-3.5" />
-											<span className="hidden md:inline">Register as Marketplace</span>
+											<span className="hidden md:inline">{t("skillsRepo.registerMarketplace")}</span>
 										</Button>
 									</span>
 								</TooltipTrigger>
@@ -531,22 +535,22 @@ export function SkillsListView({
 									document.body.removeChild(link);
 									URL.revokeObjectURL(url);
 								} catch {
-									toast.error("Failed to download skills");
+									toast.error(t("skillsRepo.downloadAllFailed"));
 								} finally {
 									setIsDownloadingAll(false);
 								}
 							}}
 							disabled={!skills?.length || isDownloadingAll}
-							title="Download all skills"
-							aria-label="Download all skills"
+							title={t("skillsRepo.downloadAllAria")}
+							aria-label={t("skillsRepo.downloadAllAria")}
 						>
 							{isDownloadingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
+							<span className="hidden md:inline">{isDownloadingAll ? t("skillsRepo.downloading") : t("skillsRepo.downloadAll")}</span>
 						</Button>
 						{hasCreateAccess && (
-							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="Add skill" aria-label="Add skill">
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title={t("skillsRepo.newSkill")} aria-label={t("skillsRepo.newSkill")}>
 								<Plus className="h-4 w-4" />
-								<span className="hidden md:inline">Add Skill</span>
+								<span className="hidden md:inline">{t("skillsRepo.createSkill")}</span>
 							</Button>
 						)}
 					</div>
@@ -578,7 +582,7 @@ export function SkillsListView({
 								<TableCell colSpan={6} className="py-12 text-center">
 									<div className="flex flex-col items-center gap-2">
 										<FileText className="text-muted-foreground h-8 w-8" />
-										<p className="text-muted-foreground text-sm">{search ? "No skills match your search" : "No skills created yet"}</p>
+										<p className="text-muted-foreground text-sm">{search ? t("skillsRepo.emptySearch") : t("skillsRepo.empty")}</p>
 										{!search && hasCreateAccess && (
 											<Button variant="outline" size="sm" onClick={onCreateNew} className="mt-2">
 												<Plus className="h-3.5 w-3.5" />

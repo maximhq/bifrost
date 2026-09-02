@@ -6,6 +6,7 @@ import { getErrorMessage, useForcePricingSyncMutation, useGetCoreConfigQuery, us
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface PricingFormData {
@@ -15,6 +16,7 @@ interface PricingFormData {
 }
 
 export default function PricingConfigView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.framework_config;
@@ -71,7 +73,7 @@ export default function PricingConfigView() {
 					model_parameters_url: data.model_parameters_url,
 				},
 			}).unwrap();
-			toast.success("Pricing configuration updated successfully.");
+			toast.success(t("pricing.toastSaved"));
 			reset(data);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -81,7 +83,7 @@ export default function PricingConfigView() {
 	const handleForceSync = async () => {
 		try {
 			await forcePricingSync().unwrap();
-			toast.success("Pricing synced successfully.");
+			toast.success(t("pricing.toastSynced"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -90,7 +92,7 @@ export default function PricingConfigView() {
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="pricing-config-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-				<PageTitle title="Pricing Configuration">Configure custom pricing datasheet and sync intervals.</PageTitle>
+				<PageTitle title={t("pricing.title")}>{t("pricing.description")}</PageTitle>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}
@@ -190,7 +192,7 @@ export default function PricingConfigView() {
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="pricing-save-btn">
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? t("saving") : t("saveChanges")}
 					</Button>
 				</div>
 			</form>
