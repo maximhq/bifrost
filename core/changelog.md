@@ -1,4 +1,5 @@
 - fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
 - feat: add Baseten to Hugging Face inference provider discovery [@nicolastoulemont](https://github.com/nicolastoulemont)
+- fix: emit and preserve `output_config.effort` for DeepSeek's Anthropic-compatible endpoint — a provider-level `NativeEffort` feature now feeds the `SupportsNativeEffort` fallback, so the converters no longer collapse a caller's reasoning effort into a `thinking.budget_tokens` DeepSeek ignores, and the capability strip no longer removes a raw `output_config.effort` on that provider
 - fix: strip the encrypted reasoning signature when the upstream reports the field as unsupported (e.g. Bedrock Converse replaying a Claude signature onto a non-Anthropic model after a mid-conversation model switch), extending the existing unverifiable-signature fail-soft
 - fix: clear Anthropic raw-body passthrough based on the resolved provider and model pair, so non-Claude models on multi-family providers (Vertex, Azure, Bedrock Mantle) convert the request instead of passing the Anthropic payload through
