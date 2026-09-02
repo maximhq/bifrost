@@ -397,6 +397,46 @@ func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	}
 }
 
+// TestSchemaGuardrailRuleConversationWindow verifies config accepts the explicit
+// history switch and rejects non-boolean values before Enterprise reconciliation.
+func TestSchemaGuardrailRuleConversationWindow(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		window    string
+		wantError bool
+	}{
+		{name: "current input only is valid", window: `,"send_all_conversation_turns":false,"max_turns_to_send":0`},
+		{name: "all history is valid", window: `,"send_all_conversation_turns":true`},
+		{name: "non boolean switch is rejected", window: `,"send_all_conversation_turns":"false"`, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "Conversation rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, test.window)
+
+			err := validateConfig(t, compiled, config)
+			if test.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 
