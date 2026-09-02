@@ -176,6 +176,7 @@ export const baseApi = createApi({
 		"RoutingRules",
 		"PricingOverrides",
 		"MCPToolGroups",
+		"VirtualMCPs",
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",

@@ -20,4 +20,5 @@ export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./sessionApi";
 export * from "./skillsApi";
+export * from "./virtualMcpsApi";
 export * from "./webhooksApi";

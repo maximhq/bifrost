@@ -451,31 +451,31 @@ export default function VirtualKeyDetailSheet({
 																			{/* Budgets */}
 																			{mb.budgets && mb.budgets.length > 0
 																				? mb.budgets.map((b, bIdx) => (
-																					<div key={bIdx} className="space-y-2">
-																						<UsageLine
-																							current={b.current_usage}
-																							max={getEffectiveBudgetLimit(b)}
-																							format={formatCurrency}
-																						/>
-																						{hasActiveBudgetOverride(b) ? (
-																							<p className="text-muted-foreground text-xs">
-																								Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
-																							</p>
-																						) : null}
-																						<div className="text-muted-foreground flex items-center justify-between text-xs">
-																							<span>
-																								Resets {parseResetPeriod(b.reset_duration)}
-																								{virtualKey.calendar_aligned &&
-																									supportsCalendarAlignment(b.reset_duration) &&
-																									" (calendar)"}
-																								{fiscalQuarterNote(b.reset_duration, b.reset_config)}
-																							</span>
-																							{b.last_reset ? (
-																								<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																						<div key={bIdx} className="space-y-2">
+																							<UsageLine
+																								current={b.current_usage}
+																								max={getEffectiveBudgetLimit(b)}
+																								format={formatCurrency}
+																							/>
+																							{hasActiveBudgetOverride(b) ? (
+																								<p className="text-muted-foreground text-xs">
+																									Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+																								</p>
 																							) : null}
+																							<div className="text-muted-foreground flex items-center justify-between text-xs">
+																								<span>
+																									Resets {parseResetPeriod(b.reset_duration)}
+																									{virtualKey.calendar_aligned &&
+																										supportsCalendarAlignment(b.reset_duration) &&
+																										" (calendar)"}
+																									{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+																								</span>
+																								{b.last_reset ? (
+																									<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																								) : null}
+																							</div>
 																						</div>
-																					</div>
-																				))
+																					))
 																				: null}
 
 																			{/* Token Limits */}
@@ -526,19 +526,19 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
-							{/* MCP Client Configurations */}
+							{/* MCP Server Configurations */}
 							<div className="space-y-4">
-								<h3 className="font-semibold">MCP Client Configurations</h3>
+								<h3 className="font-semibold">MCP Server Configurations</h3>
 
 								<div className="space-y-3">
 									{!virtualKey.mcp_configs || virtualKey.mcp_configs.length === 0 ? (
-										<span className="text-muted-foreground text-sm">No MCP clients configured (deny-by-default)</span>
+										<span className="text-muted-foreground text-sm">No MCP servers configured</span>
 									) : (
 										<div className="rounded-md border">
 											<Table>
 												<TableHeader>
 													<TableRow>
-														<TableHead>MCP Client</TableHead>
+														<TableHead>MCP Server</TableHead>
 														<TableHead>Allowed Tools</TableHead>
 													</TableRow>
 												</TableHeader>
