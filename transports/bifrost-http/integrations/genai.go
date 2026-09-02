@@ -329,14 +329,15 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 }
 
 func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore, maxUploadSizeBytes int64, loggers ...schemas.Logger) []RouteConfig {
-	// Derive max upload size from configured ClientConfig.MaxRequestBodySizeMB
-	// Every resumable upload request uses this configured request-body cap.
-	maxBodySizeMB := int64(handlerStore.GetMaxRequestBodySizeMB())
-	maxResumableUploadSize := maxBodySizeMB * 1024 * 1024
+	// maxBodySizeBytes limits the size of an individual request.
+	maxBodySizeBytes := int64(handlerStore.GetMaxRequestBodySizeMB()) * 1024 * 1024
+
+	// maxResumableUploadSize limits the cumulative size of a resumable upload session.
+	maxResumableUploadSize := int64(handlerStore.GetMaxResumableUploadSizeMB()) * 1024 * 1024
+
 	if maxUploadSizeBytes > 0 {
 		maxResumableUploadSize = maxUploadSizeBytes
 	}
-
 	uploadSessionTTL := handlerStore.GetUploadSessionTTL()
 
 	var logger schemas.Logger = bifrost.NewNoOpLogger()
@@ -368,8 +369,8 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				body := ctx.Request.Body()
 				uploadCommand := parseUploadCommand(string(ctx.Request.Header.Peek("X-Goog-Upload-Command")))
 
-				if len(body) > int(maxResumableUploadSize) {
-					return fmt.Errorf("upload exceeds maximum size of %d MB", maxResumableUploadSize/1024/1024)
+				if int64(len(body)) > maxBodySizeBytes {
+					return fmt.Errorf("upload exceeds maximum request body size of %d MB", maxBodySizeBytes/1024/1024)
 				}
 
 				r.UploadID = uploadID
@@ -469,8 +470,8 @@ func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 
 			// Each request is capped independently from the cumulative session-size check below.
 			newChunkSize := int64(len(r.FileData))
-			if newChunkSize > maxResumableUploadSize {
-				return nil, fmt.Errorf("upload exceeds maximum size of %d MB", maxResumableUploadSize/1024/1024)
+			if newChunkSize > maxBodySizeBytes {
+				return nil, fmt.Errorf("upload exceeds maximum request body size of %d MB", maxBodySizeBytes/1024/1024)
 			}
 
 			kvStore := handlerStore.GetKVStore()

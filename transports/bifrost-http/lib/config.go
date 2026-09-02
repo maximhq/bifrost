@@ -5423,6 +5423,19 @@ func (c *Config) GetUploadSessionTTL() time.Duration {
 	return c.ClientConfig.UploadSessionTTL
 }
 
+// DefaultMaxResumableUploadSizeMB is the default maximum resumable upload size in megabytes.
+const DefaultMaxResumableUploadSizeMB = 100
+
+// GetMaxResumableUploadSizeMB returns the configured maximum resumable upload size in megabytes.
+// Returns the configured value or 100 MB if not set (default).
+func (c *Config) GetMaxResumableUploadSizeMB() int {
+	if c.ClientConfig == nil || c.ClientConfig.MaxResumableUploadSizeMB <= 0 {
+		return DefaultMaxResumableUploadSizeMB
+	}
+
+	return c.ClientConfig.MaxResumableUploadSizeMB
+}
+
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
 // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
 func (c *Config) GetHeaderMatcher() *HeaderMatcher {
