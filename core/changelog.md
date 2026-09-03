@@ -1,3 +1,4 @@
+- [fix]: route opencode-zen Responses calls through /v1/chat/completions, which its upstream does not serve on /v1/responses [@miguelchico](https://github.com/miguelchico)
 - fix: give a Bedrock message a placeholder text block instead of a null `content` field when it has no text and no tool calls - `BedrockMessage.Content` has no `omitempty`, so a message with empty text and no tool calls (or an empty `tool_calls` array) serialized as `content:null`, which Converse rejects with "Member must not be null" (#2765)
 - [fix]: marshal required nullable response fields as null [@PSR94](https://github.com/PSR94)
 - fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
