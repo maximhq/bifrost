@@ -23,6 +23,14 @@ type mockRoutingManager struct {
 	reloadErr      error
 }
 
+func (m *mockRoutingManager) ValidateComplexityAnalyzerConfig(_ context.Context, _ *complexity.AnalyzerConfig) error {
+	return nil
+}
+
+func (m *mockRoutingManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
+	return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}, nil
+}
+
 func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
 	m.reloadCalls++
 	m.reloadedConfig = config
