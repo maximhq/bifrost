@@ -27,6 +27,71 @@ func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
 	}
 }
 
+// TestAnthropicContainerRoundTrip covers issue #5707: the "container" request
+// param (string id for container reuse, or object with skills[]) must survive
+// the /v1/messages ingress-to-egress round trip. Both forms were silently
+// dropped: ToBifrostResponsesRequest never read req.Container, so a client
+// requesting container reuse got HTTP 200 with a fresh container and all
+// previously staged files missing.
+func TestAnthropicContainerRoundTrip(t *testing.T) {
+	t.Run("StringForm", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-sonnet-4-5",
+			MaxTokens: 100,
+			Container: &AnthropicContainer{ContainerStr: schemas.Ptr("container_011CPQ2vNi9wkjJdrCFJNkCq")},
+		}
+
+		bifrostReq := req.ToBifrostResponsesRequest(nil)
+		out, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("egress error: %v", err)
+		}
+
+		if out.Container == nil || out.Container.ContainerStr == nil {
+			t.Fatalf("string-form container dropped in round trip: %+v", out.Container)
+		}
+		if *out.Container.ContainerStr != "container_011CPQ2vNi9wkjJdrCFJNkCq" {
+			t.Errorf("container id = %q, want %q", *out.Container.ContainerStr, "container_011CPQ2vNi9wkjJdrCFJNkCq")
+		}
+		// Consumed onto the typed field, so it must not also linger in
+		// ExtraParams and serialize twice.
+		if _, ok := out.ExtraParams["container"]; ok {
+			t.Errorf("container left in ExtraParams after promotion: %#v", out.ExtraParams["container"])
+		}
+	})
+
+	t.Run("ObjectForm", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-sonnet-4-5",
+			MaxTokens: 100,
+			Container: &AnthropicContainer{ContainerObject: &AnthropicContainerObject{
+				ID:     schemas.Ptr("container_011CPQ2vNi9wkjJdrCFJNkCq"),
+				Skills: []AnthropicContainerSkill{{SkillID: "pdf", Type: "anthropic"}},
+			}},
+		}
+
+		bifrostReq := req.ToBifrostResponsesRequest(nil)
+		out, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("egress error: %v", err)
+		}
+
+		if out.Container == nil || out.Container.ContainerObject == nil {
+			t.Fatalf("object-form container dropped in round trip: %+v", out.Container)
+		}
+		obj := out.Container.ContainerObject
+		if obj.ID == nil || *obj.ID != "container_011CPQ2vNi9wkjJdrCFJNkCq" {
+			t.Errorf("container object id = %v, want container_011CPQ2vNi9wkjJdrCFJNkCq", obj.ID)
+		}
+		if len(obj.Skills) != 1 || obj.Skills[0].SkillID != "pdf" || obj.Skills[0].Type != "anthropic" {
+			t.Errorf("container skills not preserved: %+v", obj.Skills)
+		}
+		if _, ok := out.ExtraParams["container"]; ok {
+			t.Errorf("container left in ExtraParams after promotion: %#v", out.ExtraParams["container"])
+		}
+	})
+}
+
 // TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion verifies that,
 // mirroring the Chat Completions path, providers whose native Anthropic endpoint
 // rejects output_config.format get structured output converted into a synthetic
