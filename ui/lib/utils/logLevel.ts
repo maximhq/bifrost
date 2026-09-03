@@ -18,17 +18,6 @@ export function meetsMinLogLevel(level: string | null | undefined, min: LogLevel
 	return LOG_LEVEL_RANK[level] >= LOG_LEVEL_RANK[min];
 }
 
-/** How many of `levels` each floor would show, keyed by that floor. Feeds the counts on the level tabs. */
-export function countAtOrAboveEachLevel(levels: Iterable<string | null | undefined>): Record<LogLevel, number> {
-	const counts: Record<LogLevel, number> = { debug: 0, info: 0, warn: 0, error: 0 };
-	for (const level of levels) {
-		for (const min of LOG_LEVELS) {
-			if (meetsMinLogLevel(level, min)) counts[min] += 1;
-		}
-	}
-	return counts;
-}
-
 /** Badge palette shared by every place a level is rendered next to a log line. */
 export const LOG_LEVEL_BADGE_CLASSES: Record<LogLevel, string> = {
 	debug: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",

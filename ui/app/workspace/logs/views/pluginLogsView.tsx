@@ -1,6 +1,6 @@
 import { PluginLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { countAtOrAboveEachLevel, LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
+import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { format } from "date-fns";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -22,10 +22,6 @@ function formatPluginName(name: string): string {
 export default function PluginLogsView({ pluginLogs }: PluginLogsViewProps) {
 	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
 	const parsed = useMemo(() => parsePluginLogs(pluginLogs), [pluginLogs]);
-	const counts = useMemo(
-		() => countAtOrAboveEachLevel(parsed ? Object.values(parsed).flatMap((entries) => entries.map((entry) => entry.level)) : []),
-		[parsed],
-	);
 
 	if (!parsed) return null;
 
@@ -33,7 +29,7 @@ export default function PluginLogsView({ pluginLogs }: PluginLogsViewProps) {
 		<div>
 			<div className="flex items-center justify-between gap-3 py-3">
 				<div className="text-sm font-semibold">Plugin Logs</div>
-				<LogLevelTabs value={minLevel} onChange={setMinLevel} counts={counts} testId="plugin-logs-level-filter" />
+				<LogLevelTabs value={minLevel} onChange={setMinLevel} testId="plugin-logs-level-filter" />
 			</div>
 			<div className="flex flex-col gap-2 pb-3">
 				{Object.keys(parsed).map((name) => (

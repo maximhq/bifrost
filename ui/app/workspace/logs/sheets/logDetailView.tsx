@@ -44,7 +44,7 @@ import {
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { countAtOrAboveEachLevel, LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
+import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
@@ -848,7 +848,6 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 	);
 	// Rows written before the level was recorded carry none, so there is nothing to filter on.
 	const hasLevels = lines.some((line) => line.level !== null);
-	const counts = useMemo(() => countAtOrAboveEachLevel(lines.map((line) => line.level)), [lines]);
 	const visible = hasLevels ? lines.filter((line) => meetsMinLogLevel(line.level, minLevel)) : lines;
 
 	return (
@@ -856,7 +855,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 			<div className="flex items-center justify-between gap-3 border-b py-2 pl-6">
 				<div className="text-sm font-medium">Routing Decision Logs</div>
 				<div className="flex items-center gap-1">
-					{hasLevels && <LogLevelTabs value={minLevel} onChange={setMinLevel} counts={counts} testId="routing-logs-level-filter" />}
+					{hasLevels && <LogLevelTabs value={minLevel} onChange={setMinLevel} testId="routing-logs-level-filter" />}
 					<button
 						type="button"
 						onClick={() => copy(logs)}
