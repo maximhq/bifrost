@@ -64,6 +64,11 @@ export interface ModelLimitScopeEntry {
 	// the row's own ModelConfig; renders nothing (returns null) itself when there
 	// is nothing to show.
 	ManagedByComponent?: ComponentType<{ modelConfig: ModelConfig }>;
+	// Optional. Replaces the generic read-only alert body in the Model Limit
+	// sheet for a readOnly scope, letting the owner name itself — e.g.
+	// enterprise's "managed by access profile X". Passed the row's own
+	// ModelConfig; falls back to the generic message when omitted.
+	ReadOnlyNotice?: ComponentType<{ modelConfig: ModelConfig }>;
 }
 
 const registry = new Map<string, ModelLimitScopeEntry>();

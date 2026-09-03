@@ -313,7 +313,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					<div className="grow space-y-4 px-4 md:px-8">
 						<Alert variant="info">
 							<Lock className="h-4 w-4" />
-							<AlertDescription>This limit is read-only here — it's managed elsewhere and must be changed there.</AlertDescription>
+							<AlertDescription>
+								{scopeEntry?.ReadOnlyNotice ? (
+									<scopeEntry.ReadOnlyNotice modelConfig={modelConfig} />
+								) : (
+									<p>This limit is read-only here - it's managed elsewhere.</p>
+								)}
+							</AlertDescription>
 						</Alert>
 
 						<div className="space-y-1">
