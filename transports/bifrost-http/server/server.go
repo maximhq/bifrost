@@ -95,6 +95,11 @@ type ServerCallbacks interface {
 	// Client config related callbacks
 	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
+	// RevokeVirtualKeyRotationGrace retires every in-flight virtual key rotation
+	// grace window when vk_rotation_cooldown is saved as zero. Enterprise wraps
+	// this to broadcast the resulting VK reloads to cluster peers, whose in-memory
+	// stores would otherwise keep honouring the retired values.
+	RevokeVirtualKeyRotationGrace(ctx context.Context) error
 	// Governance related callbacks
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
@@ -589,6 +594,57 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return virtualKey, nil
+}
+
+// RevokeVirtualKeyRotationGrace retires every in-flight rotation grace window,
+// in the database and in the governance store that authentication reads.
+//
+// Called when vk_rotation_cooldown is saved as zero. The cooldown is stamped
+// onto previous_value_expires_at at rotation time and never consulted again, so
+// without this a key rotated under a one-hour cooldown keeps accepting its old
+// value for the rest of that hour even after the operator sets the cooldown to
+// zero - which is precisely what the settings copy promises will not happen.
+//
+// Cost is one bulk UPDATE plus one in-memory sweep, whatever the number of keys
+// holding a grace value. Enterprise overrides this to add a single broadcast so
+// peers run the same sweep; see the comment there for why per-key reloads are
+// the wrong shape for this operation.
+func (s *BifrostHTTPServer) RevokeVirtualKeyRotationGrace(ctx context.Context) error {
+	if _, err := s.Config.ConfigStore.RevokeVirtualKeyRotationGrace(ctx); err != nil {
+		return err
+	}
+	s.ApplyVirtualKeyRotationGraceRevocationLocally(ctx)
+	return nil
+}
+
+// ApplyVirtualKeyRotationGraceRevocationLocally drops retired virtual key values
+// from this node's in-memory governance state, after the grace columns have been
+// cleared in the shared database.
+//
+// Split out so a cluster peer can apply a revocation it learned about over
+// gossip without repeating the database write the originating node already made.
+// A missing governance plugin is not an error: with no governance store there
+// are no cached virtual keys to retire.
+func (s *BifrostHTTPServer) ApplyVirtualKeyRotationGraceRevocationLocally(ctx context.Context) {
+	// Resolves the governance plugin by the name carried on the server context,
+	// which is how enterprise's own store is reached too - GetGovernanceStore
+	// returns the global store there, so no enterprise override is needed.
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil || governancePlugin == nil {
+		// Loud, not silent: the database rows are already cleared, so a node that
+		// cannot reach its governance store is serving retired values it believes
+		// it has revoked.
+		logger.Warn("could not reach the governance store to revoke virtual key rotation grace in memory; retired values may keep authenticating on this node until its next reload: %v", err)
+		return
+	}
+	revoked := governancePlugin.GetGovernanceStore().RevokeRotationGraceInMemory(ctx)
+	if len(revoked) == 0 {
+		return
+	}
+	logger.Info("vk_rotation_cooldown set to 0: revoked the rotation grace period on %d virtual key(s)", len(revoked))
+	if s.WebSocketHandler != nil {
+		s.WebSocketHandler.BroadcastUpdatesToClients([]string{"VirtualKeys"})
+	}
 }
 
 // ResetBudgetUsageInMemory clears usage for the given budgets in the governance

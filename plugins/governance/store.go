@@ -228,6 +228,10 @@ type GovernanceStore interface {
 	CreateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey)
 	UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64)
 	DeleteVirtualKeyInMemory(ctx context.Context, vkID string)
+	// RevokeRotationGraceInMemory clears the rotation grace-period state from
+	// every cached virtual key, returning the IDs it changed. In-memory only:
+	// the database side is ConfigStore.RevokeVirtualKeyRotationGrace.
+	RevokeRotationGraceInMemory(ctx context.Context) []string
 	CreateTeamInMemory(ctx context.Context, team *configstoreTables.TableTeam)
 	UpdateTeamInMemory(ctx context.Context, team *configstoreTables.TableTeam, budgetBaselines map[string]float64)
 	DeleteTeamInMemory(ctx context.Context, teamID string)
@@ -1767,6 +1771,46 @@ func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string)
 		return
 	}
 	gs.virtualKeys.CompareAndDelete(value, existing)
+}
+
+// RevokeRotationGraceInMemory drops the rotation grace-period state from every
+// cached virtual key, returning the IDs it changed.
+//
+// Pairs with ConfigStore.RevokeVirtualKeyRotationGrace: that clears the shared
+// database, this clears the in-memory copies authentication actually reads.
+// Deliberately a pure in-memory sweep with no database access, so a node can
+// apply the revocation from a single message rather than reloading every
+// affected key one at a time - the reload path costs several queries per key and
+// would run on every node in the cluster.
+//
+// Ranges the ID index, not the value map: the value map carries a second entry
+// per grace value pointing at the same object, so ranging it would visit those
+// keys again and mutate an object that has already been replaced.
+func (gs *LocalGovernanceStore) RevokeRotationGraceInMemory(ctx context.Context) []string {
+	var revoked []string
+	gs.virtualKeysByID.Range(func(_, value any) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || vk == nil || !vk.PreviousValue.IsSet() {
+			return true
+		}
+		previous := vk.PreviousValue.GetValue()
+		// Copy-on-write, matching every other in-memory VK update: readers hold
+		// this pointer without a lock, so the grace value is retired by
+		// publishing a new object rather than mutating the one in flight.
+		clone := *vk
+		clone.ClearPreviousValue()
+		gs.storeVirtualKey(clone.Value.GetValue(), &clone)
+		// Drop the alias only where it still resolves to this key. Another VK
+		// can legitimately hold the retired value as its CURRENT value - the
+		// previous-value hash index is non-unique - and that owner has to keep
+		// authenticating; deleteVirtualKeyAlias makes that check.
+		if previous != "" && previous != clone.Value.GetValue() {
+			gs.deleteVirtualKeyAlias(previous, clone.ID)
+		}
+		revoked = append(revoked, clone.ID)
+		return true
+	})
+	return revoked
 }
 
 // CheckRateLimit checks rate limits for tokens and requests across categories

@@ -1527,6 +1527,115 @@ func TestGetVirtualKeyByValue_GraceValueExpired(t *testing.T) {
 	assert.Equal(t, "vk-grace-expired", byNew.ID)
 }
 
+func TestRevokeVirtualKeyRotationGrace(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Two keys with a live grace window, one already expired, and one that was
+	// never rotated. Only the rotated ones should be reported as affected.
+	live := &tables.TableVirtualKey{
+		ID:       "vk-revoke-live",
+		Name:     "Live Grace Key",
+		Value:    *schemas.NewSecretVar("vk-revoke-live-old"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, live))
+	rotateTestVirtualKey(t, store, live, "vk-revoke-live-old", "vk-revoke-live-new", time.Now().UTC().Add(time.Hour))
+
+	expired := &tables.TableVirtualKey{
+		ID:       "vk-revoke-expired",
+		Name:     "Expired Grace Key",
+		Value:    *schemas.NewSecretVar("vk-revoke-expired-old"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, expired))
+	rotateTestVirtualKey(t, store, expired, "vk-revoke-expired-old", "vk-revoke-expired-new", time.Now().UTC().Add(-time.Hour))
+
+	untouched := &tables.TableVirtualKey{
+		ID:       "vk-revoke-untouched",
+		Name:     "Never Rotated Key",
+		Value:    *schemas.NewSecretVar("vk-revoke-untouched-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, untouched))
+
+	// The one-hour window is live, so the retired value authenticates today.
+	byOld, err := store.GetVirtualKeyByValue(ctx, "vk-revoke-live-old")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-revoke-live", byOld.ID)
+
+	revoked, err := store.RevokeVirtualKeyRotationGrace(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, revoked,
+		"both rotated keys carry grace columns; the expired leftover is swept in the same pass")
+
+	// The point of the whole exercise: the retired value stops authenticating.
+	_, err = store.GetVirtualKeyByValue(ctx, "vk-revoke-live-old")
+	require.ErrorIs(t, err, ErrNotFound, "revoked grace value must not resolve")
+
+	stored, err := store.GetVirtualKey(ctx, "vk-revoke-live")
+	require.NoError(t, err)
+	assert.False(t, stored.PreviousValue.IsSet(), "retired secret material must be cleared, not just expired")
+	assert.Empty(t, stored.PreviousValueHash)
+	assert.Nil(t, stored.PreviousValueExpiresAt)
+	assert.NotNil(t, stored.RotatedAt, "rotated_at is audit history, not grace state, and must survive")
+
+	// Current values are untouched on every key.
+	for id, value := range map[string]string{
+		"vk-revoke-live":      "vk-revoke-live-new",
+		"vk-revoke-expired":   "vk-revoke-expired-new",
+		"vk-revoke-untouched": "vk-revoke-untouched-value",
+	} {
+		got, err := store.GetVirtualKeyByValue(ctx, value)
+		require.NoError(t, err, "current value of %s must keep resolving", id)
+		assert.Equal(t, id, got.ID)
+	}
+
+	// Idempotent: nothing left to revoke.
+	revoked, err = store.RevokeVirtualKeyRotationGrace(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, revoked)
+}
+
+// TestRevokeVirtualKeyRotationGrace_CatchesConcurrentlyRotatedKey pins the
+// reason the revocation is a single UPDATE rather than a select-then-update.
+// A rotation that lands after the sweep would have chosen its rows is still
+// matched by the WHERE clause, so its retired value cannot survive a config
+// save that reported success.
+func TestRevokeVirtualKeyRotationGrace_CatchesConcurrentlyRotatedKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	early := &tables.TableVirtualKey{
+		ID:       "vk-race-early",
+		Name:     "Early Rotated Key",
+		Value:    *schemas.NewSecretVar("vk-race-early-old"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, early))
+	rotateTestVirtualKey(t, store, early, "vk-race-early-old", "vk-race-early-new", time.Now().UTC().Add(time.Hour))
+
+	// A second key rotates into a grace window after the first one already had
+	// theirs - the ordering a select-then-update would miss.
+	late := &tables.TableVirtualKey{
+		ID:       "vk-race-late",
+		Name:     "Late Rotated Key",
+		Value:    *schemas.NewSecretVar("vk-race-late-old"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, late))
+	rotateTestVirtualKey(t, store, late, "vk-race-late-old", "vk-race-late-new", time.Now().UTC().Add(time.Hour))
+
+	revoked, err := store.RevokeVirtualKeyRotationGrace(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, revoked, "the sweep matches rows at write time, not from an earlier snapshot")
+
+	for _, retired := range []string{"vk-race-early-old", "vk-race-late-old"} {
+		_, err := store.GetVirtualKeyByValue(ctx, retired)
+		require.ErrorIs(t, err, ErrNotFound, "%s must not authenticate after revocation", retired)
+	}
+}
+
 func TestGetVirtualKeyByValue_UnknownValueStillNotFound(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

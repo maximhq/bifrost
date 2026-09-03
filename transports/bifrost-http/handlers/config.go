@@ -98,6 +98,10 @@ type ConfigManager interface {
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
+	// RevokeVirtualKeyRotationGrace retires every in-flight virtual key rotation
+	// grace window, in the database and in memory. Invoked when
+	// vk_rotation_cooldown is saved as zero.
+	RevokeVirtualKeyRotationGrace(ctx context.Context) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
@@ -312,6 +316,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+
+	// Which client_config keys the caller actually sent. ClientConfig is a value
+	// struct, so an omitted vk_rotation_cooldown is indistinguishable from an
+	// explicit 0 once decoded - and revoking live credentials is too destructive
+	// to trigger on a field the request never mentioned. A decode failure here is
+	// impossible (the same body just parsed) and degrades to "nothing provided",
+	// which only ever skips the revocation.
+	rawPayload := struct {
+		ClientConfig map[string]json.RawMessage `json:"client_config"`
+	}{}
+	_ = json.Unmarshal(ctx.PostBody(), &rawPayload)
+	_, vkRotationCooldownProvided := rawPayload.ClientConfig["vk_rotation_cooldown"]
 
 	// Validate MCP external URL overrides up front — the rest of this handler
 	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
@@ -668,6 +684,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
 	updatedConfig.VKRotationCooldown = payload.ClientConfig.VKRotationCooldown
+	// Saving 0 (or an empty duration) must also retire the windows already open,
+	// not just change what future rotations stamp: the settings copy promises the
+	// old value stops working immediately. Deferred until after the config is
+	// persisted below so a failed save cannot revoke live credentials.
+	//
+	// Requires the field to be present in the request. A partial PUT that never
+	// mentions vk_rotation_cooldown decodes to 0 exactly like an explicit clear
+	// does, and treating that as "revoke every retired value now" would let an
+	// unrelated settings save invalidate credentials the caller said nothing about.
+	revokeRotationGrace := vkRotationCooldownProvided && payload.ClientConfig.VKRotationCooldown.D() == 0
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
@@ -729,6 +755,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("failed to reload client config from config store: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload client config from config store: %v", err))
 		return
+	}
+	// The cooldown is stamped onto each key at rotation time, so clearing it here
+	// is not enough to retire windows that are already open; revoke them now that
+	// the zero cooldown is persisted. Failing the request on error is deliberate:
+	// silently reporting success would leave retired values authenticating while
+	// the UI shows the grace period as disabled.
+	if revokeRotationGrace {
+		if err := h.configManager.RevokeVirtualKeyRotationGrace(ctx); err != nil {
+			logger.Warn("failed to revoke virtual key rotation grace periods: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to revoke in-flight virtual key rotation grace periods: %v", err))
+			return
+		}
 	}
 	// Fetching existing framework config
 	frameworkConfig, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
