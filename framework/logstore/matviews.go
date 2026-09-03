@@ -43,6 +43,7 @@ SELECT
     COALESCE(team_id, '') AS team_id,
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(project_id, '') AS project_id,
     COALESCE(alias, '') AS alias,
     COALESCE(canonical_model_name, '') AS canonical_model_name,
     COALESCE(user_agent, '') AS user_agent,
@@ -90,7 +91,7 @@ SELECT
     COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
 `
 
 // cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
@@ -108,7 +109,7 @@ const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name, user_agent, app)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, project_id, alias, canonical_model_name, user_agent, app)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -127,6 +128,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"team_id",
 	"customer_id",
 	"business_unit_id",
+	"project_id",
 	"alias",
 	"canonical_model_name",
 	"throughput_completion_tokens",
@@ -352,6 +354,15 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
+		// One project per request, so a plain scalar pair like users and
+		// virtual keys; nothing to fan out.
+		name:            "mv_filter_projects",
+		selectExpr:      "project_id AS id, project_name AS name, " + scopeProjection,
+		whereExpr:       "project_id IS NOT NULL AND project_id != '' AND project_name IS NOT NULL AND project_name != ''",
+		uniqueIdx:       "id, name, " + scopeIdxColumns,
+		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
+	},
+	{
 		name:            "mv_filter_apps",
 		selectExpr:      "app, " + scopeProjection,
 		whereExpr:       "app IS NOT NULL AND app != ''",
@@ -378,6 +389,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
 	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
+	{"project_id", "project_name"}:             "mv_filter_projects",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
@@ -594,6 +606,11 @@ func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// matViewNeedsRebuild reports whether the view the name resolves to on this
+// connection's search_path is missing a required column. Resolution goes
+// through to_regclass rather than a bare relname match so a same-named view
+// in another schema of the database (another tenant's, or a test schema
+// beside production's), neither masks a missing view nor lends it columns.
 func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requiredColumns []string) (bool, error) {
 	var exists bool
 	if err := conn.QueryRowContext(ctx, `
@@ -601,7 +618,7 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 			SELECT 1
 			FROM pg_class
 			WHERE relkind = 'm'
-			  AND relname = $1
+			  AND oid = to_regclass($1)
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -612,10 +629,8 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 
 	rows, err := conn.QueryContext(ctx, `
 		SELECT a.attname
-		FROM pg_class c
-		JOIN pg_attribute a ON a.attrelid = c.oid
-		WHERE c.relkind = 'm'
-		  AND c.relname = $1
+		FROM pg_attribute a
+		WHERE a.attrelid = to_regclass($1)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -668,13 +683,17 @@ func ensureIndexes(ctx context.Context, conn *sql.Conn, defs []matviewIndexDef) 
 		if idx.unique {
 			validityExpr = "pi.indisvalid AND pi.indisunique"
 		}
+		// The view is resolved through the search_path (to_regclass), and an
+		// index lives in its table's schema, so this sees only the index on
+		// the view this connection would refresh, not a same-named one in
+		// another schema, which would otherwise count as ready and leave the
+		// real view without the unique index REFRESH CONCURRENTLY needs.
 		var indexReady bool
 		if err := conn.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT COALESCE(bool_and(%s), false)
-			FROM pg_class pc
-			JOIN pg_index pi ON pi.indrelid = pc.oid
+			FROM pg_index pi
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
-			WHERE pc.relname = $1
+			WHERE pi.indrelid = to_regclass($1)
 			  AND ic.relname = $2
 		`, validityExpr), idx.view, idx.name).Scan(&indexReady); err != nil {
 			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
@@ -974,7 +993,6 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
-		len(f.ProjectIDs) == 0 &&
 		len(f.CustomerIDs) == 0
 }
 
@@ -1099,6 +1117,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.BusinessUnitIDs) > 0 {
 		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
+	}
+	if len(f.ProjectIDs) > 0 {
+		q = q.Where("project_id IN ?", f.ProjectIDs)
 	}
 	if len(f.Apps) > 0 {
 		q = q.Where("app IN ?", f.Apps)

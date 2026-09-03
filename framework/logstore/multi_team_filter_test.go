@@ -88,8 +88,8 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	assert.False(t, canUseMatViewFilters(SearchFilters{TeamIDs: []string{"t1"}}), "team filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{BusinessUnitIDs: []string{"bu1"}}), "BU filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{CustomerIDs: []string{"c1"}}), "customer filter must force the raw path")
-	// The matview carries no project column at all, so it cannot answer a project filter: the
-	// query would name a column that does not exist. The raw log table is the only path that can.
-	assert.False(t, canUseMatViewFilters(SearchFilters{ProjectIDs: []string{"p1"}}), "project filter must force the raw path")
+	// One project per request, so the hourly view carries it as a plain scalar dimension and a
+	// project filter is served from it like a provider filter is.
+	assert.True(t, canUseMatViewFilters(SearchFilters{ProjectIDs: []string{"p1"}}), "project filter is matview-eligible")
 	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "req-1"}), "parent request filter has no matview dimension and must force the raw path")
 }

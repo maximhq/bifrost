@@ -1287,6 +1287,16 @@ func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int,
 	return keyPairResultsToKeyPairs(results), nil
 }
 
+// GetAvailableProjects returns all unique project ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "project_id", "project_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available projects: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
 func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
