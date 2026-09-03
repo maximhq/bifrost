@@ -2,10 +2,16 @@
 package complexity
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/maximhq/bifrost/framework/configstore"
 )
+
+// ErrBatchEmbeddingsUnsupported lets an embedding adapter report that a
+// provider/model accepted a multi-input request but did not return one vector
+// per input. Warmup then safely falls back to one request per exemplar.
+var ErrBatchEmbeddingsUnsupported = errors.New("batch embeddings are unsupported")
 
 // ComplexityInput is the normalized input for the analyzer.
 // The caller is responsible for extracting text from request payloads.

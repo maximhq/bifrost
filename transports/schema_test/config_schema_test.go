@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -1357,6 +1358,173 @@ func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSchemaVectorStoreTypes pins the schema's store list to what NewVectorStore
+// can actually construct. The two drifted once already: chromem became a
+// selectable store type in the framework while the schema still listed four,
+// so a config the loader accepts read as invalid to every editor pointed at the
+// published schema.
+func TestSchemaVectorStoreTypes(t *testing.T) {
+	// Each supported type and the $defs section that describes its config block.
+	wantTypes := map[vectorstore.VectorStoreType]string{
+		vectorstore.VectorStoreTypeWeaviate: "weaviate_config",
+		vectorstore.VectorStoreTypeRedis:    "redis_config",
+		vectorstore.VectorStoreTypeQdrant:   "qdrant_config",
+		vectorstore.VectorStoreTypePinecone: "pinecone_config",
+		vectorstore.VectorStoreTypeChromem:  "chromem_config",
+	}
+
+	schema := loadSchema(t)
+	rawEnum, found := navigateJSON(schema, "properties", "vector_store", "properties", "type", "enum")
+	if !found {
+		t.Fatal("vector_store.type is missing its enum")
+	}
+	enum, ok := rawEnum.([]interface{})
+	if !ok {
+		t.Fatalf("vector_store.type enum is not a list, got %T", rawEnum)
+	}
+	listed := make(map[string]bool, len(enum))
+	for _, entry := range enum {
+		value, ok := entry.(string)
+		if !ok {
+			t.Fatalf("vector_store.type enum holds a non-string entry %v", entry)
+		}
+		listed[value] = true
+	}
+
+	for storeType, configDef := range wantTypes {
+		t.Run(string(storeType), func(t *testing.T) {
+			if !listed[string(storeType)] {
+				t.Errorf("vector_store.type enum is missing %q — NewVectorStore constructs this type", storeType)
+			}
+			if _, found := navigateJSON(schema, "$defs", configDef); !found {
+				t.Errorf("$defs is missing %q — %q has no config schema", configDef, storeType)
+			}
+		})
+	}
+
+	// The reverse direction: a type the schema offers but the loader rejects
+	// sends operators down a path that fails at boot.
+	for value := range listed {
+		if _, ok := wantTypes[vectorstore.VectorStoreType(value)]; !ok {
+			t.Errorf("vector_store.type enum offers %q, which NewVectorStore cannot construct", value)
+		}
+	}
+
+	// The backend config block is only meaningful next to the type that owns it.
+	// Accepting a mismatched pair means the schema validates a config the loader
+	// will reject at boot, which is the failure mode a schema exists to prevent.
+	t.Run("config block must match the declared type", func(t *testing.T) {
+		compiled := compileSchema(t)
+
+		valid := map[string]string{
+			"weaviate": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"scheme": "http", "host": "localhost:8080"}}}`,
+			"redis":    `{"vector_store": {"enabled": true, "type": "redis", "config": {"addr": "localhost:6379"}}}`,
+			"qdrant":   `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "localhost"}}}`,
+			"pinecone": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"api_key": "k", "index_host": "h"}}}`,
+			"chromem":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem"}}}`,
+		}
+		for name, config := range valid {
+			if err := validateConfig(t, compiled, config); err != nil {
+				t.Errorf("%s paired with its own config must be valid, got: %v", name, err)
+			}
+		}
+
+		mismatched := map[string]string{
+			// chromem_config requires nothing, so an empty object satisfies it. A
+			// type-blind branch lets that stand in for every other backend and
+			// waves through a redis store with no addr to dial.
+			"redis with an empty config":    `{"vector_store": {"enabled": true, "type": "redis", "config": {}}}`,
+			"redis with a chromem config":   `{"vector_store": {"enabled": true, "type": "redis", "config": {"path": "/app/data/chromem"}}}`,
+			"weaviate with a redis config":  `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"addr": "localhost:6379"}}}`,
+			"qdrant with a pinecone config": `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"api_key": "k", "index_host": "h"}}}`,
+			"pinecone with a qdrant config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"host": "localhost"}}}`,
+			"chromem with a redis config":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"addr": "localhost:6379"}}}`,
+			"weaviate with an empty config": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {}}}`,
+			"pinecone with an empty config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {}}}`,
+		}
+		for name, config := range mismatched {
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Errorf("%s must be rejected: the config block belongs to a different backend", name)
+			}
+		}
+	})
+
+	// NewVectorStore rejects a nil config for every service-backed type
+	// ("<type> config is required"), because each needs an endpoint to dial.
+	// Chromem is the sole exception: a nil config there means memory-only mode.
+	t.Run("service-backed types require a config block", func(t *testing.T) {
+		compiled := compileSchema(t)
+
+		for _, storeType := range []string{"weaviate", "redis", "qdrant", "pinecone"} {
+			omitted := `{"vector_store": {"enabled": true, "type": "` + storeType + `"}}`
+			if err := validateConfig(t, compiled, omitted); err == nil {
+				t.Errorf("%s with no config block must be rejected: it has no endpoint to dial", storeType)
+			}
+		}
+
+		// The negative control lives in "chromem config validates" below, which
+		// pins the memory-only form as valid.
+	})
+
+	t.Run("chromem config validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		persistent := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": false}}}`
+		if err := validateConfig(t, compiled, persistent); err != nil {
+			t.Errorf("a persistent chromem store must be valid, got: %v", err)
+		}
+		// Path is optional: an empty config is chromem's memory-only mode.
+		memoryOnly := `{"vector_store": {"enabled": true, "type": "chromem"}}`
+		if err := validateConfig(t, compiled, memoryOnly); err != nil {
+			t.Errorf("a memory-only chromem store must be valid, got: %v", err)
+		}
+		unknownField := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "collection": "x"}}}`
+		if err := validateConfig(t, compiled, unknownField); err == nil {
+			t.Error("an unknown chromem config field must be rejected: ChromemConfig defines only path and compress")
+		}
+		// compress only reaches chromem.NewPersistentDB, so enabling it without a
+		// path silently does nothing — reject it rather than let an operator
+		// believe their memory-only store is compressed.
+		compressNoPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"compress": true}}}`
+		if err := validateConfig(t, compiled, compressNoPath); err == nil {
+			t.Error("compress without path must be rejected: compression only applies to a persistent store")
+		}
+		compressEmptyPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "", "compress": true}}}`
+		if err := validateConfig(t, compiled, compressEmptyPath); err == nil {
+			t.Error("compress with an empty path must be rejected: an empty path is memory-only mode")
+		}
+		compressWithPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": true}}}`
+		if err := validateConfig(t, compiled, compressWithPath); err != nil {
+			t.Errorf("compress alongside a path must be valid, got: %v", err)
+		}
+		// newChromemStore trims the path before deciding between the persistent
+		// and memory-only db, so a blank path is memory-only however it is
+		// spelled. Both compression settings must reject it: writing one reads
+		// as a persistent store that silently never persists.
+		blankPaths := map[string]string{
+			"empty, no compress":          `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": ""}}}`,
+			"whitespace, no compress":     `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "   "}}}`,
+			"empty, compress false":       `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "", "compress": false}}}`,
+			"whitespace, compress false":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": " \t ", "compress": false}}}`,
+			"whitespace, compress true":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "   ", "compress": true}}}`,
+			"newline only, compress true": `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "\n", "compress": true}}}`,
+		}
+		for name, config := range blankPaths {
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Errorf("a blank chromem path (%s) must be rejected: omit path for memory-only mode", name)
+			}
+		}
+		// The rejection must not spill onto real paths under either setting.
+		for name, config := range map[string]string{
+			"compress false": `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": false}}}`,
+			"compress true":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "./relative path/chromem", "compress": true}}}`,
+		} {
+			if err := validateConfig(t, compiled, config); err != nil {
+				t.Errorf("a non-blank chromem path (%s) must stay valid, got: %v", name, err)
+			}
+		}
+	})
 }
 
 // TestSchemaGovernanceProjectsValidation pins the constraints a governance.projects declaration
