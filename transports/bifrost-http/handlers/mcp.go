@@ -810,6 +810,103 @@ type MCPClientResponse struct {
 	// self-reported state). Only ever populated by a configured
 	// MCPClusterStateAggregator; nil in a single-instance deployment.
 	NodeStates map[string]string `json:"node_states,omitempty"`
+	// Credential is the read-only view of the credential the client holds on
+	// its own behalf (see MCPClientCredentialResponse). Nil when the client's
+	// auth type has no such credential (none, headers) or when none has been
+	// issued yet (a client still pending its one-time authorization).
+	Credential *MCPClientCredentialResponse `json:"credential,omitempty"`
+}
+
+// MCPClientCredentialResponse describes the credential a client holds on its
+// own behalf, as opposed to the per-caller credentials listed under
+// /api/mcp/sessions: the single shared token for an oauth client, the
+// retained admin token for per_user_oauth and token_exchange clients (used
+// only to refresh the tool list), or the retained admin header values for a
+// per_user_headers client. Secret material never appears here: the refresh
+// token is reported as present or absent, and header values only by name.
+type MCPClientCredentialResponse struct {
+	Kind   string `json:"kind"`   // "oauth" | "headers"
+	Status string `json:"status"` // oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	// ExpiresAt is the access token's expiry on oauth credentials; nil when
+	// the provider did not report one. Always nil for headers credentials.
+	ExpiresAt *string `json:"expires_at,omitempty"`
+	// LastRefreshedAt is set on oauth credentials once the access token has
+	// been refreshed or the credential re-authorized at least once.
+	LastRefreshedAt *string `json:"last_refreshed_at,omitempty"`
+	// HasRefreshToken reports whether the provider issued a refresh token, so
+	// the access token can be renewed without another consent. Always false
+	// for headers credentials.
+	HasRefreshToken bool `json:"has_refresh_token"`
+	// Scopes are the scopes the provider reported at consent time. Empty when
+	// the provider omitted them from its token response.
+	Scopes []string `json:"scopes,omitempty"`
+	// HeaderKeys are the names of the headers the stored admin values cover,
+	// sorted. Compared against the client's per_user_header_keys, a key
+	// present there but missing here is one the stored values predate.
+	HeaderKeys []string `json:"header_keys,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	UpdatedAt  string   `json:"updated_at"`
+}
+
+// mcpClientCredentialResponse picks the credential row a client of the given
+// auth type depends on and projects it to the wire shape. Mirrors the row
+// selection in projectMCPCredentialState so the sheet's credential block and
+// the client's state badge always describe the same row. Returns nil when
+// the auth type holds no such credential or the row does not exist.
+func mcpClientCredentialResponse(
+	authType schemas.MCPAuthType,
+	adminToken *configstoreTables.TableMCPOauthToken,
+	adminCred *configstoreTables.TableMCPPerUserHeaderCredential,
+	sharedToken *configstoreTables.TableMCPOauthToken,
+) *MCPClientCredentialResponse {
+	oauthCredential := func(t *configstoreTables.TableMCPOauthToken) *MCPClientCredentialResponse {
+		if t == nil {
+			return nil
+		}
+		resp := &MCPClientCredentialResponse{
+			Kind:            "oauth",
+			Status:          t.Status,
+			HasRefreshToken: t.RefreshToken != "",
+			Scopes:          parseOauthScopesJSON(t.Scopes),
+			CreatedAt:       t.CreatedAt.UTC().Format(rfc3339Nano),
+			UpdatedAt:       t.UpdatedAt.UTC().Format(rfc3339Nano),
+		}
+		if t.ExpiresAt != nil {
+			resp.ExpiresAt = bifrost.Ptr(t.ExpiresAt.UTC().Format(rfc3339Nano))
+		}
+		if t.LastRefreshedAt != nil {
+			resp.LastRefreshedAt = bifrost.Ptr(t.LastRefreshedAt.UTC().Format(rfc3339Nano))
+		}
+		return resp
+	}
+	switch authType {
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
+		return oauthCredential(adminToken)
+	case schemas.MCPAuthTypeOauth:
+		return oauthCredential(sharedToken)
+	case schemas.MCPAuthTypePerUserHeaders:
+		if adminCred == nil {
+			return nil
+		}
+		resp := &MCPClientCredentialResponse{
+			Kind:      "headers",
+			Status:    adminCred.Status,
+			CreatedAt: adminCred.CreatedAt.UTC().Format(rfc3339Nano),
+			UpdatedAt: adminCred.UpdatedAt.UTC().Format(rfc3339Nano),
+		}
+		// Names only. A decode failure (a row written before encryption was
+		// configured and read after, say) leaves the key list empty rather
+		// than hiding the row: status and timestamps are still accurate.
+		if headers, err := adminCred.GetHeaders(); err == nil && len(headers) > 0 {
+			resp.HeaderKeys = make([]string, 0, len(headers))
+			for name := range headers {
+				resp.HeaderKeys = append(resp.HeaderKeys, name)
+			}
+			sort.Strings(resp.HeaderKeys)
+		}
+		return resp
+	}
+	return nil
 }
 
 // MCPClusterStateAggregator is an optional capability the configured
@@ -1122,6 +1219,23 @@ func projectMCPCredentialState(
 	return runtimeState
 }
 
+// oauthTokenStatus and headerCredentialStatus read the status off a possibly
+// absent credential row, so projectMCPCredentialState's "" (no row) input
+// falls out of a plain map miss.
+func oauthTokenStatus(t *configstoreTables.TableMCPOauthToken) string {
+	if t == nil {
+		return ""
+	}
+	return t.Status
+}
+
+func headerCredentialStatus(c *configstoreTables.TableMCPPerUserHeaderCredential) string {
+	if c == nil {
+		return ""
+	}
+	return c.Status
+}
+
 func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params configstore.MCPClientsQueryParams, states []string) {
 	// Get connected clients from Bifrost engine — used both to resolve the
 	// runtime state filter and to merge live state/tools onto each row below.
@@ -1219,15 +1333,18 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		}
 	}
 
-	// Batch-fetch the retained admin discovery credentials for this page's
-	// per-user clients so their registry state can carry the needs_reauth
-	// projection (see projectPerUserAdminCredentialState). Best-effort: a
-	// batch-read failure only means the projection is skipped and runtime
-	// states pass through untouched. Debug, not Error, because this runs on
-	// every registry list.
-	adminTokenStatusByClientID := make(map[string]string)
-	adminCredStatusByClientID := make(map[string]string)
-	sharedTokenStatusByClientID := make(map[string]string)
+	// Batch-fetch the credential row each of this page's clients holds on its
+	// own behalf (the retained admin discovery credential for per-user
+	// clients, the shared token for oauth ones). Each row feeds two things:
+	// the needs_reauth state projection (see projectMCPCredentialState) and
+	// the read-only credential block on the response (see
+	// mcpClientCredentialResponse). Best-effort: a batch-read failure only
+	// means the projection is skipped, runtime states pass through untouched,
+	// and the credential block is absent. Debug, not Error, because this runs
+	// on every registry list.
+	adminTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
+	adminCredByClientID := make(map[string]*configstoreTables.TableMCPPerUserHeaderCredential)
+	sharedTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
 	if h.store.ConfigStore != nil {
 		adminTokenClientIDs := make([]string, 0)
 		perUserHeaderClientIDs := make([]string, 0)
@@ -1253,7 +1370,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		if len(adminTokenClientIDs) > 0 {
 			if adminTokens, err := h.store.ConfigStore.GetAdminOauthTokensByMCPClientIDs(ctx, adminTokenClientIDs); err == nil {
 				for clientID, token := range adminTokens {
-					adminTokenStatusByClientID[clientID] = token.Status
+					adminTokenByClientID[clientID] = token
 				}
 			} else {
 				logger.Debug("failed to batch-get admin oauth tokens for MCP registry state projection: %v", err)
@@ -1262,7 +1379,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		if len(perUserHeaderClientIDs) > 0 {
 			if adminCreds, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, perUserHeaderClientIDs); err == nil {
 				for clientID, cred := range adminCreds {
-					adminCredStatusByClientID[clientID] = cred.Status
+					adminCredByClientID[clientID] = cred
 				}
 			} else {
 				logger.Debug("failed to batch-get admin header credentials for MCP registry state projection: %v", err)
@@ -1272,7 +1389,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			if sharedTokens, err := h.store.ConfigStore.GetSharedOauthTokensByConfigIDs(ctx, sharedOauthConfigIDs); err == nil {
 				for oauthConfigID, token := range sharedTokens {
 					for _, clientID := range clientIDsByOauthConfigID[oauthConfigID] {
-						sharedTokenStatusByClientID[clientID] = token.Status
+						sharedTokenByClientID[clientID] = token
 					}
 				}
 			} else {
@@ -1338,6 +1455,10 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			})
 		}
 		redactedConfig := h.store.RedactMCPClientConfig(clientConfig)
+		adminToken := adminTokenByClientID[dbClient.ClientID]
+		adminCred := adminCredByClientID[dbClient.ClientID]
+		sharedToken := sharedTokenByClientID[dbClient.ClientID]
+		credential := mcpClientCredentialResponse(clientConfig.AuthType, adminToken, adminCred, sharedToken)
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
@@ -1347,15 +1468,16 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			resolvedState := projectMCPCredentialState(
 				clientConfig.AuthType,
 				connectedClient.State,
-				adminTokenStatusByClientID[dbClient.ClientID],
-				adminCredStatusByClientID[dbClient.ClientID],
-				sharedTokenStatusByClientID[dbClient.ClientID],
+				oauthTokenStatus(adminToken),
+				headerCredentialStatus(adminCred),
+				oauthTokenStatus(sharedToken),
 			)
 			resp := MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     sortedTools,
-				State:     resolvedState,
-				VKConfigs: vkConfigs,
+				Config:     redactedConfig,
+				Tools:      sortedTools,
+				State:      resolvedState,
+				VKConfigs:  vkConfigs,
+				Credential: credential,
 			}
 			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
 				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, resolvedState); aggState == schemas.MCPConnectionStateDegraded {
@@ -1366,10 +1488,11 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			clients = append(clients, resp)
 		} else {
 			clients = append(clients, MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     []schemas.ChatToolFunction{},
-				State:     schemas.MCPConnectionStateError,
-				VKConfigs: vkConfigs,
+				Config:     redactedConfig,
+				Tools:      []schemas.ChatToolFunction{},
+				State:      schemas.MCPConnectionStateError,
+				VKConfigs:  vkConfigs,
+				Credential: credential,
 			})
 		}
 	}

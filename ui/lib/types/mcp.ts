@@ -150,6 +150,33 @@ export interface MCPVKConfigResponse {
 	tools_to_execute: string[];
 }
 
+// MCPClientCredential is the read-only view of the credential a server holds
+// on its own behalf, as opposed to the per-caller credentials listed under
+// MCP sessions: the single shared token for an oauth server, the retained
+// admin token for per_user_oauth and token_exchange servers (used only to
+// refresh the tool list), or the retained admin header values for a
+// per_user_headers server. Never carries secret material: the refresh token
+// is reported as present or absent, and header values only by name.
+export interface MCPClientCredential {
+	kind: "oauth" | "headers";
+	// oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	status: "active" | "orphaned" | "needs_reauth" | "needs_update";
+	// oauth only: access token expiry; absent when the provider did not report one.
+	expires_at?: string | null;
+	// oauth only: set once the access token has been refreshed or the
+	// credential re-authorized at least once.
+	last_refreshed_at?: string | null;
+	// oauth only: whether the provider issued a refresh token. Always false for headers.
+	has_refresh_token: boolean;
+	// oauth only: scopes the provider reported at consent. Empty when the
+	// provider omitted them from its token response.
+	scopes?: string[];
+	// headers only: names of the headers the stored admin values cover, sorted.
+	header_keys?: string[];
+	created_at: string;
+	updated_at: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
 	tools: ToolFunction[];
@@ -159,6 +186,10 @@ export interface MCPClient {
 	// -> that instance's own self-reported state). Only ever present in a
 	// distributed deployment; absent otherwise.
 	node_states?: Record<string, string>;
+	// The credential this server holds on its own behalf. Absent for auth
+	// types without one (none, headers) and for servers that have not
+	// completed their one-time authorization yet.
+	credential?: MCPClientCredential;
 }
 
 export interface CreateMCPClientRequest {

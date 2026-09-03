@@ -43,6 +43,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { TokenExchangeFields } from "./tokenExchangeFields";
@@ -112,6 +113,12 @@ export default function MCPClientSheet({
 	const isPerUserAuth =
 		mcpClient.config.auth_type === "per_user_oauth" ||
 		mcpClient.config.auth_type === "per_user_headers" ||
+		mcpClient.config.auth_type === "token_exchange";
+	// Auth types whose server holds an OAuth credential of its own: the shared
+	// token, or the retained admin token used to refresh the tool list.
+	const holdsOwnOauthCredential =
+		mcpClient.config.auth_type === "oauth" ||
+		mcpClient.config.auth_type === "per_user_oauth" ||
 		mcpClient.config.auth_type === "token_exchange";
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
 
@@ -1077,6 +1084,13 @@ export default function MCPClientSheet({
 											</>
 										)}
 
+										{mcpClient.config.auth_type === "per_user_headers" && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
 										<DottedSeparator />
 										<div className="space-y-4">
 											<SectionHeader
@@ -1115,6 +1129,20 @@ export default function MCPClientSheet({
 												)}
 											/>
 										</div>
+
+										{holdsOwnOauthCredential && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
+										{(mcpClient.config.auth_type === "per_user_oauth" || mcpClient.config.auth_type === "per_user_headers") && (
+											<>
+												<DottedSeparator />
+												<MCPClientSessionsSection mcpClient={mcpClient} />
+											</>
+										)}
 
 										{(() => {
 											const showTLS = mcpClient.config.connection_type === "http" || mcpClient.config.connection_type === "sse";
