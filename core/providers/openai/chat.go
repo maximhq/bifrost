@@ -148,11 +148,34 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 }
 
+// providerRejectsServiceTier reports whether the provider's endpoint implements
+// service_tier at all. Bedrock Mantle does not: its OpenAI-compatible surface on
+// bedrock-mantle.{region}.api.aws rejects the field outright ("'priority' is not
+// supported for 'service_tier' on this model"). Provider bedrock reaches these
+// converters only through the deprecated in-provider Mantle routing in
+// bedrock/mantle.go — every other Bedrock path uses Converse — so it means the
+// same endpoint and the same rejection.
+func providerRejectsServiceTier(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.BedrockMantle, schemas.Bedrock:
+		return true
+	default:
+		return false
+	}
+}
+
 // serviceTierForModel filters a requested tier against the final target model's
 // capabilities. Omitting an unsupported tier lets the provider use its default
 // instead of returning an unsupported-tier error.
 func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *schemas.BifrostServiceTier {
 	if tier == nil {
+		return nil
+	}
+	// Checked before the datasheet: ServiceTierSupported falls back to "keep the
+	// tier" when the catalog has no row for the pair, and Mantle model ids
+	// (openai.gpt-5.6-terra, ...) generally have none — so the fallback would
+	// forward a field the endpoint 400s on.
+	if providerRejectsServiceTier(caps.Provider()) {
 		return nil
 	}
 	if !caps.ServiceTierSupported(*tier, true) {

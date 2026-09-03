@@ -15,6 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -303,6 +304,19 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
 	}
 
+	// Admission check, before any key is selected: resolveRealtimeWebRTCKeys below reaches
+	// SelectKeyForProviderRequestType and hands the relay the operator's provider key. Covers
+	// both the GA /realtime/calls and the legacy raw-SDP routes, which funnel through here.
+	if authErr := refuseUnauthenticatedRealtime(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		h.handlerStore.GetKVStore(),
+		bifrostCtx,
+		string(ctx.Request.Header.Peek("Authorization")),
+	); authErr != nil {
+		SendBifrostError(ctx, authErr)
+		return
+	}
+
 	authKey, selectedKey, err := h.resolveRealtimeWebRTCKeys(ctx, bifrostCtx, providerKey, model)
 	if err != nil {
 		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", err.Error(), nil))
@@ -431,6 +445,9 @@ func applyRealtimeEphemeralKeyMapping(bifrostCtx *schemas.BifrostContext, mappin
 	}
 	if mapping.VirtualKey != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, mapping.VirtualKey)
+		// The ephemeral key stood in for the virtual key it was minted from, so the request is
+		// that key's.
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialVirtualKey, mapping.VirtualKey))
 	}
 	if mapping.KeyID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, mapping.KeyID)

@@ -1231,6 +1231,11 @@ type GeminiResponsesStreamState struct {
 	ToolCallNames       map[int]string // Maps output_index to tool name
 	ToolArgumentBuffers map[int]string // Accumulates tool arguments as JSON
 
+	// OutputItems maps output_index to the completed output item, for response.completed's
+	// Output array. Recorded as items close, since an item closed mid-stream is not
+	// reconstructible from the remaining state at finish time.
+	OutputItems map[int]*schemas.ResponsesMessage
+
 	// Response metadata
 	MessageID  *string // Generated message ID
 	Model      *string // Model version
@@ -1275,6 +1280,7 @@ var geminiResponsesStreamStatePool = sync.Pool{
 			ToolCallIDs:          make(map[int]string),
 			ToolCallNames:        make(map[int]string),
 			ToolArgumentBuffers:  make(map[int]string),
+			OutputItems:          make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:   0,
 			TextOutputIndex:      -1,
 			CreatedAt:            int(time.Now().Unix()),
@@ -1326,6 +1332,11 @@ func (state *GeminiResponsesStreamState) flush() {
 	} else {
 		clear(state.ToolArgumentBuffers)
 	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
 	state.CurrentOutputIndex = 0
 	state.TextOutputIndex = -1
 	state.MessageID = nil
@@ -1370,8 +1381,41 @@ func (state *GeminiResponsesStreamState) generateItemID(suffix string, outputInd
 	return fmt.Sprintf("%s_%d", suffix, outputIndex)
 }
 
+// recordGeminiOutputItems captures every output_item.done in a batch of emitted events
+// onto the state, keyed by output index, so closeGeminiOpenItems can rebuild
+// response.completed's Output array.
+//
+// Recording happens as items close rather than at finish: a text item closed mid-stream
+// has already had its TextBuffer consumed, so it cannot be reconstructed later. Scanning
+// the emitted batch keeps this to two call sites instead of one at each of the eleven
+// output_item.done emitters, so a new emitter cannot silently forget to register itself.
+//
+// The item is copied so a later mutation of the emitted event cannot reach into the
+// terminal response.
+func recordGeminiOutputItems(state *GeminiResponsesStreamState, responses []*schemas.BifrostResponsesStreamResponse) {
+	if state == nil {
+		return
+	}
+	for _, response := range responses {
+		if response == nil || response.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
+			continue
+		}
+		if response.Item == nil || response.OutputIndex == nil {
+			continue
+		}
+		item := *response.Item
+		state.OutputItems[*response.OutputIndex] = &item
+	}
+}
+
 // ToBifrostResponsesStream converts a Gemini stream event to Bifrost Responses Stream responses
 func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
+	responses, bifrostErr := response.toBifrostResponsesStream(sequenceNumber, state)
+	recordGeminiOutputItems(state, responses)
+	return responses, bifrostErr
+}
+
+func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// First event: Emit response.created and response.in_progress
@@ -2348,10 +2392,28 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		applyGeminiSearchQueryResponsesUsage(bifrostUsage, groundingMetadata, *state.Model)
 	}
 
+	// Capture the items this function just closed, alongside those recorded as they
+	// closed mid-stream, so the Output array below covers the whole turn.
+	recordGeminiOutputItems(state, responses)
+
 	completedResp := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
+	}
+
+	// Populate the Output array from the accumulated items. OpenAI's Responses
+	// contract requires response.completed to carry the full output, and clients
+	// (notably the OpenAI Agents SDK) build the finished turn from it rather than
+	// from the deltas. Walk output indices in order so the array matches the order
+	// the items were streamed in.
+	if len(state.OutputItems) > 0 {
+		completedResp.Output = make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+		for i := 0; i < state.CurrentOutputIndex; i++ {
+			if item, exists := state.OutputItems[i]; exists && item != nil {
+				completedResp.Output = append(completedResp.Output, *item)
+			}
+		}
 	}
 	if usage != nil {
 		if t := mapGeminiTrafficTypeToBifrost(usage.TrafficType); t != nil {

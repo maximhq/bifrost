@@ -397,6 +397,46 @@ func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	}
 }
 
+// TestSchemaGuardrailRuleConversationWindow verifies config accepts the explicit
+// history switch and rejects non-boolean values before Enterprise reconciliation.
+func TestSchemaGuardrailRuleConversationWindow(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		window    string
+		wantError bool
+	}{
+		{name: "current input only is valid", window: `,"send_all_conversation_turns":false,"max_turns_to_send":0`},
+		{name: "all history is valid", window: `,"send_all_conversation_turns":true`},
+		{name: "non boolean switch is rejected", window: `,"send_all_conversation_turns":"false"`, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "Conversation rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, test.window)
+
+			err := validateConfig(t, compiled, config)
+			if test.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 
@@ -795,6 +835,44 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("mcp with tool_sync_interval should be valid, got: %v", err)
+		}
+	})
+}
+
+func TestSchemaVKRotationCooldownBounds(t *testing.T) {
+	compiled := compileSchema(t)
+
+	cooldownConfig := func(value string) string {
+		return fmt.Sprintf(`{"client": {"vk_rotation_cooldown": %s}}`, value)
+	}
+
+	t.Run("valid duration string accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`"5m"`)); err != nil {
+			t.Errorf("duration string cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("zero accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`0`)); err != nil {
+			t.Errorf("zero cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("30 days in nanoseconds accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`2592000000000000`)); err != nil {
+			t.Errorf("30-day cooldown should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("negative integer rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`-1`)); err == nil {
+			t.Error("negative cooldown must be rejected by the schema")
+		}
+	})
+
+	t.Run("integer above 30 days rejected", func(t *testing.T) {
+		if err := validateConfig(t, compiled, cooldownConfig(`2592000000000001`)); err == nil {
+			t.Error("cooldown above 30 days must be rejected by the schema")
 		}
 	})
 }

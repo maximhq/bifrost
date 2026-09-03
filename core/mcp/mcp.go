@@ -346,6 +346,29 @@ func (m *MCPManager) UpdateToolManagerConfig(config *schemas.MCPToolManagerConfi
 	m.toolsManager.UpdateConfig(config)
 }
 
+// UpdateToolSyncInterval replaces the global tool sync interval at runtime and
+// re-times every running connection checker against it. Clients with an
+// explicit per-client interval resolve to the same cadence as before, so the
+// re-timing is a no-op for them; only clients following the global setting
+// actually change. The internal Bifrost client has no checker and is skipped.
+// A non-positive interval means "no global override": the built-in default
+// applies, exactly as at construction.
+func (m *MCPManager) UpdateToolSyncInterval(interval time.Duration) {
+	// Snapshot under the manager lock and apply after releasing it: re-timing
+	// takes the checker's own mutex, which Start() holds while acquiring m.mu,
+	// so nesting the two here would invert that lock order.
+	var clients []ClientIntervalSource
+	m.mu.RLock()
+	for id, clientState := range m.clientMap {
+		if id == BifrostMCPClientKey || clientState.ExecutionConfig == nil {
+			continue
+		}
+		clients = append(clients, ClientIntervalSource{ID: id, Config: clientState.ExecutionConfig})
+	}
+	m.mu.RUnlock()
+	m.checkerManager.ApplyGlobalInterval(interval, clients)
+}
+
 // CheckAndExecuteAgentForChatRequest checks if the chat response contains tool calls,
 // and if so, executes agent mode to handle the tool calls iteratively. If no tool calls
 // are present, it returns the original response unchanged.

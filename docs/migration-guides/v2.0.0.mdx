@@ -3,7 +3,7 @@ title: "Migrating to v2.0.0"
 description: "Breaking changes and migration instructions for the v2.0.0 release"
 ---
 
-v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, and moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request. This page covers the four breaking changes in this release and how to migrate.
+v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request, and restructures the request `cost` object into a per-category input/output/additional breakdown. This page covers the five breaking changes in this release and how to migrate.
 
 <Note>
 **Running Bifrost Enterprise?** This page covers the OSS behavior only. See the [Enterprise v2.0.0 Migration Guide](/enterprise/migration-guides/v2.0.0) for how these changes interact with SCIM-based authentication.
@@ -242,6 +242,95 @@ See the [Plugin Migration Guide](/plugins/migration-guide) for the full hook con
 
 ---
 
+## Breaking Change 5: Request Cost Is Now a Per-Category Breakdown
+
+The `BifrostCost` object (returned as `cost` on inference responses and as `token_usage.cost` on log entries) was restructured from a flat list of token-category costs into three buckets (input, output, additional), each with an optional nested details object, that reconcile to `total_cost`.
+
+**What changed:** the flat fields (`input_tokens_cost`, `output_tokens_cost`, `reasoning_tokens_cost`, `citation_tokens_cost`, `search_queries_cost`, `request_cost`) were replaced by `input_cost`, `output_cost`, and `additional_cost` aggregates plus `input_cost_details`, `output_cost_details`, and `additional_cost_details`. When the category split is populated, `input_cost + output_cost + additional_cost == total_cost`. A cost parsed from the legacy bare-number shape is the exception: `UnmarshalJSON` sets only `total_cost` and leaves the category fields zero, so treat `total_cost` as authoritative and check the category fields before relying on the equality.
+
+**Who is affected:** any client that parses the `cost` object from an inference response or the logs API, any Go code that reads `schemas.BifrostCost`, and any custom `framework/logstore` implementation.
+
+**How to fix it:** remap the fields you read using the table below.
+
+### JSON field mapping
+
+| v1.x (`cost`) | 2.0.0 (`cost`) |
+|---|---|
+| `input_tokens_cost` | `input_cost` (text portion in `input_cost_details.text_cost`) |
+| `output_tokens_cost` | `output_cost` (text portion in `output_cost_details.text_cost`) |
+| `reasoning_tokens_cost` | `output_cost_details.reasoning_cost` (rolled up in `output_cost`) |
+| `citation_tokens_cost` | `output_cost_details.citation_cost` (rolled up in `output_cost`) |
+| `search_queries_cost` | `output_cost_details.search_queries_cost` (rolled up in `output_cost`) |
+| `request_cost` | `input_cost_details.request_cost` (rolled up in `input_cost`) |
+| `total_cost` | `total_cost` (unchanged) |
+| (none) | `additional_cost` + `additional_cost_details` (`guardrail_cost`, `mcp_cost`, `semantic_cache_cost`), new in 2.0.0 |
+
+`input_cost_details` also breaks out `audio_cost`, `image_cost`, `cached_read_cost`, and `cached_write_cost`; `output_cost_details` also breaks out `audio_cost` and `image_cost`. Every details field is omitted when zero.
+
+<Note>
+**Reading historical data still works.** `BifrostCost` accepts the legacy flat shape (and a bare float total) when deserializing, so cost objects stored by v1.x, and providers that still emit the flat shape, parse without error. Only newly emitted responses use the nested shape, so update any consumer that reads cost fields by name.
+</Note>
+
+**Before** (v1.x response `cost`):
+```json
+{
+  "input_tokens_cost": 0.0021,
+  "output_tokens_cost": 0.0075,
+  "reasoning_tokens_cost": 0.0004,
+  "total_cost": 0.0096
+}
+```
+
+**After** (2.0.0 response `cost`):
+```json
+{
+  "input_cost": 0.0021,
+  "input_cost_details": { "text_cost": 0.0021 },
+  "output_cost": 0.0075,
+  "output_cost_details": { "text_cost": 0.0071, "reasoning_cost": 0.0004 },
+  "total_cost": 0.0096
+}
+```
+
+### Go consumers of `schemas.BifrostCost`
+
+The struct fields were renamed to match the JSON above, and the former top-level breakouts now live on the details structs:
+
+**Before:**
+```go
+cost := resp.Cost
+input := cost.InputTokensCost
+reasoning := cost.ReasoningTokensCost
+```
+
+**After:**
+```go
+cost := resp.Cost
+input := cost.InputCost
+var reasoning float64
+if cost.OutputCostDetails != nil {
+	reasoning = cost.OutputCostDetails.ReasoningCost
+}
+```
+
+### Custom log store implementations: `BulkUpdateCost`
+
+`LogStore.BulkUpdateCost` now takes the per-category split instead of a bare total, so a cost recompute keeps the denormalized `input_cost`/`output_cost`/`additional_cost` columns reconciled with the `cost` column.
+
+**Before:**
+```go
+BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+```
+
+**After:**
+```go
+BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
+```
+
+`CostUpdate` carries `Total`, `Input`, `Output`, and `Additional`. A `BulkUpdateCost` implementation reads these fields and writes them to the row (see `framework/logstore/clickhousestore.go`); it does not construct them. Construction happens in the caller that builds the update map: it turns a `*schemas.BifrostCost` into a `CostUpdate` with `logstore.CostUpdateFromBreakdown(breakdown)` (which attributes an unsplit total to the input side for opaque-total providers), or builds `CostUpdate{Total: t, Input: t}` directly when only a total is available.
+
+---
+
 ## Migration Checklist
 
 <Steps>
@@ -275,5 +364,13 @@ Any role or API key that reads `/api/governance/users/{user_id}/virtual-keys` wi
 
 <Step title="Monitor deprecated-route telemetry until alias traffic reaches zero">
 Legacy governance paths remain executable aliases for one complete GA release and return a `Deprecation` header. They are planned for removal in the following major release.
+</Step>
+
+<Step title="Update consumers of the request cost object">
+Any client parsing `cost` / `token_usage.cost`, or Go code reading `schemas.BifrostCost`, must move from the flat fields (`input_tokens_cost`, `reasoning_tokens_cost`, ...) to the nested input/output/additional shape (see the [JSON field mapping](#json-field-mapping)).
+</Step>
+
+<Step title="Update custom log store implementations for the new BulkUpdateCost signature">
+If you implement `framework/logstore.LogStore`, change `BulkUpdateCost` to take `map[string]CostUpdate` and read each value's `Total`, `Input`, `Output`, and `Additional`. `CostUpdateFromBreakdown` belongs in the caller that builds the update map, not the implementation.
 </Step>
 </Steps>
