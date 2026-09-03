@@ -2494,6 +2494,78 @@
             "if": {
               "properties": {
                 "name": {
+                  "const": "agent-capability-router"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for deterministic agent capability classification and logical alias routing",
+                  "properties": {
+                    "shadow_mode": {
+                      "type": "boolean",
+                      "description": "Classify and log without rewriting managed model aliases when true",
+                      "default": true
+                    },
+                    "confidence_threshold": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1,
+                      "description": "Minimum classifier confidence required to use a non-general capability lane",
+                      "default": 0.7
+                    },
+                    "history_messages": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 32,
+                      "description": "Maximum number of recent normalized messages considered by the classifier",
+                      "default": 8
+                    },
+                    "aliases": {
+                      "type": "object",
+                      "description": "Logical automatic model aliases managed by the plugin",
+                      "properties": {
+                        "main": { "type": "string", "minLength": 1 },
+                        "worker": { "type": "string", "minLength": 1 }
+                      },
+                      "additionalProperties": false
+                    },
+                    "active_roles": {
+                      "type": "object",
+                      "description": "Enable capability classification independently for managed roles",
+                      "properties": {
+                        "main": { "type": "boolean" },
+                        "worker": { "type": "boolean" }
+                      },
+                      "additionalProperties": false
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Optional per-capability keyword overrides",
+                      "properties": {
+                        "orchestrate": { "type": "array", "items": { "type": "string" } },
+                        "implement": { "type": "array", "items": { "type": "string" } },
+                        "debug": { "type": "array", "items": { "type": "string" } },
+                        "tool-loop": { "type": "array", "items": { "type": "string" } },
+                        "explore": { "type": "array", "items": { "type": "string" } },
+                        "summarize": { "type": "array", "items": { "type": "string" } },
+                        "general": { "type": "array", "items": { "type": "string" } }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
                   "const": "maxim"
                 }
               }

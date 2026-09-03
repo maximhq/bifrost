@@ -17,6 +17,7 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.8.3
 	github.com/maximhq/bifrost/framework v1.6.0
+	github.com/maximhq/bifrost/plugins/agentcapabilityrouter v0.0.0-00010101000000-000000000000
 	github.com/maximhq/bifrost/plugins/compat v0.2.0
 	github.com/maximhq/bifrost/plugins/governance v1.7.0
 	github.com/maximhq/bifrost/plugins/logging v1.7.0
@@ -239,3 +240,5 @@ require (
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/maximhq/bifrost/plugins/agentcapabilityrouter => ../plugins/agentcapabilityrouter

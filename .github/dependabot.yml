@@ -158,6 +158,12 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
+    directory: /plugins/agentcapabilityrouter
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
     directory: /plugins/governance
     schedule:
       interval: daily
