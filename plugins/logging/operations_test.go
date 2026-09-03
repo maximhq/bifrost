@@ -636,6 +636,15 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	}) {
 		t.Fatal("expected semantic cache debug to be stored on context")
 	}
+	routingEmbeddingTokens := 13
+	if !schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+		ProviderUsed:       &embeddingProvider,
+		ModelUsed:          &embeddingModel,
+		InputTokens:        &routingEmbeddingTokens,
+		CountTowardBudgets: true,
+	}) {
+		t.Fatal("expected routing debug to be stored on context")
+	}
 	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider:    schemas.OpenAI,
 		JudgeModel:       "gpt-4o",
@@ -700,10 +709,11 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
 	}
 	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
-	// text-embedding-3-small is 2e-8/token. The cache lookup and the judge call
-	// must both be added even though the stream ended with an error chunk.
+	// text-embedding-3-small is 2e-8/token. The cache lookup, routing
+	// classification, and judge call must all be added even though the stream
+	// ended with an error chunk.
 	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5 +
-		float64(embeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
+		float64(embeddingTokens+routingEmbeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
 	}
@@ -815,6 +825,67 @@ func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
 	}
 }
 
+func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-complexity-capture")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	// Set by the governance plugin when a routing rule references complexity_tier.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "lexical")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-complexity-capture")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.ComplexityTier == nil || *entry.ComplexityTier != "COMPLEX" {
+		t.Fatalf("expected complexity_tier COMPLEX, got %v", entry.ComplexityTier)
+	}
+	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "lexical" {
+		t.Fatalf("expected complexity_mechanism lexical, got %v", entry.ComplexityMechanism)
+	}
+	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
+		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+}
+
 func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
 	statusCode := 504
 	bifrostErr := &schemas.BifrostError{
@@ -904,6 +975,55 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+}
+
+func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
+	plugin := &LoggerPlugin{pricingManager: newTestPricingManager(t)}
+	provider, model, inputTokens := "openai", "text-embedding-3-small", 13
+
+	for _, test := range []struct {
+		name               string
+		countTowardBudgets bool
+		retryNumber        int
+		fallbackIndex      int
+		wantCost           bool
+	}{
+		{name: "initial attempt billed", countTowardBudgets: true, wantCost: true},
+		{name: "budget attribution disabled", countTowardBudgets: false},
+		{name: "retry does not rebill", countTowardBudgets: true, retryNumber: 1},
+		{name: "fallback does not rebill", countTowardBudgets: true, fallbackIndex: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, test.retryNumber)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, test.fallbackIndex)
+			if !schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+				ProviderUsed:       &provider,
+				ModelUsed:          &model,
+				InputTokens:        &inputTokens,
+				CountTowardBudgets: test.countTowardBudgets,
+			}) {
+				t.Fatal("SetRoutingDebugOnContext() = false")
+			}
+			entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+
+			plugin.applyInternalCallCosts(ctx, entry, nil)
+
+			if !test.wantCost {
+				if entry.Cost != nil {
+					t.Fatalf("cost = %v, want nil", *entry.Cost)
+				}
+				return
+			}
+			if entry.Cost == nil {
+				t.Fatal("cost = nil")
+			}
+			want := float64(inputTokens) * 2e-8
+			if diff := *entry.Cost - want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v", *entry.Cost, want)
+			}
+		})
+	}
 }
 
 // TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed guards

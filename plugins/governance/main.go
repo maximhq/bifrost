@@ -1240,6 +1240,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// logical request so each token-consuming attempt bills exactly once.
 		// Set by core on every retry iteration.
 		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+		routingDebug, _ := schemas.InitialAttemptRoutingDebugFromContext(ctx)
 
 		p.wg.Add(1)
 		go func() {
@@ -1252,7 +1253,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingDebug)
 		}()
 	}
 
@@ -1497,7 +1498,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingDebug *schemas.BifrostRoutingDebug) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1547,6 +1548,15 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 					tokensUsed = su.LLMUsage.TotalTokens
 				}
 			}
+		}
+		// A successful response normally carries RoutingDebug and CalculateCost
+		// includes it. When no response exists (or a later plugin recovered with a
+		// fresh response after routing's post-hook), add the owned context snapshot
+		// explicitly. This also composes with provider BilledUsage rather than
+		// replacing the upstream cost.
+		if p.modelCatalog != nil && routingDebug != nil && routingDebug.CountTowardBudgets &&
+			(result == nil || result.GetExtraFields().RoutingDebug == nil) {
+			cost += p.modelCatalog.CalculateRoutingEmbeddingCost(routingDebug, pricingScopes)
 		}
 
 		// Create usage update for tracker (business logic)

@@ -2244,7 +2244,9 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 // TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail verifies the routing
 // classification embed lands on the additional side under its own detail line,
 // so a breakdown that also carries a guardrail or cache sidecar stays
-// attributable to the call that incurred each part.
+// attributable to the call that incurred each part. The scalar CalculateCost is
+// pinned alongside the breakdown: callers that only read the total must see the
+// same billing decision the categories describe.
 func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
 	routeProvider := "openai"
 	routeModel := "text-embedding-3-small"
@@ -2277,10 +2279,12 @@ func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
 		}
 	}
 
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Routing embed: 500*2e-8 = 0.00001.
+	assert.InDelta(t, 0.01251, s.CalculateCost(newResponse(true), nil), 1e-12)
+
 	bd := s.CalculateCostBreakdown(newResponse(true), nil)
 	require.NotNil(t, bd)
 	require.NotNil(t, bd.AdditionalCostDetails)
-	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Routing embed: 500*2e-8 = 0.00001.
 	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
 	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
 	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
@@ -2290,7 +2294,10 @@ func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 
 	// The detail line tracks the cost actually charged: a request that never
-	// opted routing into budget attribution carries neither.
+	// opted routing into budget attribution carries neither, and the embed drops
+	// out of the total rather than being billed silently.
+	assert.InDelta(t, 0.0125, s.CalculateCost(newResponse(false), nil), 1e-12)
+
 	optedOut := s.CalculateCostBreakdown(newResponse(false), nil)
 	require.NotNil(t, optedOut)
 	assert.Zero(t, optedOut.AdditionalCost)
