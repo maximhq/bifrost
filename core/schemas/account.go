@@ -139,6 +139,7 @@ type Key struct {
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -821,6 +822,38 @@ type OllamaKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple SGLang instances.
 type SGLKeyConfig struct {
 	URL SecretVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
+}
+
+// DatabricksAPIFormat selects which Databricks inference surface a key targets. Both surfaces
+// speak the OpenAI wire format, so this only selects the base path under the workspace host.
+type DatabricksAPIFormat string
+
+const (
+	// DatabricksAPIFormatAuto picks the surface from the model name: a dotted name
+	// (system.ai.*, or a <catalog>.<schema>.<service> Unity Catalog model service) goes to the
+	// Unity AI Gateway; anything else is treated as a Model Serving endpoint name.
+	DatabricksAPIFormatAuto DatabricksAPIFormat = "auto"
+	// DatabricksAPIFormatModelServing targets /serving-endpoints — the Foundation Model APIs,
+	// covering pay-per-token endpoints (databricks-*) and provisioned-throughput endpoints.
+	DatabricksAPIFormatModelServing DatabricksAPIFormat = "model_serving"
+	// DatabricksAPIFormatAIGateway targets /ai-gateway/mlflow/v1 — the Unity AI Gateway model
+	// APIs (model services), governed through Unity Catalog.
+	DatabricksAPIFormatAIGateway DatabricksAPIFormat = "ai_gateway"
+)
+
+// DatabricksKeyConfig represents the Databricks-specific key configuration.
+// It allows each key to target a different Databricks workspace and inference surface, and
+// carries the OAuth machine-to-machine service principal credentials when a personal access
+// token is not used.
+//
+// NOTE: To use OAuth M2M authentication, leave Value in the Key struct empty and set both
+// ClientID and ClientSecret. To use a personal access token, set Value instead.
+type DatabricksKeyConfig struct {
+	WorkspaceURL       SecretVar           `json:"workspace_url"`                  // Databricks workspace URL (required, supports env. prefix); a scheme and trailing path are tolerated
+	APIFormat          DatabricksAPIFormat `json:"api_format,omitempty"`           // Which inference surface to target (default: auto)
+	ClientID           *SecretVar          `json:"client_id,omitempty"`            // OAuth M2M service principal client ID
+	ClientSecret       *SecretVar          `json:"client_secret,omitempty"`        // OAuth M2M service principal client secret
+	ForwardGatewayTags bool                `json:"forward_gateway_tags,omitempty"` // Whether to forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

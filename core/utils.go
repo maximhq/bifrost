@@ -93,6 +93,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.Databricks,
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
@@ -133,7 +134,7 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -221,6 +222,18 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// short-lived setups.
 		if key.Value.GetValue() == "" {
 			return fmt.Errorf("value is required and must be a GitHub Copilot API token")
+		}
+	case schemas.Databricks:
+		// The workspace URL is not required here: an SDK caller may set it once as the
+		// provider base_url instead of per key. The provider raises a configuration error at
+		// request time when neither is set. What is checked here is that the OAuth M2M
+		// service principal is whole, since a half-configured pair can never authenticate.
+		if key.DatabricksKeyConfig != nil {
+			hasClientID := key.DatabricksKeyConfig.ClientID != nil && key.DatabricksKeyConfig.ClientID.GetValue() != ""
+			hasClientSecret := key.DatabricksKeyConfig.ClientSecret != nil && key.DatabricksKeyConfig.ClientSecret.GetValue() != ""
+			if hasClientID != hasClientSecret {
+				return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
+			}
 		}
 	}
 	return nil
