@@ -1,6 +1,6 @@
 import NotificationCenter from "@/components/notificationCenter";
 import { ThemeToggle } from "@/components/themeToggle";
-import { deriveTitleFromPathname, TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
+import { deriveTitleFromPathname } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -123,7 +123,7 @@ export default function Topbar() {
 	};
 
 	return (
-		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-2" data-testid="topbar-container-root">
+		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-0" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
 				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
@@ -148,7 +148,7 @@ export default function Topbar() {
 							type="button"
 							data-testid="topbar-user-pill"
 							aria-label="Account menu"
-							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground md:border-border md:bg-card/60 md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
+							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground data-[state=open]:border md:border-border md:bg-card md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
 						>
 							<span className="bg-muted text-muted-foreground hidden size-6 shrink-0 items-center justify-center rounded-full md:flex">
 								<User className="size-3.5" strokeWidth={2} />
@@ -165,14 +165,14 @@ export default function Topbar() {
 							type="button"
 							data-testid="topbar-menu-btn"
 							aria-label="Open menu"
-							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
+							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground data-[state=open]:border flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
 						>
 							<Menu className="size-4" strokeWidth={2} />
 						</button>
 					)}
 				</DropdownMenuTrigger>
 
-				<DropdownMenuContent align="end" sideOffset={TOPBAR_MENU_SIDE_OFFSET} className="w-60">
+				<DropdownMenuContent align="end" sideOffset={2} className="w-60">
 					{showUserPill && (
 						<>
 							<DropdownMenuLabel className="flex min-w-0 flex-col gap-0.5 py-2">
