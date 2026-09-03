@@ -431,6 +431,37 @@ func TestEncryptPlaintextVirtualKeys_EncryptsAndDecryptsCorrectly(t *testing.T) 
 	assert.Equal(t, "vk-batch-secret", found.Value.GetValue())
 }
 
+func TestVirtualKeyPreviousValue_EncryptsAndDecryptsCorrectly(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	now := time.Now().UTC()
+	exp := now.Add(10 * time.Minute)
+
+	vk := &tables.TableVirtualKey{
+		ID:                     "vk-prev-enc",
+		Name:                   "prev-enc-vk",
+		Value:                  *schemas.NewSecretVar("vk-current-secret"),
+		IsActive:               schemas.Ptr(true),
+		PreviousValue:          *schemas.NewSecretVar("vk-previous-secret"),
+		PreviousValueExpiresAt: &exp,
+		RotatedAt:              &now,
+	}
+	require.NoError(t, db.Create(vk).Error)
+
+	// Raw DB must hold the previous value encrypted, with its hash computed.
+	var raw map[string]any
+	db.Table("governance_virtual_keys").Where("id = ?", "vk-prev-enc").Take(&raw)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "vk-previous-secret", raw["previous_value"])
+	assert.NotEmpty(t, raw["previous_value_hash"])
+
+	// GORM hooks should decrypt both values on read.
+	var found tables.TableVirtualKey
+	require.NoError(t, db.Where("id = ?", "vk-prev-enc").First(&found).Error)
+	assert.Equal(t, "vk-current-secret", found.Value.GetValue())
+	assert.Equal(t, "vk-previous-secret", found.PreviousValue.GetValue())
+	assert.True(t, found.HasActivePreviousValue(now))
+}
+
 func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {
 	store, db := setupEncryptionTestStore(t)
 	ctx := context.Background()

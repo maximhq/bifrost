@@ -176,6 +176,10 @@ type ServerCallbacks interface {
 	// client-level mutation that invalidates its credential rows as a set
 	// (needs_update schema flip, access reconciliation, client deletion).
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant,
+	// for the listing routes that run outside the request pipeline and so cannot wait for a hook
+	// to resolve it.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
 }
 
 // GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
@@ -300,8 +304,12 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 	return s.Config.Providers
 }
 
-func (s *GovernanceInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[string]string {
-	return s.Config.GetAllowOnAllVirtualKeysClients()
+func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
+	return s.Config.GetMCPClientsAllowedByDefault()
+}
+
+func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
+	return s.Config.GetMCPClientNames()
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
@@ -309,7 +317,7 @@ func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *sche
 	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
@@ -336,7 +344,7 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 	if err := s.Client.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
@@ -347,7 +355,7 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	if err := s.Config.UpdateMCPClient(ctx, id, updatedConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after editing client: %v", err)
 	}
 	return nil
@@ -381,7 +389,7 @@ func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, 
 	if s.MCPServerHandler == nil {
 		return
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to sync MCP servers after tools change for client %s: %v", clientID, err))
 	}
 }
@@ -390,7 +398,7 @@ func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id s
 	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after updating client connection: %v", err)
 	}
 	return nil
@@ -401,7 +409,7 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	if err := s.Config.RemoveMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
 	s.Config.OAuthProvider.EvictUserTokensByMCPClient(id)
@@ -421,7 +429,7 @@ func (s *BifrostHTTPServer) DisableMCPClient(ctx context.Context, id string) err
 	if err := s.Config.DisableMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after disabling client: %v", err)
 	}
 	return nil
@@ -432,7 +440,7 @@ func (s *BifrostHTTPServer) EnableMCPClient(ctx context.Context, id string) erro
 	if err := s.Config.EnableMCPClient(ctx, id); err != nil {
 		return err
 	}
-	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after enabling client: %v", err)
 	}
 	return nil
@@ -454,7 +462,7 @@ func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, co
 // then re-syncs the MCP server so the new tools are immediately visible via /mcp.
 func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
 	s.Client.SetClientTools(clientID, tools, toolNameMapping)
-	if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
+	if err := s.MCPServerHandler.SyncMCPServer(context.Background()); err != nil {
 		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
 	}
 }
@@ -562,9 +570,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
 	}
 	store := governancePlugin.GetGovernanceStore()
-	if existingVK, found := store.GetVirtualKeyByID(ctx, virtualKey.ID); found && existingVK != nil && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
-		s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
-	}
 	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
@@ -581,7 +586,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	for mcID := range staleIDs {
 		store.DeleteModelConfigInMemory(ctx, mcID)
 	}
-	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return virtualKey, nil
@@ -670,7 +674,6 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return nil
@@ -1236,6 +1239,18 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		); err != nil {
 			logger.Warn("failed to sync MCP tool manager config during client config reload: %v", err)
 		}
+		// The global tool sync interval is client-config-backed too (minutes).
+		// Re-time the checkers of every client that follows it, and keep the
+		// in-memory MCPConfig aligned so a later reload carries the current
+		// value. This path also serves cluster peers reloading the client
+		// config, so one node's edit re-times every node.
+		syncInterval := time.Duration(s.Config.ClientConfig.MCPToolSyncInterval) * time.Minute
+		if s.Config.MCPConfig != nil {
+			s.Config.MCPConfig.ToolSyncInterval = syncInterval
+		}
+		if err := s.Client.UpdateMCPToolSyncInterval(syncInterval); err != nil {
+			logger.Warn("failed to sync MCP tool sync interval during client config reload: %v", err)
+		}
 	}
 	return nil
 }
@@ -1332,6 +1347,40 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	// than waiting for a restart.
 	s.RestartLiveModelRefresher(s.backgroundCtx())
 	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, pricing)
+}
+
+// ResolveAccess answers what the request may reach, so a route that never enters the request
+// pipeline decides from the same answer the pipeline would have used: resolved once, onto the
+// request's grant.
+//
+// Without governance there is nothing to resolve and nothing to restrict, which is why a
+// missing plugin returns nil rather than access permitting nothing.
+func (s *BifrostHTTPServer) ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		logger.Warn("governance plugin not found: %v", err)
+		return nil, nil
+	}
+	return governancePlugin.ResolveAccess(ctx)
+}
+
+// AdmitMCPGatewayRequest runs a /mcp request through the governance funnel before any tool is listed
+// or called, as an MCP tool execution with no tool named yet. Evaluating is what resolves and records
+// the request's access, so what tools/list shows and what tools/call permits come from one answer.
+//
+// Without governance there is nothing to evaluate against and nothing to restrict, which is why a
+// missing plugin answers with no access rather than with access permitting nothing.
+func (s *BifrostHTTPServer) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, nil
+	}
+	if _, refused := governancePlugin.Evaluate(ctx, &governance.EvaluationRequest{RequestType: schemas.MCPToolExecutionRequest}); refused != nil {
+		return nil, refused
+	}
+	// Evaluating refuses a request that carries no grant, so one that was admitted carries the
+	// access it was admitted with.
+	return ctx.Grant().Access(), nil
 }
 
 // backgroundCtx returns the server-lifetime context background workers should
@@ -2033,7 +2082,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
-	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
+	inferenceHandler := handlers.NewInferenceHandler(s, s.Client, s.Config)
 	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
@@ -2046,7 +2095,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 			vkCache = c
 		}
 	}
-	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s, s.OAuth2IdentityResolver, vkCache)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
@@ -2674,6 +2723,19 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// enterprise ones — registered after that snapshot, causing the client to fail
 	// and only recover on a later health-monitor reconnect).
 	s.Client.ConnectConfiguredMCPClients(s.Ctx)
+	// NewMCPServerHandler (inside RegisterInferenceRoutes, above) already synced the served
+	// server once, before any client had dialed - it necessarily served zero tools. The
+	// callback registered above would ordinarily pick up what the boot dial just discovered,
+	// but it is gated on a genuine change in a client's tool hash, and a client whose tools
+	// were persisted to the config store on a previous run boots with that hash already
+	// recorded: rediscovering the same tools now looks like no change at all, so the callback
+	// never fires and the served server would stay at the zero tools it started with. This is
+	// the one place that resync is not conditional on anything changing: the boot dial is
+	// synchronous (ConnectConfiguredMCPClients blocks until every client has been attempted),
+	// so by the time it returns every client's tools are exactly what this request should see.
+	if err := s.MCPServerHandler.SyncMCPServer(s.Ctx); err != nil {
+		logger.Warn("failed to sync MCP server after the boot dial: %v", err)
+	}
 	// A proactively refreshed shared OAuth token leaves the live MCP connection
 	// still holding the old bearer (the credential is baked into the transport
 	// at connect time), so recycle the connection as soon as the refresh worker

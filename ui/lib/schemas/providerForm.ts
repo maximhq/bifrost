@@ -194,8 +194,10 @@ const BedrockMantleKeyConfigSchema = z
 		},
 	);
 
+// Optional for the same reason as replicateKeyConfigSchema in lib/types/schemas.ts:
+// the registered-but-untouched switch leaves an empty object behind.
 const ReplicateKeyConfigSchema = z.object({
-	use_deployments_endpoint: z.boolean(),
+	use_deployments_endpoint: z.boolean().optional(),
 });
 
 const KeySchema = z.object({

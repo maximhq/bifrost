@@ -20,6 +20,7 @@ An **Access Profile** is a reusable policy template that describes what a user,t
 - **Role-default auto-assignment** - Mark a profile as a role's default and new users in that role are provisioned automatically.
 - **Safe propagation** - Edit the template, then push selected fields (budgets only, MCP only, and so on) to every user copy in one call.
 - **Managed virtual keys** - Auto-issued keys are write-protected so a user cannot weaken their own policy by editing the key directly.
+- **Govern user-created keys** - Optionally bring every virtual key a member creates under the profile automatically, not just the auto-issued key.
 - **Audit and versioning** - Every change to a profile is recorded with a full snapshot history.
 
 <Info>
@@ -62,6 +63,19 @@ Role changes only replace assignments that came from a role default. Profiles as
 ### Managed virtual keys
 
 Virtual keys issued by an Access Profile are tagged as profile-managed. Direct edits to the key are blocked, except for cosmetic fields like name and description. To change what a managed key allows, edit the template and propagate. This prevents a user with key-edit permission from circumventing the profile.
+
+### Govern virtual keys created by members
+
+By default a profile only governs the virtual key Bifrost auto-issues when the profile is assigned; a member can still create their own standalone keys with any policy they choose. Turn on **Govern virtual keys created by members** to close that gap.
+
+With the toggle on, every virtual key a member of the profile creates is brought under the profile at create time: its providers, model whitelist, budgets, rate limits, and MCP access are replaced with the profile's, the key is attached to the creator, and it becomes profile-managed (edit-locked) like an auto-issued key. All keys a user creates under the profile share the same per-user budget state; each configured budget line still applies separately.
+
+A few things to know:
+
+- **Off by default**, and set per profile — flipping it on one profile does not affect others.
+- **Applies to identified users only.** The creator must sign in with their own identity (SSO/SCIM). Keys created from the local admin account or a raw API key are left as ordinary standalone keys.
+- **Create-time only.** Turning the toggle on does not sweep up keys a member already created. To bring an existing key under the profile, assign it to the user from the key's edit sheet — it is adopted into their profile on assignment.
+- **One profile per key.** If a member belongs to more than one profile with the toggle on, the earliest-assigned profile governs the key; policies from multiple profiles are not merged.
 
 ---
 
@@ -118,6 +132,10 @@ Below the provider section, add **Global Budget Configuration** lines (these app
 ### Toggle calendar alignment
 
 Flip **Align to calendar cycle** to reset budgets and rate limits at the start of each calendar period (1st of the month, beginning of the week, midnight UTC for daily) instead of rolling from the creation time. This only applies to durations of one day or longer.
+
+### Toggle member-key governance
+
+Flip **Govern virtual keys created by members** so any virtual key a member of this profile creates is automatically placed under the profile — same providers, model whitelist, budgets, rate limits, and MCP access, attached to the creator, and locked from direct edits. Leave it off (default) to let members create standalone keys freely. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members) for the full behavior and its limits.
 
 ### Configure MCP tool access
 
@@ -226,6 +244,7 @@ A profile carries the following pieces of policy. Use the UI walkthrough above f
 - **Global budgets** - Workspace-wide spend caps with reset durations of `1h`, `1d`, `1w`, `1M`, or `1Y`. Multiple budget lines can stack so you can combine a hard short-window cap with a softer long-window cap.
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
+- **Govern created keys** - When on, every virtual key a member creates is adopted into the profile (same policy, attached to the user, profile-managed). Off by default. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members).
 - **MCP tool access** - Reference [MCP Tool Groups](/enterprise/mcp-tool-groups), grant entire MCP servers, or override individual tools with include/exclude actions.
 - **Tags** - Up to 50 free-form tags for filtering and grouping in the UI.
 - **Active flag** - Activate or deactivate without deleting; deactivated profiles are hidden from selection but user copies stay intact.
@@ -241,6 +260,14 @@ Profiles can be cloned into new templates, propagated to user copies one field s
 1. Create the profile through the UI or API with the desired provider configs, budgets, and MCP access.
 2. From the Engineer role, attach the profile and mark it default for new users. Toggle "Apply to existing users" to backfill current members.
 3. Bifrost issues a virtual key for every member of the Engineer role and continues to auto-issue for any user who later gains the role.
+
+### Force every key an Engineer creates onto the Engineering policy
+
+Prerequisite: the Engineering profile is already assigned to the Engineer role (see the example above), so members have it to govern their keys.
+
+1. Edit the Engineering profile and turn on **Govern virtual keys created by members**. Save.
+2. From now on, whenever an Engineer (signed in via SSO) creates a virtual key, it is placed under the Engineering profile automatically — same providers, model whitelist, budgets, rate limits, and MCP access — attached to them and locked from direct edits.
+3. To bring keys they created earlier under the policy too, open each key and assign it to the user; it is adopted into their profile on assignment.
 
 ### Raise the monthly budget without resetting accumulated usage
 

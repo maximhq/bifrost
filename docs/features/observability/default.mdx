@@ -311,7 +311,17 @@ curl 'http://localhost:8080/api/logs?' \
 | `min_tokens` / `max_tokens` | Token usage range | `10` to `1000` |
 | `min_cost` / `max_cost` | Cost range (USD) | `0.001` to `10` |
 | `content_search` | Search in messages | `"error handling"` |
+| `request_id` | Exact lookup on a log ID | `018f2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d` |
 | `limit` / `offset` | Pagination | `100`, `200` |
+
+<Note>
+  A log's ID **is** its request ID, so `request_id` is an exact primary-key lookup rather than a text
+  search. It takes precedence over the time range — `start_time`, `end_time`, and `period` are ignored
+  when it is set, so a request is found wherever it falls. `roots_only` is ignored too, so an ID naming
+  a fallback child returns that child rather than collapsing it into its root. In the dashboard, pasting
+  a request ID into the logs search box switches to this lookup automatically; prefix it with `id:` for
+  request IDs that aren't UUIDs (any string supplied via the `x-request-id` header).
+</Note>
 
 **Response Format**
 

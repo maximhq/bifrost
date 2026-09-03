@@ -68,6 +68,7 @@ import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
+import { latestGraceDeadline } from "./virtualKeysTable.utils";
 
 // Registers the enterprise user picker as a side effect; a no-op in OSS builds,
 // where the user filter stays hidden because no picker is registered.
@@ -187,16 +188,37 @@ function VKActiveSwitch({
 	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	// Managed takes precedence: an access-profile-managed VK can't be toggled here even by a
+	// caller who does have update access.
+	const disabledReason = isManagedByProfile
+		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
+		: !hasUpdateAccess
+			? "You don't have permission to update virtual keys."
+			: undefined;
 
-	return (
+	const control = (
 		<Switch
 			checked={vk.is_active}
-			disabled={!hasUpdateAccess || isManagedByProfile}
+			disabled={!!disabledReason}
 			aria-label={`${vk.is_active ? "Disable" : "Enable"} virtual key ${vk.name}`}
 			data-testid={`vk-active-switch-${vk.name}`}
-			title={isManagedByProfile ? "This virtual key is managed by an access profile." : undefined}
 			onAsyncCheckedChange={(checked) => onToggle(vk, checked)}
 		/>
+	);
+
+	if (!disabledReason) return control;
+
+	// A disabled control emits no pointer events, so the tooltip has to hang off a wrapper.
+	// tabIndex keeps the reason reachable by keyboard, since the switch itself is unfocusable.
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<div tabIndex={0} className="inline-flex" data-testid={`vk-active-switch-tooltip-trigger-${vk.name}`}>
+					{control}
+				</div>
+			</TooltipTrigger>
+			<TooltipContent data-testid={`vk-active-switch-tooltip-content-${vk.name}`}>{disabledReason}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -460,10 +482,12 @@ export default function VirtualKeysTable({
 			setShowBulkRotateDialog(false);
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			const graceUntil = latestGraceDeadline(result.virtual_keys);
+			const graceNote = graceUntil ? ` Previous keys remain valid until ${new Date(graceUntil).toLocaleString()}.` : "";
 			if (failureCount > 0) {
-				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
+				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.${graceNote}`);
 			} else {
-				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+				toast.success(`Rotated ${result.virtual_keys.length} virtual keys.${graceNote}`);
 			}
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -768,8 +792,8 @@ export default function VirtualKeysTable({
 						<AlertDialogTitle>Rotate selected virtual keys?</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
-							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values will stop working
-							immediately.
+							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values stop working immediately
+							unless a rotation cooldown is configured, in which case they remain valid until the cooldown ends.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

@@ -42,6 +42,12 @@ ClientConfig:
     enforce_auth_on_inference:
       type: boolean
       description: Whether to enforce virtual key authentication on inference requests
+    vk_rotation_cooldown:
+      type: [string, integer]
+      minimum: 0
+      maximum: 2592000000000000
+      default: 0
+      description: Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. "5m", "1h"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days.
     enforce_governance_header:
       type: boolean
       deprecated: true
@@ -80,12 +86,12 @@ ClientConfig:
       description: Timeout for MCP tool execution in seconds
     mcp_tool_sync_interval:
       type: integer
+      minimum: 0
       description: >
         Global tool-list sync interval in minutes for MCP clients. Applies to
         clients whose per-client tool_sync_interval is 0 or omitted; a
-        per-client positive value overrides it and a per-client negative value
-        disables syncing for that client. When 0 or unset, a 10-minute default
-        applies.
+        per-client positive value overrides it. When 0 or unset, a 10-minute
+        default applies.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode

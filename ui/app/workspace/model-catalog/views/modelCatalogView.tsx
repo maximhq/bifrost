@@ -23,7 +23,7 @@ export default function ModelCatalogView() {
 	}
 
 	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full max-w-7xl flex-col overflow-hidden p-4">
+		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full flex-col overflow-hidden p-4">
 			<Tabs value={tab} onValueChange={(value) => setTab(value as ModelCatalogTab)} className="flex min-h-0 grow flex-col gap-4">
 				<TabsList className="shrink-0">
 					<TabsTrigger value="overview" data-testid="model-catalog-tab-overview">

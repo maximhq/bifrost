@@ -41,6 +41,10 @@ func newRealtimeTurnContext(
 			}
 			ctx.SetValue(ctxKey, value)
 		}
+		// A turn is the session's request: it carries the session's grant, not a copy.
+		if g := baseCtx.Grant(); g != nil {
+			ctx.SetGrant(g)
+		}
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)

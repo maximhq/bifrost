@@ -95,8 +95,8 @@ type MCPClientsQueryParams struct {
 	// Virtual-key access filter (OR semantics within the group). When both are
 	// set, a client matches if it is open to all VKs OR explicitly assigned to
 	// one of VirtualKeyIDs.
-	OnlyAllVirtualKeys bool     // include clients with allow_on_all_virtual_keys=true
-	VirtualKeyIDs      []string // include clients explicitly assigned to any of these VK IDs
+	OnlyAllowedByDefault bool     // include clients allowed by default (column allow_on_all_virtual_keys)
+	VirtualKeyIDs        []string // include clients explicitly assigned to any of these VK IDs
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -811,7 +811,7 @@ type ConfigStore interface {
 	// dashboard edit, AP propagation, SCIM auto-assign). Orphans
 	// vk-keyed credentials whose MCP is no longer in the VK's effective
 	// allowlist (explicit per-VK row ∪ MCPs with
-	// AllowOnAllVirtualKeys=true) and reactivates orphaned rows when the
+	// AllowByDefault=true) and reactivates orphaned rows when the
 	// grant returns. Pending flow rows for lost grants are hard-deleted.
 	//
 	// Session-keyed rows are never touched — they carry no notion of
@@ -822,7 +822,7 @@ type ConfigStore interface {
 	ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error
 	ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error
 	// MCP-side variants: called when the change originates on the MCP
-	// client (vk_configs edit OR AllowOnAllVirtualKeys toggle). Each
+	// client (vk_configs edit OR AllowByDefault toggle). Each
 	// re-evaluates every VK that holds a credential for the changed MCP.
 	ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error
 	ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error
@@ -893,15 +893,15 @@ type ConfigStore interface {
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
-	UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error
-	GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error)
-	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error)
-	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
-	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
-	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
-	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
+	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
+	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

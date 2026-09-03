@@ -154,17 +154,45 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 
 // Responses performs a responses request to the Opencode API.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
-	}
-	return chatResponse.ToBifrostResponsesResponse(), nil
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		p.client,
+		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		p.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.providerKey,
+		nil,
+		parseOpencodeError,
+		nil,
+		p.logger,
+	)
 }
 
 // ResponsesStream performs a streaming responses request to the Opencode API.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	return openai.HandleOpenAIResponsesStreaming(
+		ctx,
+		p.streamingClient,
+		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		p.networkConfig.ExtraHeaders,
+		p.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.providerKey,
+		postHookRunner,
+		nil,
+		parseOpencodeError,
+		nil,
+		nil,
+		nil,
+		p.logger,
+		postHookSpanFinalizer,
+	)
 }
 
 // Embedding is not supported by Opencode.

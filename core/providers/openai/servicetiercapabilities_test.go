@@ -84,6 +84,14 @@ func TestOpenAIConvertersFilterUltrafastByModelCapability(t *testing.T) {
 		{name: "compatible provider without tier metadata", provider: schemas.OpenRouter, model: "other-model", wantTier: true},
 		{name: "compatible provider explicitly unsupported tier", provider: schemas.OpenRouter, model: "compatible-standard-model", wantTier: false},
 		{name: "compatible provider supported model", provider: schemas.OpenRouter, model: "compatible-fast-model", wantTier: true},
+		// Mantle's OpenAI-compatible surface rejects service_tier outright, and its
+		// verbatim model ids carry no datasheet row — so the "no metadata means keep
+		// the tier" fallback above must not apply to it.
+		{name: "bedrock mantle drops tier without metadata", provider: schemas.BedrockMantle, model: "openai.gpt-5.6-terra", wantTier: false},
+		{name: "bedrock mantle drops tier for bare name", provider: schemas.BedrockMantle, model: "gpt-5.6-terra", wantTier: false},
+		// Provider bedrock reaches these converters only via the deprecated
+		// in-provider Mantle routing, so it means the same endpoint.
+		{name: "legacy in-bedrock mantle drops tier", provider: schemas.Bedrock, model: "openai.gpt-5.4", wantTier: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -22,7 +22,8 @@ func span(base time.Time, id, parent, name string, kind schemas.SpanKind, startM
 func bucketMap(t *testing.T, trace *schemas.Trace, overheadMs float64, ovOK bool) map[string]float64 {
 	t.Helper()
 	out := map[string]float64{}
-	for _, b := range computeOverheadBreakdown(trace, overheadMs, ovOK, 0, false) {
+	buckets, _, _ := computeOverheadBreakdown(trace, overheadMs, ovOK, 0, false)
+	for _, b := range buckets {
 		out[b.Name] = b.DurationUs
 	}
 	return out
@@ -46,7 +47,7 @@ func TestComputeOverheadBreakdown_ChatPath(t *testing.T) {
 	got := bucketMap(t, trace, 12, true)
 
 	if len(got) != 3 {
-		t.Fatalf("expected 3 buckets (key.selection, plugin.governance, core), got %v", got)
+		t.Fatalf("expected 3 buckets (key.selection, plugin.governance, scheduling), got %v", got)
 	}
 	if got["key.selection"] != 2000 {
 		t.Errorf("key.selection = %v us, want 2000", got["key.selection"])
@@ -55,9 +56,9 @@ func TestComputeOverheadBreakdown_ChatPath(t *testing.T) {
 	if got["plugin.governance"] != 6000 {
 		t.Errorf("plugin.governance = %v us, want 6000", got["plugin.governance"])
 	}
-	// 12ms overhead - 8ms measured = 4ms attributed to core
-	if got["core"] != 4000 {
-		t.Errorf("core = %v us, want 4000", got["core"])
+	// 12ms overhead - 8ms measured = 4ms attributed to scheduling
+	if got["scheduling"] != 4000 {
+		t.Errorf("scheduling = %v us, want 4000", got["scheduling"])
 	}
 	// llm.call (upstream) and the root http.request span are not overhead buckets
 	if _, ok := got["chat gpt-4o"]; ok {
@@ -97,8 +98,8 @@ func TestComputeOverheadBreakdown_NestedPhaseSpansCountedOnce(t *testing.T) {
 	if sum := got["request-sign"] + got["credentials-fetch"]; sum != 20000 {
 		t.Errorf("request-sign + credentials-fetch = %v us, want 20000 (no double-count)", sum)
 	}
-	if _, ok := got["core"]; ok {
-		t.Errorf("core should be empty when spans account for all overhead, got %v", got["core"])
+	if _, ok := got["scheduling"]; ok {
+		t.Errorf("scheduling should be empty when spans account for all overhead, got %v", got["scheduling"])
 	}
 }
 
@@ -133,8 +134,8 @@ func TestComputeOverheadBreakdown_SiblingPluginsUnderPhaseCountedOnce(t *testing
 	if sum != 40000 {
 		t.Errorf("phase + plugins = %v us, want 40000 (== pipeline-post wall, no double-count)", sum)
 	}
-	if _, ok := got["core"]; ok {
-		t.Errorf("core should be empty, got %v", got["core"])
+	if _, ok := got["scheduling"]; ok {
+		t.Errorf("scheduling should be empty, got %v", got["scheduling"])
 	}
 }
 
@@ -148,7 +149,7 @@ func TestComputeOverheadBreakdown_CoreOnly(t *testing.T) {
 	}}
 
 	got := bucketMap(t, trace, 3, true)
-	if len(got) != 1 || got["core"] != 3000 {
+	if len(got) != 1 || got["scheduling"] != 3000 {
 		t.Errorf("expected a single core bucket of 3000 us, got %v", got)
 	}
 }
@@ -167,7 +168,7 @@ func TestComputeOverheadBreakdown_NoNegativeCore(t *testing.T) {
 	if len(got) != 1 || got["plugin.governance"] != 10000 {
 		t.Errorf("expected only plugin.governance=10000, got %v", got)
 	}
-	if _, ok := got["core"]; ok {
+	if _, ok := got["scheduling"]; ok {
 		t.Error("core bucket must not be emitted when it would be negative")
 	}
 }
@@ -214,7 +215,7 @@ func TestComputeOverheadBreakdown_SelfTimeExcludesChildren(t *testing.T) {
 	if got["plugin.mcp"] != 10000 {
 		t.Errorf("plugin.mcp = %v us, want 10000", got["plugin.mcp"])
 	}
-	if _, ok := got["core"]; ok {
+	if _, ok := got["scheduling"]; ok {
 		t.Error("no core bucket without an overhead total")
 	}
 }
@@ -238,8 +239,8 @@ func TestComputeOverheadBreakdown_KeySelectionReparentedLLMCall(t *testing.T) {
 		t.Errorf("key.selection = %v us, want 2000", got["key.selection"])
 	}
 	// 5ms overhead - 2ms key.selection = 3ms core.
-	if got["core"] != 3000 {
-		t.Errorf("core = %v us, want 3000", got["core"])
+	if got["scheduling"] != 3000 {
+		t.Errorf("core = %v us, want 3000", got["scheduling"])
 	}
 }
 
@@ -253,16 +254,59 @@ func TestComputeOverheadBreakdown_NegligibleOverhead(t *testing.T) {
 		span(base, "llm", "root", "chat gpt-4o", schemas.SpanKindLLMCall, 0, 100),
 	}}
 
-	if got := computeOverheadBreakdown(trace, 0, false, 0, false); len(got) != 0 {
+	if got, _, _ := computeOverheadBreakdown(trace, 0, false, 0, false); len(got) != 0 {
 		t.Errorf("expected no overhead buckets when overhead is negligible, got %v", got)
 	}
 }
 
 func TestComputeOverheadBreakdown_Empty(t *testing.T) {
-	if computeOverheadBreakdown(nil, 0, false, 0, false) != nil {
+	if got, _, _ := computeOverheadBreakdown(nil, 0, false, 0, false); got != nil {
 		t.Error("nil trace must yield nil")
 	}
-	if computeOverheadBreakdown(&schemas.Trace{}, 5, true, 0, false) != nil {
+	if got, _, _ := computeOverheadBreakdown(&schemas.Trace{}, 5, true, 0, false); got != nil {
 		t.Error("trace with no spans must yield nil")
+	}
+}
+
+// Streaming: overhead is the measured Bifrost CPU (the buckets), never total-upstream.
+// A stream stamps stream-phase attributes on the root span; the breakdown must fold those
+// into buckets, emit NO "scheduling" residual (that leftover is off-CPU relay/scheduler
+// wait between chunks, not Bifrost work), and return measuredMs = the bucket sum with
+// isStreaming=true so Inject can use it as the overhead and fold the remainder into upstream.
+func TestComputeOverheadBreakdown_StreamingNoSchedulingResidual(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/responses", schemas.SpanKindHTTPRequest, 0, 100)
+	root.Attributes = map[string]any{
+		schemas.AttrBifrostStreamParseMs: 1.0, // 1ms SSE framing+decode -> response-parse bucket
+	}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "keysel", "root", "key.selection", schemas.SpanKindInternal, 1, 3), // 2ms
+		},
+	}
+
+	// total-upstream overhead is a huge 40ms (dominated by off-CPU relay wait), but the
+	// measured Bifrost CPU is only key.selection (2ms) + stream-parse (1ms) = 3ms.
+	buckets, measuredMs, isStreaming := computeOverheadBreakdown(trace, 40, true, 5, true)
+	if !isStreaming {
+		t.Fatal("expected isStreaming=true when a stream attr is present on the root span")
+	}
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if _, ok := got["scheduling"]; ok {
+		t.Errorf("streaming must not emit a scheduling residual bucket, got %v", got)
+	}
+	if got["key.selection"] != 2000 {
+		t.Errorf("key.selection = %v us, want 2000", got["key.selection"])
+	}
+	if got["response-parse"] != 1000 {
+		t.Errorf("response-parse (stream framing) = %v us, want 1000", got["response-parse"])
+	}
+	if measuredMs < 2.99 || measuredMs > 3.01 {
+		t.Errorf("measuredMs = %v, want ~3 (2ms key.selection + 1ms stream-parse), not the 40ms total-upstream", measuredMs)
 	}
 }

@@ -529,6 +529,28 @@ LogStats:
       format: int64
       description: Number of semantic local-cache hits
 
+LogStatsResponse:
+  description: >-
+    Log statistics for the requested window. The current period's fields are at
+    the top level, so a request without `compare_to_previous` returns exactly the
+    LogStats shape.
+  allOf:
+    - $ref: '#/LogStats'
+    - type: object
+      properties:
+        has_previous_period:
+          type: boolean
+          description: >-
+            True when `previous` is populated. False when the comparison was not
+            requested, the window is unbounded, or the previous-period query failed.
+        previous:
+          allOf:
+            - $ref: '#/LogStats'
+          description: >-
+            The same statistics for the preceding window of equal length, ending
+            immediately before the requested window starts. Present only when
+            `compare_to_previous` is true and `has_previous_period` is true.
+
 DroppedRequestsResponse:
   type: object
   description: Dropped requests response

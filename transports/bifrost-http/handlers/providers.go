@@ -19,7 +19,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -42,6 +41,11 @@ type ModelsManager interface {
 	// key of the provider on demand. Returns ErrRefreshInProgress when the
 	// provider is already being refreshed.
 	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
+	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant.
+	// Listing routes run outside the request pipeline, so they ask for the answer here rather
+	// than waiting for a hook to. Nil means nothing was resolved: no key was presented, or the
+	// deployment has no governance at all. An error is a request nothing settled who it is.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
 }
 
 // ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
@@ -728,8 +732,9 @@ type modelListQuery struct {
 	Unfiltered bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
-	HasVKFilter       bool
-	VKProviderConfigs []tables.TableVirtualKeyProviderConfig
+	HasVKFilter bool
+	// Access is what the key-authenticated caller may reach; nil when no key was presented.
+	Access schemas.Access
 }
 
 type listedModel struct {
@@ -749,7 +754,14 @@ type listedModel struct {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
-	query, ok := h.parseModelListQuery(ctx, 5)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	query, ok := h.parseModelListQuery(ctx, bifrostCtx, 5)
 	if !ok {
 		return
 	}
@@ -793,7 +805,14 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
-	query, ok := h.parseModelListQuery(ctx, 20)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	query, ok := h.parseModelListQuery(ctx, bifrostCtx, 20)
 	if !ok {
 		return
 	}
@@ -936,9 +955,13 @@ func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.Model
 	return capabilities != nil && capabilities.IsDeprecated
 }
 
-// parseModelListQuery normalizes the management model-list query string and resolves
-// any virtual key present in the request headers to populate provider/model filters.
-func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) (modelListQuery, bool) {
+// parseModelListQuery normalizes the management model-list query string and resolves what a
+// virtual key presented in the request headers may reach, to populate provider/model filters.
+//
+// bifrostCtx is the caller's request context: it carries the presented key and whatever else
+// the request was authenticated with, which is what access resolution reads. The caller owns
+// its lifetime, because the request outlives this parse.
+func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, defaultLimit int) (modelListQuery, bool) {
 	queryArgs := ctx.QueryArgs()
 	query := modelListQuery{
 		Provider:   schemas.ModelProvider(string(queryArgs.Peek("provider"))),
@@ -970,27 +993,16 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultL
 		}
 	}
 
-	// Resolve virtual key from request headers and populate provider/model filters.
-	if vkValue := governanceplugin.ParseVirtualKeyFromFastHTTPRequest(ctx); vkValue != nil {
-		trimmedVKValue := strings.TrimSpace(*vkValue)
-
-		if h.dbStore == nil {
-			SendError(ctx, fasthttp.StatusServiceUnavailable, "database store unavailable")
-			return query, false
-		}
-
-		vk, err := h.dbStore.GetVirtualKeyByValue(ctx, trimmedVKValue)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to resolve virtual key: %v", err))
-				return query, false
-			}
-		}
-
-		if vk != nil {
-			query.HasVKFilter = true
-			query.VKProviderConfigs = vk.ProviderConfigs
-		}
+	// Resolve what a key-authenticated caller may reach, and filter the listing to it. This
+	// route runs outside the request pipeline, so it asks governance directly rather than
+	// waiting for a hook to.
+	//
+	// Nothing resolved leaves the listing unfiltered: an unknown key, or a deployment with no
+	// governance at all, has nothing to narrow the listing by. So does a request nothing settled
+	// who it is; it is refused where it matters, and a listing is not that.
+	if access, err := h.modelsManager.ResolveAccess(bifrostCtx); err == nil && access != nil {
+		query.HasVKFilter = true
+		query.Access = access
 	}
 
 	return query, true
@@ -1010,12 +1022,13 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	}
 
 	// When a virtual key is present, restrict the provider list to those explicitly
-	// permitted by the VK. An empty ProviderConfigs means no providers are allowed
-	// (deny-by-default), so we return nothing even if providers are configured.
+	// permitted for the caller. A caller granted no provider is shown nothing, even when
+	// providers are configured: deny-by-default.
 	if query.HasVKFilter {
+		granted := query.Access.GrantedProvidersForModel("")
 		providers = slices.DeleteFunc(providers, func(p schemas.ModelProvider) bool {
-			return !slices.ContainsFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
-				return strings.EqualFold(pc.Provider, string(p))
+			return !slices.ContainsFunc(granted, func(grantedProvider string) bool {
+				return strings.EqualFold(grantedProvider, string(p))
 			})
 		})
 	}
@@ -1052,15 +1065,12 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
 	}
 
-	// Apply VK-level model whitelist filtering.
-	// AllowedModels=["*"] passes all; empty AllowedModels denies all (deny-by-default).
+	// Keep only the models the caller may use on this provider. A model granted only through
+	// something composed onto the request is kept; one the composition removed is dropped.
 	if query.HasVKFilter {
-		if idx := slices.IndexFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
-			return strings.EqualFold(pc.Provider, string(provider))
-		}); idx >= 0 {
-			allowedModels := query.VKProviderConfigs[idx].AllowedModels
-			models = slices.DeleteFunc(models, func(m string) bool { return !allowedModels.IsAllowed(m) })
-		}
+		models = slices.DeleteFunc(models, func(m string) bool {
+			return !query.Access.IsModelAllowed(string(provider), m)
+		})
 	}
 
 	if len(query.KeyIDs) == 0 || query.Unfiltered {

@@ -16,6 +16,11 @@ The Model Catalog is a foundational component of Bifrost that provides a unified
 
 ## Core Features
 
+<Info>
+  The megapixel image rates, along with `input_cost_per_query` and `cost_per_request`,
+  are available in **Bifrost v2.0.0 and above**.
+</Info>
+
 ### **1. Automatic Pricing Synchronization**
 
 The Model Catalog manages pricing data through a two-phase approach:
@@ -39,7 +44,7 @@ It supports diverse pricing models across different AI operation types:
 - **Text Operations**: Token-based pricing for chat completions, text completions, responses, and embeddings. Cache-read/cache-write pricing applies to chat/text/responses when providers surface prompt cache token details.
 - **Audio Processing**: Character-based, token-based, and duration-based pricing for speech synthesis and transcription, with audio token detail breakdown. Speech responses populate `usage.input_chars` so speech can be billed by input characters in addition to tokens/duration.
 - **Image Processing**: Per-image (`input_cost_per_image`/`output_cost_per_image`), per-pixel (`input_cost_per_pixel`/`output_cost_per_pixel`), or token-based pricing with text/image token breakdown.
-- **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to `output_cost_per_video_per_second` / `output_cost_per_second`.
+- **Video Processing**: Token-based or duration-based pricing. Input can use prompt tokens or `input_cost_per_video_per_second`; output can use completion tokens or fall back to a resolution-banded per-second rate (`output_cost_per_video_per_second_480p` / `_720p` / `_1024p` / `_1080p` / `_4k`, matched on the short edge of the video's size), then `output_cost_per_video_per_second` / `output_cost_per_second`. The per-second rate is multiplied by the number of clips returned.
 - **Reranking**: Input/output token pricing with search query cost support.
 - **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
 
@@ -189,6 +194,12 @@ type PricingEntry struct {
     OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
     OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
     OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+    OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
+    OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
+    OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
+    OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
+    OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
