@@ -27,7 +27,7 @@ import { useT } from "@/lib/i18n";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CustomersEmptyState } from "./customersEmptyState";
 import CustomerSheet from "./customerSheet";
