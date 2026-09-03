@@ -336,16 +336,21 @@ func TestEmbedComplexityTextRecordsRoutingUsage(t *testing.T) {
 
 	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok, "classification embed must record usage on the request context")
-	assert.Equal(t, "openai", *usage.ProviderUsed)
-	assert.Equal(t, "text-embedding-3-small", *usage.ModelUsed)
-	assert.Equal(t, 42, *usage.InputTokens)
-	assert.True(t, usage.CountTowardBudgets)
+	require.Len(t, usage.Calls, 1)
+	call := usage.Calls[0]
+	assert.Equal(t, "openai", *call.ProviderUsed)
+	assert.Equal(t, "text-embedding-3-small", *call.ModelUsed)
+	assert.Equal(t, 42, *call.InputTokens)
+	assert.True(t, call.CountTowardBudgets)
 }
 
-// Classification runs once per top-level request. If a caller defensively
-// records again, the latest call replaces the previous snapshot rather than
-// inventing additional provider usage through accumulation.
-func TestRecordRoutingEmbedUsageReplacesPreviousSnapshot(t *testing.T) {
+// Classification runs once per top-level request, so recordRoutingEmbedUsage
+// is called at most once in practice. This pins what happens if a caller
+// defensively records again anyway: it appends rather than merging or
+// overwriting, so a hypothetical double-call double-bills a small embedding
+// call instead of silently dropping one — the same safe-by-default choice
+// AppendGuardrailJudgeCallOnContext makes for guardrail judge calls.
+func TestRecordRoutingEmbedUsageAppendsRatherThanReplaces(t *testing.T) {
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
 	cfg := testEmbeddingSemanticConfig()
@@ -355,7 +360,60 @@ func TestRecordRoutingEmbedUsageReplacesPreviousSnapshot(t *testing.T) {
 
 	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok)
-	assert.Equal(t, 7, *usage.InputTokens)
+	require.Len(t, usage.Calls, 2)
+	assert.Equal(t, 20, *usage.Calls[0].InputTokens)
+	assert.Equal(t, 7, *usage.Calls[1].InputTokens)
+}
+
+func TestRecordRoutingLLMUsageAppendsOwnCall(t *testing.T) {
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	cfg := &complexity.LLMConfig{
+		Provider:           schemas.OpenAI,
+		Model:              "gpt-4o-mini",
+		CountTowardBudgets: true,
+	}
+
+	recordRoutingLLMUsage(ctx, cfg, 20, 4)
+
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, usage.Calls, 1)
+	call := usage.Calls[0]
+	assert.Equal(t, "openai", *call.ProviderUsed)
+	assert.Equal(t, "gpt-4o-mini", *call.ModelUsed)
+	assert.Equal(t, 20, *call.InputTokens)
+	require.NotNil(t, call.OutputTokens, "non-nil output tokens select chat pricing")
+	assert.Equal(t, 4, *call.OutputTokens)
+	assert.True(t, call.CountTowardBudgets)
+}
+
+// TestRecordRoutingUsageAppendsBothSemanticAndLLMCalls pins the fix for the
+// bug where a request that classifies via semantic and then falls back to the
+// llm classifier lost the embedding's usage: both calls must be observable
+// afterward, not just the one that wrote last.
+func TestRecordRoutingUsageAppendsBothSemanticAndLLMCalls(t *testing.T) {
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	semanticCfg := testEmbeddingSemanticConfig()
+	semanticCfg.CountTowardBudgets = true
+	llmCfg := &complexity.LLMConfig{
+		Provider:           schemas.Anthropic,
+		Model:              "claude-haiku-4-5",
+		CountTowardBudgets: true,
+	}
+
+	recordRoutingEmbedUsage(ctx, semanticCfg, 12)
+	recordRoutingLLMUsage(ctx, llmCfg, 40, 8)
+
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, usage.Calls, 2, "both the embed and the llm classification must survive")
+	assert.Equal(t, "openai", *usage.Calls[0].ProviderUsed)
+	assert.Nil(t, usage.Calls[0].OutputTokens, "an embed call never carries output tokens")
+	assert.Equal(t, "anthropic", *usage.Calls[1].ProviderUsed)
+	require.NotNil(t, usage.Calls[1].OutputTokens)
+	assert.Equal(t, 8, *usage.Calls[1].OutputTokens)
 }
 
 // A provider that reports a negative token count must not have it recorded:
@@ -377,7 +435,8 @@ func TestEmbedComplexityTextDropsNegativeProviderUsage(t *testing.T) {
 
 	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok)
-	assert.Equal(t, 0, *usage.InputTokens, "negative provider usage must not reach budget accounting")
+	require.Len(t, usage.Calls, 1)
+	assert.Equal(t, 0, *usage.Calls[0].InputTokens, "negative provider usage must not reach budget accounting")
 }
 
 // warmupObservation captures one WarmupEmbedUsageObserver invocation.
@@ -530,7 +589,8 @@ func TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors(t *t
 
 	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok, "a billed classification embed must be recorded for the stamp")
-	assert.Equal(t, 42, *usage.InputTokens)
+	require.Len(t, usage.Calls, 1)
+	assert.Equal(t, 42, *usage.Calls[0].InputTokens)
 	assert.Empty(t, observed, "a request embed must never fire the warmup observer")
 }
 
@@ -555,7 +615,7 @@ func TestStampRoutingDebug(t *testing.T) {
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		t.Cleanup(ctx.Cancel)
 		provider, model, inputTokens := "openai", "text-embedding-3-small", 42
-		require.True(t, schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+		require.True(t, schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
 			ProviderUsed:       &provider,
 			ModelUsed:          &model,
 			InputTokens:        &inputTokens,
@@ -574,13 +634,15 @@ func TestStampRoutingDebug(t *testing.T) {
 
 			rd := result.GetExtraFields().RoutingDebug
 			require.NotNil(t, rd, "routing debug must be stamped whenever a routing embed ran (flag=%v)", flag)
-			require.NotNil(t, rd.ProviderUsed)
-			assert.Equal(t, "openai", *rd.ProviderUsed)
-			require.NotNil(t, rd.ModelUsed)
-			assert.Equal(t, "text-embedding-3-small", *rd.ModelUsed)
-			require.NotNil(t, rd.InputTokens)
-			assert.Equal(t, 42, *rd.InputTokens)
-			assert.Equal(t, flag, rd.CountTowardBudgets)
+			require.Len(t, rd.Calls, 1)
+			call := rd.Calls[0]
+			require.NotNil(t, call.ProviderUsed)
+			assert.Equal(t, "openai", *call.ProviderUsed)
+			require.NotNil(t, call.ModelUsed)
+			assert.Equal(t, "text-embedding-3-small", *call.ModelUsed)
+			require.NotNil(t, call.InputTokens)
+			assert.Equal(t, 42, *call.InputTokens)
+			assert.Equal(t, flag, call.CountTowardBudgets)
 		}
 	})
 
@@ -648,8 +710,9 @@ func TestStampRoutingDebug(t *testing.T) {
 
 		rd := result.GetExtraFields().RoutingDebug
 		require.NotNil(t, rd, "the embed still ran, so it stays observable")
-		require.NotNil(t, rd.InputTokens)
-		assert.Equal(t, 0, *rd.InputTokens)
+		require.Len(t, rd.Calls, 1)
+		require.NotNil(t, rd.Calls[0].InputTokens)
+		assert.Equal(t, 0, *rd.Calls[0].InputTokens)
 	})
 }
 

@@ -57,6 +57,19 @@ func TestComplexitySemanticConfigTimeoutDecoding(t *testing.T) {
 	}
 }
 
+// "fallback" is deliberately absent here: it was removed with the lexical
+// fallback and later reintroduced for the llm fallback classifier, so it is a
+// live field again (decoding covered by TestComplexitySemanticFallbackValidation).
+func TestComplexitySemanticConfigRejectsRemovedFields(t *testing.T) {
+	for _, field := range []string{"dimension"} {
+		t.Run(field, func(t *testing.T) {
+			var cfg ComplexitySemanticConfig
+			err := json.Unmarshal([]byte(`{"provider":"openai","embedding_model":"text-embedding-3-small","`+field+`":true}`), &cfg)
+			require.ErrorContains(t, err, `unknown semantic complexity field "`+field+`"`)
+		})
+	}
+}
+
 func TestComplexitySemanticConfigTimeoutMarshalRoundTrip(t *testing.T) {
 	cfg := testSemanticConfig()
 	cfg.Timeout = 250 * time.Millisecond

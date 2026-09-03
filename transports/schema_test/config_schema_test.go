@@ -1231,6 +1231,88 @@ func TestSchemaComplexitySemanticTimeout(t *testing.T) {
 	}
 }
 
+// TestSchemaComplexityLLMTimeout is the llm-block half of
+// TestSchemaComplexitySemanticTimeout. Both blocks decode timeout the same way —
+// a time.Duration with no empty-string sentinel, so absent, null, and zero all
+// arrive as 0 and normalized() substitutes the default — which is why zero has to
+// be accepted in both forms here too. Fields whose Go type is a string spell
+// "unset" as "" and do reject an explicit zero; those carry a ^[1-9] pattern
+// instead.
+func TestSchemaComplexityLLMTimeout(t *testing.T) {
+	compiled := compileSchema(t)
+	llm := func(timeout string) string {
+		return `{"governance": {"complexity_analyzer_config": {
+			"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]},
+			"semantic": {"provider": "openai", "embedding_model": "text-embedding-3-small", "fallback": "llm"},
+			"llm": {"provider": "openai", "model": "gpt-4.1-mini", "timeout": ` + timeout + `}
+		}}}`
+	}
+
+	for name, timeout := range map[string]string{
+		"zero as a number": "0",
+		"zero as duration": `"0s"`,
+		"number":           "4000",
+		"fractional":       "2.5",
+		"duration string":  `"2s"`,
+	} {
+		if err := validateConfig(t, compiled, llm(timeout)); err != nil {
+			t.Errorf("llm timeout (%s) must be valid — the decoder accepts it and normalized() defaults zero, got: %v", name, err)
+		}
+	}
+
+	for name, timeout := range map[string]string{
+		"negative number":   "-1",
+		"negative duration": `"-1s"`,
+		"unitless string":   `"4000"`,
+	} {
+		if err := validateConfig(t, compiled, llm(timeout)); err == nil {
+			t.Errorf("llm timeout (%s) must be rejected", name)
+		}
+	}
+}
+
+// TestSchemaComplexityLLMFallbackRequiresLLMBlock pins the schema to
+// ComplexityAnalyzerConfig.Validate, which rejects a semantic block selecting the
+// "llm" fallback with no llm block to run it. The conditional has to read the
+// nested semantic.fallback and require both keys: an `if` that merely names a
+// property passes vacuously when the property is absent, which would demand an
+// llm block from every analyzer config that never mentioned a fallback.
+func TestSchemaComplexityLLMFallbackRequiresLLMBlock(t *testing.T) {
+	compiled := compileSchema(t)
+	analyzer := func(body string) string {
+		fields := `"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]}`
+		if body != "" {
+			fields += ", " + body
+		}
+		return `{"governance": {"complexity_analyzer_config": {` + fields + `}}}`
+	}
+	const semanticBase = `"provider": "openai", "embedding_model": "text-embedding-3-small"`
+	const llmBlock = `"llm": {"provider": "openai", "model": "gpt-4.1-mini"}`
+
+	valid := map[string]string{
+		"llm fallback with its classifier":   `"semantic": {` + semanticBase + `, "fallback": "llm"}, ` + llmBlock,
+		"fallback none without an llm block": `"semantic": {` + semanticBase + `, "fallback": "none"}`,
+		// Validate() lets an llm block sit dormant so toggling the fallback back on
+		// does not lose it.
+		"dormant llm block under fallback none": `"semantic": {` + semanticBase + `, "fallback": "none"}, ` + llmBlock,
+		// The vacuous-truth guards: neither of these names a fallback, so the
+		// conditional must not fire.
+		"semantic block with no fallback key": `"semantic": {` + semanticBase + `}`,
+		"no semantic block at all":            `"llm": {"provider": "openai", "model": "gpt-4.1-mini"}`,
+		"keywords only":                       "",
+	}
+	for name, body := range valid {
+		if err := validateConfig(t, compiled, analyzer(body)); err != nil {
+			t.Errorf("%s must be valid — the loader accepts it, got: %v", name, err)
+		}
+	}
+
+	missing := analyzer(`"semantic": {` + semanticBase + `, "fallback": "llm"}`)
+	if err := validateConfig(t, compiled, missing); err == nil {
+		t.Error("an llm fallback with no llm block must be rejected: Validate reports \"requires an llm config block\"")
+	}
+}
+
 func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
 	compiled := compileSchema(t)
 

@@ -12319,10 +12319,12 @@ const backfillDefaultComplexityExemplarsMigrationID = "backfill_default_complexi
 type preSplitComplexityAnalyzerRow struct {
 	Keywords     ComplexityEditableKeywordConfig
 	Semantic     *ComplexitySemanticConfig
+	LLM          *ComplexityLLMConfig
 	ConfigHashes ComplexityAnalyzerConfigHashes
-	// semanticUnreadable holds the reason the semantic block was skipped, if it
-	// was present but could not be decoded.
+	// semanticUnreadable and llmUnreadable hold the reason a block was skipped,
+	// if it was present but could not be decoded.
 	semanticUnreadable string
+	llmUnreadable      string
 }
 
 // complexityConfigFromPreSplitAnalyzerRow reads everything worth carrying out of
@@ -12340,6 +12342,7 @@ func complexityConfigFromPreSplitAnalyzerRow(data []byte) (preSplitComplexityAna
 	var row struct {
 		Keywords     ComplexityEditableKeywordConfig `json:"keywords"`
 		Semantic     json.RawMessage                 `json:"semantic"`
+		LLM          json.RawMessage                 `json:"llm"`
 		ConfigHashes ComplexityAnalyzerConfigHashes  `json:"_config_hashes"`
 	}
 	if err := json.Unmarshal(data, &row); err != nil {
@@ -12357,6 +12360,28 @@ func complexityConfigFromPreSplitAnalyzerRow(data []byte) (preSplitComplexityAna
 			out.ConfigHashes.SemanticSettings = ""
 		} else {
 			out.Semantic = &semantic
+		}
+	}
+	// The llm block travels with the semantic settings it backs: without it, a
+	// carried-over "fallback": "llm" would name a classifier that is not there,
+	// which Validate rejects.
+	if len(row.LLM) > 0 && string(row.LLM) != "null" {
+		var llm ComplexityLLMConfig
+		if err := json.Unmarshal(row.LLM, &llm); err != nil {
+			out.llmUnreadable = err.Error()
+			out.ConfigHashes.LLMSettings = ""
+			if out.Semantic != nil && strings.EqualFold(strings.TrimSpace(out.Semantic.Fallback), ComplexitySemanticFallbackLLM) {
+				// The selector goes with the block it selects. Left alone it
+				// names a classifier that is not there, which is what Validate
+				// rejects -- and the caller drops the whole carried config over
+				// it, not just the block that could not be read. Its section
+				// hash goes too, so a config.json that still asks for the llm
+				// fallback re-applies both blocks on the next boot.
+				out.Semantic.Fallback = ComplexitySemanticFallbackNone
+				out.ConfigHashes.SemanticSettings = ""
+			}
+		} else {
+			out.LLM = &llm
 		}
 	}
 	return out, nil
@@ -12428,7 +12453,13 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 				config.ConfigHashes.SimpleKeywords = preSplit.ConfigHashes.SimpleKeywords
 				config.ConfigHashes.MediumKeywords = preSplit.ConfigHashes.MediumKeywords
 				config.ConfigHashes.ComplexKeywords = preSplit.ConfigHashes.ComplexKeywords
+				config.LLM = preSplit.LLM
 				config.ConfigHashes.SemanticSettings = preSplit.ConfigHashes.SemanticSettings
+				config.ConfigHashes.LLMSettings = preSplit.ConfigHashes.LLMSettings
+				if preSplit.llmUnreadable != "" {
+					logger.Warn("[configstore] %s: could not carry the pre-split llm block forward: %s",
+						migrationName, preSplit.llmUnreadable)
+				}
 				if preSplit.semanticUnreadable != "" {
 					// A semantic block this version cannot parse comes from a
 					// build further up the stack. Dropping it is better than
@@ -12461,11 +12492,13 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 			record := complexitySemanticConfigRecord{
 				Keywords: normalized.Keywords,
 				Semantic: normalized.Semantic,
+				LLM:      normalized.LLM,
 				ConfigHashes: complexitySemanticRowHashes{
 					SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
 					MediumKeywords:   config.ConfigHashes.MediumKeywords,
 					ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
 					SemanticSettings: config.ConfigHashes.SemanticSettings,
+					LLMSettings:      config.ConfigHashes.LLMSettings,
 				},
 			}
 			if semanticRow != nil {

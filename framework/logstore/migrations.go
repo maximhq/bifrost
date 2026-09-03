@@ -31,6 +31,25 @@ var addColumnIfNotExists = migrator.AddColumnIfNotExists
 // same reason as above so call sites can use dropColumnIfExists(tx, ...).
 var dropColumnIfExists = migrator.DropColumnIfExists
 
+// boundDDLLockWait caps how long the DDL that follows waits for its table lock,
+// on PostgreSQL only.
+//
+// ADD COLUMN and DROP COLUMN both take ACCESS EXCLUSIVE on logs. The change
+// itself is metadata-only, but waiting for the lock parks the statement at the
+// head of the lock queue, where every query arriving behind a long-running read
+// waits on it too - a cluster-wide stall on the highest-volume table. Bounding
+// the wait fails this boot's migration instead, and the next boot retries it.
+//
+// SET LOCAL needs the transaction opts.UseTransaction gives the migration, and
+// reverts with it. It applies to the whole transaction, so it is set once per
+// callback rather than before each statement.
+func boundDDLLockWait(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return tx.Exec("SET LOCAL lock_timeout = '5s'").Error
+}
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -291,6 +310,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_complexity_routing_columns"}, run: migrationAddComplexityRoutingColumns},
+	{IDs: []string{"logs_add_routing_debug_column"}, run: migrationAddRoutingDebugColumn},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
@@ -699,6 +719,39 @@ func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding overhead_breakdown column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingDebugColumn adds the routing_debug column to the logs
+// table, so the semantic classification embed and llm classification calls
+// the routing plugin made for a request are visible in the log detail view,
+// mirroring how guardrail_debug already surfaces guardrail judge calls.
+func migrationAddRoutingDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_routing_debug_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "routing_debug")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "routing_debug")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding routing_debug column: %s", err.Error())
 	}
 	return nil
 }
@@ -4002,17 +4055,8 @@ func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logg
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Each ADD COLUMN takes ACCESS EXCLUSIVE on logs. The change itself is
-			// metadata-only, but waiting for the lock parks this statement at the head
-			// of the lock queue, where every query that arrives behind a long-running
-			// read waits on it too - a cluster-wide stall on the highest-volume table.
-			// Bounding the wait fails this boot's migration instead, and the next boot
-			// retries it. SET LOCAL needs the transaction opts.UseTransaction gives us,
-			// and reverts with it.
-			if tx.Dialector.Name() == "postgres" {
-				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
-					return err
-				}
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
 			}
 			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_tier"); err != nil {
 				return err
@@ -4027,14 +4071,8 @@ func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Bounded for the same reason as the Migrate side above: DROP COLUMN takes
-			// the same ACCESS EXCLUSIVE lock on logs, so waiting for it parks this
-			// statement at the head of the lock queue and stalls every query behind it.
-			// SET LOCAL is transaction-scoped, so one call covers all three drops.
-			if tx.Dialector.Name() == "postgres" {
-				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
-					return err
-				}
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
 			}
 			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_score"); err != nil {
 				return err

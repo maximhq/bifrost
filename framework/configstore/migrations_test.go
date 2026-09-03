@@ -3261,6 +3261,56 @@ func TestMigrationBackfillDefaultComplexityExemplars(t *testing.T) {
 		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
 	})
 
+	// The fallback selector lives in the semantic block and the classifier it
+	// names lives in the llm block, so an unreadable llm block leaves the
+	// selector pointing at nothing -- which Validate rejects, costing the whole
+	// backfill rather than just the block that could not be read.
+	t.Run("disables the llm fallback when the llm block is unreadable", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"min_similarity": 0.3,
+				"fallback": "llm"
+			},
+			"llm": {
+				"provider": "openai",
+				"model": "gpt-4o-mini",
+				"a_field_from_a_higher_branch": true
+			},
+			"_config_hashes": {"semantic_settings": "semantic-hash", "llm_settings": "llm-hash"}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		require.NotNil(t, semanticRow.Semantic, "the readable semantic block still carries over")
+		assert.Nil(t, semanticRow.LLM, "an unreadable llm block cannot be carried")
+		assert.Equal(t, ComplexitySemanticFallbackNone, semanticRow.Semantic.Fallback,
+			"the fallback must not name a classifier that was dropped")
+		// Both section hashes go, so a config.json still asking for the llm
+		// fallback re-applies both blocks on the next boot.
+		assert.Empty(t, semanticRow.ConfigHashes.SemanticSettings)
+		assert.Empty(t, semanticRow.ConfigHashes.LLMSettings)
+		// The settings that had nothing to do with the fallback survive.
+		assert.Equal(t, schemas.ModelProvider("openai"), semanticRow.Semantic.Provider)
+		assert.Equal(t, 0.3, semanticRow.Semantic.MinSimilarity)
+		// And the backfill this migration exists for still happened.
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, semanticRow.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
 	// The semantic row itself can be unreadable for the same reason: a build
 	// further up the stack writes a field this version has no name for, and
 	// ComplexitySemanticConfig rejects unknown fields. Failing takes every

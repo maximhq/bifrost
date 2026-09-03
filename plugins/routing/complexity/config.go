@@ -47,7 +47,12 @@ const (
 // there are no historical rows carrying it and nothing offers it as a filter.
 const (
 	MechanismSemantic = "semantic"
-	MechanismSkipped  = "skipped"
+	// MechanismLLM means the chat-completion classifier published the tier.
+	MechanismLLM = "llm"
+	// MechanismSkipped means classification was demanded by a routing rule but
+	// produced no tier.
+	MechanismSkipped = "skipped"
+
 )
 
 // Default boundaries are retained for the dormant lexical analyzer and its
@@ -66,6 +71,9 @@ type EditableKeywordConfig = configstore.ComplexityEditableKeywordConfig
 // SemanticConfig is the embedding-based classifier configuration. Its
 // exemplars are the shared per-tier keyword lists in EditableKeywordConfig.
 type SemanticConfig = configstore.ComplexitySemanticConfig
+
+// LLMConfig is the chat-completion classifier configuration.
+type LLMConfig = configstore.ComplexityLLMConfig
 
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
