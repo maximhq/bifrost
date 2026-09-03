@@ -1240,7 +1240,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// logical request so each token-consuming attempt bills exactly once.
 		// Set by core on every retry iteration.
 		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-		routingDebug, _ := schemas.InitialAttemptRoutingDebugFromContext(ctx)
+		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 
 		p.wg.Add(1)
 		go func() {
@@ -1253,7 +1253,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingDebug)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1498,7 +1498,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingDebug *schemas.BifrostRoutingDebug) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1549,16 +1549,16 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 				}
 			}
 		}
-		// A successful response normally carries RoutingDebug and CalculateCost
+		// A successful response normally carries routing metadata and CalculateCost
 		// includes it. When no response exists (or a later plugin recovered with a
 		// fresh response after routing's post-hook), add the owned context snapshot
 		// explicitly. This also composes with provider BilledUsage rather than
 		// replacing the upstream cost. Each call's own CountTowardBudgets flag is
 		// checked independently, so a request that made both a semantic embed and
 		// an llm classification call bills whichever of the two (or both) opted in.
-		if p.modelCatalog != nil && routingDebug != nil &&
-			(result == nil || result.GetExtraFields().RoutingDebug == nil) {
-			for _, call := range routingDebug.Calls {
+		if p.modelCatalog != nil && routingMetadata != nil &&
+			(result == nil || result.GetExtraFields().RoutingMetadata == nil) {
+			for _, call := range routingMetadata.Calls {
 				if call.CountTowardBudgets {
 					cost += p.modelCatalog.CalculateRoutingCallCost(call, pricingScopes)
 				}

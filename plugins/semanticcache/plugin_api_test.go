@@ -157,18 +157,18 @@ func TestClearCacheForKey_FiltersByCacheKeyAndPluginMarker(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// stampCacheDebugForMiss
+// stampCacheMetadataForMiss
 // -----------------------------------------------------------------------------
 
-func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
+func TestStampCacheMetadataForMiss_AlwaysSetsCacheID(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "stored-id-123", false, false)
+	plugin.stampCacheMetadataForMiss(state, extra, "stored-id-123", false, false)
 
 	if extra.CacheDebug == nil {
-		t.Fatal("expected CacheDebug to be stamped on miss")
+		t.Fatal("expected cache metadata to be stamped on miss")
 	}
 	if extra.CacheDebug.CacheHit {
 		t.Fatal("expected CacheHit=false on miss")
@@ -182,12 +182,12 @@ func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
 	}
 }
 
-func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
+func TestStampCacheMetadataForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{EmbeddingsInputTokens: 42}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "id-x", false, false)
+	plugin.stampCacheMetadataForMiss(state, extra, "id-x", false, false)
 
 	if extra.CacheDebug.InputTokens == nil || *extra.CacheDebug.InputTokens != 42 {
 		t.Fatalf("expected InputTokens=42, got %v", extra.CacheDebug.InputTokens)
@@ -197,12 +197,12 @@ func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
 	}
 }
 
-func TestStampCacheDebugForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
+func TestStampCacheMetadataForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "id-y", true, false) // mid-stream
+	plugin.stampCacheMetadataForMiss(state, extra, "id-y", true, false) // mid-stream
 
 	if extra.CacheDebug != nil {
 		t.Fatal("expected mid-stream chunk to NOT be stamped")

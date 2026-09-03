@@ -46,7 +46,7 @@ var payloadFields = []string{
 	"video_delete_output",
 	"cache_debug",
 	"guardrail_debug",
-	"routing_debug",
+	"routing_metadata",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -89,7 +89,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
 	m["guardrail_debug"] = l.GuardrailDebug
-	m["routing_debug"] = l.RoutingDebug
+	m["routing_metadata"] = l.RoutingMetadata
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -233,7 +233,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
 	l.GuardrailDebug = ""
-	l.RoutingDebug = ""
+	l.RoutingMetadata = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -272,7 +272,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
 	l.GuardrailDebugParsed = nil
-	l.RoutingDebugParsed = nil
+	l.RoutingMetadataParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -372,8 +372,8 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["guardrail_debug"]; ok && v != "" {
 		l.GuardrailDebug = v
 	}
-	if v, ok := m["routing_debug"]; ok && v != "" {
-		l.RoutingDebug = v
+	if v, ok := m["routing_metadata"]; ok && v != "" {
+		l.RoutingMetadata = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -941,9 +941,9 @@ func clearPayloadField(l *Log, name string) {
 	case "guardrail_debug":
 		l.GuardrailDebug = ""
 		l.GuardrailDebugParsed = nil
-	case "routing_debug":
-		l.RoutingDebug = ""
-		l.RoutingDebugParsed = nil
+	case "routing_metadata":
+		l.RoutingMetadata = ""
+		l.RoutingMetadataParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

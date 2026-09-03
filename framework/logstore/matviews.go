@@ -1439,7 +1439,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 
 	// Cache hits come from the same hybrid aggregate (materialized in
 	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
-	// no more full-window raw scan. CacheDebugCount reproduces
+	// no more full-window raw scan. The cache metadata count reproduces
 	// aggregateCacheHits' nil contract: when no row in the window carried
 	// valid cache_debug JSON, the fields stay nil so they are omitted from
 	// the JSON payload, matching the raw path.

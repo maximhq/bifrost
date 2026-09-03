@@ -334,7 +334,7 @@ func TestEmbedComplexityTextRecordsRoutingUsage(t *testing.T) {
 	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
 	require.NoError(t, err)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok, "classification embed must record usage on the request context")
 	require.Len(t, usage.Calls, 1)
 	call := usage.Calls[0]
@@ -358,7 +358,7 @@ func TestRecordRoutingEmbedUsageAppendsRatherThanReplaces(t *testing.T) {
 	recordRoutingEmbedUsage(ctx, cfg, 20)
 	recordRoutingEmbedUsage(ctx, cfg, 7)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok)
 	require.Len(t, usage.Calls, 2)
 	assert.Equal(t, 20, *usage.Calls[0].InputTokens)
@@ -376,7 +376,7 @@ func TestRecordRoutingLLMUsageAppendsOwnCall(t *testing.T) {
 
 	recordRoutingLLMUsage(ctx, cfg, 20, 4)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok)
 	require.Len(t, usage.Calls, 1)
 	call := usage.Calls[0]
@@ -406,7 +406,7 @@ func TestRecordRoutingUsageAppendsBothSemanticAndLLMCalls(t *testing.T) {
 	recordRoutingEmbedUsage(ctx, semanticCfg, 12)
 	recordRoutingLLMUsage(ctx, llmCfg, 40, 8)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok)
 	require.Len(t, usage.Calls, 2, "both the embed and the llm classification must survive")
 	assert.Equal(t, "openai", *usage.Calls[0].ProviderUsed)
@@ -433,7 +433,7 @@ func TestEmbedComplexityTextDropsNegativeProviderUsage(t *testing.T) {
 	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
 	require.NoError(t, err)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok)
 	require.Len(t, usage.Calls, 1)
 	assert.Equal(t, 0, *usage.Calls[0].InputTokens, "negative provider usage must not reach budget accounting")
@@ -500,8 +500,8 @@ func TestEmbedComplexityTextsObservesWarmupNeverRecordsRoutingUsage(t *testing.T
 	defer ctx.Cancel()
 	_, err := plugin.embedComplexityTexts(ctx, testEmbeddingSemanticConfig(), []string{"a", "b"})
 	require.NoError(t, err)
-	_, hasRoutingDebug := schemas.RoutingDebugFromContext(ctx)
-	assert.False(t, hasRoutingDebug)
+	_, hasRoutingMetadata := schemas.RoutingMetadataFromContext(ctx)
+	assert.False(t, hasRoutingMetadata)
 	require.Len(t, observed, 1)
 	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 7}, observed[0])
 }
@@ -554,20 +554,20 @@ func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
 	})
 
 	// A classification embed on a request context records usage for the
-	// RoutingDebug stamp; it must NOT also fire the warmup observer, or the
+	// routing metadata stamp; it must NOT also fire the warmup observer, or the
 	// request phase would double-count in telemetry.
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
 	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
 	require.NoError(t, err)
-	_, hasRoutingDebug := schemas.RoutingDebugFromContext(ctx)
-	assert.True(t, hasRoutingDebug)
+	_, hasRoutingMetadata := schemas.RoutingMetadataFromContext(ctx)
+	assert.True(t, hasRoutingMetadata)
 	assert.Empty(t, observed)
 }
 
 // TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors keeps
 // the request side consistent: a classification that failed on response shape
-// still cost the caller tokens, so it reaches the RoutingDebug stamp rather
+// still cost the caller tokens, so it reaches the routing metadata stamp rather
 // than disappearing because no tier came back.
 func TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors(t *testing.T) {
 	plugin := &RoutingPlugin{}
@@ -587,7 +587,7 @@ func TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors(t *t
 	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
 	require.Error(t, err)
 
-	usage, ok := schemas.RoutingDebugFromContext(ctx)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
 	require.True(t, ok, "a billed classification embed must be recorded for the stamp")
 	require.Len(t, usage.Calls, 1)
 	assert.Equal(t, 42, *usage.Calls[0].InputTokens)
@@ -609,7 +609,7 @@ func TestEmbedComplexityTextSkipsUsageBeforeProviderResponds(t *testing.T) {
 	assert.Empty(t, observed)
 }
 
-func TestStampRoutingDebug(t *testing.T) {
+func TestStampRoutingMetadata(t *testing.T) {
 	newCtxWithUsage := func(t *testing.T, countTowardBudgets bool) *schemas.BifrostContext {
 		t.Helper()
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
@@ -630,10 +630,10 @@ func TestStampRoutingDebug(t *testing.T) {
 	t.Run("stamps regardless of budget flag", func(t *testing.T) {
 		for _, flag := range []bool{false, true} {
 			result := newChatResult()
-			stampRoutingDebug(newCtxWithUsage(t, flag), result, schemas.ChatCompletionRequest, false)
+			stampRoutingMetadata(newCtxWithUsage(t, flag), result, schemas.ChatCompletionRequest, false)
 
-			rd := result.GetExtraFields().RoutingDebug
-			require.NotNil(t, rd, "routing debug must be stamped whenever a routing embed ran (flag=%v)", flag)
+			rd := result.GetExtraFields().RoutingMetadata
+			require.NotNil(t, rd, "routing metadata must be stamped whenever a routing embed ran (flag=%v)", flag)
 			require.Len(t, rd.Calls, 1)
 			call := rd.Calls[0]
 			require.NotNil(t, call.ProviderUsed)
@@ -650,13 +650,13 @@ func TestStampRoutingDebug(t *testing.T) {
 		ctx := newCtxWithUsage(t, false)
 
 		intermediate := newChatResult()
-		stampRoutingDebug(ctx, intermediate, schemas.ChatCompletionStreamRequest, false)
-		assert.Nil(t, intermediate.GetExtraFields().RoutingDebug)
+		stampRoutingMetadata(ctx, intermediate, schemas.ChatCompletionStreamRequest, false)
+		assert.Nil(t, intermediate.GetExtraFields().RoutingMetadata)
 
 		final := newChatResult()
-		stampRoutingDebug(ctx, final, schemas.ChatCompletionStreamRequest, true)
-		assert.NotNil(t, final.GetExtraFields().RoutingDebug)
-		_, usageRemainsAvailable := schemas.RoutingDebugFromContext(ctx)
+		stampRoutingMetadata(ctx, final, schemas.ChatCompletionStreamRequest, true)
+		assert.NotNil(t, final.GetExtraFields().RoutingMetadata)
+		_, usageRemainsAvailable := schemas.RoutingMetadataFromContext(ctx)
 		assert.True(t, usageRemainsAvailable, "no-response consumers read the context snapshot")
 	})
 
@@ -664,14 +664,14 @@ func TestStampRoutingDebug(t *testing.T) {
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
 		result := newChatResult()
-		stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
-		assert.Nil(t, result.GetExtraFields().RoutingDebug)
+		stampRoutingMetadata(ctx, result, schemas.ChatCompletionRequest, false)
+		assert.Nil(t, result.GetExtraFields().RoutingMetadata)
 	})
 
 	t.Run("nil result leaves usage pending", func(t *testing.T) {
 		ctx := newCtxWithUsage(t, true)
-		stampRoutingDebug(ctx, nil, schemas.ChatCompletionRequest, false)
-		_, usageStillPending := schemas.RoutingDebugFromContext(ctx)
+		stampRoutingMetadata(ctx, nil, schemas.ChatCompletionRequest, false)
+		_, usageStillPending := schemas.RoutingMetadataFromContext(ctx)
 		assert.True(t, usageStillPending)
 	})
 
@@ -690,9 +690,9 @@ func TestStampRoutingDebug(t *testing.T) {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, attempt.fallbackIndex)
 				result := newChatResult()
 
-				stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
+				stampRoutingMetadata(ctx, result, schemas.ChatCompletionRequest, false)
 
-				assert.Nil(t, result.GetExtraFields().RoutingDebug)
+				assert.Nil(t, result.GetExtraFields().RoutingMetadata)
 			})
 		}
 	})
@@ -706,9 +706,9 @@ func TestStampRoutingDebug(t *testing.T) {
 		recordRoutingEmbedUsage(ctx, testEmbeddingSemanticConfig(), -42)
 
 		result := newChatResult()
-		stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
+		stampRoutingMetadata(ctx, result, schemas.ChatCompletionRequest, false)
 
-		rd := result.GetExtraFields().RoutingDebug
+		rd := result.GetExtraFields().RoutingMetadata
 		require.NotNil(t, rd, "the embed still ran, so it stays observable")
 		require.Len(t, rd.Calls, 1)
 		require.NotNil(t, rd.Calls[0].InputTokens)

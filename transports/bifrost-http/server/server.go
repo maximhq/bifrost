@@ -2353,7 +2353,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 // must repeat this wiring themselves, and an unexported method is unreachable
 // from their package even through the embedded server. Warmup embeds carry no
 // request or response, so an embedder that misses this observer loses the usage
-// entirely — it cannot be recovered from the RoutingDebug path.
+// entirely — it cannot be recovered from the routing metadata path.
 func (s *BifrostHTTPServer) ObserveWarmupRoutingEmbedding(provider, model string, inputTokens int) {
 	plugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
 	if err != nil || plugin == nil {

@@ -60,8 +60,8 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	// A call's cost only folds in here when that flag is set; telemetry prices
 	// every call unconditionally via RoutingCallCost directly, without this gate.
 	var routingCost float64
-	if extraFields.RoutingDebug != nil {
-		for _, call := range extraFields.RoutingDebug.Calls {
+	if extraFields.RoutingMetadata != nil {
+		for _, call := range extraFields.RoutingMetadata.Calls {
 			if call.CountTowardBudgets {
 				routingCost += s.RoutingCallCost(call, &lookupScopes)
 			}
@@ -223,13 +223,13 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // CalculateCost uses this for normal responses. Logging also calls it directly
 // for input guardrail blocks, where the main provider call never produced a
 // BifrostResponse.
-func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
-	if debug == nil || len(debug.JudgeCalls) == 0 {
+func (s *Store) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *LookupScopes) float64 {
+	if metadata == nil || len(metadata.JudgeCalls) == 0 {
 		return 0
 	}
 
 	var total float64
-	for _, call := range debug.JudgeCalls {
+	for _, call := range metadata.JudgeCalls {
 		total += s.computeGuardrailJudgeCost(call, scopes)
 	}
 	return total
@@ -377,18 +377,18 @@ func cloneFloat64Pointer(value *float64) *float64 {
 	return &clone
 }
 
-// calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) *schemas.BifrostCost {
-	if cacheDebug.CacheHit {
+// calculateCostWithCache handles cost calculation when semantic cache metadata is present.
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) *schemas.BifrostCost {
+	if cacheMetadata.CacheHit {
 		// Direct cache hit — no LLM call, no cost
-		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
+		if cacheMetadata.HitType != nil && *cacheMetadata.HitType == "direct" {
 			return nil
 		}
 		// Semantic cache hit — only the embedding lookup cost. It's an internal
 		// sidecar cost (a separate embedding call), so it lands on the additional
 		// side, alongside guardrail/MCP, not folded into the request's input.
-		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+		if cacheMetadata.ProviderUsed != nil && cacheMetadata.ModelUsed != nil && cacheMetadata.InputTokens != nil {
+			c := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 			if c == 0 {
 				return nil
 			}
@@ -403,7 +403,7 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 
 	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
 	base := s.calculateBaseCost(result, scopes)
-	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+	embeddingCost := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 	if embeddingCost == 0 {
 		return base
 	}
@@ -426,24 +426,24 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
-	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
+func (s *Store) computeCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) float64 {
+	if cacheMetadata == nil || cacheMetadata.ProviderUsed == nil || cacheMetadata.ModelUsed == nil || cacheMetadata.InputTokens == nil {
 		return 0
 	}
 	if scopes.Provider == "" {
-		scopes.Provider = *cacheDebug.ProviderUsed
+		scopes.Provider = *cacheMetadata.ProviderUsed
 	}
-	// Cache-debug pricing has only a single model identifier (whatever the
+	// Cache metadata pricing has only a single model identifier (whatever the
 	// cache recorded). Maps to RoutingInfo.Model — no alias resolution
 	// context exists for the cache-replayed request.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
-		Provider: schemas.ModelProvider(*cacheDebug.ProviderUsed),
-		Model:    *cacheDebug.ModelUsed,
+		Provider: schemas.ModelProvider(*cacheMetadata.ProviderUsed),
+		Model:    *cacheMetadata.ModelUsed,
 	}, schemas.EmbeddingRequest, scopes)
 	if pricing == nil {
 		return 0
 	}
-	cost := float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	cost := float64(*cacheMetadata.InputTokens) * tieredInputRate(pricing, *cacheMetadata.InputTokens, serviceTier{})
 	// The lookup is a separate embedding call, so the embedding model's flat
 	// per-request fee applies once, mirroring the synchronous/batch paths.
 	if pricing.CostPerRequest != nil {
@@ -453,12 +453,12 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (s *Store) CalculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes *LookupScopes) float64 {
+func (s *Store) CalculateCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes *LookupScopes) float64 {
 	var lookupScopes LookupScopes
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
-	return s.computeCacheEmbeddingCost(cacheDebug, lookupScopes)
+	return s.computeCacheEmbeddingCost(cacheMetadata, lookupScopes)
 }
 
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.

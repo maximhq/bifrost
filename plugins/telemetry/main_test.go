@@ -199,7 +199,7 @@ func TestPostLLMHookRequiresStartTime(t *testing.T) {
 
 // TestMetricsEnabledGating covers the pull-gateway (/metrics scrape) on/off switch: default-on
 // when the config omits the field (back-compat), and honoring an explicit value.
-// TestRoutingEmbeddingCounters: a response stamped with RoutingDebug increments
+// TestRoutingEmbeddingCounters: a response stamped with routing metadata increments
 // bifrost_routing_embedding_requests_total regardless of the count_toward_budgets
 // flag — the flag only controls budget folding (CalculateCost), never telemetry.
 // Cost stays unrecorded here because the test plugin has no pricing manager;
@@ -215,7 +215,7 @@ func TestRoutingEmbeddingCounters(t *testing.T) {
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
-				RoutingDebug: &schemas.BifrostRoutingDebug{
+				RoutingMetadata: &schemas.BifrostRoutingMetadata{
 					Calls: []schemas.BifrostRoutingCall{{
 						ProviderUsed:       &provider,
 						ModelUsed:          &model,
@@ -244,7 +244,7 @@ func TestRoutingEmbeddingCounters(t *testing.T) {
 
 // TestRoutingCountersRecordBothSemanticAndLLMCalls pins the fix for the bug
 // where a request that classified via semantic and then fell back to the llm
-// classifier lost the embedding's telemetry: both calls in one RoutingDebug
+// classifier lost the embedding's telemetry: both calls in one routing metadata record
 // stamp must each increment their own counter family, not just the last one
 // written.
 func TestRoutingCountersRecordBothSemanticAndLLMCalls(t *testing.T) {
@@ -256,7 +256,7 @@ func TestRoutingCountersRecordBothSemanticAndLLMCalls(t *testing.T) {
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ChatCompletionRequest,
-			RoutingDebug: &schemas.BifrostRoutingDebug{
+			RoutingMetadata: &schemas.BifrostRoutingMetadata{
 				Calls: []schemas.BifrostRoutingCall{
 					{ProviderUsed: &embedProvider, ModelUsed: &embedModel, InputTokens: &embedTokens},
 					{ProviderUsed: &llmProvider, ModelUsed: &llmModel, InputTokens: &llmInput, OutputTokens: &llmOutput},
@@ -326,7 +326,7 @@ func counterTotalWithLabel(t *testing.T, reg *prometheus.Registry, name, labelNa
 	return sum
 }
 
-// TestRoutingEmbeddingCountersAbsentWithoutStamp: responses without RoutingDebug
+// TestRoutingEmbeddingCountersAbsentWithoutStamp: responses without routing metadata
 // (no routing embed ran) must not touch the routing counters.
 func TestRoutingEmbeddingCountersAbsentWithoutStamp(t *testing.T) {
 	p := newTestPlugin(t)

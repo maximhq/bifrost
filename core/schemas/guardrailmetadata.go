@@ -1,7 +1,7 @@
 package schemas
 
-// BifrostGuardrailDebug carries request-scoped guardrail execution metadata.
-type BifrostGuardrailDebug struct {
+// BifrostGuardrailMetadata carries request-scoped guardrail execution metadata.
+type BifrostGuardrailMetadata struct {
 	JudgeCalls []BifrostGuardrailJudgeCall `json:"judge_calls,omitempty"`
 }
 
@@ -24,12 +24,12 @@ type BifrostGuardrailJudgeCall struct {
 	TotalTokens             int                          `json:"total_tokens,omitempty"`
 }
 
-// Clone returns an owned snapshot of the guardrail debug data.
-func (d *BifrostGuardrailDebug) Clone() *BifrostGuardrailDebug {
+// Clone returns an owned snapshot of the guardrail metadata.
+func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 	if d == nil || len(d.JudgeCalls) == 0 {
 		return nil
 	}
-	clone := &BifrostGuardrailDebug{
+	clone := &BifrostGuardrailMetadata{
 		JudgeCalls: make([]BifrostGuardrailJudgeCall, len(d.JudgeCalls)),
 	}
 	for index, call := range d.JudgeCalls {
@@ -75,24 +75,24 @@ func cloneUint(value *uint) *uint {
 	return &clone
 }
 
-// GuardrailDebugFromContext returns typed guardrail debug data stored on ctx.
-func GuardrailDebugFromContext(ctx *BifrostContext) (*BifrostGuardrailDebug, bool) {
+// GuardrailMetadataFromContext returns typed guardrail metadata stored on ctx.
+func GuardrailMetadataFromContext(ctx *BifrostContext) (*BifrostGuardrailMetadata, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	debug, ok := ctx.Value(BifrostContextKeyGuardrailDebug).(*BifrostGuardrailDebug)
-	if !ok || debug == nil || len(debug.JudgeCalls) == 0 {
+	metadata, ok := ctx.Value(BifrostContextKeyGuardrailMetadata).(*BifrostGuardrailMetadata)
+	if !ok || metadata == nil || len(metadata.JudgeCalls) == 0 {
 		return nil, false
 	}
-	return debug.Clone(), true
+	return metadata.Clone(), true
 }
 
-// SetGuardrailDebugOnContext stores non-empty guardrail debug data on ctx.
-func SetGuardrailDebugOnContext(ctx *BifrostContext, debug *BifrostGuardrailDebug) bool {
-	if ctx == nil || debug == nil || len(debug.JudgeCalls) == 0 {
+// SetGuardrailMetadataOnContext stores non-empty guardrail metadata on ctx.
+func SetGuardrailMetadataOnContext(ctx *BifrostContext, metadata *BifrostGuardrailMetadata) bool {
+	if ctx == nil || metadata == nil || len(metadata.JudgeCalls) == 0 {
 		return false
 	}
-	ctx.SetValue(BifrostContextKeyGuardrailDebug, debug.Clone())
+	ctx.SetValue(BifrostContextKeyGuardrailMetadata, metadata.Clone())
 	return true
 }
 
@@ -101,10 +101,23 @@ func AppendGuardrailJudgeCallOnContext(ctx *BifrostContext, call BifrostGuardrai
 	if ctx == nil || call.TotalTokens == 0 && call.PromptTokens == 0 && call.CompletionTokens == 0 {
 		return false
 	}
-	current, _ := GuardrailDebugFromContext(ctx)
+	current, _ := GuardrailMetadataFromContext(ctx)
 	if current == nil {
-		current = &BifrostGuardrailDebug{}
+		current = &BifrostGuardrailMetadata{}
 	}
 	current.JudgeCalls = append(current.JudgeCalls, call)
-	return SetGuardrailDebugOnContext(ctx, current)
+	return SetGuardrailMetadataOnContext(ctx, current)
+}
+
+// Deprecated: use BifrostGuardrailMetadata.
+type BifrostGuardrailDebug = BifrostGuardrailMetadata
+
+// Deprecated: use GuardrailMetadataFromContext.
+func GuardrailDebugFromContext(ctx *BifrostContext) (*BifrostGuardrailMetadata, bool) {
+	return GuardrailMetadataFromContext(ctx)
+}
+
+// Deprecated: use SetGuardrailMetadataOnContext.
+func SetGuardrailDebugOnContext(ctx *BifrostContext, metadata *BifrostGuardrailMetadata) bool {
+	return SetGuardrailMetadataOnContext(ctx, metadata)
 }

@@ -32,19 +32,19 @@ func waitForCacheWrite(t *testing.T, lc logCtx, step int) {
 	time.Sleep(cacheWriteSettle)
 }
 
-// cacheDebugged is implemented by any HTTP response type that carries
+// cacheMetadataCarrier is implemented by any HTTP response type that carries
 // `extra_fields.cache_debug`. Lets the assertion helpers work across chat,
 // text-completion, responses, embedding, image-gen, etc. without per-type
 // duplication.
-type cacheDebugged interface {
-	cacheDebug() *cacheDebug
+type cacheMetadataCarrier interface {
+	cacheMetadata() *cacheMetadata
 }
 
 // assertMiss verifies the response is a cache miss with a non-empty cache_id stamped.
 // cache_debug must be present (plugin ran), CacheHit must be false, cache_id must be set.
-func assertMiss(t *testing.T, lc logCtx, step int, resp cacheDebugged) string {
+func assertMiss(t *testing.T, lc logCtx, step int, resp cacheMetadataCarrier) string {
 	t.Helper()
-	cd := resp.cacheDebug()
+	cd := resp.cacheMetadata()
 	if cd == nil {
 		logf(t, lc.at(step), "FAIL", "assert_miss", map[string]any{"reason": "cache_debug absent"})
 		t.Fatalf("expected miss with cache_debug stamped; cache_debug is nil")
@@ -63,9 +63,9 @@ func assertMiss(t *testing.T, lc logCtx, step int, resp cacheDebugged) string {
 
 // assertHit verifies the response is a cache hit with the expected hit_type.
 // Returns the cache_id for further chaining (e.g. same_cache_id checks).
-func assertHit(t *testing.T, lc logCtx, step int, resp cacheDebugged, wantType string) string {
+func assertHit(t *testing.T, lc logCtx, step int, resp cacheMetadataCarrier, wantType string) string {
 	t.Helper()
-	cd := resp.cacheDebug()
+	cd := resp.cacheMetadata()
 	if cd == nil {
 		logf(t, lc.at(step), "FAIL", "assert_hit", map[string]any{"reason": "cache_debug absent"})
 		t.Fatalf("expected hit with cache_debug stamped; cache_debug is nil")
@@ -96,11 +96,11 @@ func assertHit(t *testing.T, lc logCtx, step int, resp cacheDebugged, wantType s
 	return *cd.CacheID
 }
 
-// assertNoCacheDebug verifies the plugin did NOT run (no cache_debug stamped).
+// assertNoCacheMetadata verifies the plugin did NOT run (no cache_debug stamped).
 // Used for plugin-disabled and skipped-caching cases.
-func assertNoCacheDebug(t *testing.T, lc logCtx, step int, resp cacheDebugged) {
+func assertNoCacheMetadata(t *testing.T, lc logCtx, step int, resp cacheMetadataCarrier) {
 	t.Helper()
-	cd := resp.cacheDebug()
+	cd := resp.cacheMetadata()
 	if cd != nil {
 		logf(t, lc.at(step), "FAIL", "assert_no_cache_debug", map[string]any{
 			"cache_hit": cd.CacheHit,

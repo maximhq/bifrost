@@ -1,8 +1,8 @@
 package schemas
 
-// Routing classification debug lifecycle
+// Routing classification metadata lifecycle
 //
-// BifrostRoutingDebug is the request-scoped accounting handoff for internal
+// BifrostRoutingMetadata is the request-scoped accounting handoff for internal
 // calls made by the routing plugin: a semantic classification embed, an llm
 // classifier chat completion, or both when semantic classification produces
 // no tier and the llm fallback runs. It is not general routing-decision
@@ -12,23 +12,23 @@ package schemas
 // PostLLMHook runs for every retry and configured fallback. The routing plugin
 // therefore stores an owned snapshot on BifrostContext and only the primary
 // provider's first physical attempt may claim it. Successful initial attempts
-// also copy that snapshot to BifrostResponseExtraFields.RoutingDebug so normal
+// also copy that snapshot to the response's routing metadata compatibility field so normal
 // CalculateCost processing can include it.
 //
 // The context snapshot is necessary because a provider may return only an
 // error. Governance and logging use it for error-path accounting when
 // CountTowardBudgets is enabled. When a response exists, dedicated routing
 // telemetry records every internal classifier call regardless of that flag.
-// RoutingDebug intentionally does not belong on BifrostErrorExtraFields:
+// Routing metadata intentionally does not belong on BifrostErrorExtraFields:
 // request-scoped sidecar state stays on the context, matching cache and
-// guardrail debug handling.
+// guardrail metadata handling.
 
-// Clone returns an owned snapshot of routing-classification debug data.
-func (d *BifrostRoutingDebug) Clone() *BifrostRoutingDebug {
+// Clone returns an owned snapshot of routing-classification metadata.
+func (d *BifrostRoutingMetadata) Clone() *BifrostRoutingMetadata {
 	if d == nil || len(d.Calls) == 0 {
 		return nil
 	}
-	clone := &BifrostRoutingDebug{
+	clone := &BifrostRoutingMetadata{
 		Calls: make([]BifrostRoutingCall, len(d.Calls)),
 	}
 	for index, call := range d.Calls {
@@ -41,23 +41,23 @@ func (d *BifrostRoutingDebug) Clone() *BifrostRoutingDebug {
 	return clone
 }
 
-// RoutingDebugFromContext returns routing-classification debug data stored on ctx.
-func RoutingDebugFromContext(ctx *BifrostContext) (*BifrostRoutingDebug, bool) {
+// RoutingMetadataFromContext returns routing-classification metadata stored on ctx.
+func RoutingMetadataFromContext(ctx *BifrostContext) (*BifrostRoutingMetadata, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	debug, ok := ctx.Value(BifrostContextKeyRoutingDebug).(*BifrostRoutingDebug)
-	if !ok || debug == nil || len(debug.Calls) == 0 {
+	metadata, ok := ctx.Value(BifrostContextKeyRoutingMetadata).(*BifrostRoutingMetadata)
+	if !ok || metadata == nil || len(metadata.Calls) == 0 {
 		return nil, false
 	}
-	return debug.Clone(), true
+	return metadata.Clone(), true
 }
 
-// InitialAttemptRoutingDebugFromContext returns routing-classification debug
+// InitialAttemptRoutingMetadataFromContext returns routing-classification metadata
 // only for the primary provider's first physical attempt. Classification runs
 // once in PreRequestHook, while PostLLMHook runs for every retry and fallback;
 // this gate makes the initial attempt the single owner of that sidecar call.
-func InitialAttemptRoutingDebugFromContext(ctx *BifrostContext) (*BifrostRoutingDebug, bool) {
+func InitialAttemptRoutingMetadataFromContext(ctx *BifrostContext) (*BifrostRoutingMetadata, bool) {
 	if ctx == nil {
 		return nil, false
 	}
@@ -67,7 +67,7 @@ func InitialAttemptRoutingDebugFromContext(ctx *BifrostContext) (*BifrostRouting
 	if retryNumber, _ := ctx.Value(BifrostContextKeyNumberOfRetries).(int); retryNumber != 0 {
 		return nil, false
 	}
-	return RoutingDebugFromContext(ctx)
+	return RoutingMetadataFromContext(ctx)
 }
 
 // AppendRoutingCallOnContext appends one billable routing-classification call
@@ -80,12 +80,12 @@ func AppendRoutingCallOnContext(ctx *BifrostContext, call BifrostRoutingCall) bo
 	if ctx == nil || !validRoutingCall(call) {
 		return false
 	}
-	current, _ := RoutingDebugFromContext(ctx)
+	current, _ := RoutingMetadataFromContext(ctx)
 	if current == nil {
-		current = &BifrostRoutingDebug{}
+		current = &BifrostRoutingMetadata{}
 	}
 	current.Calls = append(current.Calls, call)
-	ctx.SetValue(BifrostContextKeyRoutingDebug, current.Clone())
+	ctx.SetValue(BifrostContextKeyRoutingMetadata, current.Clone())
 	return true
 }
 

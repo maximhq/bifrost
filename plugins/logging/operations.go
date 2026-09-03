@@ -124,7 +124,7 @@ func applySerializedLogUpdates(
 	updates map[string]interface{},
 	entry *logstore.Log,
 	data *UpdateLogData,
-	cacheDebug *schemas.BifrostCacheDebug,
+	cacheMetadata *schemas.BifrostCacheMetadata,
 	contentLoggingEnabled bool,
 ) {
 	if data.ChatOutput != nil && contentLoggingEnabled {
@@ -184,7 +184,7 @@ func applySerializedLogUpdates(
 		updates["cached_read_tokens"] = entry.CachedReadTokens
 	}
 
-	if cacheDebug != nil {
+	if cacheMetadata != nil {
 		updates["cache_debug"] = entry.CacheDebug
 	}
 	if data.ErrorDetails != nil {
@@ -204,7 +204,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	routingRuleID string,
 	routingRuleName string,
 	numberOfRetries int,
-	cacheDebug *schemas.BifrostCacheDebug,
+	cacheMetadata *schemas.BifrostCacheMetadata,
 	routingEngineLogs string,
 	data *UpdateLogData,
 	contentLoggingEnabled bool,
@@ -326,9 +326,9 @@ func (p *LoggerPlugin) updateLogEntry(
 		updates["cost"] = *data.Cost
 	}
 
-	// Handle cache debug
-	if cacheDebug != nil {
-		tempEntry.CacheDebugParsed = cacheDebug
+	// Handle cache metadata.
+	if cacheMetadata != nil {
+		tempEntry.CacheDebugParsed = cacheMetadata
 		needsSerialization = true
 	}
 
@@ -342,7 +342,7 @@ func (p *LoggerPlugin) updateLogEntry(
 		if err := tempEntry.SerializeFields(); err != nil {
 			p.logger.Error("failed to serialize log update fields: %v", err)
 		} else {
-			applySerializedLogUpdates(updates, tempEntry, data, cacheDebug, contentLoggingEnabled)
+			applySerializedLogUpdates(updates, tempEntry, data, cacheMetadata, contentLoggingEnabled)
 		}
 	}
 
@@ -1634,7 +1634,7 @@ type billingOutcome struct {
 	breakdown *schemas.BifrostCost
 	err       error
 	// knownZeroCost is captured while the row's payload is still hydrated, because it
-	// is derived from CacheDebugParsed and ReleaseBillingPayloads clears that. Callers
+	// is derived from the cache metadata compatibility field and ReleaseBillingPayloads clears that. Callers
 	// run after the release, so they cannot re-derive it.
 	knownZeroCost bool
 	// batchDebugUpdate is the serialized batch_debug JSON to persist alongside cost,
@@ -2038,11 +2038,11 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	usage := logEntry.TokenUsageParsed
-	cacheDebug := logEntry.CacheDebugParsed
-	guardrailDebug := logEntry.GuardrailDebugParsed
+	cacheMetadata := logEntry.CacheDebugParsed
+	guardrailMetadata := logEntry.GuardrailDebugParsed
 
 	// If no cache hit, guardrail call, or usage, we can't calculate cost.
-	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
+	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
 		return nil, fmt.Errorf("%w: token usage not available for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
@@ -2052,7 +2052,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	// unpriceable and revisited by every MissingCostOnly pass. A guardrail judge
 	// call is billed separately (AdditionalCost) even on a cache hit, so fall
 	// through when one ran instead of discarding that charge.
-	if isKnownZeroCostLog(logEntry) && guardrailDebug == nil {
+	if isKnownZeroCostLog(logEntry) && guardrailMetadata == nil {
 		return nil, nil
 	}
 
@@ -2069,7 +2069,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	}
 
 	requestType := normalizeLogRequestType(logEntry.Object)
-	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
+	if requestType == "" && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return nil, fmt.Errorf("%w: object type is empty for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
@@ -2086,8 +2086,8 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 		Provider:               schemas.ModelProvider(logEntry.Provider),
 		OriginalModelRequested: originalModelRequested,
 		ResolvedModelUsed:      logEntry.Model,
-		CacheDebug:             cacheDebug,
-		GuardrailDebug:         guardrailDebug,
+		CacheDebug:             cacheMetadata,
+		GuardrailDebug:         guardrailMetadata,
 		RoutingInfo: schemas.RoutingInfo{
 			Provider: schemas.ModelProvider(logEntry.Provider),
 			Model:    originalModelRequested,

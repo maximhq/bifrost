@@ -315,7 +315,7 @@ var defaultMCPLabelNames = []string{
 var mcpOperationDurationBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
 
 // Values of the phase label on bifrost_routing_embedding_* counters: "request"
-// is a per-request classification embed (recorded off the RoutingDebug response
+// is a per-request classification embed (recorded through the routing metadata response
 // stamp), "warmup" is a boot/config-change exemplar embed (recorded via
 // ObserveWarmupRoutingEmbedding — no request or response exists for those).
 const (
@@ -810,7 +810,7 @@ func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.
 
 // ObserveWarmupRoutingEmbedding records one warmup/boot embedding call made by
 // semantic routing (exemplar warmup has no request or response, so it cannot
-// ride the RoutingDebug stamp path that request-phase embeds use). The HTTP
+// ride the routing metadata stamp path that request-phase embeds use). The HTTP
 // server wires this into the governance plugin's warmup embed usage observer.
 // This method is telemetry-only; budget attribution for warmup (provider/model-
 // level budgets, gated on count_toward_budgets) happens inside governance.
@@ -1205,7 +1205,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// llm classification call, so every call is recorded rather than
 			// only the first or last.
 			extraFields := result.GetExtraFields()
-			if rd := extraFields.RoutingDebug; rd != nil {
+			if rd := extraFields.RoutingMetadata; rd != nil {
 				for _, call := range rd.Calls {
 					if call.ProviderUsed == nil || call.ModelUsed == nil {
 						continue

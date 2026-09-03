@@ -450,8 +450,8 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	}
 }
 
-// TestPreLLMHookStoresEmbeddingDebug verifies a successful semantic lookup remains billable if the main request later fails.
-func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
+// TestPreLLMHookStoresEmbeddingMetadata verifies a successful semantic lookup remains billable if the main request later fails.
+func TestPreLLMHookStoresEmbeddingMetadata(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
@@ -470,18 +470,18 @@ func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-	cacheDebug, ok := schemas.CacheDebugFromContext(ctx)
+	cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx)
 	if !ok {
-		t.Fatal("expected semantic embedding debug on request context")
+		t.Fatal("expected semantic embedding metadata on request context")
 	}
-	if cacheDebug.ProviderUsed == nil || *cacheDebug.ProviderUsed != string(plugin.config.Provider) {
-		t.Fatalf("cache debug provider = %v, want %q", cacheDebug.ProviderUsed, plugin.config.Provider)
+	if cacheMetadata.ProviderUsed == nil || *cacheMetadata.ProviderUsed != string(plugin.config.Provider) {
+		t.Fatalf("cache metadata provider = %v, want %q", cacheMetadata.ProviderUsed, plugin.config.Provider)
 	}
-	if cacheDebug.ModelUsed == nil || *cacheDebug.ModelUsed != plugin.config.EmbeddingModel {
-		t.Fatalf("cache debug model = %v, want %q", cacheDebug.ModelUsed, plugin.config.EmbeddingModel)
+	if cacheMetadata.ModelUsed == nil || *cacheMetadata.ModelUsed != plugin.config.EmbeddingModel {
+		t.Fatalf("cache metadata model = %v, want %q", cacheMetadata.ModelUsed, plugin.config.EmbeddingModel)
 	}
-	if cacheDebug.InputTokens == nil || *cacheDebug.InputTokens != 12 {
-		t.Fatalf("cache debug input tokens = %v, want 12", cacheDebug.InputTokens)
+	if cacheMetadata.InputTokens == nil || *cacheMetadata.InputTokens != 12 {
+		t.Fatalf("cache metadata input tokens = %v, want 12", cacheMetadata.InputTokens)
 	}
 }
 

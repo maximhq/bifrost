@@ -180,7 +180,7 @@ func (p *RoutingPlugin) classifyComplexityTextViaLLM(ctx context.Context, llm *c
 	inputTokens, outputTokens := 0, 0
 	if response.Usage != nil {
 		// Provider-reported usage is untrusted input: negative counts would
-		// flow into the RoutingDebug stamp and subtract from billed cost.
+		// flow into the routing metadata stamp and subtract from billed cost.
 		if response.Usage.PromptTokens > 0 {
 			inputTokens = response.Usage.PromptTokens
 		}

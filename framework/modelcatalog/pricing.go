@@ -105,13 +105,13 @@ func (mc *ModelCatalog) CalculateRoutingCallCost(call schemas.BifrostRoutingCall
 }
 
 // CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
-func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateGuardrailCost(metadata, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateCacheEmbeddingCost(metadata *schemas.BifrostCacheMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCacheEmbeddingCost(metadata, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateBatchCostDetailsForUsage computes batch cost and exposes the

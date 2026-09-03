@@ -105,7 +105,7 @@ func (p *RoutingPlugin) SetComplexityVectorStore(store vectorstore.VectorStore) 
 
 // embedComplexityText adapts Governance's Bifrost-aware embedding path to the
 // classifier's context-based dependency. It records the embed's usage on the
-// triggering request's context so PostLLMHook can stamp RoutingDebug; budget
+// triggering request's context so PostLLMHook can stamp routing metadata; budget
 // attribution itself happens later in cost calculation, never here.
 func (p *RoutingPlugin) embedComplexityText(ctx context.Context, semantic *complexity.SemanticConfig, text string) ([]float32, error) {
 	// A *schemas.BifrostContext means a live request is blocked on this embed; a
@@ -207,20 +207,20 @@ func recordRoutingLLMUsage(ctx context.Context, llm *complexity.LLMConfig, input
 	})
 }
 
-// stampRoutingDebug attaches routing-classification telemetry to the response
+// stampRoutingMetadata attaches routing-classification metadata to the response
 // when this request ran a semantic routing embed. Stamped on every such
 // response for visibility, independent of count_toward_budgets — the flag rides
 // in the struct because cost calculation (modelcatalog) cannot see governance
 // config. For streams, only the final chunk is stamped, matching where cost is
 // billed and mirroring the semantic cache's stamping.
-func stampRoutingDebug(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, requestType schemas.RequestType, isFinalChunk bool) {
+func stampRoutingMetadata(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, requestType schemas.RequestType, isFinalChunk bool) {
 	if result == nil {
 		return
 	}
 	if bifrost.IsStreamRequestType(requestType) && !isFinalChunk {
 		return
 	}
-	usage, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx)
+	metadata, ok := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 	if !ok {
 		return
 	}
@@ -228,7 +228,7 @@ func stampRoutingDebug(ctx *schemas.BifrostContext, result *schemas.BifrostRespo
 	if extraFields == nil {
 		return
 	}
-	extraFields.RoutingDebug = usage
+	extraFields.RoutingMetadata = metadata
 }
 
 // embedComplexityTexts adapts the same internal embedding path for bounded
@@ -399,7 +399,7 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 	}
 	inputTokens := 0
 	// Provider-reported usage is untrusted input: a negative count would flow
-	// into the RoutingDebug stamp and from there into cost calculation and
+	// into the routing metadata stamp and from there into cost calculation and
 	// warmup budget attribution, where it would subtract from billed usage.
 	// Drop it to zero — the embed still happened, we just cannot price it.
 	if response.Usage != nil && response.Usage.TotalTokens > 0 {

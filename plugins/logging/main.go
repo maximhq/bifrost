@@ -283,10 +283,10 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
-// guardrailDebugForLog returns the request's guardrail debug snapshot.
-func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailDebug {
-	if debug, ok := schemas.GuardrailDebugFromContext(ctx); ok {
-		return debug
+// guardrailMetadataForLog returns the request's guardrail metadata snapshot.
+func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailMetadata {
+	if metadata, ok := schemas.GuardrailMetadataFromContext(ctx); ok {
+		return metadata
 	}
 	if result == nil {
 		return nil
@@ -294,37 +294,37 @@ func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	return result.GetExtraFields().GuardrailDebug.Clone()
 }
 
-// routingDebugForLog returns the request's routing-classification debug
+// routingMetadataForLog returns the request's routing-classification metadata
 // snapshot — the semantic classification embed, the llm classification
 // completion, or both. Classification runs once in PreRequestHook, before any
 // retry or fallback attempt, so the context snapshot is stable across every
 // PostLLMHook call for this request; unlike applyInternalCallCosts, this is
 // not gated to the initial attempt because it feeds display, not billing.
-func routingDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingDebug {
-	if debug, ok := schemas.RoutingDebugFromContext(ctx); ok {
-		return debug
+func routingMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingMetadata {
+	if metadata, ok := schemas.RoutingMetadataFromContext(ctx); ok {
+		return metadata
 	}
 	if result == nil {
 		return nil
 	}
-	return result.GetExtraFields().RoutingDebug.Clone()
+	return result.GetExtraFields().RoutingMetadata.Clone()
 }
 
 // applyInternalCallCosts adds sidecar costs when no response exists to carry them.
-func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailDebug *schemas.BifrostGuardrailDebug) {
+func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailMetadata *schemas.BifrostGuardrailMetadata) {
 	if entry == nil || p.pricingManager == nil {
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 	var cacheCost, guardrailCost, routingCost float64
-	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
-		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+	if cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx); ok {
+		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheMetadata, pricingScopes)
 	}
-	if guardrailDebug != nil {
-		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+	if guardrailMetadata != nil {
+		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailMetadata, pricingScopes)
 	}
-	if routingDebug, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx); ok {
-		for _, call := range routingDebug.Calls {
+	if routingMetadata, ok := schemas.InitialAttemptRoutingMetadataFromContext(ctx); ok {
+		for _, call := range routingMetadata.Calls {
 			if call.CountTowardBudgets {
 				routingCost += p.pricingManager.CalculateRoutingCallCost(call, pricingScopes)
 			}
@@ -966,7 +966,7 @@ type LogMessage struct {
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
-	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
+	SemanticCacheDebug *schemas.BifrostCacheMetadata      // For semantic cache operations; field spelling is retained for compatibility
 	UpdateData         *UpdateLogData                     // For update operations
 	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
 	RoutingEngineLogs  string                             // Formatted routing engine decision logs
@@ -1783,13 +1783,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
-	guardrailDebug := guardrailDebugForLog(ctx, result)
-	if result != nil && guardrailDebug != nil {
-		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
+	guardrailMetadata := guardrailMetadataForLog(ctx, result)
+	if result != nil && guardrailMetadata != nil {
+		result.GetExtraFields().GuardrailDebug = guardrailMetadata.Clone()
 	}
-	routingDebug := routingDebugForLog(ctx, result)
-	if result != nil && routingDebug != nil {
-		result.GetExtraFields().RoutingDebug = routingDebug.Clone()
+	routingMetadata := routingMetadataForLog(ctx, result)
+	if result != nil && routingMetadata != nil {
+		result.GetExtraFields().RoutingMetadata = routingMetadata.Clone()
 	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
@@ -1860,9 +1860,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ComplexityScore = &complexityScore
 			}
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
-			entry.GuardrailDebugParsed = guardrailDebug
-			entry.RoutingDebugParsed = routingDebug
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			entry.GuardrailDebugParsed = guardrailMetadata
+			entry.RoutingMetadataParsed = routingMetadata
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1955,8 +1955,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
-	entry.GuardrailDebugParsed = guardrailDebug
-	entry.RoutingDebugParsed = routingDebug
+	entry.GuardrailDebugParsed = guardrailMetadata
+	entry.RoutingMetadataParsed = routingMetadata
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -2073,7 +2073,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
-		p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
@@ -2130,15 +2130,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// A stream error can arrive with a response chunk, bypassing Path A.
 			// Preserve provider-billed usage and the sidecar calls in that case.
 			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = logStatusSuccess
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			// Without an accumulated response, CalculateCost cannot see cache or
-			// guardrail debug. Normal accumulated streams already include both.
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			// guardrail metadata. Normal accumulated streams already include both.
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
@@ -2218,11 +2218,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	// Calculate cost
-	var cacheDebug *schemas.BifrostCacheDebug
+	var cacheMetadata *schemas.BifrostCacheMetadata
 	if result != nil {
-		cacheDebug = result.GetExtraFields().CacheDebug
+		cacheMetadata = result.GetExtraFields().CacheDebug
 	}
-	entry.CacheDebugParsed = cacheDebug
+	entry.CacheDebugParsed = cacheMetadata
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
