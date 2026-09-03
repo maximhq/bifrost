@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,10 +21,10 @@ type accountingFixture struct {
 	tracker *UsageTracker
 }
 
-func TestReportBatchUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
+func TestReportUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 	f := newAccountingFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
-	report := batchaccounting.BatchUsageReport{
+	report := jobaccounting.UsageReport{
 		RequestID:    "batch-cost:openai:batch-1",
 		Provider:     schemas.OpenAI,
 		Model:        "gpt-4o-mini",
@@ -34,8 +34,8 @@ func TestReportBatchUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 		RateLimitIDs: []string{"rl1"},
 	}
 
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
 	assert.Equal(t, 12.5, f.cost())
 	assert.Equal(t, int64(123), f.tokens())
 	assert.Equal(t, int64(1), f.requests())
@@ -214,6 +214,45 @@ func TestAccounting_ZeroCostFailureNotBilled(t *testing.T) {
 	assert.Equal(t, int64(0), f.tokens(), "no-usage failure counts no tokens")
 }
 
+// Whatever funds the user was gathered onto the request's grant when the batch was
+// created, alongside every other co-payer, so the user's ids are already in
+// BudgetIDs and RateLimitIDs. Naming the user on the report must therefore not add
+// a charge of its own: a second pass keyed by user would bump those same limits
+// twice.
+//
+// This is asserted on the charged amount rather than by spying on the user-scoped
+// store methods, because those are not on the GovernanceStore interface at all —
+// the plugin cannot reach them, so a spy could never observe anything and would
+// pass no matter what the code did.
+func TestReportUsage_UserOnReportDoesNotAddASecondCharge(t *testing.T) {
+	newReport := func(requestID, userID string) jobaccounting.UsageReport {
+		return jobaccounting.UsageReport{
+			RequestID:    requestID,
+			Provider:     schemas.OpenAI,
+			Model:        "gpt-4o-mini",
+			Cost:         12.5,
+			TokensUsed:   123,
+			BudgetIDs:    []string{"budget1"},
+			RateLimitIDs: []string{"rl1"},
+			UserID:       userID,
+		}
+	}
+
+	withUser := newAccountingFixture(t)
+	withUserPlugin := &GovernancePlugin{store: withUser.store, tracker: withUser.tracker}
+	// Settlement is at-least-once, so a repeated report must not double-charge either.
+	require.NoError(t, withUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
+	require.NoError(t, withUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:with-user", "user-alice")))
+
+	withoutUser := newAccountingFixture(t)
+	withoutUserPlugin := &GovernancePlugin{store: withoutUser.store, tracker: withoutUser.tracker}
+	require.NoError(t, withoutUserPlugin.ReportUsage(context.Background(), newReport("batch-cost:openai:no-user", "")))
+
+	assert.Equal(t, 12.5, withUser.cost(), "the grant's ids are charged exactly once")
+	assert.Equal(t, withoutUser.cost(), withUser.cost(),
+		"naming the user must not change the amount charged; the user is a co-payer on the grant, not a tier of its own")
+}
+
 // modelScopedFixture wires a user-scoped per-model budget (how an access profile's
 // model-level limits are stored) alongside a user-scoped all-models wildcard, so a
 // settlement can be checked for charging the first and not double-charging the second.
@@ -257,46 +296,46 @@ func (f *modelScopedFixture) budgetUsage(id string) float64 {
 	return f.store.GetGovernanceData(context.Background()).Budgets[id].CurrentUsage
 }
 
-func TestReportBatchUsage_ChargesPerModelBudgets(t *testing.T) {
+func TestReportUsage_ChargesPerModelBudgets(t *testing.T) {
 	f := newModelScopedFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 
 	// What a settled batch looks like: the wildcard budget was collected at create
 	// time (and so is already charged the full total), the per-model budget was not.
-	report := batchaccounting.BatchUsageReport{
+	report := jobaccounting.UsageReport{
 		RequestID:  "batch-cost:openai:batch-models",
 		Provider:   schemas.OpenAI,
 		Cost:       30.0,
 		TokensUsed: 300,
 		BudgetIDs:  []string{"wildcard-budget"},
 		UserID:     "user-alice",
-		ModelUsage: []batchaccounting.BatchModelUsage{
+		ModelUsage: []jobaccounting.ModelUsage{
 			{Model: "gpt-5", Cost: 20.0, TokensUsed: 200},
 			{Model: "gpt-4o", Cost: 10.0, TokensUsed: 100},
 		},
 	}
 
 	// Settlement is at-least-once, so a repeat must not double-charge.
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
 
 	assert.Equal(t, 20.0, f.budgetUsage("model-budget"), "the gpt-5 budget takes gpt-5's share, not the batch total")
 	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
 }
 
 // A batch whose models carry no per-model config must behave exactly as before.
-func TestReportBatchUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
+func TestReportUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
 	f := newModelScopedFixture(t)
 	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
 
-	require.NoError(t, plugin.ReportBatchUsage(context.Background(), batchaccounting.BatchUsageReport{
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
 		RequestID:  "batch-cost:openai:batch-nomodels",
 		Provider:   schemas.OpenAI,
 		Cost:       12.0,
 		TokensUsed: 100,
 		BudgetIDs:  []string{"wildcard-budget"},
 		UserID:     "user-alice",
-		ModelUsage: []batchaccounting.BatchModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
+		ModelUsage: []jobaccounting.ModelUsage{{Model: "gpt-4o", Cost: 12.0, TokensUsed: 100}},
 	}))
 
 	assert.Equal(t, 0.0, f.budgetUsage("model-budget"), "a model with no config of its own charges nothing extra")

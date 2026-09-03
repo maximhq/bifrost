@@ -893,15 +893,15 @@ type ConfigStore interface {
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
-	UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error
-	GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error)
-	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error)
-	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
-	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
-	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
-	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
+	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
+	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

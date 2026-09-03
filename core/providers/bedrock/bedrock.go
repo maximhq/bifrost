@@ -1243,7 +1243,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.routesToMantle(ctx, key, request.Model) {
 		return provider.mantleChatCompletions(ctx, key, request)
 	}
 
@@ -1434,7 +1434,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.routesToMantle(ctx, key, request.Model) {
 		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1756,7 +1756,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.routesToMantle(ctx, key, request.Model) {
 		return provider.mantleResponses(ctx, key, request)
 	}
 
@@ -1835,7 +1835,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(ctx, request.Model) {
+	if provider.routesToMantle(ctx, key, request.Model) {
 		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 

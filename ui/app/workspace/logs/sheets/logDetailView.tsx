@@ -3116,7 +3116,11 @@ export function LogDetailView({
 												)
 											) : msg.output !== undefined ? (
 												<CollapsibleCode
-													text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
+													text={
+														typeof msg.output === "string"
+															? applyRedactionMapping(msg.output, mapping)
+															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
+													}
 													preview={3}
 												/>
 											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (

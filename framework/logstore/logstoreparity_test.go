@@ -110,18 +110,18 @@ type parityLogSpec struct {
 	teamIDs, teamNames         *string
 	customerIDs, customerNames *string
 	buIDs, buNames             *string
-	cost         *float64
-	latency      *float64
-	tokens       [3]int // prompt, completion, total
-	stopReason   *string
-	routing      *string
-	metadata     *string
-	cacheDebug   string
-	content      string
-	parentID     *string
-	nodeID       *string
-	budgetIDs    *string
-	rateLimitIDs *string
+	cost                       *float64
+	latency                    *float64
+	tokens                     [3]int // prompt, completion, total
+	stopReason                 *string
+	routing                    *string
+	metadata                   *string
+	cacheDebug                 string
+	content                    string
+	parentID                   *string
+	nodeID                     *string
+	budgetIDs                  *string
+	rateLimitIDs               *string
 }
 
 func (s parityLogSpec) toLog(base time.Time) *Log {
@@ -1243,4 +1243,52 @@ func TestLogStoreParity(t *testing.T) {
 			return s.Close(ctx)
 		})
 	})
+}
+
+// video_debug must survive the serialize/deserialize round trip like batch_debug
+// does. It is operational detail, not request content, so it also has to outlive an
+// object-storage offload — a row whose payload was offloaded still needs to say
+// which video it settled.
+func TestLogVideoDebugRoundTrip(t *testing.T) {
+	seconds := 8
+	entry := &Log{
+		ID: "req-video-roundtrip",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{
+			VideoID: "vid_rt",
+			Status:  schemas.VideoStatusCompleted,
+			Accounting: &schemas.VideoAccountingDebug{
+				Seconds:     &seconds,
+				Size:        "1920x1080",
+				OutputCount: 2,
+			},
+		},
+	}
+
+	require.NoError(t, entry.SerializeFields())
+	require.NotEmpty(t, entry.VideoDebug, "the parsed blob must reach the column")
+
+	decoded := &Log{ID: entry.ID, VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Equal(t, "vid_rt", decoded.VideoDebugParsed.VideoID)
+	assert.Equal(t, schemas.VideoStatusCompleted, decoded.VideoDebugParsed.Status)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 8, *decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 2, decoded.VideoDebugParsed.Accounting.OutputCount)
+}
+
+// A submission row carries the video id but no accounting block; that absence is
+// what the UI keys on to tell it from the settlement.
+func TestLogVideoDebugSubmissionRowHasNoAccounting(t *testing.T) {
+	entry := &Log{
+		ID:               "req-video-submission",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{VideoID: "vid_sub", Status: schemas.VideoStatusQueued},
+	}
+	require.NoError(t, entry.SerializeFields())
+
+	decoded := &Log{VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Nil(t, decoded.VideoDebugParsed.Accounting)
 }

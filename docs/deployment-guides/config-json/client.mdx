@@ -105,7 +105,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowed_origins` | array | `["*"]` | CORS allowed origins (use URIs or `"*"`) |
-| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes |
+| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |

@@ -72,7 +72,7 @@ type UsageTracker struct {
 	// idempotent within one process, not across a restart or another node. A
 	// batch whose report succeeded but whose durable marker write failed stays
 	// retryable, and a retry elsewhere has an empty map and will bill it again.
-	// That gap is accepted — see framework/batchaccounting's package doc for why
+	// That gap is accepted — see framework/jobaccounting's package doc for why
 	// and what closing it would cost. Note the synchronous path's `billed` map
 	// above has the same property with no durable marker at all.
 	batchBilled map[string]time.Time

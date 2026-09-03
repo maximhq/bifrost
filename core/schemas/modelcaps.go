@@ -481,3 +481,39 @@ func (c ModelCaps) SupportsTextEditorTool(fallback bool) bool {
 	}
 	return fallback
 }
+
+// ---- Bedrock surface selection ----
+
+// BedrockAPIs returns the wire APIs the datasheet says this (provider, model)
+// pair accepts, in the row's preference order, dropping any value this binary
+// does not recognise. Returns nil when the row says nothing, publishes an empty
+// list, or lists only unrecognised values — callers then fall back to their own
+// detection.
+//
+// The endpoint is the one the resolved row is scoped to, so a caller spanning
+// both Bedrock surfaces resolves ModelCaps once per provider and reads each.
+func (c ModelCaps) BedrockAPIs() []BedrockAPI {
+	if c.record == nil || len(c.record.BedrockAPIs) == 0 {
+		return nil
+	}
+	apis := make([]BedrockAPI, 0, len(c.record.BedrockAPIs))
+	for _, api := range c.record.BedrockAPIs {
+		if api.IsValid() && !slices.Contains(apis, api) {
+			apis = append(apis, api)
+		}
+	}
+	if len(apis) == 0 {
+		return nil
+	}
+	return apis
+}
+
+// MinOutputTokens returns the floor the model enforces on max_output_tokens.
+// Prefers the datasheet's min_output_tokens, falling back to the caller's
+// name-based answer. Zero means no floor, so callers clamp only above zero.
+func (c ModelCaps) MinOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MinOutputTokens != nil {
+		return *c.record.MinOutputTokens
+	}
+	return fallback
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -303,14 +304,15 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 	}
 }
 
-// checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
-// If it is, it attaches the raw request body for direct use by the provider.
-// It also checks for anthropic oauth headers and sets the bifrost context.
+// checkAnthropicPassthrough configures provider-native forwarding for Claude Code requests.
+// Alongside the required auth, path, and raw-response settings, it registers an
+// Anthropic-owned text rewriter so raw request bytes cannot bypass runtime redaction.
 func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req any) error {
 	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
 
 	var provider schemas.ModelProvider
 	var model string
+	isMessagesRequest := false
 
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
@@ -318,6 +320,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
+		isMessagesRequest = true
 	}
 
 	headers := extractHeadersFromRequest(ctx)
@@ -345,13 +348,176 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
+		// These providers convert output_config.format through Bifrost, including
+		// their client-facing response events, so raw request and response text
+		// rewriters do not apply.
+		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			return nil
+		}
+		if isMessagesRequest {
+			// Native Messages response forwarding is independent of raw request
+			// serialization. Vertex beta modes serialize the normalized request but
+			// still return Anthropic SSE that Guardrails must synchronize.
+			bifrostCtx.SetValue(
+				schemas.BifrostContextKeyRawStreamTextCodec,
+				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
+			)
+		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
-		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
-			return nil
+		// Raw passthrough preserves native-only fields but skips normalized request
+		// serialization, so Guardrails needs an integration-owned path rewriter.
+		bifrostCtx.SetValue(
+			schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+			schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
+		)
+	}
+	return nil
+}
+
+// anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
+type anthropicRawStreamTextCodec struct{}
+
+// Inspect returns text only for assistant content_block_delta text_delta events.
+func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
+	if !gjson.Valid(rawResponse) {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
+	}
+	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
+		gjson.Get(rawResponse, "delta.type").String() != "text_delta" {
+		return schemas.RawStreamTextEvent{}, false, nil
+	}
+	index := gjson.Get(rawResponse, "index")
+	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
+	}
+	text := gjson.Get(rawResponse, "delta.text")
+	if !text.Exists() || text.Type != gjson.String {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
+	}
+	return schemas.RawStreamTextEvent{
+		TargetID: strconv.FormatInt(index.Int(), 10),
+		Text:     text.String(),
+	}, true, nil
+}
+
+// Rewrite replaces only delta.text on an eligible Anthropic raw stream event.
+func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
+	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
+		return "", err
+	} else if !eligible {
+		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
+	}
+	rewritten, err := sjson.Set(rawResponse, "delta.text", text)
+	if err != nil {
+		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
+	}
+	return rewritten, nil
+}
+
+// rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.
+// Keeping the allowlist here preserves native metadata and other fields Guardrails did not inspect.
+func rewriteAnthropicRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectAnthropicRawRequestTextPaths)
+}
+
+// anthropicRawContentScope controls which native content-block text fields are guardrail-visible.
+type anthropicRawContentScope uint8
+
+const (
+	anthropicRawContentScopeSystem anthropicRawContentScope = iota
+	anthropicRawContentScopeMessage
+	anthropicRawContentScopeToolResult
+)
+
+// collectAnthropicRawRequestTextPaths enumerates Anthropic fields mirrored into mutable Bifrost request text.
+func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := appendRawRequestStringPath(&paths, root.Get("prompt"), "prompt"); err != nil {
+		return nil, err
+	}
+	if err := collectAnthropicRawContentPaths(&paths, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
+		return nil, err
+	}
+
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return paths, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectAnthropicRawContentPaths(
+			&paths,
+			message.Get("content"),
+			rawRequestObjectPath(messagePath, "content"),
+			anthropicRawContentScopeMessage,
+		)
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.
+func collectAnthropicRawContentPaths(paths *[]string, content gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if content.Type == gjson.String {
+		*paths = append(*paths, path)
+		return nil
+	}
+	if content.IsObject() {
+		return collectAnthropicRawContentBlockPaths(paths, content, path, scope)
+	}
+	if !content.IsArray() {
+		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
+	}
+
+	var collectErr error
+	content.ForEach(func(index, block gjson.Result) bool {
+		collectErr = collectAnthropicRawContentBlockPaths(paths, block, rawRequestArrayPath(path, int(index.Int())), scope)
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectAnthropicRawContentBlockPaths selects only block fields represented as mutable normalized text.
+func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !block.IsObject() {
+		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
+	}
+	blockType := block.Get("type")
+	if !blockType.Exists() || blockType.Type == gjson.Null {
+		return nil
+	}
+	if blockType.Type != gjson.String {
+		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
+	}
+
+	switch scope {
+	case anthropicRawContentScopeSystem, anthropicRawContentScopeToolResult:
+		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		}
+		return nil
+	case anthropicRawContentScopeMessage:
+		switch anthropic.AnthropicContentBlockType(blockType.String()) {
+		case anthropic.AnthropicContentBlockTypeText:
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
+			return collectAnthropicRawContentPaths(
+				paths,
+				block.Get("content"),
+				rawRequestObjectPath(path, "content"),
+				anthropicRawContentScopeToolResult,
+			)
 		}
 	}
 	return nil
@@ -1058,13 +1224,13 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		PreCallback: extractAnthropicFileListQueryParams,
 	})
 
-	// Retrieve file endpoint - GET /v1/files/{file_id}
+	// Retrieve file metadata endpoint - GET /v1/files/{file_id}
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeAnthropic,
-		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Path:   pathPrefix + "/v1/files/{file_id}",
 		Method: "GET",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.FileContentRequest
+			return schemas.FileRetrieveRequest
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
@@ -1091,6 +1257,41 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicFileRetrieveResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		},
+		PreCallback: extractAnthropicFileIDFromPath,
+	})
+
+	// Download file content endpoint - GET /v1/files/{file_id}/content
+	// No response converter: the router streams the raw bytes with the provider's content type.
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   pathPrefix + "/v1/files/{file_id}/content",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicFileContentRequest{}
+		},
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
+			if contentReq, ok := req.(*anthropic.AnthropicFileContentRequest); ok {
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				// Handle file id conversion for Gemini
+				if provider == schemas.Gemini {
+					contentReq.FileID = strings.Replace(contentReq.FileID, "files-", "files/", 1)
+				}
+				return &FileRequest{
+					Type: schemas.FileContentRequest,
+					ContentRequest: &schemas.BifrostFileContentRequest{
+						FileID:   contentReq.FileID,
+						Provider: provider,
+					},
+				}, nil
+			}
+			return nil, errors.New("invalid file content request type")
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)

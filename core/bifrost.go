@@ -6713,7 +6713,11 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
+	// Native redaction codecs are valid only while the matching Anthropic body
+	// and response stream are forwarded; converted fallbacks must not inherit them.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)

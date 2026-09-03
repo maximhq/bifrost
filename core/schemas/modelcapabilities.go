@@ -1,5 +1,7 @@
 package schemas
 
+import "slices"
+
 // ModelCapabilities is the per-(model, provider) capability record sourced from
 // the bifrost datasheet (https://getbifrost.ai/datasheet). It is the single
 // source of truth for behaviour the runtime previously hard-coded — model limits
@@ -177,6 +179,13 @@ type ModelCapabilities struct {
 	// Default max_tokens when the caller omits it (Anthropic requires a value).
 	DefaultMaxTokens *int `json:"default_max_tokens,omitempty"`
 
+	// Floor the provider enforces on max_output_tokens. A request below it is
+	// rejected outright rather than clamped upstream, so callers raise the value
+	// to this floor. Models served by an OpenAI-compatible backend require 16 —
+	// on Bedrock that covers the OpenAI family and xAI Grok, while Claude and
+	// Nova accept 1. Absent ⇒ the caller's own fallback; zero ⇒ no floor.
+	MinOutputTokens *int `json:"min_output_tokens,omitempty"`
+
 	// Floor for reasoning budget tokens.
 	MinReasoningMaxTokens *int `json:"min_reasoning_max_tokens,omitempty"`
 
@@ -232,7 +241,62 @@ type ModelCapabilities struct {
 	// ---- Bedrock model-family flags consumed by the runtime ----
 
 	// Bedrock: Cohere Command R/R+ uses native text-completion shape, not Converse.
+	//
+	// Deprecated: never populated and never read. Subsumed by BedrockAPIs
+	// ["invoke"]; remove once the feed drops the key.
 	IsCohereCommandR *bool `json:"is_cohere_command_r,omitempty"`
+
+	// Wire APIs this model accepts on the AWS endpoint the row is scoped to.
+	// The host is NOT encoded in the value — it comes from the row's provider
+	// ("bedrock" ⇒ bedrock-runtime, "bedrock_mantle" ⇒ bedrock-mantle), so the
+	// same value means different endpoints on different rows and a model gaining
+	// a surface is a new value on the matching row, not a new vocabulary:
+	//
+	//   openai.gpt-5.6-luna        provider bedrock_mantle → ["responses"]
+	//   global.openai.gpt-5.6-luna provider bedrock        → ["converse"]
+	//
+	// Listed in preference order. Unrecognised entries are skipped rather than
+	// rejected, so the datasheet may ship an API ahead of the binary that reads
+	// it. An empty list is treated as absent.
+	//
+	// This is a claim, not a constraint: the configured model identifier wins
+	// when the two disagree, because AWS rejects a mismatched identifier
+	// outright (a bare id 400s on bedrock-runtime, a cross-region or ARN id 404s
+	// on bedrock-mantle). Callers must resolve identifier form first.
+	BedrockAPIs []BedrockAPI `json:"bedrock_apis,omitempty"`
+}
+
+// BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it
+// is carried by the datasheet row's provider, not by the value — see
+// ModelCapabilities.BedrockAPIs.
+type BedrockAPI string
+
+const (
+	// Served by bedrock-runtime.
+	BedrockAPIConverse BedrockAPI = "converse"
+	BedrockAPIInvoke   BedrockAPI = "invoke"
+	BedrockAPIMessages BedrockAPI = "messages"
+
+	// Served by bedrock-mantle today, and by bedrock-runtime once that surface
+	// is wired — the row's provider distinguishes them.
+	BedrockAPIChatCompletions BedrockAPI = "chat_completions"
+	BedrockAPIResponses       BedrockAPI = "responses"
+)
+
+// BedrockAPIValues lists every recognised BedrockAPI.
+var BedrockAPIValues = []BedrockAPI{
+	BedrockAPIConverse,
+	BedrockAPIInvoke,
+	BedrockAPIMessages,
+	BedrockAPIChatCompletions,
+	BedrockAPIResponses,
+}
+
+// IsValid reports whether a is an API this binary knows how to reach. Values the
+// datasheet publishes ahead of the runtime are simply not valid yet, and callers
+// skip them.
+func (a BedrockAPI) IsValid() bool {
+	return slices.Contains(BedrockAPIValues, a)
 }
 
 // ModelParameterDescriptor is one entry of the datasheet's model_parameters

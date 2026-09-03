@@ -10,6 +10,13 @@ import (
 
 type BatchCostDetails = datasheet.BatchCostDetails
 
+type (
+	// VideoPricingDimensions is the request+response pricing basis for one video
+	// job. See the datasheet type for why it is captured at submission.
+	VideoPricingDimensions = datasheet.VideoPricingDimensions
+	VideoCostDetails       = datasheet.VideoCostDetails
+)
+
 // GetModelCapabilityEntryForModel returns capability metadata for a
 // (model, provider) pair. Alias lookups try the canonical model name, wire
 // model ID, and original alias key in that order. Within each model, chat,
@@ -122,4 +129,17 @@ func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TableP
 
 func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.datasheet.DeleteOverride(id)
+}
+
+// CalculateVideoCostDetails prices a video job from its merged request/response
+// dimensions, preferring a provider-reported cost over any catalog rate.
+func (mc *ModelCatalog) CalculateVideoCostDetails(dims VideoPricingDimensions, provider schemas.ModelProvider, scopes *PricingLookupScopes) VideoCostDetails {
+	return mc.datasheet.CalculateVideoCostDetails(dims, provider, (*datasheet.LookupScopes)(scopes))
+}
+
+// VideoDimensionsFromResponse reads the pricing dimensions a terminal video
+// response reports; what it omits is filled from the dimensions captured at
+// submission.
+func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) VideoPricingDimensions {
+	return datasheet.VideoDimensionsFromResponse(resp)
 }
