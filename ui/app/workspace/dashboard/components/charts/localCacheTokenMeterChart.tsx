@@ -1,4 +1,8 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LogStats } from "@/lib/types/logs";
+import { clampPercentage, resolveLocalCacheGauge } from "@/lib/utils/cacheGauge";
+import { formatCompactNumber } from "@/lib/utils/numbers";
+import { Info } from "lucide-react";
 import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -13,30 +17,21 @@ const METER_COLORS = { direct: "#06b6d4", semantic: "#8b5cf6", remaining: "#3b82
 function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
 
-	const { percentage, directHits, semanticHits, totalRequests, hasCacheCounters } = useMemo(() => {
-		const hasCacheCounters = data?.direct_cache_hits != null && data?.semantic_cache_hits != null;
-		const direct = data?.direct_cache_hits ?? 0;
-		const semantic = data?.semantic_cache_hits ?? 0;
-		const total = data?.cache_hit_rate_total_requests ?? data?.total_requests ?? 0;
-		if (total === 0) {
-			return { percentage: 0, directHits: direct, semanticHits: semantic, totalRequests: total, hasCacheCounters };
-		}
-		return {
-			percentage: Math.max(0, Math.min(100, ((direct + semantic) / total) * 100)),
-			directHits: direct,
-			semanticHits: semantic,
-			totalRequests: total,
-			hasCacheCounters,
-		};
-	}, [data]);
+	const { state, percentage, directHits, semanticHits, totalRequests } = useMemo(() => resolveLocalCacheGauge(data), [data]);
 
 	const gaugeGeometry = useMemo(() => getGaugeGeometry(width, height), [width, height]);
-	const hasData = !!data && hasCacheCounters && totalRequests > 0;
+	const hasData = state === "ready";
+	// The gauge is drawn for "not-engaged" too, so the card stays visually
+	// consistent with its siblings. It reads 0% with an explicit caption rather
+	// than an empty placeholder that looks like a broken panel.
+	const showGauge = state === "ready" || state === "not-engaged";
 
-	const rawDirectPct = totalRequests > 0 ? (directHits / totalRequests) * 100 : 0;
-	const rawSemanticPct = totalRequests > 0 ? (semanticHits / totalRequests) * 100 : 0;
-	const directPct = Math.max(0, Math.min(100, rawDirectPct));
-	const semanticPct = Math.max(0, Math.min(100 - directPct, rawSemanticPct));
+	// Gated on hasData, not just on totalRequests: "not-engaged" can still carry a
+	// non-nil counter when only one of the pair is missing, and drawing that as a
+	// hit segment would contradict the summary, which reads "--" because nothing
+	// was measured. Every non-ready state renders the neutral arc alone.
+	const directPct = hasData && totalRequests > 0 ? clampPercentage((directHits / totalRequests) * 100) : 0;
+	const semanticPct = hasData && totalRequests > 0 ? clampPercentage((semanticHits / totalRequests) * 100, 100 - directPct) : 0;
 	const valueData = [
 		{ name: "direct", value: directPct },
 		{ name: "semantic", value: semanticPct },
@@ -44,11 +39,13 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 	];
 
 	return (
-		<ChartErrorBoundary resetKey={`${directHits}-${semanticHits}-${totalRequests}`}>
+		<ChartErrorBoundary resetKey={`${state}-${directHits}-${semanticHits}-${totalRequests}`}>
 			<div className="grid h-full grid-rows-[104px_auto] items-start overflow-hidden pt-8">
 				<div ref={ref} className="relative h-[104px] w-full">
-					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
-					{hasData && gaugeGeometry && (
+					{state === "no-data" && (
+						<div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>
+					)}
+					{showGauge && gaugeGeometry && (
 						<>
 							<ResponsiveContainer width="100%" height="100%">
 								<PieChart>
@@ -76,21 +73,51 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 						</>
 					)}
 				</div>
-				{hasData && (
-					<div>
+				{showGauge && (
+					<div data-testid="local-cache-meter-summary" data-state={state}>
 						<div className="flex flex-col items-center pt-1 leading-none">
-							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
-							<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
+							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">
+								{hasData ? `${percentage.toFixed(1)}%` : "--"}
+							</div>
+							{hasData ? (
+								<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
+							) : (
+								<div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
+									<span>Cache not engaged</span>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<button
+												type="button"
+												data-testid="local-cache-meter-not-engaged-info-btn"
+												className="text-zinc-500 transition-colors hover:text-zinc-300"
+												aria-label="Why the local cache was not engaged"
+											>
+												<Info className="h-3 w-3" />
+											</button>
+										</TooltipTrigger>
+										<TooltipContent side="top">
+											No cache activity was recorded in this window. The local cache engages only when the semantic cache plugin is enabled
+											and the request carries an x-bf-cache-key header, or the plugin sets a default_cache_key.
+										</TooltipContent>
+									</Tooltip>
+								</div>
+							)}
 						</div>
 						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
-								<span className="text-primary">Direct: {directHits}</span>
-							</span>
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
-								<span className="text-primary">Semantic: {semanticHits}</span>
-							</span>
+							{hasData ? (
+								<>
+									<span className="flex items-center gap-1.5">
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
+										<span className="text-primary">Direct: {directHits}</span>
+									</span>
+									<span className="flex items-center gap-1.5">
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
+										<span className="text-primary">Semantic: {semanticHits}</span>
+									</span>
+								</>
+							) : (
+								<span className="text-muted-foreground">{formatCompactNumber(totalRequests)} requests, no cache activity recorded</span>
+							)}
 						</div>
 					</div>
 				)}
