@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { useVirtualKeyAccessAudit } from "@enterprise/lib/hooks/useVirtualKeyAccessAudit";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
@@ -575,12 +576,17 @@ export default function VirtualKeysTable({
 		}
 	};
 
+	// Enterprise records reveals and copies in the audit log; a no-op in OSS builds.
+	const reportVkAccess = useVirtualKeyAccessAudit();
+
 	const toggleKeyVisibility = (vkId: string) => {
 		const newRevealed = new Set(revealedKeys);
 		if (newRevealed.has(vkId)) {
 			newRevealed.delete(vkId);
 		} else {
 			newRevealed.add(vkId);
+			// Only the reveal edge is a disclosure; re-hiding is not.
+			reportVkAccess(vkId, "reveal");
 		}
 		setRevealedKeys(newRevealed);
 	};
@@ -979,7 +985,11 @@ export default function VirtualKeysTable({
 														<Button
 															variant="ghost"
 															size="sm"
-															onClick={() => copyToClipboard(vk.value)}
+															onClick={() => {
+																// Not awaited: the clipboard write must not wait on the beacon.
+																reportVkAccess(vk.id, "copy");
+																copyToClipboard(vk.value);
+															}}
 															data-testid={`vk-copy-btn-${vk.name}`}
 														>
 															<Copy className="h-4 w-4" />
