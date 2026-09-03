@@ -90,9 +90,9 @@ case schemas.CoreWeave:
 </Tab>
 </Tabs>
 
-### Usage tracking with `OpenAI-Project`
+### Usage tracking and concurrency limits
 
-An optional `OpenAI-Project: <team>/<project>` header attributes usage to a W&B project. Send it through `extra_headers`:
+W&B attributes usage to a W&B project. The optional `OpenAI-Project: <team>/<project>` header picks the project; without it, W&B uses the key's default entity and a project named `inference`. Send it through `extra_headers`:
 
 ```json
 {
@@ -109,8 +109,12 @@ An optional `OpenAI-Project: <team>/<project>` header attributes usage to a W&B 
 }
 ```
 
+W&B applies concurrency limits per project and per user, so both apply to every request. The part people miss: every request without the header lands in `<default entity>/inference`, so services that share a key and omit the header also share one project limit. Give each service its own project to get its own project limit. The per-user limit still spans all of them.
+
+Past either limit the gateway returns `429 Concurrency limit reached for requests`. W&B does not publish the numbers; Support can raise them. Bifrost treats a 429 as a per-key rate limit and rotates to another key if one is configured. It retries with backoff only when `network_config.max_retries` is set, so set it for this provider.
+
 <Warning>
-The key must have access to the team, or the gateway returns `403 the inference gateway is not enabled for your organization`.
+The header must name a team and project the key can use. W&B lists a wrong entity or project as a cause of `401 Authentication failed`, and a team whose organization has not enabled the gateway returns `403 the inference gateway is not enabled for your organization`.
 </Warning>
 
 ---
@@ -134,7 +138,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Reasoning
 
-Reasoning models such as gpt-oss and DeepSeek return reasoning in the assistant message's `reasoning` field, which Bifrost maps to reasoning content. The gateway accepts replayed `reasoning_content` and `reasoning_details` on assistant turns, so Bifrost forwards them unchanged.
+Reasoning models such as gpt-oss return reasoning in the assistant message's `reasoning` field, which Bifrost maps to reasoning content. The gateway accepts replayed `reasoning_content` and `reasoning_details` on assistant turns, so Bifrost forwards them unchanged.
 
 ### Extra Parameters
 
@@ -142,7 +146,7 @@ Chat and text completion requests pass `extra_params` through untouched. vLLM ig
 
 ### Vision
 
-Multimodal models accept `image_url` parts as public URLs or base64 data URIs. The gateway fetches URLs itself, so a host that blocks automated fetches produces a gateway `403 Forbidden`.
+Multimodal models accept `image_url` parts as public URLs or base64 data URIs. The gateway fetches image URLs itself; a URL it cannot fetch fails with a gateway `403 Forbidden`.
 
 ---
 
@@ -201,12 +205,12 @@ The gateway returns OpenAI-shaped `{"error": {...}}` bodies for authentication f
 
 | Status | Meaning |
 |--------|---------|
-| 401 | Invalid or missing API key |
-| 402 | Spending cap or credits exhausted for the plan |
-| 403 | Key or `OpenAI-Project` header names an organization without gateway access |
+| 401 | Invalid, expired, or revoked API key, or a team or project the key cannot use |
+| 402 | `You exceeded your current quota, please check your plan and billing details`; plan credits or spending cap exhausted |
+| 403 | Organization has not enabled the inference gateway, or the request comes from an unsupported country or region |
 | 404 | Model not found |
 | 422 / 400 | Invalid request parameters |
-| 429 | Concurrency limit reached for the project; Bifrost retries with backoff |
+| 429 | `Concurrency limit reached for requests`, per project and per user; see [concurrency limits](#usage-tracking-and-concurrency-limits) |
 
 ---
 
