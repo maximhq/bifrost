@@ -3091,6 +3091,18 @@ func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *ta
 	} else {
 		txDB = s.DB()
 	}
+	// created_at is immutable: Save writes every column, so a caller passing a row it
+	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
+	// A missing row is not an error here — this also serves create-or-update callers,
+	// so fall through to Save and let it insert.
+	if override.ID != "" {
+		var existing tables.TablePricingOverride
+		if err := txDB.WithContext(ctx).Select("created_at").First(&existing, "id = ?", override.ID).Error; err == nil {
+			override.CreatedAt = existing.CreatedAt
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	if err := txDB.WithContext(ctx).Save(override).Error; err != nil {
 		return s.parseGormError(err)
 	}
@@ -3308,6 +3320,10 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		}
 		// not found — nothing to delete
 	} else {
+		// This is a delete-and-reinsert, so the new row would otherwise be stamped
+		// with a fresh created_at. Carry the original forward: gorm's autoCreateTime
+		// only fills a zero value, so a non-zero CreatedAt survives Create.
+		plugin.CreatedAt = existing.CreatedAt
 		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
 			if localTx {
 				txDB.Rollback()
@@ -4677,6 +4693,18 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 	} else {
 		txDB = s.DB()
 	}
+	// created_at is immutable: Save writes every column, so a caller passing a row it
+	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
+	// A missing row is not an error here — this also serves create-or-update callers,
+	// so fall through to Save and let it insert.
+	if team.ID != "" {
+		var existing tables.TableTeam
+		if err := txDB.WithContext(ctx).Select("created_at").First(&existing, "id = ?", team.ID).Error; err == nil {
+			team.CreatedAt = existing.CreatedAt
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
@@ -4818,6 +4846,18 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 	} else {
 		txDB = s.DB()
 	}
+	// created_at is immutable: Save writes every column, so a caller passing a row it
+	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
+	// A missing row is not an error here — this also serves create-or-update callers,
+	// so fall through to Save and let it insert.
+	if customer.ID != "" {
+		var existing tables.TableCustomer
+		if err := txDB.WithContext(ctx).Select("created_at").First(&existing, "id = ?", customer.ID).Error; err == nil {
+			customer.CreatedAt = existing.CreatedAt
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
@@ -4935,6 +4975,9 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 		rateLimit.TokenLastReset = existing.TokenLastReset
 		rateLimit.RequestCurrentUsage = existing.RequestCurrentUsage
 		rateLimit.RequestLastReset = existing.RequestLastReset
+		// created_at is immutable: Save writes every column, so a caller passing a row
+		// it didn't read from the DB (e.g. a config.json reload) would zero it out.
+		rateLimit.CreatedAt = existing.CreatedAt
 	}
 	if err := txDB.WithContext(ctx).Save(rateLimit).Error; err != nil {
 		return s.parseGormError(err)
@@ -5934,6 +5977,9 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 			}
 			return err
 		}
+		// created_at is immutable: Save writes every column, so a caller passing a row
+		// it didn't read from the DB (e.g. a config.json reload) would zero it out.
+		modelConfig.CreatedAt = existing.CreatedAt
 	}
 	// Omit associations: budgets (has-many via ModelConfigID) and rate-limit are managed
 	// explicitly by callers. A cascading Save would otherwise clobber their usage counters.
