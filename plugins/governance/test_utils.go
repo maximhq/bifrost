@@ -250,7 +250,7 @@ func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.Bifrost
 // request), so a test driving the tracker directly has to settle them or nothing is billed.
 func settleLimits(gs GovernanceStore, vkValue string, provider schemas.ModelProvider, model string, update *UsageUpdate) *UsageUpdate {
 	ctx := resolverCtx(gs, vkValue)
-	update.Budgets, update.RateLimits = gatherLimits(ctx, gs, ctx.Grant().Access(), provider, model)
+	update.Budgets, update.RateLimits, _ = gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
 	return update
 }
 
@@ -389,7 +389,11 @@ func evaluateGrantedRequest(r *BudgetResolver, ctx *schemas.BifrostContext, acce
 	}
 	// Evaluate settles the limits on the grant before any check runs; a test reaching the resolver
 	// directly has to do the same, or it checks an attempt nothing has been settled for.
-	return r.evaluateLimits(ctx, evaluationRequest, resolveLimits(ctx, r.store, provider, model))
+	limits, err := resolveLimits(ctx, r.store, provider, model)
+	if err != nil {
+		return &EvaluationResult{Decision: DecisionAccessBlocked, Reason: err.Error()}
+	}
+	return r.evaluateLimits(ctx, evaluationRequest, limits)
 }
 
 // evaluateDeploymentLimits runs the limits that apply to every request regardless of what granted
@@ -398,13 +402,20 @@ func evaluateGrantedRequest(r *BudgetResolver, ctx *schemas.BifrostContext, acce
 // nobody granted anything reaches them: no access, with the deployment's limits settled on its grant.
 func evaluateDeploymentLimits(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
 	return r.evaluateLimits(ctx, &EvaluationRequest{Provider: provider, Model: model},
-		resolveLimits(ctx, r.store, provider, model))
+		resolveLimitsForTest(r, ctx, provider, model))
 }
 
 // resolveLimitsForTest settles the limits onto whatever access ctx carries, as Evaluate does, and
 // hands it back for a test that then calls the resolver itself.
 func resolveLimitsForTest(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) schemas.Limits {
-	return resolveLimits(ctx, r.store, provider, model)
+	return settleAttemptLimits(ctx, r.store, provider, model)
+}
+
+// settleAttemptLimits is resolveLimits for a test driving a store directly, dropping the settling
+// error: the store under test resolves one permit per credential and never fails to settle.
+func settleAttemptLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) schemas.Limits {
+	limits, _ := resolveLimits(ctx, store, provider, model)
+	return limits
 }
 
 // evaluateHolderLimits runs the limits a grant carries, plus the deployment's, through that same

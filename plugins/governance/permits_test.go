@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -1476,7 +1477,7 @@ func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
 	t.Run("the project's permit", func(t *testing.T) {
 		project := permitWithProviders(grant.PermitProject, "proj-1", "Atlas", "openai")
 
-		scope, found := scopeNamed(modelConfigScopesFor(emptyCtx(), project), configstoreTables.ModelConfigScopeProject)
+		scope, found := scopeNamed(modelConfigScopesFor(project), configstoreTables.ModelConfigScopeProject)
 
 		require.True(t, found, "a request running inside a project answers to none of its per-model limits")
 		assert.Equal(t, "proj-1", scope.id)
@@ -1487,8 +1488,65 @@ func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
 	t.Run("a permit that is not a project's", func(t *testing.T) {
 		key := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai")
 
-		_, found := scopeNamed(modelConfigScopesFor(emptyCtx(), key), configstoreTables.ModelConfigScopeProject)
+		_, found := scopeNamed(modelConfigScopesFor(key), configstoreTables.ModelConfigScopeProject)
 
 		assert.False(t, found, "a request outside every project was held to a project's per-model limits")
+	})
+}
+
+// settlingErrorStore wraps a real store so GatherLimits fails the way a store composing several
+// possible payers can: the payers could not be settled at all, not a limit being exhausted.
+type settlingErrorStore struct {
+	GovernanceStore
+	err error
+}
+
+func (s *settlingErrorStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit, error) {
+	return nil, nil, s.err
+}
+
+// newSettlingErrorTestPlugin builds a plugin whose store fails to settle limits with err.
+func newSettlingErrorTestPlugin(t *testing.T, err error) *GovernancePlugin {
+	t.Helper()
+	vk := buildVKForMCPStamping(nil)
+	logger := NewMockLogger()
+	local, localErr := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, localErr)
+
+	plugin, initErr := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, &settlingErrorStore{GovernanceStore: local, err: err}, nil, nil, nil, nil)
+	require.NoError(t, initErr)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
+// TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped covers the store.GatherLimits error
+// path for a request that asked not to be checked against anything it answers to (e.g. a read-only
+// list-models call). LocalGovernanceStore never returns one, but the interface allows a store
+// composing several possible payers to fail this way, and such a request spends nothing, so an
+// unsettled payer list is not something it depends on either.
+func TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped(t *testing.T) {
+	request := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	t.Run("a settling error still blocks a request that did not skip spending checks", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+
+		result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+		require.NotNil(t, bifrostErr, "a request whose payers could not be settled was served anyway")
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+	})
+
+	t.Run("a request that skipped spending checks is not blocked by it", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+		ctx := emptyCtx()
+		ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
+		result, bifrostErr := plugin.Evaluate(ctx, request)
+
+		assert.Nil(t, bifrostErr, "a read-only request was blocked by a settling failure it does not depend on")
+		assert.Equal(t, DecisionAllow, result.Decision)
 	})
 }
