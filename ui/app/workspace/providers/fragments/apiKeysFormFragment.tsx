@@ -2,8 +2,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -209,6 +209,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 		}
 	}, [isVertex, form]);
 
+	const databricksDefaults = form.formState.defaultValues?.key?.databricks_key_config;
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isDatabricks) {
@@ -924,7 +925,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								}
 							}}
 						>
-							<TabsList className="flex w-full justify-start">
+							<TabsList className="grid w-full grid-cols-2">
 								<TabsTrigger data-testid="apikey-databricks-pat-tab" value="pat">
 									Personal Access Token
 								</TabsTrigger>
