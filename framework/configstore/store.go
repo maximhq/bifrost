@@ -671,14 +671,18 @@ type ConfigStore interface {
 	// per-user-named methods on this merged table, see GetOauthUserTokenByMode's
 	// comment), this is not scoped away from 'shared' — the tokenID handed in
 	// always comes from an internal lookup already, never an arbitrary
-	// caller-supplied ID.
-	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// caller-supplied ID. reason is recorded as the row's StatusReason (the
+	// provider's rejection, e.g. "provider rejected the refresh (HTTP 400,
+	// invalid_grant: Token has been expired or revoked)") so the UI and the
+	// client's connection-failure record can say what actually failed rather
+	// than only that the row is no longer usable.
+	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
 	// invalidates every existing holder's cached credential (shared, per-user,
 	// vk, session, admin alike), not just the shared one.
-	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error
 	// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
 	// 'needs_reauth' on a token_exchange client's retained admin bootstrap
 	// credential (auth_mode='admin', mcp_client_id=<id>, oauth_config_id='' —
@@ -691,7 +695,7 @@ type ConfigStore interface {
 	// cached in-memory only, never persisted (see GetExchangedAccessToken's
 	// doc comment) — the admin row is the only persisted state a
 	// token_exchange config edit can invalidate.
-	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error
+	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error
 	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
 	// place when ANY of them differs from what's stored (client_id,
 	// client_secret, authorize_url, token_url, registration_url, resource,

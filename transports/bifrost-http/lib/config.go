@@ -2073,7 +2073,7 @@ func rotateMCPTokenExchangeConfigFromFile(ctx context.Context, store configstore
 	if !existing.DiffersFrom(&resolved) {
 		return
 	}
-	if err := store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, clientID); err != nil {
+	if err := store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, clientID, "token exchange settings changed in config.json; the admin credential must be re-verified"); err != nil {
 		logger.Warn("failed to mark admin exchange credential needs_reauth for MCP client %q from config file: %v", clientName, err)
 		return
 	}

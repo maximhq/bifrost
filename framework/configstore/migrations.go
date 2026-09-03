@@ -482,6 +482,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
 	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
 	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
+	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -12740,4 +12741,30 @@ func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 		WHERE pc.relname = ? AND ic.relname = ?
 	`, table, index).Scan(&valid).Error
 	return valid, err
+}
+
+// migrationAddMCPOauthTokenStatusReasonColumn adds mcp_oauth_tokens.status_reason:
+// the explanation behind a row's Status leaving 'active' (the provider's
+// refresh rejection, a credential rotation, a failed admin exchange), which
+// the credential block and the client's connection-failure record surface
+// so an admin can tell a revoked grant from a misconfigured client. Nullable
+// text, no backfill: rows that are already needs_reauth simply have no
+// recorded reason until their next transition.
+func migrationAddMCPOauthTokenStatusReasonColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_oauth_token_status_reason_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthToken{}, "status_reason")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthToken{}, "status_reason")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }
