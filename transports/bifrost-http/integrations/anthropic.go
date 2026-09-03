@@ -351,7 +351,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		// These providers convert output_config.format through Bifrost, including
 		// their client-facing response events, so raw request and response text
 		// rewriters do not apply.
-		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
+		if anthropic.ProviderRequiresSyntheticStructuredOutput(provider) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}

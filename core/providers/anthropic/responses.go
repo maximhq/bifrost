@@ -4236,7 +4236,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.Text != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
+			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {
