@@ -820,6 +820,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		Status:        "pending",
 		ExpiresAt:     expiresAt,
 	}
+
+	// Resolve env var reference to actual value for use in the authorize URL.
+	resolvedClientID := clientID.GetValue()
+
 	if err := p.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Create(oauthConfigRecord).Error; err != nil {
 			return fmt.Errorf("failed to create oauth config: %w", err)
@@ -837,10 +841,6 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	}); err != nil {
 		return nil, err
 	}
-
-	// Resolve env var reference to actual value for use in the authorize URL.
-	// The reference ("env.MY_VAR") is stored in DB; the resolved value is sent to the provider.
-	resolvedClientID := clientID.GetValue()
 
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
 	authURL := p.buildAuthorizeURLWithPKCE(
