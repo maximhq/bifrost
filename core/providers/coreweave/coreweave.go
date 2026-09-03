@@ -172,8 +172,10 @@ func (provider *CoreWeaveProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	)
 }
 
-// Responses posts to the gateway's own /responses endpoint.
+// Responses posts to the gateway's own /responses endpoint. Extra params pass
+// through here as well; the streaming path inherits the flag from ChatCompletionStream.
 func (provider *CoreWeaveProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,

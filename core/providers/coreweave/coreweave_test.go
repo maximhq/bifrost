@@ -192,16 +192,19 @@ func TestCoreWeaveChatCompletionWire(t *testing.T) {
 }
 
 // TestCoreWeaveResponsesUsesNativeEndpoint pins that non-streaming Responses hit
-// /responses rather than chat completions.
+// /responses rather than chat completions, and that extra params reach the wire.
 func TestCoreWeaveResponsesUsesNativeEndpoint(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
 	var gotPath string
+	var gotBody map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		gotPath = r.URL.Path
+		_ = json.Unmarshal(body, &gotBody)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -227,6 +230,9 @@ func TestCoreWeaveResponsesUsesNativeEndpoint(t *testing.T) {
 			Role:    &role,
 			Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
 		}},
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]any{"top_k": 5},
+		},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("Responses returned an error: %v", bifrostErr.Error.Message)
@@ -236,6 +242,9 @@ func TestCoreWeaveResponsesUsesNativeEndpoint(t *testing.T) {
 	defer mu.Unlock()
 	if gotPath != "/v1/responses" {
 		t.Errorf("path: got %q, want %q", gotPath, "/v1/responses")
+	}
+	if topK, ok := gotBody["top_k"].(float64); !ok || topK != 5 {
+		t.Errorf("extra param top_k did not pass through: body=%v", gotBody)
 	}
 	if response.ID == nil || *response.ID != "resp_1" {
 		t.Errorf("ID: got %v", response.ID)
