@@ -83,7 +83,7 @@ func TestPersistMCPClientTools_StoreErrorLogsAndDoesNotPanic(t *testing.T) {
 // TestSyncMCPServersAfterToolsChange_NilHandler_NoOp confirms the nil-guard
 // convention this package uses elsewhere — MCPServerHandler not yet wired
 // (e.g. in a partially-constructed test server) must not panic. The
-// underlying SyncAllMCPServers call itself is exercised the same way the
+// underlying SyncMCPServer call itself is exercised the same way the
 // pre-existing SetClientTools wrapper's identical call already is: only via
 // full integration, since MCPServerHandler has no fake-able seam from this
 // package.

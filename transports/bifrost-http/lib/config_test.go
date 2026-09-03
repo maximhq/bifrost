@@ -1748,39 +1748,39 @@ func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.T
 }
 
 // Batch jobs
-func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+func (m *MockConfigStore) UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error {
 	return nil
 }
 
-func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+func (m *MockConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+func (m *MockConfigStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (m *MockConfigStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	return false, nil
 }
 
-func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+func (m *MockConfigStore) CompleteProviderJob(ctx context.Context, jobID, runnerID string) error {
 	return nil
 }
 
-func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+func (m *MockConfigStore) MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
 	return nil
 }
 
-func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
+func (m *MockConfigStore) FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error {
 	return nil
 }
 
@@ -2480,6 +2480,41 @@ func TestValidateClientConfig_AuthCodeTTL(t *testing.T) {
 			if tc.wantErr {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), "auth_code_ttl")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateClientConfig_VKRotationCooldown covers the same load-time
+// invariant for the rotation grace period. PUT /api/config rejects a cooldown
+// outside 0..30d, but config.json and any pre-existing DB row bypass that
+// handler, so the bound has to hold here too: an unbounded cooldown keeps a
+// retired credential authenticating indefinitely.
+func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
+	cooldown := func(d time.Duration) *configstore.ClientConfig {
+		return &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(d)}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"unset means no grace period", &configstore.ClientConfig{}, false},
+		{"zero is valid", cooldown(0), false},
+		{"in-range", cooldown(5 * time.Minute), false},
+		{"exactly at cap", cooldown(configstore.MaxVKRotationCooldown), false},
+		{"one nanosecond over cap", cooldown(configstore.MaxVKRotationCooldown + 1), true},
+		{"744h is over the 30 day cap", cooldown(744 * time.Hour), true},
+		{"negative", cooldown(-time.Minute), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "vk_rotation_cooldown")
 			} else {
 				require.NoError(t, err)
 			}
@@ -8695,6 +8730,124 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 	t.Logf("DB hash: %s", dbHash)
 	t.Logf("File hash: %s", fileHash)
 	t.Log("✓ Different hashes correctly detected - file config would be synced to DB")
+}
+
+// vkSyncTestSetup builds a merge scenario: a DB VK (with ConfigHash derived from
+// an older file state so the update branch is entered) and a file VK.
+func vkSyncTestSetup(t *testing.T, dbVK tables.TableVirtualKey, fileVK tables.TableVirtualKey, cooldown time.Duration) (*Config, *ConfigData, *configstore.GovernanceConfig) {
+	t.Helper()
+	initTestLogger()
+	dbGovernance := &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{dbVK}}
+	config := &Config{
+		GovernanceConfig: dbGovernance,
+		ClientConfig:     &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(cooldown)},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{fileVK}},
+	}
+	return config, configData, dbGovernance
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace: a config.json
+// value differing from both the active and previous values is treated as an
+// explicit rotation - active becomes previous with a grace expiry.
+func TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue(), "config.json value must become active")
+	require.Equal(t, "sk-bf-active", merged.PreviousValue.GetValue(), "old active value must move to previous")
+	require.NotNil(t, merged.RotatedAt)
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash")
+
+	// Second boot with the same file: hash matches, nothing re-syncs.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}}},
+	}
+	firstRotatedAt := merged.RotatedAt
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	again := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", again.Value.GetValue())
+	require.Equal(t, firstRotatedAt, again.RotatedAt, "second boot must not re-rotate")
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately: with
+// no cooldown configured the rotation still happens but no grace state is kept.
+func TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 0)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue())
+	require.False(t, merged.PreviousValue.IsSet(), "no grace state at zero cooldown")
+	require.Nil(t, merged.PreviousValueExpiresAt)
+	require.NotNil(t, merged.RotatedAt)
+}
+
+// TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange: when the file
+// still holds the pre-rotation value (rotated via API/UI after the file was
+// written), the active value is kept and no rotation happens; the file-derived
+// ConfigHash is stored so the next boot no-ops.
+func TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange(t *testing.T) {
+	graceExpiry := time.Now().UTC().Add(10 * time.Minute)
+	rotatedAt := time.Now().UTC().Add(-time.Minute)
+	dbVK := tables.TableVirtualKey{
+		ID:                     "vk-1",
+		Name:                   "rotated-vk",
+		Description:            "old description",
+		Value:                  *schemas.NewSecretVar("sk-bf-active"),
+		PreviousValue:          *schemas.NewSecretVar("sk-bf-rotated-out"),
+		PreviousValueHash:      encrypt.HashSHA256("sk-bf-rotated-out"),
+		PreviousValueExpiresAt: &graceExpiry,
+		RotatedAt:              &rotatedAt,
+	}
+	// The DB row was last synced when the file held the pre-rotation value.
+	oldFileState := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "old description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(oldFileState)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	// The file still holds the pre-rotation value but changes another field, so
+	// the update branch is entered.
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-active", merged.Value.GetValue(), "active value must be kept when the file holds the previous value")
+	require.Equal(t, "new description", merged.Description, "non-value fields must still sync")
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash so the next boot no-ops")
+	require.Equal(t, "sk-bf-rotated-out", merged.PreviousValue.GetValue(), "in-flight grace state must be carried over")
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, &rotatedAt, merged.RotatedAt)
+
+	// Second boot with the same file: hash matches, value untouched.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}}},
+	}
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	require.Equal(t, "sk-bf-active", dbGovernance.VirtualKeys[0].Value.GetValue())
 }
 
 // TestVirtualKeyHashComparison_VirtualKeyOnlyInDB tests that dashboard-added VK is preserved
@@ -18001,14 +18154,16 @@ var excludedGoFields = map[string]map[string]bool{
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash":        true,
-		"created_at":         true,
-		"updated_at":         true,
-		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
-		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
-		"rate_limit":         true, // GORM relation
-		"team":               true, // GORM relation
-		"customer":           true, // GORM relation
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"created_by_user_id":        true, // DB ownership metadata; set by API/session layer
+		"budgets":                   true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":                true, // GORM relation
+		"team":                      true, // GORM relation
+		"customer":                  true, // GORM relation
+		"previous_value_expires_at": true, // Runtime rotation grace-period state; not config.json-settable
+		"rotated_at":                true, // Runtime rotation state; not config.json-settable
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation
@@ -18098,8 +18253,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
-		"websocket_config": true, // Schema documents all connection types
-		"http_config":      true, // Schema documents all connection types
+		"websocket_config":          true, // Schema documents all connection types
+		"http_config":               true, // Schema documents all connection types
+		"allow_on_all_virtual_keys": true, // Earlier name of allow_by_default; read by MCPClientConfig.UnmarshalJSON, kept in schema for backward-compatible config.json validation
 	},
 }
 
@@ -21246,16 +21402,32 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 	tests := []struct {
 		name            string
 		fileInterval    time.Duration
+		fileIsTruth     bool
 		startingMinutes int
 		expectedMinutes int
 		expectPersisted bool
+		// expectedMCPCfg is what bifrost.Init receives afterwards: the file
+		// value when one is declared, the stored value backfilled when the
+		// store is authoritative and the file declares none.
+		expectedMCPCfg time.Duration
 	}{
 		{
-			name:            "zero disables and clears an existing value",
+			name:            "zero with file as source of truth clears an existing value",
 			fileInterval:    0,
+			fileIsTruth:     true,
 			startingMinutes: 10,
 			expectedMinutes: 0,
 			expectPersisted: true,
+			expectedMCPCfg:  0,
+		},
+		{
+			name:            "zero with store as source of truth keeps the stored value and backfills the MCP config",
+			fileInterval:    0,
+			fileIsTruth:     false,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
 		},
 		{
 			name:            "zero with no existing value is a no-op",
@@ -21263,6 +21435,7 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 			startingMinutes: 0,
 			expectedMinutes: 0,
 			expectPersisted: false,
+			expectedMCPCfg:  0,
 		},
 		{
 			name:            "whole minute converts and persists",
@@ -21270,6 +21443,16 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 			startingMinutes: 10,
 			expectedMinutes: 5,
 			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Minute,
+		},
+		{
+			name:            "whole minute overrides the stored value even when the store is source of truth",
+			fileInterval:    5 * time.Minute,
+			fileIsTruth:     false,
+			startingMinutes: 10,
+			expectedMinutes: 5,
+			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Minute,
 		},
 		{
 			name:            "whole hour converts to minutes",
@@ -21277,20 +21460,41 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 			startingMinutes: 0,
 			expectedMinutes: 300,
 			expectPersisted: true,
+			expectedMCPCfg:  5 * time.Hour,
 		},
 		{
-			name:            "non-minute duration is ignored, existing value kept",
+			name:            "non-minute duration is ignored as unset: stored value kept and handed to Init",
 			fileInterval:    90 * time.Second,
 			startingMinutes: 10,
 			expectedMinutes: 10,
 			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
 		},
 		{
-			name:            "negative duration is ignored, existing value kept",
+			name:            "negative duration is rejected as unset: stored value kept and handed to Init",
 			fileInterval:    -time.Minute,
 			startingMinutes: 10,
 			expectedMinutes: 10,
 			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "negative duration with file as source of truth still keeps the stored value",
+			fileInterval:    -time.Minute,
+			fileIsTruth:     true,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
+		},
+		{
+			name:            "non-minute duration with file as source of truth still keeps the stored value",
+			fileInterval:    90 * time.Second,
+			fileIsTruth:     true,
+			startingMinutes: 10,
+			expectedMinutes: 10,
+			expectPersisted: false,
+			expectedMCPCfg:  10 * time.Minute,
 		},
 	}
 
@@ -21307,18 +21511,11 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
 			mcpCfg := &schemas.MCPConfig{ToolSyncInterval: tt.fileInterval}
 
-			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg)
+			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tt.fileIsTruth)
 
 			assert.Equal(t, tt.expectedMinutes, cfg.ClientConfig.MCPToolSyncInterval, "in-memory value")
+			assert.Equal(t, tt.expectedMCPCfg, mcpCfg.ToolSyncInterval, "value handed to bifrost.Init")
 
-			// tables.TableClientConfig tags MCPToolSyncInterval `gorm:"default:10"`,
-			// which makes GORM's Create() omit an explicit 0 and let the DB
-			// substitute its own default — a storage-layer quirk unrelated to
-			// this reconciliation logic, so round-trip checks are skipped
-			// whenever either side of the comparison is 0.
-			if tt.expectedMinutes == 0 || (!tt.expectPersisted && tt.startingMinutes == 0) {
-				return
-			}
 			persisted, err := store.GetClientConfig(ctx)
 			require.NoError(t, err)
 			if tt.expectPersisted {
@@ -21328,4 +21525,68 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetMCPConfig_CarriesGlobalToolSyncInterval pins that the MCP config
+// loaded from the store carries the client-config-backed global tool sync
+// interval, so a boot without an mcp section in config.json still hands
+// bifrost.Init the configured value instead of a zero that silently falls
+// back to the built-in default.
+func TestGetMCPConfig_CarriesGlobalToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 7}))
+
+	mcpCfg, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpCfg)
+	assert.Equal(t, 7*time.Minute, mcpCfg.ToolSyncInterval)
+}
+
+// TestMCPClientConfigToTable_RejectsNegativeToolSyncInterval pins the config
+// file write path: a negative per-client interval is an error (the client is
+// skipped with a warning), not a third semantic.
+func TestMCPClientConfigToTable_RejectsNegativeToolSyncInterval(t *testing.T) {
+	_, err := mcpClientConfigToTable(&schemas.MCPClientConfig{ID: "neg", Name: "neg", ToolSyncInterval: -time.Minute})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_sync_interval must be 0")
+}
+
+// TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval pins the store's
+// update path, which used to let a negative through while create rejected it.
+func TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "neg-update",
+		Name:             "neg-update",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"),
+	}))
+	err := store.UpdateMCPClientConfig(ctx, "neg-update", &configstoreTables.TableMCPClient{
+		ClientID:         "neg-update",
+		Name:             "neg-update",
+		ConnectionType:   "http",
+		ToolSyncInterval: -60,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_sync_interval must be non-negative")
+}
+
+// TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval pins that an
+// explicit 0 (the built-in default) survives the store's delete+create even
+// though the column carries a non-zero GORM default, so "0 = default" reads
+// back as 0 rather than 10.
+func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 5}))
+	require.NoError(t, store.UpdateClientConfig(ctx, &configstore.ClientConfig{MCPToolSyncInterval: 0}))
+
+	persisted, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
 }

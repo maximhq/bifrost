@@ -691,6 +691,62 @@ func forEachProviderMigrationDB(t *testing.T, testSuffix string) []namedDB {
 	return dbs
 }
 
+// setupVKTestDBWithoutRotationColumns creates an in-memory SQLite database with
+// governance_virtual_keys in its pre-rotation-migration shape: none of the
+// previous_value*/rotated_at columns and no idx_virtual_key_previous_value_hash
+// index, simulating an upgraded (not fresh) installation.
+func setupVKTestDBWithoutRotationColumns(t *testing.T) *gorm.DB {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+
+	err = db.Exec(`
+		CREATE TABLE governance_virtual_keys (
+			id VARCHAR(255) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			value TEXT,
+			value_hash VARCHAR(64),
+			encryption_status VARCHAR(20) DEFAULT 'plain_text',
+			config_hash VARCHAR(255),
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create governance_virtual_keys table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS migrations (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create migrations table")
+
+	return db
+}
+
+func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "previous_value_hash"),
+		"previous_value_hash column must not exist before migration")
+	require.False(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_virtual_key_previous_value_hash"),
+		"previous_value_hash index must not exist before migration")
+
+	require.NoError(t, migrationAddVKRotationCooldownColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"} {
+		assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, column),
+			"%s column should exist after migration", column)
+	}
+	assert.True(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_virtual_key_previous_value_hash"),
+		"upgrade path must create the previous_value_hash index declared in struct tags")
+
+	// Idempotent: a re-run with the index already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_vk_rotation_cooldown_columns").Error)
+	require.NoError(t, migrationAddVKRotationCooldownColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 	tests := []struct {
 		name                            string
@@ -2978,4 +3034,396 @@ func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
 	require.NoError(t, db.Where("id = ?", seed.ID).First(&got).Error)
 	assert.Equal(t, time.April, got.QuarterStartMonth(),
 		"the fiscal quarter definition must survive the refused rollback")
+}
+
+// TestMigrationAddBatchJobsAttributionColumns verifies the upgrade path: an existing
+// batch_jobs table gains the requester-identity columns without disturbing the rows
+// already in it (which simply have no identity to recover).
+func TestMigrationAddBatchJobsAttributionColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	// Pre-migration shape: the table as migrationAddBatchJobsTable left it.
+	require.NoError(t, db.Exec(`
+		CREATE TABLE batch_jobs (
+			id VARCHAR(512) PRIMARY KEY,
+			provider VARCHAR(255) NOT NULL,
+			batch_id VARCHAR(255) NOT NULL,
+			model VARCHAR(255),
+			endpoint VARCHAR(255),
+			provider_status VARCHAR(50),
+			input_file_id VARCHAR(255),
+			output_file_id VARCHAR(255),
+			error_file_id VARCHAR(255),
+			results_url TEXT,
+			next_check_at DATETIME,
+			poll_attempts INTEGER DEFAULT 0,
+			accounting_status VARCHAR(50) NOT NULL,
+			runner_id VARCHAR(255),
+			claimed_at DATETIME,
+			unpriceable_reason VARCHAR(255),
+			last_error TEXT,
+			aggregate_log_written_at DATETIME,
+			governance_reported_at DATETIME,
+			selected_key_id VARCHAR(255),
+			virtual_key_id VARCHAR(255),
+			budget_ids TEXT,
+			rate_limit_ids TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`).Error)
+
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(`
+		INSERT INTO batch_jobs (id, provider, batch_id, accounting_status, selected_key_id, virtual_key_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-legacy"), "openai", "batch-legacy",
+		tables.ProviderJobAccountingStatusPending, "key-1", "vk-1", now, now).Error)
+
+	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
+
+	mig := db.Migrator()
+	for _, column := range []string{"user_id", "team_id", "customer_id", "source_log_id"} {
+		assert.True(t, mig.HasColumn(&tables.TableProviderJob{}, column), "expected column %s", column)
+	}
+
+	var job tables.TableProviderJob
+	require.NoError(t, db.Where("id = ?", tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-legacy")).First(&job).Error)
+	assert.Equal(t, "key-1", job.SelectedKeyID, "pre-existing attribution must survive")
+	require.NotNil(t, job.VirtualKeyID)
+	assert.Equal(t, "vk-1", *job.VirtualKeyID)
+	assert.Nil(t, job.UserID, "a batch created before the column has no user to recover")
+	assert.Nil(t, job.SourceLogID)
+
+	// Migrations are re-run on every boot; the second pass must be a no-op.
+	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
+}
+
+// TestMigrationAddVideoResolutionPricingColumns exercises the upgrade path the
+// fresh-DB migration tests cannot: on a fresh database the pricing table is
+// created complete, so addColumnIfNotExists no-ops and never proves it can add
+// the columns to a table that predates them.
+func TestMigrationAddVideoResolutionPricingColumns(t *testing.T) {
+	s := setupRDBTestStore(t)
+	db := s.DB()
+	ctx := context.Background()
+
+	// A pre-upgrade pricing table: no resolution-banded columns.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS governance_model_pricing (
+		id TEXT PRIMARY KEY, model TEXT, provider TEXT, mode TEXT,
+		output_cost_per_video_per_second REAL
+	)`).Error)
+	for _, column := range videoResolutionPricingColumns {
+		require.False(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s should not exist yet", column)
+	}
+
+	require.NoError(t, migrationAddVideoResolutionPricingColumns(ctx, db, testMigrationLogger))
+	for _, column := range videoResolutionPricingColumns {
+		require.True(t, db.Migrator().HasColumn("governance_model_pricing", column), "column %s missing after migration", column)
+	}
+
+	// Rolling deploys re-run migrations; a second pass must be a no-op.
+	require.NoError(t, migrationAddVideoResolutionPricingColumns(ctx, db, testMigrationLogger))
+}
+
+// providerJobPreMigrationDDL is batch_jobs as the attribution migration left it:
+// no kind, no params, and the narrow identity index this change replaces.
+func providerJobPreMigrationDDL(dialect string) []string {
+	if dialect == "postgres" {
+		return []string{`
+			CREATE TABLE batch_jobs (
+				id VARCHAR(512) PRIMARY KEY,
+				provider VARCHAR(255) NOT NULL,
+				batch_id VARCHAR(255) NOT NULL,
+				model VARCHAR(255),
+				endpoint VARCHAR(255),
+				provider_status VARCHAR(50),
+				input_file_id VARCHAR(255),
+				output_file_id VARCHAR(255),
+				error_file_id VARCHAR(255),
+				results_url TEXT,
+				next_check_at TIMESTAMPTZ,
+				poll_attempts INTEGER NOT NULL DEFAULT 0,
+				accounting_status VARCHAR(50) NOT NULL,
+				runner_id VARCHAR(255),
+				claimed_at TIMESTAMPTZ,
+				unpriceable_reason VARCHAR(255),
+				last_error TEXT,
+				aggregate_log_written_at TIMESTAMPTZ,
+				governance_reported_at TIMESTAMPTZ,
+				selected_key_id VARCHAR(255),
+				virtual_key_id VARCHAR(255),
+				user_id VARCHAR(255),
+				team_id VARCHAR(255),
+				customer_id VARCHAR(255),
+				budget_ids TEXT,
+				rate_limit_ids TEXT,
+				source_log_id VARCHAR(255),
+				created_at TIMESTAMPTZ NOT NULL,
+				updated_at TIMESTAMPTZ NOT NULL
+			)`,
+			`CREATE UNIQUE INDEX idx_batch_jobs_identity ON batch_jobs (provider, batch_id)`,
+			`CREATE INDEX idx_batch_jobs_sweeper ON batch_jobs (provider, accounting_status, next_check_at)`,
+		}
+	}
+	return []string{`
+		CREATE TABLE batch_jobs (
+			id VARCHAR(512) PRIMARY KEY,
+			provider VARCHAR(255) NOT NULL,
+			batch_id VARCHAR(255) NOT NULL,
+			model VARCHAR(255),
+			endpoint VARCHAR(255),
+			provider_status VARCHAR(50),
+			input_file_id VARCHAR(255),
+			output_file_id VARCHAR(255),
+			error_file_id VARCHAR(255),
+			results_url TEXT,
+			next_check_at DATETIME,
+			poll_attempts INTEGER DEFAULT 0,
+			accounting_status VARCHAR(50) NOT NULL,
+			runner_id VARCHAR(255),
+			claimed_at DATETIME,
+			unpriceable_reason VARCHAR(255),
+			last_error TEXT,
+			aggregate_log_written_at DATETIME,
+			governance_reported_at DATETIME,
+			selected_key_id VARCHAR(255),
+			virtual_key_id VARCHAR(255),
+			user_id VARCHAR(255),
+			team_id VARCHAR(255),
+			customer_id VARCHAR(255),
+			budget_ids TEXT,
+			rate_limit_ids TEXT,
+			source_log_id VARCHAR(255),
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX idx_batch_jobs_identity ON batch_jobs (provider, batch_id)`,
+		`CREATE INDEX idx_batch_jobs_sweeper ON batch_jobs (provider, accounting_status, next_check_at)`,
+	}
+}
+
+// forEachProviderJobMigrationDB returns a pre-migration batch_jobs on every backend
+// available. Postgres matters here specifically: the properties this migration
+// leans on — a NOT NULL DEFAULT add being metadata-only, DROP INDEX cascading off a
+// dropped column — are postgres semantics that sqlite does not exercise.
+func forEachProviderJobMigrationDB(t *testing.T) []namedDB {
+	t.Helper()
+	dbs := []namedDB{}
+
+	sqliteDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err, "Failed to create test database")
+	for _, stmt := range providerJobPreMigrationDDL("sqlite") {
+		require.NoError(t, sqliteDB.Exec(stmt).Error)
+	}
+	dbs = append(dbs, namedDB{"sqlite", sqliteDB})
+
+	pgDB, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return dbs
+	}
+	sqlDB, err := pgDB.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		return dbs
+	}
+	if pgDB.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error != nil {
+		return dbs
+	}
+	pgDB.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE")
+	pgDB.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`)
+	pgDB.Exec("DELETE FROM migrations")
+	for _, stmt := range providerJobPreMigrationDDL("postgres") {
+		if err := pgDB.Exec(stmt).Error; err != nil {
+			return dbs
+		}
+	}
+	t.Cleanup(func() {
+		pgDB.Exec("DELETE FROM migrations")
+		pgDB.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE")
+	})
+	return append(dbs, namedDB{"postgres", pgDB})
+}
+
+// TestMigrationAddProviderJobKindColumns verifies the upgrade path that matters
+// most in this change: an existing batch_jobs table, holding both in-flight and
+// already-settled rows, gains kind/params and the widened identity index without
+// a single existing row being altered, re-keyed, or losing its place in the
+// sweeper's queue.
+func TestMigrationAddProviderJobKindColumns(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	for _, backend := range forEachProviderJobMigrationDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			now := time.Now().UTC().Truncate(time.Second)
+			due := now.Add(-time.Minute)
+
+			// One job still being polled and one already settled: the migration must not
+			// disturb either, and the in-flight one must stay visible to the sweeper.
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, model, accounting_status, next_check_at, poll_attempts, selected_key_id, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-inflight"), "openai", "batch-inflight",
+				"gpt-4o-mini", tables.ProviderJobAccountingStatusPending, due, 3, "key-1", now, now).Error)
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, model, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindBatch, "anthropic", "batch-settled"), "anthropic", "batch-settled",
+				"claude-sonnet-5", tables.ProviderJobAccountingStatusAccounted, 0, now, now).Error)
+
+			require.NoError(t, migrationAddProviderJobKindColumns(ctx, db, logr))
+
+			mig := db.Migrator()
+			assert.True(t, mig.HasColumn(&tables.TableProviderJob{}, "kind"))
+			assert.True(t, mig.HasColumn(&tables.TableProviderJob{}, "params"))
+
+			// Every pre-existing row *becomes* a batch row, with no UPDATE having touched
+			// it: the column default is what backfills them.
+			var inflight tables.TableProviderJob
+			require.NoError(t, db.Where("batch_id = ?", "batch-inflight").First(&inflight).Error)
+			assert.Equal(t, tables.ProviderJobKindBatch, inflight.Kind)
+			assert.Nil(t, inflight.Params, "a batch created before the column has no params to recover")
+			assert.Equal(t, tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-inflight"), inflight.ID,
+				"the primary key must survive verbatim, or the sweeper settles the job a second time under a new id")
+			assert.Equal(t, "gpt-4o-mini", inflight.Model)
+			assert.Equal(t, 3, inflight.PollAttempts, "poll progress must not reset")
+			assert.Equal(t, "key-1", inflight.SelectedKeyID)
+			require.NotNil(t, inflight.NextCheckAt)
+			assert.WithinDuration(t, due, inflight.NextCheckAt.UTC(), time.Second, "the job must stay due at the same moment")
+
+			var settled tables.TableProviderJob
+			require.NoError(t, db.Where("batch_id = ?", "batch-settled").First(&settled).Error)
+			assert.Equal(t, tables.ProviderJobKindBatch, settled.Kind)
+			assert.Equal(t, tables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus,
+				"a settled batch must stay settled; re-opening it would bill it twice")
+
+			// The identity index widened, and the narrow one it replaces is gone.
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_identity_v2"))
+			assert.False(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_identity"))
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_sweeper_v2"))
+			assert.False(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_sweeper"))
+
+			// The widened index is what lets a video job reuse a provider's batch id.
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, kind, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindVideo, "openai", "batch-inflight"), "openai", "batch-inflight",
+				tables.ProviderJobKindVideo, tables.ProviderJobAccountingStatusPending, 0, now, now).Error)
+
+			// ...but two rows of the same kind still cannot share one provider job id.
+			err := db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, kind, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"batch-job:openai:duplicate", "openai", "batch-inflight",
+				tables.ProviderJobKindBatch, tables.ProviderJobAccountingStatusPending, 0, now, now).Error
+			require.Error(t, err, "the widened index must still enforce one row per (provider, kind, batch_id)")
+
+			// Re-run the DDL itself, not just the migrator: clearing the recorded id is
+			// what forces the HasColumn/IF NOT EXISTS guards to actually execute against
+			// an already-migrated table. Without this the migrator short-circuits and the
+			// guards are never exercised at all.
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_provider_job_kind_columns").Error)
+			require.NoError(t, migrationAddProviderJobKindColumns(ctx, db, logr),
+				"the migration's own SQL must be idempotent, not merely skipped by the migrator")
+			assert.True(t, mig.HasColumn(&tables.TableProviderJob{}, "kind"))
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_identity_v2"))
+		})
+	}
+}
+
+// params is the pricing basis captured at submission and is reconstructible from
+// nothing else, so a rollback must refuse while any job still carries it — checked
+// on the column's own contents, not on kind. Only video writes params today, so the
+// kind guard happens to cover it; that is a fact about the current writers, not
+// about the column.
+func TestMigrationAddProviderJobKindColumns_RollbackRefusesWhileParamsExist(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	for _, backend := range forEachProviderJobMigrationDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			now := time.Now().UTC().Truncate(time.Second)
+			require.NoError(t, migrationAddProviderJobKindColumns(ctx, db, logr))
+
+			// A batch-kind row carrying params: the kind guard passes it through.
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, kind, params, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "job-with-params"), "openai", "job-with-params",
+				tables.ProviderJobKindBatch, `{"seconds":8,"size":"1920x1080"}`,
+				tables.ProviderJobAccountingStatusPending, 0, now, now).Error)
+
+			err := rollbackProviderJobKindColumns(ctx, db)
+			require.Error(t, err, "rollback must refuse while captured params exist")
+			assert.Contains(t, err.Error(), "non-rollbackable")
+			assert.Contains(t, err.Error(), "params")
+			assert.True(t, db.Migrator().HasColumn(&tables.TableProviderJob{}, "params"),
+				"a refused rollback must leave the column intact")
+
+			// Cleared, it rolls back cleanly — the common case right after deploying,
+			// before any job has captured anything.
+			require.NoError(t, db.Exec("UPDATE batch_jobs SET params = NULL").Error)
+			require.NoError(t, rollbackProviderJobKindColumns(ctx, db))
+			assert.False(t, db.Migrator().HasColumn(&tables.TableProviderJob{}, "params"))
+		})
+	}
+}
+
+// TestMigrationAddProviderJobKindColumns_Rollback verifies the down path drops the
+// columns and restores the narrow indexes — and, more importantly, that it refuses
+// outright once the table holds a kind the narrow index cannot represent.
+func TestMigrationAddProviderJobKindColumns_Rollback(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	for _, backend := range forEachProviderJobMigrationDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			mig := db.Migrator()
+			now := time.Now().UTC().Truncate(time.Second)
+
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "shared-id"), "openai", "shared-id",
+				tables.ProviderJobAccountingStatusAccounted, 0, now, now).Error)
+			require.NoError(t, migrationAddProviderJobKindColumns(ctx, db, logr))
+
+			// A video job may legitimately carry the same provider-side id as a batch.
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, kind, accounting_status, poll_attempts, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				tables.ProviderJobID(tables.ProviderJobKindVideo, "openai", "shared-id"), "openai", "shared-id",
+				tables.ProviderJobKindVideo, tables.ProviderJobAccountingStatusPending, 0, now, now).Error)
+
+			// Restoring a UNIQUE (provider, batch_id) over that data is impossible, and
+			// the column drop happens first — so a rollback that discovered the problem
+			// at the index would already have erased the only thing telling the two rows
+			// apart. It has to refuse before touching anything.
+			err := rollbackProviderJobKindColumns(ctx, db)
+			require.Error(t, err, "rollback must refuse while a non-batch job exists")
+			assert.Contains(t, err.Error(), "non-rollbackable")
+			assert.True(t, mig.HasColumn(&tables.TableProviderJob{}, "kind"),
+				"a refused rollback must leave the schema exactly as it was")
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_identity_v2"))
+
+			// With the video rows gone the narrow index is representable again.
+			require.NoError(t, db.Exec("DELETE FROM batch_jobs WHERE kind <> ?", tables.ProviderJobKindBatch).Error)
+			require.NoError(t, rollbackProviderJobKindColumns(ctx, db))
+
+			assert.False(t, mig.HasColumn(&tables.TableProviderJob{}, "kind"))
+			assert.False(t, mig.HasColumn(&tables.TableProviderJob{}, "params"))
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_identity"),
+				"the narrow identity index must come back, or nothing enforces batch uniqueness")
+			assert.True(t, mig.HasIndex(&tables.TableProviderJob{}, "idx_batch_jobs_sweeper"))
+
+			var count int64
+			require.NoError(t, db.Table("batch_jobs").Where("batch_id = ?", "shared-id").Count(&count).Error)
+			assert.Equal(t, int64(1), count, "rolling back the schema must not drop the batch rows")
+		})
+	}
 }

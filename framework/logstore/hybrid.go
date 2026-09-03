@@ -1566,9 +1566,9 @@ func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string)
 	return h.inner.FindWebhookDeliveryByID(ctx, id)
 }
 
-// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
-func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
-	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+// SearchWebhookDeliveries returns one page of matching delivery history.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, filters, pagination)
 }
 
 // DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.

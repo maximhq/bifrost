@@ -50,7 +50,9 @@ export class LogsPage extends BasePage {
     this.statusFilter = page.locator('[data-testid="filter-status"]').or(
       page.locator('button').filter({ hasText: /Status/i })
     )
-    this.searchInput = page.locator('[data-testid="filter-search"]').or(
+    this.searchInput = page.locator('[data-testid="logs-search-input"]').or(
+      page.locator('[data-testid="filter-search"]')
+    ).or(
       page.getByPlaceholder('Search logs')
     )
     this.dateRangePicker = page.locator('[data-testid="filter-date-range"]').or(

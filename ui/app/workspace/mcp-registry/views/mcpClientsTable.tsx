@@ -31,7 +31,7 @@ import {
 	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
-import { MCPClient } from "@/lib/types/mcp";
+import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
@@ -53,6 +53,7 @@ import {
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { IconWrap, InfoBox } from "./authorizerUi";
 import MCPClientSheet from "./mcpClientSheet";
+import { authScopeOf } from "./mcpClientFormFields";
 import { canReconnectMCPClient } from "./mcpClientsTable.utils";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -502,18 +503,15 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const getAuthScopeDisplay = (type: string | undefined) => {
-		switch (type) {
-			case "per_user_oauth":
-			case "per_user_headers":
-			case "token_exchange":
-				return "Per-User";
-			case "oauth":
-			case "headers":
-				return "Shared";
-			default:
-				return "-";
+	// token_exchange carries the caller's own token on every call, so it is
+	// per-user even though the form does not expose a scope dropdown for it.
+	// Everything else, including "none", resolves through authScopeOf so the
+	// table agrees with the form.
+	const getAuthScopeDisplay = (type: MCPAuthType | undefined) => {
+		if (type === "token_exchange") {
+			return "Per-User";
 		}
+		return authScopeOf(type) === "per_user" ? "Per-User" : "Shared";
 	};
 
 	const handleRowClick = (mcpClient: MCPClient) => {
@@ -929,7 +927,7 @@ export default function MCPClientsTable({
 								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
 								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
 								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
+								<TableHead className="w-[150px] font-semibold">Access</TableHead>
 								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
 								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
 								<TableHead className="w-[140px] font-semibold">
@@ -1019,8 +1017,8 @@ export default function MCPClientsTable({
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
-												{c.config.allow_on_all_virtual_keys
-													? "All"
+												{c.config.allow_by_default
+													? "Allowed by default"
 													: c.vk_configs?.length
 														? `${c.vk_configs.length} ${c.vk_configs.length === 1 ? "VK" : "VKs"}`
 														: "None"}

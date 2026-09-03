@@ -107,7 +107,13 @@
             "icon": "arrow-up-right-dots",
             "pages": [
               "migration-guides/v2.0.0",
-              "migration-guides/v1.5.0",
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
+            "group":"Migrate from other Gateway",
+            "icon":"arrow-up",
+            "pages":[
               "migration-guides/litellm"
             ]
           },
@@ -1287,16 +1293,14 @@
                   "POST /api/webhooks/{id}/rotate-secret",
                   "POST /api/webhooks/{id}/test",
                   "GET /api/webhooks/{id}/deliveries",
+                  "GET /api/webhooks/deliveries",
                   "POST /api/webhooks/deliveries/{id}/redeliver"
                 ]
               },
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": [
-                  "GET /api/notifications",
-                  "POST /api/notifications"
-                ]
+                "pages": ["GET /api/notifications", "POST /api/notifications"]
               }
             ]
           },
@@ -1333,9 +1337,11 @@
                   "GET /api/governance/virtual-keys",
                   "POST /api/governance/virtual-keys",
                   "GET /api/governance/virtual-keys/quota",
+                  "POST /api/governance/virtual-keys/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}",
                   "PUT /api/governance/virtual-keys/{vk_id}",
                   "DELETE /api/governance/virtual-keys/{vk_id}",
+                  "POST /api/governance/virtual-keys/{vk_id}/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}/users",
                   "POST /api/governance/virtual-keys/{vk_id}/users",
                   "DELETE /api/governance/virtual-keys/{vk_id}/users/{user_id}",
@@ -1681,8 +1687,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.11",
+              "changelogs/v2.0.0",
               "changelogs/v2.0.0-prerelease3",
+              "changelogs/v1.6.11",
               "changelogs/v1.6.10",
               "changelogs/v1.6.9",
               "changelogs/v1.6.8",
@@ -1889,6 +1896,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.0.0",
               "changelogs/ent-v1.5.12",
               "changelogs/ent-v1.5.11",
               "changelogs/ent-v2.0.0-prerelease3",
@@ -1972,6 +1980,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.5.6",
               "changelogs/edge-v0.4.0",
               "changelogs/edge-v0.3.0",
               "changelogs/edge-v0.2.0",
@@ -2002,6 +2011,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.37",
               "changelogs/helm-v2.1.36",
               "changelogs/helm-v2.1.35",
               "changelogs/helm-v2.1.34",

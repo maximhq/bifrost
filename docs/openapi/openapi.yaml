@@ -853,6 +853,10 @@ paths:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-users"
   /api/governance/virtual-keys/{vk_id}/users/{user_id}:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
+  /api/governance/virtual-keys/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id-rotate"
 
   # Governance - Teams
   /api/governance/teams:
@@ -1242,6 +1246,8 @@ paths:
     $ref: "./paths/management/webhooks.yaml#/webhooks-test"
   /api/webhooks/{id}/deliveries:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries"
+  /api/webhooks/deliveries:
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-search"
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
@@ -1835,6 +1841,8 @@ components:
       $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
       $ref: "./schemas/management/logging.yaml#/LogStats"
+    LogStatsResponse:
+      $ref: "./schemas/management/logging.yaml#/LogStatsResponse"
     DeleteLogsRequest:
       $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:

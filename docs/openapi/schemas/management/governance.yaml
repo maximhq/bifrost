@@ -382,6 +382,14 @@ VirtualKey:
       type: [string, 'null']
       format: date-time
       description: Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires.
+    previous_value_expires_at:
+      type: [string, 'null']
+      format: date-time
+      description: When set, the pre-rotation key value continues to authenticate until this timestamp (rotation grace period, configured via client vk_rotation_cooldown). Absent when no grace window is active.
+    rotated_at:
+      type: [string, 'null']
+      format: date-time
+      description: Timestamp of the most recent value rotation. Absent if the key has never been rotated.
     provider_configs:
       type: array
       items:
@@ -1958,6 +1966,41 @@ PricingPatch:
     output_cost_per_second:
       type: number
       minimum: 0
+    output_cost_per_video_per_second_480p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 480p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_720p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 720p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_1024p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 1024p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_1080p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 1080p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_4k:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 4K video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
     # Costs - Other
     search_context_cost_per_query:
       type: number

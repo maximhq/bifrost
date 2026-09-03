@@ -45,15 +45,17 @@ func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client *bifrost.Bifrost
-	config *lib.Config
+	modelsManager ModelsManager
+	client        *bifrost.Bifrost
+	config        *lib.Config
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(modelsManager ModelsManager, client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
 	return &CompletionHandler{
-		client: client,
-		config: config,
+		modelsManager: modelsManager,
+		client:        client,
+		config:        config,
 	}
 }
 
@@ -849,6 +851,31 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
+// applyListModelsProviderFilter narrows the provider fan-out of a models listing to what the
+// request may reach: a provider reachable only through a grant composed onto the request is
+// asked, one the composition removed is not. Without it, every configured provider is asked and
+// governance rejects the ones the request may not use, filling request logs with expected errors.
+//
+// Narrowing is the whole job, so a request with nothing resolved (no key presented, or no
+// governance wired) keeps the fan-out it already had rather than being narrowed to nothing, and
+// so does a request nothing settled who it is: it is refused where that matters, and a listing
+// is not that.
+func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.BifrostContext) {
+	if h.modelsManager == nil {
+		return
+	}
+	access, err := h.modelsManager.ResolveAccess(bifrostCtx)
+	if err != nil || access == nil {
+		return
+	}
+	granted := access.GrantedProvidersForModel("")
+	providers := make([]schemas.ModelProvider, 0, len(granted))
+	for _, provider := range granted {
+		providers = append(providers, schemas.ModelProvider(provider))
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
+}
+
 // listModels handles GET /v1/models - Process list models requests
 // If provider is not specified, lists all models from all configured providers
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
@@ -862,8 +889,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
-		return
+	if provider == "" {
+		h.applyListModelsProviderFilter(bifrostCtx)
 	}
 
 	var resp *schemas.BifrostListModelsResponse
@@ -2000,6 +2027,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
 	go func() {
 		var transportLogs []schemas.PluginLogEntry
+		// Per-chunk transport-goroutine costs, stamped onto the root span at stream end so
+		// the overhead breakdown attributes the outbound relay (chunk marshal = transport
+		// CPU -> "convertor.stream-out"; client socket write -> "stream-client-write")
+		// instead of folding it into the residual bucket. Mirrors integrations/router.go.
+		var streamTransportCPUNs, streamClientWriteNs int64
 		completerRan := false
 		// runCompleter invokes the transport post-hook completer at most once.
 		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
@@ -2064,6 +2096,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
 			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
+			// Stamp the outbound relay costs onto the root span before the trace completes
+			// below (traceCompleter), so they reach the overhead breakdown. Runs on every
+			// exit path (normal end, client disconnect, interceptor error).
+			bifrostCtx.StampStreamTransport(time.Duration(streamTransportCPUNs), time.Duration(streamClientWriteNs))
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
@@ -2141,8 +2177,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			// Convert response to JSON
+			// Convert response to JSON (transport-goroutine CPU).
+			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
 				continue
@@ -2167,7 +2205,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			if !reader.SendEvent(eventType, chunkJSON) {
+			writeStart := time.Now()
+			sent := reader.SendEvent(eventType, chunkJSON)
+			streamClientWriteNs += time.Since(writeStart).Nanoseconds()
+			if !sent {
 				cancel() // Client disconnected, cancel upstream stream
 				// Drain remaining chunks so the provider goroutine's defer
 				// (HandleStreamCancellation -> PostLLMHook -> storeOrEnqueueEntry) finishes
@@ -3409,9 +3450,12 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
-	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
-		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
-			model = schemas.Ptr(m)
+	} else if len(req.Requests) > 0 {
+		for _, body := range []map[string]any{req.Requests[0].Body, req.Requests[0].Params} {
+			if m, ok := body["model"].(string); ok && m != "" {
+				model = schemas.Ptr(m)
+				break
+			}
 		}
 	}
 
