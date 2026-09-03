@@ -139289,6 +139289,180 @@
           ]
         }
       ]
+    },
+    {
+      "name": "65. Anthropic Egress Terminal Events on Truncated Turns (#6081)",
+      "description": "Pins that a turn cut short by the output-token cap still closes the Anthropic Messages stream properly on /anthropic/v1/messages.\n\nBug (#6081): Bedrock ConverseStream ending with stopReason max_tokens is finalized by FinalizeBedrockStream as a response.incomplete terminal event, distinct from response.completed. The Anthropic egress converter (toAnthropicResponsesStreamEvents in core/providers/anthropic/responses.go) had a case only for response.completed, so response.incomplete fell through to `default: return nil` and the terminal frame was dropped. The stream ended after content_block_stop with a clean 200 - no message_delta carrying stop_reason, no message_stop, no error. Claude Code therefore treated a tool_use whose input_json had been truncated mid-JSON as complete, failed to parse it, and retried in a loop.\n\nFolder 17 already pins the upstream half (Bedrock emits response.incomplete on /v1/responses, #4680); these cases pin the Anthropic egress that consumes it.\n\nCases: (1) plain text truncation on Bedrock Claude; (2) the reported shape, truncation mid tool_use, where the open block is a function call rather than text so the block-closing path differs; (3) the same invariant through a chat-completions provider, whose finish_reason \"length\" becomes response.incomplete via responsesTerminalFromChatFinishReason in core/schemas/mux.go - guarding against a fix that only works for Bedrock.",
+      "item": [
+        {
+          "name": "Bedrock Claude /anthropic/v1/messages truncated by max_tokens emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock claude: truncated stream terminates with message_delta(stop_reason=max_tokens) + message_stop - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":16,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 1000, one number per line.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude /anthropic/v1/messages tool_use truncated mid input_json still emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock claude: tool_use truncated mid input_json still terminates with message_delta + message_stop - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":16,\"stream\":true,\"tool_choice\":{\"type\":\"tool\",\"name\":\"Write\"},\"tools\":[{\"name\":\"Write\",\"description\":\"Writes content to a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"file_path\",\"content\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call Write exactly once for /tmp/numbers.txt. The content must contain the integers 1 through 1000, one per line, with no omissions, abbreviations, or surrounding explanation.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages truncated by max_tokens emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('openai gpt-4o-mini: chat finish_reason length maps to a terminated Anthropic stream - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":16,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 1000, one number per line.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
