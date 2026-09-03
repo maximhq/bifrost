@@ -1733,6 +1733,25 @@ func IsAzureModelRouter(model string) bool {
 	return strings.Contains(model, "model-router")
 }
 
+// ServedModel returns the model the provider named on the response body. It can
+// differ from the model the caller addressed.
+func (r *BifrostResponse) ServedModel() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.Model
+	case r.ResponsesResponse != nil:
+		return r.ResponsesResponse.Model
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Model
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.Model
+	}
+	return ""
+}
+
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
 // effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
 // rather than text-to-speech. These models are not tied to a voice.

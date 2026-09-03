@@ -2088,6 +2088,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Read off the raw final-chunk ExtraFields, not the rebuilt streamResponse.
 			if result != nil {
 				applyUpstreamOverheadToEntry(entry, result.GetExtraFields())
+				applyServedModel(entry, result)
 			}
 		}
 		if entry.ErrorDetailsParsed != nil {
@@ -2144,6 +2145,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		} else {
 			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
 		}
+		applyServedModel(entry, result)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = logStatusError
