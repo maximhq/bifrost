@@ -20,6 +20,7 @@ type Config struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	AzureDeepseek          bool `json:"azure_deepseek"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -29,6 +30,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		AzureDeepseek          *bool `json:"azure_deepseek"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -38,12 +40,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -120,6 +123,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
+	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -143,7 +147,8 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
 	// supports on Azure, so their Responses requests are converted by core (see azure.go).
 	// This must run before the param drop below, which reads the conversion decision.
-	if shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
+	// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
+	if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
 	}
 

@@ -278,6 +278,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ConvertChatToResponses: cc.ConvertChatToResponses,
 		ShouldDropParams:       cc.ShouldDropParams,
 		ShouldConvertParams:    cc.ShouldConvertParams,
+		AzureDeepseek:          cc.AzureDeepseek,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

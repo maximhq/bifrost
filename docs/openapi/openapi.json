@@ -88732,6 +88732,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Converts model parameter values that are not supported by the model"
+                  },
+                  "azure_deepseek": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses"
                   }
                 },
                 "additionalProperties": false
@@ -89062,6 +89067,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Converts model parameter values that are not supported by the model"
+                  },
+                  "azure_deepseek": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses"
                   }
                 },
                 "additionalProperties": false

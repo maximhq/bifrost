@@ -50,6 +50,7 @@ type CompatConfig struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	AzureDeepseek          bool `json:"azure_deepseek"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -59,6 +60,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		AzureDeepseek          *bool `json:"azure_deepseek"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -68,6 +70,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	return nil
 }
 
@@ -131,6 +134,7 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			ConvertChatToResponses: true,
 			ShouldDropParams:       true,
 			ShouldConvertParams:    true,
+			AzureDeepseek:          true,
 		},
 	}
 	if err := sonic.Unmarshal(data, &alias); err != nil {
