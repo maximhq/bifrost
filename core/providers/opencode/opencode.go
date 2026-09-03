@@ -128,7 +128,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 		p.GetProviderKey(),
 		nil,
 		parseOpencodeError,
-		nil,
+		opencodeSessionSigner(ctx),
 		p.logger,
 	)
 }
@@ -152,7 +152,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 		parseOpencodeError,
 		nil,
 		nil,
-		nil,
+		opencodeSessionSigner(ctx),
 		p.logger,
 		postHookSpanFinalizer,
 	)
@@ -180,7 +180,7 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 		p.providerKey,
 		nil,
 		parseOpencodeError,
-		nil,
+		opencodeSessionSigner(ctx),
 		p.logger,
 	)
 }
@@ -214,7 +214,7 @@ func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHook
 		parseOpencodeError,
 		nil,
 		nil,
-		nil,
+		opencodeSessionSigner(ctx),
 		p.logger,
 		postHookSpanFinalizer,
 	)
