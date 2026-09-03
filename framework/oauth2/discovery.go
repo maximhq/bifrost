@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,8 @@ type OAuthMetadata struct {
 	RegistrationURL  *string  `json:"registration_endpoint,omitempty"`
 	ScopesSupported  []string `json:"scopes_supported,omitempty"`
 	Resource         string   `json:"resource,omitempty"`
+	// Required by RFC 8414 and OIDC Discovery metadata; omitempty is retained
+	// for legacy metadata documents that omit it.
 	Issuer           string   `json:"issuer,omitempty"`
 	ResponseTypes    []string `json:"response_types_supported,omitempty"`
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
@@ -238,6 +241,7 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
 // Tries multiple authorization servers until one succeeds
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+	var discoveryErrs []error
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
 		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
@@ -245,7 +249,13 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
 		}
+		if err != nil {
+			discoveryErrs = append(discoveryErrs, err)
+		}
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", issuer, err))
+	}
+	if len(discoveryErrs) > 0 {
+		return nil, fmt.Errorf("failed to fetch metadata from any authorization server: %w", errors.Join(discoveryErrs...))
 	}
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
@@ -253,28 +263,42 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 // fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
 // Implements RFC 8414 discovery
 func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMetadata, error) {
-	base, path := splitURL(issuer)
+	// RFC 8414 §3.1 requires removal of a terminating slash before the
+	// well-known path is inserted. Use the same normalized issuer when
+	// validating the metadata issuer (RFC 8414 §3.3).
+	canonicalIssuer := strings.TrimSuffix(issuer, "/")
+	base, path := splitURL(canonicalIssuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
 	}
 
-	// Try different well-known endpoint patterns
+	// MCP's required discovery order is documented at:
+	// https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery
+	// RFC 8414 inserts the well-known path before a path-bearing issuer,
+	// while OIDC Discovery appends it to the issuer. Host-level URLs for a
+	// path-bearing issuer describe a different issuer and are not candidates.
 	var candidateURLs []string
 	if path != "" {
 		candidateURLs = append(candidateURLs,
 			fmt.Sprintf("%s/.well-known/oauth-authorization-server/%s", base, path),
 			fmt.Sprintf("%s/.well-known/openid-configuration/%s", base, path),
+			canonicalIssuer+"/.well-known/openid-configuration",
+		)
+	} else {
+		candidateURLs = append(candidateURLs,
+			fmt.Sprintf("%s/.well-known/oauth-authorization-server", base),
+			fmt.Sprintf("%s/.well-known/openid-configuration", base),
 		)
 	}
-	candidateURLs = append(candidateURLs,
-		fmt.Sprintf("%s/.well-known/oauth-authorization-server", base),
-		fmt.Sprintf("%s/.well-known/openid-configuration", base),
-		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
-	)
+
+	// Legacy compatibility fallback for authorization servers that publish
+	// metadata directly at the issuer URL. This is not part of MCP discovery.
+	candidateURLs = append(candidateURLs, canonicalIssuer)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
+	var issuerMismatchErr error
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
@@ -298,7 +322,19 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 			}
 
 			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
-				// Validate that we got at least authorization_endpoint
+				// RFC 8414 §3.3 and OIDC Discovery §4.3 require the returned
+				// issuer to exactly match the issuer used for discovery. Deliberately
+				// compare the serialized values without URI normalization, including
+				// scheme and host case. The direct issuer URL is a legacy fallback,
+				// however, and may be a guessed MCP server origin rather than an
+				// authorization-server issuer.
+				if metadata.Issuer != canonicalIssuer && candidateURL != canonicalIssuer {
+					issuerMismatchErr = fmt.Errorf("authorization-server metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, canonicalIssuer)
+					logger.Warn("[OAuth Discovery] %v", issuerMismatchErr)
+					continue
+				}
+
+				// Validate that we got at least authorization_endpoint.
 				if metadata.AuthorizationURL != "" {
 					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
 					return &metadata, nil
@@ -307,6 +343,9 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		} else {
 			resp.Body.Close()
 		}
+	}
+	if issuerMismatchErr != nil {
+		return nil, issuerMismatchErr
 	}
 
 	return nil, fmt.Errorf("no valid metadata found for issuer: %s", issuer)
