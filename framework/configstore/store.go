@@ -32,12 +32,46 @@ type VirtualKeyQueryParams struct {
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
 type ModelConfigsQueryParams struct {
-	Limit    int
-	Offset   int
-	Search   string
-	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	Limit  int
+	Offset int
+	Search string
+	// Scope optionally filters to an exact scope value (e.g. "global",
+	// "virtual_key").
+	//
+	// Deprecated: use Scopes, which can carry more than one. Kept so existing
+	// callers of this published module keep compiling and behaving identically; a
+	// value set here is OR-ed together with anything in Scopes.
+	Scope string
+	// Scopes optionally filters to one or more exact scope values. Several values
+	// are OR-ed, which lets a UI present one filter option covering scopes a user
+	// thinks of as the same thing — e.g. rows scoped to a user directly and rows
+	// materialized onto them from an access profile. Empty (with Scope also empty)
+	// means no scope filter.
+	Scopes   []string
 	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
+}
+
+// effectiveScopes returns the scope values to filter on, merging the deprecated
+// single Scope with Scopes and dropping blanks and duplicates. Returns nil when
+// neither is set, meaning "no scope filter".
+func (p ModelConfigsQueryParams) effectiveScopes() []string {
+	seen := make(map[string]struct{}, len(p.Scopes)+1)
+	out := make([]string, 0, len(p.Scopes)+1)
+	for _, s := range append([]string{p.Scope}, p.Scopes...) {
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.

@@ -59,6 +59,14 @@ export interface ModelLimitScopeEntry {
 	// literal "user" scope value — still read as "User" wherever a single row is
 	// displayed, without colliding with "user" as a distinct filterable option.
 	displayAsScope?: string;
+	// Optional. Groups this scope under another scope's filter option, so the
+	// Scope filter offers one choice covering both and queries them together.
+	// The value names the scope that owns the option (e.g. enterprise's
+	// "access_profile" rows filter under "user": they are still a user's limits,
+	// just materialized from a profile, so splitting them across two filter
+	// options only hides rows from someone filtering by User). The grouped scope
+	// keeps its own `label` for anywhere it names itself.
+	filterUnderScope?: string;
 	// Optional. Renders additional context next to the Scope Target for a row of
 	// this scope — e.g. enterprise's "Managed by Access Profile: X" note. Passed
 	// the row's own ModelConfig; renders nothing (returns null) itself when there
@@ -91,6 +99,41 @@ export function getModelLimitScopes(): ModelLimitScopeEntry[] {
 
 export function getModelLimitScope(value: string): ModelLimitScopeEntry | undefined {
 	return registry.get(value);
+}
+
+/**
+ * A single Scope filter choice: the option's own label, and every scope value it
+ * should query. Scopes that declare `filterUnderScope` are folded into their
+ * owner's option instead of getting one of their own, so the filter reads the way
+ * a user thinks about the rows rather than mirroring storage.
+ */
+export interface ModelLimitScopeFilterOption {
+	value: string;
+	label: string;
+	scopes: string[];
+}
+
+export function getModelLimitScopeFilterOptions(): ModelLimitScopeFilterOption[] {
+	const options: ModelLimitScopeFilterOption[] = [];
+	const byValue = new Map<string, ModelLimitScopeFilterOption>();
+	for (const entry of getModelLimitScopes()) {
+		if (entry.filterUnderScope) continue;
+		const option = { value: entry.value, label: entry.label, scopes: [entry.value] };
+		options.push(option);
+		byValue.set(entry.value, option);
+	}
+	for (const entry of getModelLimitScopes()) {
+		if (!entry.filterUnderScope) continue;
+		const owner = byValue.get(entry.filterUnderScope);
+		// An unknown owner would silently drop the scope from the filter, so fall
+		// back to giving it its own option rather than hiding its rows.
+		if (owner) {
+			owner.scopes.push(entry.value);
+		} else {
+			options.push({ value: entry.value, label: entry.label, scopes: [entry.value] });
+		}
+	}
+	return options;
 }
 
 // ---------------------------------------------------------------------------
