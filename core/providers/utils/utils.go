@@ -3536,8 +3536,15 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	//
+	// Skipped when the reader already consumed the body to EOF: there is nothing
+	// left to drain, and on a keep-alive connection io.Copy blocks in
+	// parseChunkSize waiting for a chunk the upstream will never send, which
+	// deadlocks this deferred cleanup and stops the stream channel from closing.
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close

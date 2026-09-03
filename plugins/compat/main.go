@@ -140,6 +140,13 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
+	// supports on Azure, so their Responses requests are converted by core (see azure.go).
+	// This must run before the param drop below, which reads the conversion decision.
+	if shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+	}
+
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
 		_, model, _ := modifiedReq.GetRequestFields()

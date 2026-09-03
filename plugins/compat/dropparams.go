@@ -175,6 +175,10 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			if !isSupported["reasoning"] {
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
+			} else if isAzureDeepSeekResponsesRequest(req) && !isConvertedToChatCompletions(ctx) {
+				// Azure's Responses endpoint rejects reasoning.effort for DeepSeek.
+				params.Reasoning = nil
+				dropped = append(dropped, "reasoning")
 			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
 				schemas.IsAzureModelRouter(req.ResponsesRequest.Model) {
 				// model-router only supports "auto" summary
