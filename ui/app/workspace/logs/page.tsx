@@ -731,16 +731,20 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
+		// Below lg the strip, the volume chart and the table cannot all share one
+		// viewport-height column - the table collapses to a couple of rows. There the
+		// page itself scrolls and each section keeps its natural height; from lg up
+		// the fixed-height, inner-scrolling layout is untouched.
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] overflow-y-auto lg:overflow-y-visible">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (
-				<div className="bg-background flex h-full w-full grow gap-3">
+				<div className="bg-background flex min-h-full w-full grow gap-3 lg:h-full">
 					{/* Sidebar Filters */}
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 rounded-md border p-4 pb-2 lg:overflow-hidden">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}
@@ -806,7 +810,10 @@ export default function LogsPage() {
 							</Alert>
 						)}
 
-						<div className="min-h-0 flex-1">
+						{/* The min-height is what makes the table usable on a scrolling page:
+						    without it the flex child shrinks to its content and the strip plus
+						    the chart leave it a few rows tall. */}
+						<div className="min-h-[28rem] flex-1 lg:min-h-0">
 							<LogsDataTable
 								columns={columns}
 								data={displayLogs}
