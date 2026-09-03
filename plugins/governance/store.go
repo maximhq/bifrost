@@ -4532,6 +4532,20 @@ func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit sc
 	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
 }
 
+// ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
+// to the given holder kind.
+//
+// The scope is named directly rather than derived from a permit, because a scope can belong to an
+// identity no permit stands for: a store layered on this one may impose per-model limits on the
+// caller themselves, whose rows are keyed by a scope this package has no permit type for. What
+// covers a pair stays modelLimitsInScopes's single answer.
+func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
 // limitScope is one model-config scope to resolve limits from, with the holder kind its limits are
 // attributed to.
 type limitScope struct {
