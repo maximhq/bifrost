@@ -34,6 +34,7 @@ ModelProvider:
     - fireworks
     - sarvam
     - wafer
+    - databricks
 
 Fallback:
   type: object

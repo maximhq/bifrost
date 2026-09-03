@@ -115,7 +115,10 @@ var specialCredProviders = map[string]bool{
 
 // standardProviders is the set of Bifrost standard provider names (from schemas.StandardProviders).
 // A LiteLLM provider absent from this is either added as a custom provider or is skipped and reported.
-
+//
+// Databricks is deliberately excluded: its keys need a per-key workspace URL that a LiteLLM
+// model entry does not carry, so migrating it here would emit a key the gateway rejects at
+// validation. Falling through to the custom-provider path produces a working config instead.
 var standardProviders = map[string]bool{
 	"anthropic":      true,
 	"azure":          true,
