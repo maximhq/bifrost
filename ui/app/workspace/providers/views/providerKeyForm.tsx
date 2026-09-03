@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
+import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
 	keyId: string | null;
@@ -99,6 +100,9 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (key.bedrock_mantle_key_config) {
 			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
 			key.bedrock_mantle_key_config = rest;
+		}
+		if (key.databricks_key_config) {
+			key.databricks_key_config = stripDatabricksAuthDiscriminator(key.databricks_key_config);
 		}
 		const mutation = isEditing
 			? updateProviderKey({

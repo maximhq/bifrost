@@ -30,6 +30,7 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"databricks",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -54,6 +55,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"sgl",
 	"vertex",
 	"vllm",
+	"databricks",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -156,6 +158,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	databricks: "Databricks",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

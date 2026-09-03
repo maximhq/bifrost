@@ -818,6 +818,11 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	databricks: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return <img src="/images/databricks.svg" alt="databricks" width={resolvedSize} height={resolvedSize} className={className} />;
+	},
 } as const;
 
 // Routing Engine Icons
