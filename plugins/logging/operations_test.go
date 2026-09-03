@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -31,24 +31,24 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 	return schemas.NoopLogEvent
 }
 
-// fakeBatchStore is an in-memory batchaccounting.SweepStore for logging tests.
+// fakeBatchStore is an in-memory jobaccounting.SweepStore for logging tests.
 type fakeBatchStore struct {
-	jobs map[string]*cstables.TableBatchJob
+	jobs map[string]*cstables.TableProviderJob
 }
 
 func newFakeBatchStore() *fakeBatchStore {
-	return &fakeBatchStore{jobs: make(map[string]*cstables.TableBatchJob)}
+	return &fakeBatchStore{jobs: make(map[string]*cstables.TableProviderJob)}
 }
 
-func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error {
+func (s *fakeBatchStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
 	if job.ID == "" {
-		job.ID = cstables.BatchJobID(job.Provider, job.BatchID)
+		job.ID = cstables.ProviderJobID(cstables.ProviderJobKindBatch, job.Provider, job.JobID)
 	}
 	existing, ok := s.jobs[job.ID]
 	if !ok {
 		copied := *job
 		if copied.AccountingStatus == "" {
-			copied.AccountingStatus = cstables.BatchJobAccountingStatusPending
+			copied.AccountingStatus = cstables.ProviderJobAccountingStatusPending
 		}
 		s.jobs[job.ID] = &copied
 		return nil
@@ -76,7 +76,7 @@ func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.Table
 	return nil
 }
 
-func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error) {
+func (s *fakeBatchStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
 	job, ok := s.jobs[jobID]
 	if !ok {
 		return nil, errors.New("missing batch job")
@@ -85,16 +85,27 @@ func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstabl
 	return &copied, nil
 }
 
-func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error) {
-	var jobs []*cstables.TableBatchJob
+func (s *fakeBatchStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*cstables.TableProviderJob, error) {
+	var jobs []*cstables.TableProviderJob
+	if kind == "" {
+		kind = cstables.ProviderJobKindBatch
+	}
 	for _, job := range s.jobs {
+		// Mirror the real store: a sweeper only ever sees its own kind's rows.
+		jobKind := job.Kind
+		if jobKind == "" {
+			jobKind = cstables.ProviderJobKindBatch
+		}
+		if jobKind != kind {
+			continue
+		}
 		if provider != "" && job.Provider != provider {
 			continue
 		}
 		if job.NextCheckAt == nil || job.NextCheckAt.After(now) {
 			continue
 		}
-		if job.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || job.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+		if job.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || job.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable {
 			continue
 		}
 		jobs = append(jobs, job)
@@ -102,23 +113,30 @@ func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, 
 	return jobs, nil
 }
 
-func (s *fakeBatchStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (s *fakeBatchStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	entry, ok := s.jobs[jobID]
 	if !ok {
 		return false, errors.New("missing batch job")
 	}
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || entry.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted {
+		return false, nil
+	}
+	// "unpriceable" is a stop-polling marker, not a refusal of money: a caller
+	// holding real results may re-drive it. Mirrors the real store's allowUnpriceable,
+	// which this fake previously ignored — hiding the result-driven re-accounting path
+	// from every test using it.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable && !allowUnpriceable {
 		return false, nil
 	}
 	// Claim staleness reads claimed_at, not updated_at — updated_at is refreshed by
-	// the unfenced UpsertBatchJob, so it cannot represent claim age.
-	if entry.AccountingStatus == cstables.BatchJobAccountingStatusProcessing &&
+	// the unfenced UpsertProviderJob, so it cannot represent claim age.
+	if entry.AccountingStatus == cstables.ProviderJobAccountingStatusProcessing &&
 		entry.ClaimedAt != nil && entry.ClaimedAt.After(staleBefore) {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	rid := runnerID
-	entry.AccountingStatus = cstables.BatchJobAccountingStatusProcessing
+	entry.AccountingStatus = cstables.ProviderJobAccountingStatusProcessing
 	entry.RunnerID = &rid
 	entry.ClaimedAt = &now
 	entry.UpdatedAt = now
@@ -139,7 +157,7 @@ func (s *fakeBatchStore) markTerminal(id, status, reason string) error {
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -149,7 +167,7 @@ func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id
 	return nil
 }
 
-func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id, runnerID string) error {
+func (s *fakeBatchStore) MarkProviderJobGovernanceReported(ctx context.Context, id, runnerID string) error {
 	entry, ok := s.jobs[id]
 	if !ok {
 		return errors.New("missing batch job")
@@ -159,16 +177,16 @@ func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id,
 	return nil
 }
 
-func (s *fakeBatchStore) CompleteBatchJob(ctx context.Context, id, runnerID string) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusAccounted, "")
+func (s *fakeBatchStore) CompleteProviderJob(ctx context.Context, id, runnerID string) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusAccounted, "")
 }
 
-func (s *fakeBatchStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusUnpriceable, reason)
+func (s *fakeBatchStore) MarkProviderJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusUnpriceable, reason)
 }
 
-func (s *fakeBatchStore) FailBatchJob(ctx context.Context, id, runnerID string, err error) error {
-	return s.markTerminal(id, cstables.BatchJobAccountingStatusError, "")
+func (s *fakeBatchStore) FailProviderJob(ctx context.Context, id, runnerID string, err error) error {
+	return s.markTerminal(id, cstables.ProviderJobAccountingStatusError, "")
 }
 
 func newTestStore(t *testing.T) logstore.LogStore {
@@ -412,6 +430,8 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 		"region": "us-east",
 	})
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, "proj-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectName, "Project One")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -456,9 +476,15 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
 	}
+	if logEntry.ProjectID == nil || *logEntry.ProjectID != "proj-1" {
+		t.Fatalf("expected project ID proj-1 on the minimal-error entry, got %v", logEntry.ProjectID)
+	}
+	if logEntry.ProjectName == nil || *logEntry.ProjectName != "Project One" {
+		t.Fatalf("expected project name %q on the minimal-error entry, got %v", "Project One", logEntry.ProjectName)
+	}
 }
 
-func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
+func TestEmitAggregateLogRunsCallback(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
 		ctx:   context.Background(),
@@ -477,7 +503,7 @@ func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
 		Model:     "gpt-4o-mini",
 		Status:    "success",
 	}
-	plugin.EmitBatchAggregateLog(context.Background(), entry)
+	plugin.EmitAggregateLog(context.Background(), entry)
 	if callbacks != 1 {
 		t.Fatalf("callback count after emit = %d, want 1", callbacks)
 	}
@@ -2726,12 +2752,12 @@ func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
 			}
 			plugin.recordBatchJobLifecycle(entry, result)
 
-			job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", batchID))
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", batchID))
 			if err != nil {
-				t.Fatalf("GetBatchJob() error = %v", err)
+				t.Fatalf("GetProviderJob() error = %v", err)
 			}
-			if job.BatchID != batchID {
-				t.Fatalf("expected batch_id %s, got %s", batchID, job.BatchID)
+			if job.JobID != batchID {
+				t.Fatalf("expected batch_id %s, got %s", batchID, job.JobID)
 			}
 			if job.ProviderStatus != tt.status {
 				t.Fatalf("expected status %s, got %s", tt.status, job.ProviderStatus)
@@ -2787,9 +2813,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	}
 	plugin.recordBatchJobLifecycle(entry, result)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-create-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-create-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.Model != "gpt-4o" {
 		t.Fatalf("expected model %s, got %s", "gpt-4o", job.Model)
@@ -2797,8 +2823,8 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	if job.InputFileID != "file-abc" {
 		t.Fatalf("expected input_file_id %s, got %s", "file-abc", job.InputFileID)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusPending {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusPending, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusPending {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusPending, job.AccountingStatus)
 	}
 }
 
@@ -2827,9 +2853,9 @@ func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
 	plugin.accountBatchResults(entry, nonResultsResult, nil)
 
 	// Verify no batch_jobs rows were created
-	jobs, err := bs.ListDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
+	jobs, err := bs.ListDueProviderJobs(context.Background(), cstables.ProviderJobKindBatch, "openai", time.Now().UTC().Add(time.Hour), 100)
 	if err != nil {
-		t.Fatalf("ListDueBatchJobs() error = %v", err)
+		t.Fatalf("ListDueProviderJobs() error = %v", err)
 	}
 	if len(jobs) > 0 {
 		t.Fatalf("expected no batch jobs from non-batch-response, got %d", len(jobs))
@@ -2861,15 +2887,15 @@ func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
 
 	plugin.accountBatchResults(entry, result, nil)
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-empty-results"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-empty-results"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
-	if job.AccountingStatus != cstables.BatchJobAccountingStatusUnpriceable {
-		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusUnpriceable {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	}
-	if job.UnpriceableReason == nil || *job.UnpriceableReason != batchaccounting.UnpriceableReasonNoResults {
-		t.Fatalf("expected unpriceable_reason %s, got %#v", batchaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
+	if job.UnpriceableReason == nil || *job.UnpriceableReason != jobaccounting.UnpriceableReasonNoResults {
+		t.Fatalf("expected unpriceable_reason %s, got %#v", jobaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
 	}
 }
 
@@ -2945,7 +2971,7 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 	aggregateRows := 0
 	for _, l := range logs.Logs {
-		if l.ID == batchaccounting.AccountingLogID(schemas.OpenAI, "batch-repeat-fetch") {
+		if l.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch-repeat-fetch") {
 			aggregateRows++
 		}
 	}
@@ -2954,15 +2980,15 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 }
 
-// noopBatchFetcher satisfies batchaccounting.BatchResultFetcher without touching a
+// noopBatchFetcher satisfies jobaccounting.BatchResultFetcher without touching a
 // provider: the point of the test below is that it is never reached.
 type noopBatchFetcher struct{}
 
-func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	return nil, nil
 }
 
-func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
 	return nil, nil
 }
 
@@ -3031,9 +3057,9 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 		},
 	})
 
-	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-identity-123"))
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-identity-123"))
 	if err != nil {
-		t.Fatalf("GetBatchJob() error = %v", err)
+		t.Fatalf("GetProviderJob() error = %v", err)
 	}
 	if job.UserID == nil || *job.UserID != userID {
 		t.Fatalf("expected user_id %s, got %v", userID, job.UserID)
@@ -3046,5 +3072,247 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 	}
 	if job.SourceLogID == nil || *job.SourceLogID != entry.ID {
 		t.Fatalf("expected source_log_id %s, got %v", entry.ID, job.SourceLogID)
+	}
+}
+
+// newVideoLifecyclePlugin is the minimal plugin a video lifecycle record needs.
+func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
+	t.Helper()
+	bs := newFakeBatchStore()
+	return &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      newTestStore(t),
+		batchStore: bs,
+		logger:     testLogger{},
+	}, bs
+}
+
+// The request is the only witness to duration and resolution for most providers,
+// and it is in hand exactly once — here. If it is not written down now, settlement
+// minutes later has nothing to price from.
+func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	audio := true
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:            "req-video-1",
+		Provider:      string(schemas.OpenAI),
+		Model:         "sora-2-pro",
+		SelectedKeyID: "key-abc",
+		ParamsParsed: &schemas.VideoGenerationParameters{
+			Seconds: &eightSeconds,
+			Size:    "1920x1080",
+			Audio:   &audio,
+		},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_abc",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_abc"))
+	if err != nil {
+		t.Fatalf("expected a video job row: %v", err)
+	}
+	if job.Kind != cstables.ProviderJobKindVideo {
+		t.Fatalf("kind = %q, want %q", job.Kind, cstables.ProviderJobKindVideo)
+	}
+	if job.Model != "sora-2-pro" {
+		t.Fatalf("model = %q, want sora-2-pro", job.Model)
+	}
+	if job.NextCheckAt == nil {
+		t.Fatal("a queued video must be scheduled for a poll")
+	}
+	// The sweeper pins its poll to this key. An OpenAI video id is visible only to
+	// the key that created it, so a row without one can only be polled by whatever
+	// key core happens to pick — which will be told the video does not exist.
+	if job.SelectedKeyID != "key-abc" {
+		t.Fatalf("selected key id = %q, want key-abc", job.SelectedKeyID)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("seconds = %v, want 8", dims.Seconds)
+	}
+	if dims.Size != "1920x1080" {
+		t.Fatalf("size = %q, want 1920x1080", dims.Size)
+	}
+	if dims.Audio == nil || !*dims.Audio {
+		t.Fatalf("audio = %v, want true", dims.Audio)
+	}
+	if dims.RequestType != schemas.VideoGenerationRequest {
+		t.Fatalf("request type = %q, want %q", dims.RequestType, schemas.VideoGenerationRequest)
+	}
+}
+
+// A video submitted before this build was already charged at submission. Creating
+// its row on a later retrieve would hand it to the sweeper and charge it twice.
+func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	entry := &logstore.Log{ID: "req-video-retrieve", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_pre_upgrade",
+			Status: schemas.VideoStatusCompleted,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoRetrieveRequest)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_pre_upgrade")); err == nil {
+		t.Fatal("a retrieve must never create a job row we did not see submitted")
+	}
+}
+
+// A retrieve on a job we did submit must still advance it, without losing the
+// dimensions the submission captured.
+func TestRecordVideoJobLifecycle_RetrieveAdvancesKnownJob(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-2",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	retrieved := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusCompleted},
+	}
+	plugin.recordVideoJobLifecycle(entry, retrieved, schemas.VideoRetrieveRequest)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_known"))
+	if err != nil {
+		t.Fatalf("expected the submitted job row: %v", err)
+	}
+	if job.ProviderStatus != string(schemas.VideoStatusCompleted) {
+		t.Fatalf("provider status = %q, want completed", job.ProviderStatus)
+	}
+
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 8 {
+		t.Fatalf("the submission's dimensions must survive a retrieve that reports none: %v", dims.Seconds)
+	}
+	if dims.Size != "1280x720" {
+		t.Fatalf("size = %q, want 1280x720", dims.Size)
+	}
+}
+
+// The retrieve path settles inline off the response the caller already fetched,
+// instead of leaving the sweeper to fetch it a second time up to a sweep interval
+// later. The submission is recorded first, then the terminal poll settles it.
+func TestAccountVideoResults_SettlesTheJobTheSubmissionRecorded(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-inline",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	submitted := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_inline_wired", Status: schemas.VideoStatusQueued},
+	}
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_inline_wired",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, terminal, schemas.VideoRetrieveRequest)
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_inline_wired"))
+	if err != nil {
+		t.Fatalf("GetProviderJob() error = %v", err)
+	}
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusAccounted {
+		t.Fatalf("accounting_status = %s, want %s", job.AccountingStatus, cstables.ProviderJobAccountingStatusAccounted)
+	}
+}
+
+// A video submitted before this build was charged at submission; settling it now
+// would bill it twice. With no coordination row, the inline path must do nothing.
+func TestAccountVideoResults_SkipsAJobWithNoCoordinationRow(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	entry := &logstore.Log{ID: "req-video-orphan", Provider: string(schemas.OpenAI), Model: "sora-2-pro"}
+	terminal := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_orphan",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
+		},
+	}
+	plugin.accountVideoResults(entry, terminal, nil)
+
+	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_orphan")); err == nil {
+		t.Fatal("inline settlement must not create a job row for a video we never saw submitted")
+	}
+}
+
+// The submission row must name the video it started, so the settlement that lands
+// minutes later is traceable back to it. No accounting block here — that is what
+// distinguishes the settlement's own cost row from this one.
+func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
+	plugin, _ := newVideoLifecyclePlugin(t)
+
+	eightSeconds := "8"
+	entry := &logstore.Log{
+		ID:           "req-video-debug",
+		Provider:     string(schemas.OpenAI),
+		Model:        "sora-2-pro",
+		ParamsParsed: &schemas.VideoGenerationParameters{Seconds: &eightSeconds, Size: "1280x720"},
+	}
+	result := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_marked",
+			Status: schemas.VideoStatusQueued,
+		},
+	}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+	if entry.VideoDebugParsed == nil {
+		t.Fatal("the submission row must name the video it started")
+	}
+	if entry.VideoDebugParsed.VideoID != "vid_marked" {
+		t.Fatalf("video id = %q, want vid_marked", entry.VideoDebugParsed.VideoID)
+	}
+	if entry.VideoDebugParsed.Status != schemas.VideoStatusQueued {
+		t.Fatalf("status = %q, want queued", entry.VideoDebugParsed.Status)
+	}
+	if entry.VideoDebugParsed.Accounting != nil {
+		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
 	}
 }

@@ -145,6 +145,23 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	degraded: "bg-blue-100 text-blue-800",
 };
 
+// Credential row statuses (the admin/shared OAuth token or the admin header
+// values a server holds on its own behalf), in the same soft-pill palette as
+// MCP_STATUS_COLORS so a credential badge reads like every other status
+// badge: green for usable, red for "a human must act", amber for
+// informational.
+export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
+	active: "bg-green-100 text-green-800",
+	needs_reauth: "bg-red-100 text-red-800",
+	needs_update: "bg-red-100 text-red-800",
+	orphaned: "bg-yellow-100 text-yellow-800",
+	// Sessions table only: an OAuth flow that was started but not completed.
+	pending: "bg-gray-100 text-gray-800",
+	// Fallback for a status value this build does not know. Neutral on
+	// purpose: an unrecognized status must not read as usable.
+	unknown: "bg-gray-100 text-gray-800",
+};
+
 // Mapping of what IS supported by each base provider
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [

@@ -672,12 +672,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -686,6 +688,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -697,6 +700,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 							case "should_convert_params":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+							case "azure_deepseek":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 							}
 						}
 					}
@@ -822,7 +827,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 
 	// Everything the middlewares and the headers can say about who this request is now sits on the
 	// context, so this is where it is settled onto the request's grant.
-	settleIdentity(bifrostCtx)
+	SettleIdentity(bifrostCtx)
 
 	return bifrostCtx, cancel
 }

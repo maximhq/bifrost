@@ -1690,6 +1690,12 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
+// case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
+func IsDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -1725,6 +1731,25 @@ func isOSeriesModel(model string) bool {
 // IsAzureModelRouter reports whether model is Azure's model-router model.
 func IsAzureModelRouter(model string) bool {
 	return strings.Contains(model, "model-router")
+}
+
+// ServedModel returns the model the provider named on the response body. It can
+// differ from the model the caller addressed.
+func (r *BifrostResponse) ServedModel() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.Model
+	case r.ResponsesResponse != nil:
+		return r.ResponsesResponse.Model
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Model
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.Model
+	}
+	return ""
 }
 
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound

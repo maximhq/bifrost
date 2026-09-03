@@ -397,6 +397,46 @@ func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	}
 }
 
+// TestSchemaGuardrailRuleConversationWindow verifies config accepts the explicit
+// history switch and rejects non-boolean values before Enterprise reconciliation.
+func TestSchemaGuardrailRuleConversationWindow(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		window    string
+		wantError bool
+	}{
+		{name: "current input only is valid", window: `,"send_all_conversation_turns":false,"max_turns_to_send":0`},
+		{name: "all history is valid", window: `,"send_all_conversation_turns":true`},
+		{name: "non boolean switch is rejected", window: `,"send_all_conversation_turns":"false"`, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "Conversation rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, test.window)
+
+			err := validateConfig(t, compiled, config)
+			if test.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 
@@ -1276,6 +1316,58 @@ func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
 			plain := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "1M"}`)
 			if err := validateConfig(t, compiled, plain); err != nil {
 				t.Errorf("a budget with no reset_config must stay valid on any duration, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestSchemaGovernanceProjectsValidation pins the constraints a governance.projects declaration
+// has to satisfy before the reconciler sees it: the two policies that cannot combine, the model
+// tier the provider's own budget already covers, a rate limit that would enforce nothing, negative
+// caps, and a members list the file cannot declare.
+func TestSchemaGovernanceProjectsValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		project   string
+		wantError bool
+	}{
+		{
+			name: "a full declaration is valid",
+			project: `{
+				"name": "atlas", "access_rule": "union", "split_policy": "equal",
+				"budgets": [{"max_limit": 100, "reset_duration": "1M"}],
+				"rate_limit": {"request_max_limit": 10, "request_reset_duration": "1m"},
+				"provider_configs": [{"provider_name": "openai", "allowed_models": ["gpt-4o"],
+					"budgets": [{"max_limit": 40, "reset_duration": "1d"}],
+					"model_budgets": [{"model_name": "gpt-4o", "budgets": [{"max_limit": 5, "reset_duration": "1d"}]}]}],
+				"mcp_configs": [{"mcp_client_name": "github", "tools_to_execute": ["*"]}]
+			}`,
+		},
+		{name: "an open project cannot split equally", project: `{"name": "p", "access_rule": "union", "membership_mode": "open", "split_policy": "equal"}`, wantError: true},
+		{name: "an open project with no split is valid", project: `{"name": "p", "access_rule": "union", "membership_mode": "open", "split_policy": "none"}`},
+		{name: "an open project with the default split is valid", project: `{"name": "p", "access_rule": "union", "membership_mode": "open"}`},
+		{name: "the wildcard model tier is rejected", project: `{"name": "p", "access_rule": "union", "provider_configs": [{"provider_name": "openai", "model_budgets": [{"model_name": "*"}]}]}`, wantError: true},
+		{name: "an empty rate limit is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {}}`, wantError: true},
+		{name: "a token cap without its window is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"token_max_limit": 1000}}`, wantError: true},
+		{name: "a request cap without its window is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"request_max_limit": 10, "token_reset_duration": "1h"}}`, wantError: true},
+		{name: "one complete pair is a valid rate limit", project: `{"name": "p", "access_rule": "union", "rate_limit": {"token_max_limit": 1000, "token_reset_duration": "1h"}}`},
+		{name: "a negative budget cap is rejected", project: `{"name": "p", "access_rule": "union", "budgets": [{"max_limit": -1, "reset_duration": "1M"}]}`, wantError: true},
+		{name: "a negative token cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"token_max_limit": -1, "token_reset_duration": "1h"}}`, wantError: true},
+		{name: "a negative request cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"request_max_limit": -1, "request_reset_duration": "1m"}}`, wantError: true},
+		{name: "a members list cannot be declared", project: `{"name": "p", "access_rule": "union", "members": [{"user_id": "u-1"}]}`, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{"governance": {"projects": [%s]}}`, tt.project)
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
 			}
 		})
 	}

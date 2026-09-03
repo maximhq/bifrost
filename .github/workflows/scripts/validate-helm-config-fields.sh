@@ -1144,6 +1144,16 @@ bifrost:
         stream_replay_event_interval_ms: 25
         provider_config_ids:
           - 1
+      - id: 2
+        name: "Current input only"
+        enabled: true
+        target: "llm"
+        cel_expression: 'provider == "openai"'
+        apply_to: "input"
+        send_all_conversation_turns: false
+        max_turns_to_send: 0
+        provider_config_ids:
+          - 1
     providers:
       - id: 1
         provider_name: "bedrock"
@@ -1166,6 +1176,8 @@ assert_field_value 'guardrails rule[0].sampling_rate' '.guardrails_config.guardr
 assert_field_value 'guardrails rule[0].timeout' '.guardrails_config.guardrail_rules.[0].timeout' '1000'
 assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardrails_config.guardrail_rules.[0].stream_replay_event_interval_ms' '25'
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
+assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
+assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'

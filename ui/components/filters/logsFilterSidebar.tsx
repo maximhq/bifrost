@@ -113,6 +113,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CustomerFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<BusinessUnitFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ProjectFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -1115,6 +1116,65 @@ function BusinessUnitFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="business-units-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ProjectFilter
+// ---------------------------------------------------------------------------
+
+function ProjectFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.project_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["projects"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableProjects = filterData?.projects || [];
+	const nameToIds = useMemo(() => groupByName(availableProjects), [availableProjects]);
+
+	if (!isUninitialized && !isLoading && availableProjects.length === 0 && !hasActive && !opened) return null;
+
+	const toggle = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.project_ids || [];
+		const allSelected = resolvedIds.every((id) => current.includes(id));
+		const next = allSelected
+			? current.filter((v) => !resolvedIds.includes(v))
+			: [...current, ...resolvedIds.filter((id) => !current.includes(id))];
+		onFiltersChange({ ...filters, project_ids: next });
+	};
+
+	const isSelected = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.project_ids || [];
+		return resolvedIds.every((id) => current.includes(id));
+	};
+
+	return (
+		<FilterSection
+			title="Projects"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="projects-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a project"
+				items={dedup(availableProjects).map((name) => ({ key: name, label: name }))}
+				allowCustom
+				isSelected={isSelected}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="projects-filter"
 			/>
 		</FilterSection>
 	);

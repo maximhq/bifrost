@@ -9,7 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
@@ -1192,7 +1192,7 @@ func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
 	store := plugin.store
 
 	entry := &logstore.Log{
-		ID:        batchaccounting.AccountingLogID(schemas.OpenAI, "batch_e2e_mixed"),
+		ID:        jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_e2e_mixed"),
 		Timestamp: time.Now().UTC(),
 		Object:    string(schemas.BatchResultsRequest),
 		Provider:  string(schemas.OpenAI),
@@ -1215,7 +1215,7 @@ func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Updated)
 
-	logged, err := store.FindByID(context.Background(), batchaccounting.AccountingLogID(schemas.OpenAI, "batch_e2e_mixed"))
+	logged, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_e2e_mixed"))
 	require.NoError(t, err)
 	require.NotNil(t, logged.Cost)
 
@@ -1247,7 +1247,7 @@ func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
 	settledCost := wantGPT4o + wantGPT4oMini
 
 	entry := &logstore.Log{
-		ID:        batchaccounting.AccountingLogID(schemas.OpenAI, "batch_job_priced"),
+		ID:        jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_job_priced"),
 		Timestamp: time.Now().UTC(),
 		Object:    string(schemas.BatchResultsRequest),
 		Provider:  string(schemas.OpenAI),
@@ -1278,7 +1278,7 @@ func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &meta))
 	require.Equal(t, 1, meta.Updated)
 
-	logged, err := store.FindByID(ctx, batchaccounting.AccountingLogID(schemas.OpenAI, "batch_job_priced"))
+	logged, err := store.FindByID(ctx, jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_job_priced"))
 	require.NoError(t, err)
 	require.NotNil(t, logged.Cost)
 	assertCostsEqual(t, "batch row cost after background recalculation", *logged.Cost, settledCost)
@@ -1305,7 +1305,7 @@ func TestRecalculateCostsDoesNotBillBatchEchoRow(t *testing.T) {
 	ctx := context.Background()
 
 	const batchID = "batch_echo"
-	aggregateID := batchaccounting.AccountingLogID(schemas.OpenAI, batchID)
+	aggregateID := jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, batchID)
 	staleCost := 42.0
 	now := time.Now().UTC()
 

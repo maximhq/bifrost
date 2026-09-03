@@ -369,7 +369,6 @@ func TestTablePlugin_EncryptDecrypt(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "test-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "secret-plugin-key", "endpoint": "https://plugin.example.com"},
 	}
 
@@ -394,7 +393,6 @@ func TestTablePlugin_EmptyConfig_NoEncryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "empty-plugin",
 		Enabled: true,
-		Version: 1,
 		// nil Config will serialize to "{}"
 	}
 
@@ -1157,7 +1155,6 @@ func TestTablePlugin_UpdatePreservesDecryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "update-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"key": "original-secret"},
 	}
 	require.NoError(t, db.Create(plugin).Error)
@@ -1653,7 +1650,6 @@ func TestTablePlugin_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "disabled-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "plugin-secret"},
 	}
 

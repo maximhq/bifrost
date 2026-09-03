@@ -62,6 +62,7 @@ type SearchFilters struct {
 	CustomerIDs       []string          `json:"customer_ids,omitempty"`
 	UserIDs           []string          `json:"user_ids,omitempty"`
 	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
+	ProjectIDs        []string          `json:"project_ids,omitempty"`
 	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
 	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
@@ -196,6 +197,7 @@ type Log struct {
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
 	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
+	ServedModel             *string   `gorm:"type:varchar(255)" json:"served_model,omitempty"` // Model the provider named on the response body when it differs from Model
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -217,6 +219,8 @@ type Log struct {
 	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
 	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
+	ProjectID               *string   `gorm:"type:varchar(255);index:idx_logs_project_id" json:"project_id"`
+	ProjectName             *string   `gorm:"type:varchar(255)" json:"project_name"`
 	TeamIDs                 *string   `gorm:"type:text" json:"-"`
 	TeamNames               *string   `gorm:"type:text" json:"-"`
 	CustomerIDs             *string   `gorm:"type:text" json:"-"`
@@ -329,6 +333,11 @@ type Log struct {
 	// operational records rather than request content, so they must survive
 	// object-storage offload and content-hidden rows.
 	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+	// VideoDebug carries the video job id and lifecycle status, and on the aggregate
+	// cost row the pricing detail that distinguishes it from the submission it
+	// settles. Operational, like BatchDebug — it must survive object-storage offload
+	// and content-hidden rows.
+	VideoDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDebug
 
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
@@ -361,6 +370,7 @@ type Log struct {
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
+	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
@@ -725,6 +735,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.VideoDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.VideoDebugParsed); err != nil {
+			return err
+		} else {
+			l.VideoDebug = string(data)
+		}
+	}
+
 	if l.GuardrailDebugParsed != nil {
 		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
 			return err
@@ -1069,6 +1087,12 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.VideoDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoDebug), &l.VideoDebugParsed); err != nil {
+			l.VideoDebugParsed = nil
+		}
+	}
+
 	if l.GuardrailDebug != "" {
 		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -1262,6 +1286,8 @@ type MCPToolLog struct {
 	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
+	ProjectID      *string   `gorm:"type:varchar(255);index:idx_mcp_logs_project_id" json:"project_id"`
+	ProjectName    *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent      *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App            *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
 	Arguments      string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
@@ -1960,6 +1986,7 @@ const (
 	DimensionCustomer     HistogramDimension = "customer_id"
 	DimensionUser         HistogramDimension = "user_id"
 	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+	DimensionProject      HistogramDimension = "project_id"
 	DimensionApp          HistogramDimension = "app"
 	DimensionUserAgent    HistogramDimension = "user_agent"
 )
@@ -1971,6 +1998,7 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+	DimensionProject:      true,
 	DimensionApp:          true,
 	DimensionUserAgent:    true,
 }
@@ -1991,6 +2019,8 @@ func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
 		return "user_id", true
 	case DimensionBusinessUnit:
 		return "business_unit_id", true
+	case DimensionProject:
+		return "project_id", true
 	}
 	return "", false
 }
@@ -2171,6 +2201,7 @@ const (
 	RankingDimensionTeam         RankingDimension = "team"
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionProject      RankingDimension = "project"
 	RankingDimensionUser         RankingDimension = "user"
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 	RankingDimensionApp          RankingDimension = "app"
@@ -2181,6 +2212,7 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionTeam:         true,
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
+	RankingDimensionProject:      true,
 	RankingDimensionUser:         true,
 	RankingDimensionVirtualKey:   true,
 	RankingDimensionApp:          true,
@@ -2196,6 +2228,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionProject:      {IDCol: "project_id", NameCol: "project_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},

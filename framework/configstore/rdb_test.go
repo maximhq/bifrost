@@ -2291,6 +2291,31 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(azureDeepseek bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{AzureDeepseek: azureDeepseek},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.AzureDeepseek, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2592,7 +2617,6 @@ func TestCreateAndGetPlugin(t *testing.T) {
 	plugin := &tables.TablePlugin{
 		Name:    "test-plugin",
 		Enabled: true,
-		Version: 1,
 	}
 
 	err := store.CreatePlugin(ctx, plugin)
@@ -2612,19 +2636,73 @@ func TestUpsertPlugin(t *testing.T) {
 	plugin := &tables.TablePlugin{
 		Name:    "upsert-plugin",
 		Enabled: true,
-		Version: 1,
 	}
 	err := store.UpsertPlugin(ctx, plugin)
 	require.NoError(t, err)
 
 	// Upsert with update
-	plugin.Version = 2
+	plugin.Enabled = false
 	err = store.UpsertPlugin(ctx, plugin)
 	require.NoError(t, err)
 
 	result, err := store.GetPlugin(ctx, "upsert-plugin")
 	require.NoError(t, err)
-	assert.Equal(t, int16(2), result.Version)
+	assert.False(t, result.Enabled)
+}
+
+// TestUpdatePluginPreservesPlacementAndOrder verifies that a UI/API edit, which sends neither
+// field because the UI has no control over them, does not clear the stored placement/order.
+func TestUpdatePluginPreservesPlacementAndOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	preBuiltin := schemas.PluginPlacementPreBuiltin
+	order7 := 7
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "ordering-plugin", Enabled: true, Placement: &preBuiltin, Order: &order7,
+		Config: map[string]any{"setting": "old"},
+	}))
+
+	require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{
+		Name: "ordering-plugin", Enabled: true, Config: map[string]any{"setting": "new"},
+	}))
+
+	result, err := store.GetPlugin(ctx, "ordering-plugin")
+	require.NoError(t, err)
+	require.NotNil(t, result.Placement)
+	assert.Equal(t, preBuiltin, *result.Placement)
+	require.NotNil(t, result.Order)
+	assert.Equal(t, 7, *result.Order)
+	assert.Equal(t, map[string]any{"setting": "new"}, result.Config, "the edit itself must still apply")
+}
+
+// TestUpdatePluginPreservesSyncState verifies that a UI/API edit, which sets neither field,
+// keeps the stored config hash and version. Clearing either makes the next startup read
+// config.json as changed and revert the edit.
+func TestUpdatePluginPreservesSyncState(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name:       "sync-state-plugin",
+		Enabled:    true,
+		Version:    3,
+		ConfigHash: "hash-from-last-file-sync",
+		Config:     map[string]any{"setting": "file-value"},
+	}))
+
+	// A UI/API edit: only the fields the form knows about.
+	require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{
+		Name:    "sync-state-plugin",
+		Enabled: true,
+		Config:  map[string]any{"setting": "ui-value"},
+	}))
+
+	result, err := store.GetPlugin(ctx, "sync-state-plugin")
+	require.NoError(t, err)
+	assert.Equal(t, "hash-from-last-file-sync", result.ConfigHash)
+	assert.Equal(t, int16(3), result.Version)
+	assert.Equal(t, map[string]any{"setting": "ui-value"}, result.Config)
 }
 
 // =============================================================================
@@ -4207,4 +4285,208 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 
 		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
 	})
+}
+
+// TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync pins the
+// ON CONFLICT DO UPDATE path: a column missing from pricingSyncUpdateColumns is
+// written on the initial Create but silently dropped on every later sync of an
+// existing row.
+func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := tables.TableModelPricing{Model: "sora-2-pro", Provider: "openai", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerVideoPerSecond480p = cost(0.10)
+	row.OutputCostPerVideoPerSecond720p = cost(0.30)
+	row.OutputCostPerVideoPerSecond1024p = cost(0.50)
+	row.OutputCostPerVideoPerSecond1080p = cost(0.70)
+	row.OutputCostPerVideoPerSecond4k = cost(0.60)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "sora-2-pro" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.OutputCostPerVideoPerSecond480p, "output_cost_per_video_per_second_480p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond720p, "output_cost_per_video_per_second_720p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond1024p, "output_cost_per_video_per_second_1024p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond1080p, "output_cost_per_video_per_second_1080p missing from pricingSyncUpdateColumns")
+	require.NotNil(t, found.OutputCostPerVideoPerSecond4k, "output_cost_per_video_per_second_4k missing from pricingSyncUpdateColumns")
+	assert.Equal(t, 0.10, *found.OutputCostPerVideoPerSecond480p)
+	assert.Equal(t, 0.30, *found.OutputCostPerVideoPerSecond720p)
+	assert.Equal(t, 0.50, *found.OutputCostPerVideoPerSecond1024p)
+	assert.Equal(t, 0.70, *found.OutputCostPerVideoPerSecond1080p)
+	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
+}
+
+// TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
+// TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
+// column, so any entity rebuilt from config.json — which carries no created_at —
+// has its original insert timestamp overwritten with the zero time unless the
+// store carries the persisted value forward.
+func TestRDBConfigStore_CreatedAtSurvivesConfigSync(t *testing.T) {
+	ctx := context.Background()
+
+	// seed inserts the entity and returns its persisted created_at. sync re-saves it
+	// shaped exactly the way the config.json reconciler builds one: same ID, changed
+	// payload, zero CreatedAt. verify asserts the changed payload actually landed
+	// before returning the created_at that survived, so an Update that quietly did
+	// nothing cannot pass a case just by leaving the row alone.
+	tests := []struct {
+		name   string
+		seed   func(t *testing.T, store *RDBConfigStore) time.Time
+		sync   func(t *testing.T, store *RDBConfigStore)
+		verify func(t *testing.T, store *RDBConfigStore) time.Time
+	}{
+		{
+			name: "RateLimit",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				max := int64(1000)
+				require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &max, TokenResetDuration: strPtr("1h"),
+				}))
+				created, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				newMax := int64(2000)
+				require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &newMax, TokenResetDuration: strPtr("1h"),
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				require.Equal(t, int64(2000), *got.TokenMaxLimit)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Team",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A"}))
+				created, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				require.Equal(t, "Team A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Customer",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A"}))
+				created, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				require.Equal(t, "Customer A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "ModelConfig",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global",
+				}))
+				created, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global", CalendarAligned: true,
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				require.True(t, got.CalendarAligned)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "PricingOverride",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+				created, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A renamed", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				require.Equal(t, "Override A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			// UpdatePlugin is a delete-and-reinsert, so without a carry-forward
+			// created_at is re-stamped to now() rather than zeroed.
+			name: "Plugin",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: true}))
+				created, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: false}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				require.False(t, got.Enabled)
+				return got.CreatedAt
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+
+			createdAt := tt.seed(t, store)
+			require.False(t, createdAt.IsZero())
+
+			tt.sync(t, store)
+
+			syncedAt := tt.verify(t, store)
+			require.False(t, syncedAt.IsZero())
+			require.Equal(t, createdAt, syncedAt, "created_at must survive a config sync")
+		})
+	}
 }

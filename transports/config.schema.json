@@ -30,7 +30,7 @@
     },
     "version": {
       "type": "integer",
-      "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
+      "description": "Controls how empty arrays in the allow-list fields of provider keys (models) and virtual keys (allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all. Projects under governance.projects are not affected: their allow-lists always treat empty or omitted as granting nothing, whatever this is set to.",
       "enum": [1, 2],
       "default": 2
     },
@@ -187,6 +187,11 @@
             "should_convert_params": {
               "type": "boolean",
               "description": "Converts model parameter values that are not supported by the model.",
+              "default": false
+            },
+            "azure_deepseek": {
+              "type": "boolean",
+              "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses.",
               "default": false
             }
           },
@@ -471,6 +476,9 @@
           "$ref": "#/$defs/provider"
         },
         "sarvam": {
+          "$ref": "#/$defs/provider"
+        },
+        "github-copilot": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -889,6 +897,13 @@
             },
             "required": ["name"],
             "additionalProperties": false
+          }
+        },
+        "projects": {
+          "type": "array",
+          "description": "Projects: per-request access gates and accounting scopes that requests opt into. Matched by name and created or updated on startup when the config hash changes; membership is managed from the dashboard and is never declared here.",
+          "items": {
+            "$ref": "#/$defs/project"
           }
         },
         "virtual_keys": {
@@ -2300,20 +2315,20 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 32767,
-            "description": "DB-Backed Only. Version metadata persisted on TablePlugin (default: 1). In DB-backed sync, version metadata is considered for plugin replacement/reload decisions.",
+            "description": "Integer version for a plugin (deprecated)",
             "optional": true,
             "default": 1
           },
           "placement": {
             "type": "string",
             "enum": ["pre_builtin", "post_builtin", "builtin"],
-            "description": "DB-Backed Only. Whether this plugin runs before, after, or as a built-in. Default: post_builtin. Ignored in config.json.",
+            "description": "DB-Backed Only. Whether this plugin runs before, after, or as a built-in. Default: post_builtin. Setting or changing it here reloads the plugin entry from config.json; omit it and the stored value is kept.",
             "optional": true,
             "default": "post_builtin"
           },
           "order": {
             "type": "integer",
-            "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
+            "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Setting or changing it here reloads the plugin entry from config.json; omit it and the stored value is kept.",
             "optional": true,
             "default": 0
           },
@@ -6875,10 +6890,14 @@
                 "minimum": 0,
                 "description": "Timeout in seconds for rule execution"
               },
+              "send_all_conversation_turns": {
+                "type": "boolean",
+                "description": "Whether to send all input conversation turns to the guardrail provider. When false, max_turns_to_send selects the current input plus preceding turns. Omit this field to preserve legacy behavior."
+              },
               "max_turns_to_send": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
+                "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
               },
               "evaluation_mode": {
                 "type": "string",
@@ -7183,6 +7202,289 @@
         }
       },
       "required": ["model_name"],
+      "additionalProperties": false
+    },
+    "project": {
+      "type": "object",
+      "description": "A project declared under governance.projects: what it grants, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "membership_mode": {
+                "const": "open"
+              }
+            },
+            "required": ["membership_mode"]
+          },
+          "then": {
+            "properties": {
+              "split_policy": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique project name. Requests reference it with the x-bf-project-name header; the reconciler matches the declaration to the stored project by this name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional project description"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether the project grants and accounts for anything",
+          "default": true
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the project stops granting anything; omit to never expire"
+        },
+        "access_rule": {
+          "type": "string",
+          "description": "How the project's grants compose with the grants a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "enum": ["union", "intersect"]
+        },
+        "membership_mode": {
+          "type": "string",
+          "description": "explicit consults the membership rows; open lets any caller opt in. An open project cannot divide its budget between members.",
+          "enum": ["explicit", "open"],
+          "default": "explicit"
+        },
+        "accounting_mode": {
+          "type": "string",
+          "description": "Which ledgers a request's spend lands on: the project's, the calling principal's, or both",
+          "enum": ["both", "project_only", "principal_only"],
+          "default": "both"
+        },
+        "split_policy": {
+          "type": "string",
+          "description": "How the budgets and rate limits the project holds, at every tier (its own, each provider's, and each model's), are divided between members: none leaves them shared, equal gives every member an equal share of each. A change to an equal split's roster or caps recomputes every share in the background.",
+          "enum": ["none", "equal"],
+          "default": "none"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, year) instead of rolling from first use",
+          "default": false
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "provider_configs": {
+          "type": "array",
+          "description": "Per-provider grants and accounting, one entry per provider",
+          "items": {
+            "$ref": "#/$defs/project_provider_config"
+          }
+        },
+        "mcp_configs": {
+          "type": "array",
+          "description": "MCP clients the project grants, one entry per client",
+          "items": {
+            "$ref": "#/$defs/project_mcp_config"
+          }
+        }
+      },
+      "required": ["name", "access_rule"],
+      "additionalProperties": false
+    },
+    "project_budget": {
+      "type": "object",
+      "description": "A spend cap on a project, a provider inside it, or a model under that provider",
+      "allOf": [
+        {
+          "if": {
+            "required": ["reset_config"]
+          },
+          "then": {
+            "required": ["reset_duration"],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "max_limit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". Also what pairs a declared budget with its stored row on a change."
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12. Omitted or 0 means January."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["max_limit", "reset_duration"],
+      "additionalProperties": false
+    },
+    "project_rate_limit": {
+      "type": "object",
+      "description": "A request and token rate limit on a project, a provider inside it, or a model under that provider. A cap is enforced only with its window, and a limit with neither pair enforces nothing, so at least one complete pair is required.",
+      "properties": {
+        "token_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of tokens allowed in the reset window"
+        },
+        "token_reset_duration": {
+          "type": "string",
+          "description": "Token reset window, e.g. \"1M\", \"1h\""
+        },
+        "request_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of requests allowed in the reset window"
+        },
+        "request_reset_duration": {
+          "type": "string",
+          "description": "Request reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "dependentRequired": {
+        "token_max_limit": ["token_reset_duration"],
+        "token_reset_duration": ["token_max_limit"],
+        "request_max_limit": ["request_reset_duration"],
+        "request_reset_duration": ["request_max_limit"]
+      },
+      "anyOf": [
+        {
+          "required": ["token_max_limit"]
+        },
+        {
+          "required": ["request_max_limit"]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "project_provider_config": {
+      "type": "object",
+      "properties": {
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name. A project names each provider at most once; on a change the entry is matched to its stored row by this name."
+        },
+        "all_models_allowed": {
+          "type": "boolean",
+          "description": "Whether all models under this provider are allowed",
+          "default": false
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key IDs allowed for this provider. Use [\"*\"] to allow all keys; empty array or omitted allows none, regardless of the top-level version. Specific IDs restrict access to those keys only, and each must belong to this provider.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weight": {
+          "type": ["number", "null"],
+          "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
+          "default": null
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps on this provider inside the project",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits under this provider, at most one entry per model",
+          "items": {
+            "$ref": "#/$defs/project_provider_model_budget"
+          }
+        }
+      },
+      "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "project_provider_model_budget": {
+      "type": "object",
+      "description": "Per-model budget group under a project provider config, with optional per-model rate limit",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "not": {
+            "const": "*"
+          },
+          "description": "Model this budget group applies to (scoped to the parent provider). The \"*\" tier is not accepted here; the provider's own budgets cover it."
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps for this model",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        }
+      },
+      "required": ["model_name"],
+      "additionalProperties": false
+    },
+    "project_mcp_config": {
+      "type": "object",
+      "properties": {
+        "mcp_client_name": {
+          "type": "string",
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project grants. Resolved to the stored client on startup; a name that matches no client is refused."
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools of the client the project grants. Use [\"*\"] to grant every tool; empty array or omitted grants none, regardless of the top-level version.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mcp_client_name"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_group": {

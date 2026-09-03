@@ -699,7 +699,6 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1044,6 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1062,7 +1060,8 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	request *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1134,7 +1133,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageEdit performs an image edit request to Azure's API.
@@ -1203,7 +1201,6 @@ func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, post
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageVariation is not supported by the Azure provider.

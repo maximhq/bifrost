@@ -1,3 +1,6 @@
 - fix: give a Bedrock message a placeholder text block instead of a null `content` field when it has no text and no tool calls - `BedrockMessage.Content` has no `omitempty`, so a message with empty text and no tool calls (or an empty `tool_calls` array) serialized as `content:null`, which Converse rejects with "Member must not be null" (#2765)
+- [fix]: marshal required nullable response fields as null [@PSR94](https://github.com/PSR94)
+- fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
+- feat: add Baseten to Hugging Face inference provider discovery [@nicolastoulemont](https://github.com/nicolastoulemont)
 - fix: strip the encrypted reasoning signature when the upstream reports the field as unsupported (e.g. Bedrock Converse replaying a Claude signature onto a non-Anthropic model after a mid-conversation model switch), extending the existing unverifiable-signature fail-soft
 - fix: clear Anthropic raw-body passthrough based on the resolved provider and model pair, so non-Claude models on multi-family providers (Vertex, Azure, Bedrock Mantle) convert the request instead of passing the Anthropic payload through

@@ -188,6 +188,7 @@ const (
 	filterDimCustomers      = "customers"
 	filterDimUsers          = "users"
 	filterDimBusinessUnits  = "business_units"
+	filterDimProjects       = "projects"
 	filterDimMetadataKeys   = "metadata_keys"
 )
 
@@ -204,7 +205,7 @@ var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
 	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
-	filterDimBusinessUnits, filterDimMetadataKeys,
+	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
@@ -650,6 +651,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -914,6 +918,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -994,8 +1001,77 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
 		return
 	}
+	if stats == nil {
+		logger.Error("log stats returned no result")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Stats calculation returned no result")
+		return
+	}
 
-	SendJSON(ctx, stats)
+	response := &LogStatsResponse{SearchStats: *stats}
+
+	// compare_to_previous adds the same stats for the immediately preceding window
+	// of equal length, so the UI can show change-vs-previous-period without having
+	// to derive that window itself (period= is resolved server side above).
+	if compare := string(ctx.QueryArgs().Peek("compare_to_previous")); compare != "" {
+		// Not every filter has a preceding window to compare against; where it does
+		// not, has_previous_period stays false and previous is omitted.
+		if enabled, parseErr := strconv.ParseBool(compare); parseErr == nil && enabled && hasComparableWindow(filters) {
+			previous, prevErr := h.logManager.GetStats(ctx, previousPeriodFilters(filters))
+			switch {
+			case prevErr != nil:
+				// The current period is still useful on its own, so degrade to no
+				// comparison rather than failing the whole request.
+				logger.Warn("failed to get previous period log stats: %v", prevErr)
+			case previous != nil:
+				response.Previous = previous
+				response.HasPreviousPeriod = true
+			}
+		}
+	}
+
+	SendJSON(ctx, response)
+}
+
+// LogStatsResponse is the GET /api/logs/stats payload. SearchStats is embedded so
+// the current period's fields stay at the top level: callers that do not pass
+// compare_to_previous see exactly the shape they saw before it existed.
+type LogStatsResponse struct {
+	logstore.SearchStats
+	Previous          *logstore.SearchStats `json:"previous,omitempty"`
+	HasPreviousPeriod bool                  `json:"has_previous_period"`
+}
+
+// hasComparableWindow reports whether a filter describes a window that actually
+// has a distinct preceding window to compare against.
+//
+// Three cases do not. An unbounded (all-time) filter has nothing before it. A
+// zero-length or reversed window has no positive duration to shift back by, so
+// previousPeriodFilters would build a range that ends before it starts. And an
+// explicit request_id is an exact primary-key lookup, for which the store drops
+// the time-range clauses entirely so an ID is never hidden by the selected window
+// (see the RequestID branch in framework/logstore/rdb.go) - shifting the window
+// back would read the very same row and report it as its own previous period.
+func hasComparableWindow(filters *logstore.SearchFilters) bool {
+	if filters.RequestID != "" || filters.StartTime == nil || filters.EndTime == nil {
+		return false
+	}
+	return filters.EndTime.After(*filters.StartTime)
+}
+
+// previousPeriodFilters shifts a bounded filter window back by its own duration,
+// ending one nanosecond before the current window starts so the two periods are
+// the same length and never overlap. This mirrors the trend windowing already used
+// by the ranking queries in framework/logstore/rdb.go. Callers must check that both
+// StartTime and EndTime are set.
+func previousPeriodFilters(filters *logstore.SearchFilters) *logstore.SearchFilters {
+	duration := filters.EndTime.Sub(*filters.StartTime)
+	prevStart := filters.StartTime.Add(-duration)
+	prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+	prev := *filters
+	prev.StartTime = &prevStart
+	prev.EndTime = &prevEnd
+	return &prev
 }
 
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
@@ -1081,6 +1157,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
+	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
@@ -1299,11 +1378,11 @@ func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.Reques
 func parseDimension(ctx *fasthttp.RequestCtx) (logstore.HistogramDimension, bool) {
 	dim := logstore.HistogramDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent")
 		return "", false
 	}
 	if !logstore.ValidHistogramDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent", dim))
 		return "", false
 	}
 	return dim, true
@@ -1428,11 +1507,11 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, user")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent")
 		return
 	}
 	if !logstore.ValidRankingDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, user", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent", dim))
 		return
 	}
 
@@ -1453,13 +1532,15 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 
 // dashboardRankingDimensions is the fixed set of dimensions returned in the
 // consolidated dashboard payload, mirroring the dimension-ranking tabs on the
-// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit).
+// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit,
+// Project).
 var dashboardRankingDimensions = []logstore.RankingDimension{
 	logstore.RankingDimensionTeam,
 	logstore.RankingDimensionUser,
 	logstore.RankingDimensionVirtualKey,
 	logstore.RankingDimensionCustomer,
 	logstore.RankingDimensionBusinessUnit,
+	logstore.RankingDimensionProject,
 }
 
 const dashboardMCPTopToolsLimit = 10
@@ -1702,6 +1783,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		customers      []logging.KeyPair
 		users          []logging.KeyPair
 		businessUnits  []logging.KeyPair
+		projects       []logging.KeyPair
 		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
@@ -1867,6 +1949,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
+	if _, ok := want[filterDimProjects]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableProjects(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			projects = result
+			mu.Unlock()
+			return nil
+		})
+	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		g.Go(func() error {
 			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query)
@@ -2018,6 +2112,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimBusinessUnits]; ok {
 		payload[filterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[filterDimProjects]; ok {
+		payload[filterDimProjects] = projects
 	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		if metadataKeys == nil {

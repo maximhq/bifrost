@@ -73,6 +73,7 @@ const (
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
+	GithubCopilot ModelProvider = "github-copilot"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -118,6 +119,7 @@ var StandardProviders = []ModelProvider{
 	Fireworks,
 	Sarvam,
 	Wafer,
+	GithubCopilot,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -263,6 +265,8 @@ const (
 	BifrostContextKeyGovernanceCustomerIDs               BifrostContextKey = "bifrost-governance-customer-ids"        // []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceCustomerNames             BifrostContextKey = "bifrost-governance-customer-names"      // []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"  // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceProjectID                 BifrostContextKey = "bifrost-governance-project-id"          // string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceProjectName               BifrostContextKey = "bifrost-governance-project-name"        // string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"     // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"   // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"      // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -282,6 +286,8 @@ const (
 	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"  // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                 // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
+	BifrostContextKeyRawStreamTextCodec                  BifrostContextKey = "bifrost-raw-stream-text-codec"                    // RawStreamTextCodec (set by native integrations whose client response forwards provider-native stream events)
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
@@ -400,6 +406,7 @@ const (
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatAzureDeepseek                 BifrostContextKey = "bifrost-compat-azure-deepseek"              // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
@@ -409,11 +416,24 @@ const (
 	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
 	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
+	BifrostContextKeyStreamBodyExhausted                 BifrostContextKey = "stream_body_exhausted"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - upstream body was read to EOF, so cleanup must not drain it again
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
+)
+
+// Headers a request uses to name the project it asks to be scoped by. The id takes precedence over
+// the name.
+//
+// Declared here rather than wherever projects are resolved, because two things read them: whatever
+// resolves the project, and the governance funnel, which refuses a request that named one and ended
+// up scoped by none. Two copies of these names would let those two disagree about what a request
+// asked for.
+const (
+	HeaderGovernanceProjectID   = "x-bf-project-id"
+	HeaderGovernanceProjectName = "x-bf-project-name"
 )
 
 const (

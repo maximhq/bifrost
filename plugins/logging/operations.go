@@ -12,7 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -1287,6 +1287,16 @@ func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int,
 	return keyPairResultsToKeyPairs(results), nil
 }
 
+// GetAvailableProjects returns all unique project ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "project_id", "project_name", limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available projects: %w", err)
+	}
+	return keyPairResultsToKeyPairs(results), nil
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
 func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
@@ -1867,7 +1877,7 @@ func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
 	if batchID == "" {
 		return batchRowRoleAggregate
 	}
-	if logEntry.ID == batchaccounting.AccountingLogID(schemas.ModelProvider(logEntry.Provider), batchID) {
+	if logEntry.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.ModelProvider(logEntry.Provider), batchID) {
 		return batchRowRoleAggregate
 	}
 	return batchRowRoleEcho
@@ -1878,7 +1888,7 @@ func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
 // multiple models, and the row's own Model field is "mixed" in that case —
 // pricing that literal string against the catalog never finds an entry, so the
 // row prices at zero forever through the generic calculateCostForLog path.
-// Repricing per model, the same way settlement (batchaccounting.summarizeResults)
+// Repricing per model, the same way settlement (jobaccounting.summarizeResults)
 // originally priced each result item, is the only way a mixed-model batch — or a
 // single-model batch whose rate only arrived after settlement — can recover a
 // cost here.
@@ -1904,7 +1914,7 @@ func (p *LoggerPlugin) calculateBatchAggregateCost(logEntry *logstore.Log, refre
 	// rather than being guessed at.
 	requestType := schemas.RequestType(logEntry.Object)
 	if endpoint := logEntry.BatchDebugParsed.Endpoint; endpoint != "" {
-		requestType = batchaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
+		requestType = jobaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
 	}
 
 	var total float64
@@ -2112,6 +2122,15 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry))
 
+	// Put the served model back on the response body, which the reconstructed
+	// response leaves empty. Pricing reads it in one place — the Azure Model Router
+	// split, which bills the router's own row plus the model it routed to — so
+	// without this a recalc drops the underlying model's leg. Every other row is
+	// priced off RoutingInfo and is unaffected.
+	if logEntry.ServedModel != nil {
+		setResponseModel(resp, *logEntry.ServedModel)
+	}
+
 	// Patch modality-specific output fields that are not captured in BifrostLLMUsage
 	// but are required for accurate cost calculation.
 
@@ -2191,6 +2210,24 @@ func servedTierFromLog(logEntry *logstore.Log) servedTier {
 		tier.serviceTier = &st
 	}
 	return tier
+}
+
+// setResponseModel writes model onto whichever response field the reconstructed
+// response carries, covering the types schemas.BifrostResponse.ServedModel reads.
+func setResponseModel(resp *schemas.BifrostResponse, model string) {
+	if resp == nil {
+		return
+	}
+	switch {
+	case resp.ChatResponse != nil:
+		resp.ChatResponse.Model = model
+	case resp.ResponsesResponse != nil:
+		resp.ResponsesResponse.Model = model
+	case resp.ResponsesStreamResponse != nil && resp.ResponsesStreamResponse.Response != nil:
+		resp.ResponsesStreamResponse.Response.Model = model
+	case resp.TextCompletionResponse != nil:
+		resp.TextCompletionResponse.Model = model
+	}
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response

@@ -229,6 +229,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 		token.ExpiresAt = &exp
 	}
 	token.LastRefreshedAt = &now
+	token.StatusReason = ""
 	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update admin exchange credential: %w", err)
 	}
@@ -242,7 +243,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 // credential looking active, mirroring RefreshAccessToken's permanent-error
 // path) and signals re-verification via the ErrOAuth2TokenExpired sentinel.
 func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOauthToken, cause error) error {
-	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID); markErr != nil {
+	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID, "admin token exchange failed: "+cause.Error()); markErr != nil {
 		return fmt.Errorf("admin exchange credential is dead but status update failed (mcp_client=%s): %w", token.MCPClientID, markErr)
 	}
 	p.EvictUserTokenByID(token.ID)

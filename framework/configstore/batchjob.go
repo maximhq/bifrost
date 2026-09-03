@@ -13,17 +13,20 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// UpsertBatchJob inserts a new batch job or merges non-zero fields into an
+// UpsertProviderJob inserts a new provider job or merges non-zero fields into an
 // existing one. The identity row (id) is never overwritten; only the mutable
 // lifecycle/hint columns are advanced. Terminal-but-not-completed provider states
 // clear next_check_at so the sweeper stops polling.
-func (s *RDBConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error {
 	if job == nil || job.ID == "" {
-		return fmt.Errorf("batch job and id are required")
+		return fmt.Errorf("provider job and id are required")
 	}
 	now := time.Now().UTC()
+	if job.Kind == "" {
+		job.Kind = tables.ProviderJobKindBatch
+	}
 	if job.AccountingStatus == "" {
-		job.AccountingStatus = tables.BatchJobAccountingStatusPending
+		job.AccountingStatus = tables.ProviderJobAccountingStatusPending
 	}
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
@@ -72,15 +75,15 @@ func (s *RDBConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBa
 		updates["next_check_at"] = nil
 	}
 
-	return db.Model(&tables.TableBatchJob{}).Where("id = ?", job.ID).Updates(updates).Error
+	return db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID).Updates(updates).Error
 }
 
-// GetBatchJob returns a batch job by its stable id, or ErrNotFound.
-func (s *RDBConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+// GetProviderJob returns a provider job by its stable id, or ErrNotFound.
+func (s *RDBConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error) {
 	if jobID == "" {
-		return nil, fmt.Errorf("batch job id is required")
+		return nil, fmt.Errorf("provider job id is required")
 	}
-	var job tables.TableBatchJob
+	var job tables.TableProviderJob
 	if err := s.DB().WithContext(ctx).Where("id = ?", jobID).First(&job).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -90,14 +93,23 @@ func (s *RDBConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables
 	return &job, nil
 }
 
-// ListDueBatchJobs returns non-terminal batch jobs whose next poll is due at or
-// before now, oldest-due first. An empty provider matches every provider.
-func (s *RDBConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+// ListDueProviderJobs returns non-terminal jobs of one kind whose next poll is due
+// at or before now, oldest-due first. An empty provider matches every provider.
+//
+// The kind filter is mandatory, not a convenience: each kind has its own settler
+// and its own way of talking to the provider, so a sweeper handed another kind's
+// rows would poll them with the wrong client and burn their attempt budget. An
+// empty kind means batch, matching rows written before the column existed.
+func (s *RDBConfigStore) ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	if kind == "" {
+		kind = tables.ProviderJobKindBatch
+	}
 	query := s.DB().WithContext(ctx).
-		Where("accounting_status NOT IN ?", []string{tables.BatchJobAccountingStatusAccounted, tables.BatchJobAccountingStatusUnpriceable}).
+		Where("kind = ?", kind).
+		Where("accounting_status NOT IN ?", []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable}).
 		Where("next_check_at IS NOT NULL AND next_check_at <= ?", now).
 		Order("next_check_at ASC").
 		Limit(limit)
@@ -105,14 +117,14 @@ func (s *RDBConfigStore) ListDueBatchJobs(ctx context.Context, provider string, 
 		query = query.Where("provider = ?", provider)
 	}
 
-	var jobs []*tables.TableBatchJob
+	var jobs []*tables.TableProviderJob
 	if err := query.Find(&jobs).Error; err != nil {
 		return nil, err
 	}
 	return jobs, nil
 }
 
-// ClaimBatchJob transitions a claimable batch job to "processing" under runnerID
+// ClaimProviderJob transitions a claimable provider job to "processing" under runnerID
 // and returns true on success. A job is claimable when it is not already in a
 // terminal accounting state and is either not currently processing or its claim
 // has gone stale (claimed_at older than staleBefore).
@@ -123,30 +135,30 @@ func (s *RDBConfigStore) ListDueBatchJobs(ctx context.Context, provider string, 
 // caller that turns up holding the actual results. Refusing such a caller made the
 // state a one-way door that permanently dropped the batch's money, so settlement
 // paths with results in hand pass true. The sweeper's poll loop still skips these
-// jobs (ListDueBatchJobs excludes them); "accounted" is terminal forever.
+// jobs (ListDueProviderJobs excludes them); "accounted" is terminal forever.
 //
 // Staleness is measured on claimed_at rather than updated_at because updated_at is
-// refreshed by UpsertBatchJob, which is unfenced and runs on every sweep — using it
+// refreshed by UpsertProviderJob, which is unfenced and runs on every sweep — using it
 // would mean routine polling perpetually renews a dead runner's claim and the job
 // could never be reclaimed. claimed_at is written only here.
-func (s *RDBConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+func (s *RDBConfigStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
 	if jobID == "" {
-		return false, fmt.Errorf("batch job id is required")
+		return false, fmt.Errorf("provider job id is required")
 	}
 	if runnerID == "" {
 		return false, fmt.Errorf("runner id is required")
 	}
-	blocked := []string{tables.BatchJobAccountingStatusAccounted, tables.BatchJobAccountingStatusUnpriceable}
+	blocked := []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable}
 	if allowUnpriceable {
-		blocked = []string{tables.BatchJobAccountingStatusAccounted}
+		blocked = []string{tables.ProviderJobAccountingStatusAccounted}
 	}
 	now := time.Now().UTC()
-	res := s.DB().WithContext(ctx).Model(&tables.TableBatchJob{}).
+	res := s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
 		Where("id = ?", jobID).
 		Where("accounting_status NOT IN ?", blocked).
-		Where("(accounting_status <> ? OR claimed_at IS NULL OR claimed_at < ?)", tables.BatchJobAccountingStatusProcessing, staleBefore).
+		Where("(accounting_status <> ? OR claimed_at IS NULL OR claimed_at < ?)", tables.ProviderJobAccountingStatusProcessing, staleBefore).
 		Updates(map[string]any{
-			"accounting_status": tables.BatchJobAccountingStatusProcessing,
+			"accounting_status": tables.ProviderJobAccountingStatusProcessing,
 			"runner_id":         runnerID,
 			"claimed_at":        now,
 			"last_error":        nil,
@@ -158,16 +170,16 @@ func (s *RDBConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID stri
 	return res.RowsAffected == 1, nil
 }
 
-// markBatchJobTimestamp sets a single lifecycle timestamp column on a job this
+// markProviderJobTimestamp sets a single lifecycle timestamp column on a job this
 // runner still owns and is still processing, clearing any prior error. Fenced on
 // runner_id so a former owner cannot advance a re-claimed job.
-func (s *RDBConfigStore) markBatchJobTimestamp(ctx context.Context, jobID, runnerID, column string) error {
+func (s *RDBConfigStore) markProviderJobTimestamp(ctx context.Context, jobID, runnerID, column string) error {
 	if jobID == "" {
-		return fmt.Errorf("batch job id is required")
+		return fmt.Errorf("provider job id is required")
 	}
 	now := time.Now().UTC()
-	res := s.DB().WithContext(ctx).Model(&tables.TableBatchJob{}).
-		Where("id = ? AND runner_id = ? AND accounting_status = ?", jobID, runnerID, tables.BatchJobAccountingStatusProcessing).
+	res := s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
+		Where("id = ? AND runner_id = ? AND accounting_status = ?", jobID, runnerID, tables.ProviderJobAccountingStatusProcessing).
 		Updates(map[string]any{
 			column:       now,
 			"last_error": nil,
@@ -182,37 +194,37 @@ func (s *RDBConfigStore) markBatchJobTimestamp(ctx context.Context, jobID, runne
 	return nil
 }
 
-// MarkBatchJobAggregateLogWritten records that the durable aggregate cost log row
+// MarkProviderJobAggregateLogWritten records that the durable aggregate cost log row
 // has been created for this job (settlement idempotency marker).
-func (s *RDBConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
-	return s.markBatchJobTimestamp(ctx, jobID, runnerID, "aggregate_log_written_at")
+func (s *RDBConfigStore) MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+	return s.markProviderJobTimestamp(ctx, jobID, runnerID, "aggregate_log_written_at")
 }
 
-// MarkBatchJobGovernanceReported records that batch usage has been reported to
+// MarkProviderJobGovernanceReported records that usage has been reported to
 // governance for this job (settlement idempotency marker).
-func (s *RDBConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
-	return s.markBatchJobTimestamp(ctx, jobID, runnerID, "governance_reported_at")
+func (s *RDBConfigStore) MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+	return s.markProviderJobTimestamp(ctx, jobID, runnerID, "governance_reported_at")
 }
 
-// CompleteBatchJob marks a claimed job accounted and releases the runner fence.
-func (s *RDBConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
-	return s.finishBatchJob(ctx, jobID, runnerID, tables.BatchJobAccountingStatusAccounted, "", nil)
+// CompleteProviderJob marks a claimed job accounted and releases the runner fence.
+func (s *RDBConfigStore) CompleteProviderJob(ctx context.Context, jobID, runnerID string) error {
+	return s.finishProviderJob(ctx, jobID, runnerID, tables.ProviderJobAccountingStatusAccounted, "", nil)
 }
 
-// MarkBatchJobUnpriceable marks a claimed job terminal-unpriceable with a reason.
-func (s *RDBConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
-	return s.finishBatchJob(ctx, jobID, runnerID, tables.BatchJobAccountingStatusUnpriceable, reason, err)
+// MarkProviderJobUnpriceable marks a claimed job terminal-unpriceable with a reason.
+func (s *RDBConfigStore) MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+	return s.finishProviderJob(ctx, jobID, runnerID, tables.ProviderJobAccountingStatusUnpriceable, reason, err)
 }
 
-// FailBatchJob releases the runner fence after an accounting failure so a later
+// FailProviderJob releases the runner fence after an accounting failure so a later
 // /results call or reconciler pass can retry the job.
-func (s *RDBConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
-	return s.finishBatchJob(ctx, jobID, runnerID, tables.BatchJobAccountingStatusError, "", err)
+func (s *RDBConfigStore) FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error {
+	return s.finishProviderJob(ctx, jobID, runnerID, tables.ProviderJobAccountingStatusError, "", err)
 }
 
-func (s *RDBConfigStore) finishBatchJob(ctx context.Context, jobID, runnerID, status, reason string, err error) error {
+func (s *RDBConfigStore) finishProviderJob(ctx context.Context, jobID, runnerID, status, reason string, err error) error {
 	if jobID == "" {
-		return fmt.Errorf("batch job id is required")
+		return fmt.Errorf("provider job id is required")
 	}
 	var lastError any
 	if err != nil {
@@ -226,14 +238,14 @@ func (s *RDBConfigStore) finishBatchJob(ctx context.Context, jobID, runnerID, st
 		"last_error":        lastError,
 		"updated_at":        now,
 	}
-	if status == tables.BatchJobAccountingStatusAccounted {
+	if status == tables.ProviderJobAccountingStatusAccounted {
 		updates["unpriceable_reason"] = nil
 	}
 	if reason != "" {
 		updates["unpriceable_reason"] = reason
 	}
-	res := s.DB().WithContext(ctx).Model(&tables.TableBatchJob{}).
-		Where("id = ? AND runner_id = ? AND accounting_status = ?", jobID, runnerID, tables.BatchJobAccountingStatusProcessing).
+	res := s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
+		Where("id = ? AND runner_id = ? AND accounting_status = ?", jobID, runnerID, tables.ProviderJobAccountingStatusProcessing).
 		Updates(updates)
 	if res.Error != nil {
 		return res.Error

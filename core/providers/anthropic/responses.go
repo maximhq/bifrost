@@ -1,10 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"maps"
 	"math"
 	"strings"
@@ -178,6 +180,13 @@ type anthropicToResponsesStreamState struct {
 	nextBlockIndex   int
 	blockIndexByItem map[string]int
 
+	// emittedTextByBlock holds bounded progress for text that actually reached a
+	// normalized Anthropic client. Responses output_text.done is cumulative, while
+	// Anthropic clients assemble incremental content_block_delta events, so the
+	// converter needs this state to recover only a verified missing suffix without
+	// retaining a second full copy of the streamed response.
+	emittedTextByBlock map[int]*emittedTextProgress
+
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
 	// asked for an index that allocBlockIndex never assigned — i.e. a
 	// content_block_stop/_delta referencing a block whose content_block_start was
@@ -237,6 +246,81 @@ type anthropicToResponsesStreamState struct {
 	// Code can't carry and never spawns nested blocks, so it is left open here and
 	// closed at output_item.done from the verbatim carry input instead.
 	codeExecServerClosedByItem map[string]bool
+}
+
+// emittedTextProgress records one Anthropic text block's wire-visible prefix.
+// emittedBytes locates the possible terminal suffix, while prefixHasher proves
+// that output_text.done still extends the exact bytes already sent. Keeping only
+// the count and digest makes the bookkeeping bounded regardless of output size.
+type emittedTextProgress struct {
+	emittedBytes int
+	prefixHasher hash.Hash
+}
+
+// recordEmittedText advances one block's bounded progress after a text delta is
+// known to be client-visible.
+func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text string) {
+	if text == "" {
+		return
+	}
+	if s.emittedTextByBlock == nil {
+		s.emittedTextByBlock = make(map[int]*emittedTextProgress)
+	}
+	progress := s.emittedTextByBlock[blockIndex]
+	if progress == nil {
+		progress = &emittedTextProgress{prefixHasher: sha256.New()}
+		s.emittedTextByBlock[blockIndex] = progress
+	}
+	_, _ = progress.prefixHasher.Write([]byte(text))
+	progress.emittedBytes += len(text)
+}
+
+// recordEmittedTextEvents tracks only text deltas that survived protocol
+// validation and will reach the normalized client. Raw passthrough frames remain
+// authoritative, so the converter must neither track nor later supplement them.
+func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
+	if s.passthrough {
+		return
+	}
+	for _, event := range events {
+		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil ||
+			event.Delta == nil || event.Delta.Type != AnthropicStreamDeltaTypeText || event.Delta.Text == nil {
+			continue
+		}
+		s.recordEmittedText(*event.Index, *event.Delta.Text)
+	}
+}
+
+// missingTerminalText returns the append-only suffix not present in prior
+// client-visible deltas. Responses output_text.done carries cumulative text, so
+// the emitted prefix must match byte-for-byte before the remainder can safely be
+// converted into an Anthropic delta; a shorter or divergent aggregate is rejected
+// instead of duplicating or guessing client-visible content.
+func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, aggregate string) (string, bool) {
+	emittedBytes := 0
+	if progress := s.emittedTextByBlock[blockIndex]; progress != nil {
+		emittedBytes = progress.emittedBytes
+		if emittedBytes > len(aggregate) {
+			return "", false
+		}
+		aggregatePrefixHash := sha256.Sum256([]byte(aggregate[:emittedBytes]))
+		if !bytes.Equal(progress.prefixHasher.Sum(nil), aggregatePrefixHash[:]) {
+			return "", false
+		}
+	}
+	missing := aggregate[emittedBytes:]
+	return missing, missing != ""
+}
+
+// clearEmittedTextProgress releases terminal-text bookkeeping once
+// output_item.done closes the corresponding Anthropic content block.
+func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
+	if key == "" || s.blockIndexByItem == nil || s.emittedTextByBlock == nil {
+		return
+	}
+	if blockIndex, ok := s.blockIndexByItem[key]; ok {
+		delete(s.emittedTextByBlock, blockIndex)
+	}
 }
 
 // allocBlockIndex assigns and returns the next Anthropic content-block index. A
@@ -549,8 +633,8 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
 // conversion as running on the Claude Code passthrough path (raw upstream frames
-// interleaved with converted ones). The converter reads state.passthrough only for
-// collapsed server-tool result blocks that must still consume an upstream index.
+// interleaved with converted ones). The converter keeps raw upstream text
+// authoritative while still consuming indices for collapsed server-tool results.
 func SetResponsesStreamPassthrough(ctx *schemas.BifrostContext) {
 	getOrCreateAnthropicToResponsesStreamState(ctx).passthrough = true
 }
@@ -2784,7 +2868,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	if len(events) == 0 || ctx == nil {
 		return events
 	}
-	return enforceStreamBlockTypes(getOrCreateAnthropicToResponsesStreamState(ctx), events)
+	state := getOrCreateAnthropicToResponsesStreamState(ctx)
+	events = enforceStreamBlockTypes(state, events)
+	state.recordEmittedTextEvents(events)
+	return events
 }
 
 // enforceStreamBlockTypes tracks the type each content_block_start opens and drops
@@ -3240,6 +3327,30 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
+	case schemas.ResponsesStreamResponseTypeOutputTextDone:
+		// Runtime redaction may hold every output_text.delta and release the safe
+		// cumulative text only in output_text.done. Anthropic has no equivalent
+		// cumulative text event, so emit only the verified suffix before the block
+		// closes; passthrough streams keep their raw upstream frames authoritative.
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		if state.passthrough || bifrostResp.Text == nil || *bifrostResp.Text == "" {
+			return nil
+		}
+		blockIndex, ok := state.blockIndexByItem[reverseStreamItemKey(bifrostResp)]
+		if !ok || state.blockType(blockIndex) != AnthropicContentBlockTypeText {
+			return nil
+		}
+		missing, ok := state.missingTerminalText(blockIndex, *bifrostResp.Text)
+		if !ok {
+			return nil
+		}
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		streamResp.Index = schemas.Ptr(blockIndex)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type: AnthropicStreamDeltaTypeText,
+			Text: schemas.Ptr(missing),
+		}
+
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
 		if bifrostResp.ItemID != nil {
@@ -3314,6 +3425,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		return nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
+		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
 		// Handle WebSearch tool completion with sanitization and synthetic delta generation
 		if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
@@ -3690,7 +3802,11 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 	case schemas.ResponsesStreamResponseTypePing:
 		streamResp.Type = AnthropicStreamEventTypePing
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a turn cut short by the output-token cap
+	// or a content filter still has to close with message_delta + message_stop, or the
+	// client is left holding a half-written tool_use with no stop_reason to explain it.
+	case schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 		// If a message_delta was already emitted from the upstream event, only emit message_stop
 		// to avoid sending a duplicate message_delta to the client.
@@ -3710,6 +3826,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			if bifrostResp.Response.StopReason != nil {
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
 					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
+					StopSequence: nil,
+				}
+			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
+				// A truncated turn carrying only incomplete_details must not report end_turn.
+				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
+					StopReason:   schemas.Ptr(reason),
 					StopSequence: nil,
 				}
 			}
@@ -3810,12 +3932,21 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
-	case schemas.ResponsesStreamResponseTypeError:
+	// response.failed is terminal as well, and Anthropic spells a failed turn as an
+	// error event rather than message_stop. Dropping it stalls the client silently.
+	case schemas.ResponsesStreamResponseTypeError,
+		schemas.ResponsesStreamResponseTypeFailed:
 		streamResp.Type = AnthropicStreamEventTypeError
+		message := ""
 		if bifrostResp.Message != nil {
+			message = *bifrostResp.Message
+		} else if bifrostResp.Response != nil && bifrostResp.Response.Error != nil {
+			message = bifrostResp.Response.Error.Message
+		}
+		if message != "" {
 			streamResp.Error = &AnthropicStreamError{
 				Type:    "error",
-				Message: *bifrostResp.Message,
+				Message: message,
 			}
 		}
 
@@ -4124,7 +4255,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.Text != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
+			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {

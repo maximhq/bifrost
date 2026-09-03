@@ -418,6 +418,19 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
 
+	// A video is billed once, at settlement — the job may still be queued, may
+	// produce different dimensions than were asked for, and may fail outright. This
+	// gate sits *ahead* of the provider-cost short-circuit below rather than in the
+	// modality switch, because a provider-reported cost on a job that has not
+	// finished is a quote, not a bill, and would otherwise be returned here before
+	// any status was consulted.
+	//
+	// An absent status means the provider does not report one, so there is nothing
+	// to gate on and pricing proceeds as before.
+	if input.videoStatus != "" && input.videoStatus != schemas.VideoStatusCompleted {
+		return nil
+	}
+
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
 		return input.usage.Cost
@@ -470,7 +483,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
@@ -479,24 +492,6 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 	}
 
 	return cost
-}
-
-// azureModelRouterServedModel reads the model Azure Model Router actually
-// routed to off the response body's own model field separate from the "model-router"
-// deployment name carried on RoutingInfo.Model.
-func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
-	switch {
-	case result.ChatResponse != nil:
-		return result.ChatResponse.Model
-	case result.ResponsesResponse != nil:
-		return result.ResponsesResponse.Model
-	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
-		return result.ResponsesStreamResponse.Response.Model
-	case result.TextCompletionResponse != nil:
-		return result.TextCompletionResponse.Model
-	default:
-		return ""
-	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
@@ -543,7 +538,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -649,16 +644,25 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
 
-	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Usage != nil && result.VideoGenerationResponse.Usage.Cost != nil:
-		// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
-		// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
-		// etc.) that have no datasheet rate.
-		input.usage = &schemas.BifrostLLMUsage{Cost: result.VideoGenerationResponse.Usage.Cost}
-
-	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
-		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
-		if err == nil {
-			input.videoSeconds = &seconds
+	case result.VideoGenerationResponse != nil:
+		video := result.VideoGenerationResponse
+		input.videoStatus = video.Status
+		if video.Usage != nil && video.Usage.Cost != nil {
+			// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
+			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
+			// etc.) that have no datasheet rate.
+			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
+		} else {
+			if video.Seconds != nil {
+				if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+					input.videoSeconds = &seconds
+				}
+			}
+			// Size and clip count drive the output rate and its multiplier. Neither can
+			// bypass the no-usage guard below on its own: without seconds there is still
+			// nothing to price.
+			input.videoSize = video.Size
+			input.videoCount = len(video.Videos)
 		}
 
 	case result.OCRResponse != nil:
@@ -1470,7 +1474,7 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) *schemas.BifrostCost {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -1488,14 +1492,66 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	if usage != nil && usage.CompletionTokens > 0 {
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
-		if pricing.OutputCostPerVideoPerSecond != nil {
-			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
-		} else if pricing.OutputCostPerSecond != nil {
-			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerSecond
-		}
+		// Seconds is one clip's duration, and a single job can return several clips
+		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
+		// yet, which still owes one clip's worth rather than nothing.
+		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize) * float64(max(1, videoCount))
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoOutputPerSecondRate returns the per-second output rate for a generated video,
+// preferring the band matching its resolution.
+//
+// Providers publish a distinct rate per output resolution — sora-2-pro is $0.30/s at
+// 720p but $0.70/s at 1080p, Veo 3.1 is $0.40/s at 720p/1080p and $0.60/s at 4K — which
+// the single unbanded rate cannot express.
+//
+// Bands match exactly on the short edge rather than at-or-above: an unlisted resolution
+// falls back to the unbanded rate instead of rounding up into a more expensive band, so a
+// 480p clip is never billed at the 720p rate.
+func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string) float64 {
+	switch videoResolutionBand(size) {
+	case 480:
+		if pricing.OutputCostPerVideoPerSecond480p != nil {
+			return *pricing.OutputCostPerVideoPerSecond480p
+		}
+	case 720:
+		if pricing.OutputCostPerVideoPerSecond720p != nil {
+			return *pricing.OutputCostPerVideoPerSecond720p
+		}
+	case 1024:
+		if pricing.OutputCostPerVideoPerSecond1024p != nil {
+			return *pricing.OutputCostPerVideoPerSecond1024p
+		}
+	case 1080:
+		if pricing.OutputCostPerVideoPerSecond1080p != nil {
+			return *pricing.OutputCostPerVideoPerSecond1080p
+		}
+	case 2160:
+		if pricing.OutputCostPerVideoPerSecond4k != nil {
+			return *pricing.OutputCostPerVideoPerSecond4k
+		}
+	}
+	if pricing.OutputCostPerVideoPerSecond != nil {
+		return *pricing.OutputCostPerVideoPerSecond
+	}
+	if pricing.OutputCostPerSecond != nil {
+		return *pricing.OutputCostPerSecond
+	}
+	return 0
+}
+
+// videoResolutionBand returns the short edge of a "WxH" size, which is the number
+// providers name their resolution tiers after ("1920x1080" and "1080x1920" are both
+// 1080p). Returns 0 when the size is absent or malformed.
+func videoResolutionBand(size string) int {
+	width, height := parseImageDimensions(size)
+	if width <= 0 || height <= 0 {
+		return 0
+	}
+	return min(width, height)
 }
 
 // computeOCRCost handles OCR requests, billing per page processed.

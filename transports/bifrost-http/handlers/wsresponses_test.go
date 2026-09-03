@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -108,6 +109,39 @@ func TestCreateBifrostContextFromAuth_BaggageSessionIDSetsGrouping(t *testing.T)
 
 	if got, _ := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-ws-123" {
 		t.Fatalf("parent request id = %q, want %q", got, "rt-ws-123")
+	}
+}
+
+// A connection settles its identity at upgrade the way an HTTP request does at conversion, so
+// governance sees a settled request whether or not a key was presented.
+func TestCreateBifrostContextFromAuth_SettlesIdentity(t *testing.T) {
+	cases := map[string]struct {
+		auth     *authHeaders
+		wantKind string
+		wantKey  string
+	}{
+		"no credential":       {auth: &authHeaders{}},
+		"virtual key header":  {auth: &authHeaders{virtualKey: "sk-bf-ws"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-ws"},
+		"bearer virtual key":  {auth: &authHeaders{authorization: "Bearer sk-bf-bearer"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-bearer"},
+		"provider key bearer": {auth: &authHeaders{authorization: "Bearer sk-openai"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, tc.auth)
+			defer cancel()
+
+			g := ctx.Grant()
+			if g == nil {
+				t.Fatal("expected a grant on the connection context")
+			}
+			identity := g.Identity()
+			if identity == nil {
+				t.Fatal("expected a settled identity on the grant")
+			}
+			if got := identity.Credential(); got.Kind != tc.wantKind || got.Value != tc.wantKey {
+				t.Fatalf("credential = %+v, want kind %q value %q", got, tc.wantKind, tc.wantKey)
+			}
+		})
 	}
 }
 

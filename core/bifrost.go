@@ -31,6 +31,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/mistral"
@@ -4145,9 +4146,10 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		})
 
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
-			Config: client.ExecutionConfig,
-			Tools:  tools,
-			State:  client.State,
+			Config:      client.ExecutionConfig,
+			Tools:       tools,
+			State:       client.State,
+			LastFailure: client.LastFailure,
 		})
 	}
 
@@ -4500,6 +4502,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return opencode.NewOpencodeGoProvider(config, bifrost.logger)
 	case schemas.OpencodeZen:
 		return opencode.NewOpencodeZenProvider(config, bifrost.logger)
+	case schemas.GithubCopilot:
+		return githubcopilot.NewGithubCopilotProvider(config, bifrost.logger)
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
@@ -6369,6 +6373,12 @@ func executeRequestWithRetries[T any](
 		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
 			span.SetAttribute(schemas.AttrBifrostBusinessUnitName, businessUnitName)
 		}
+		if projectID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceProjectID).(string); ok && projectID != "" {
+			span.SetAttribute(schemas.AttrBifrostProjectID, projectID)
+		}
+		if projectName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceProjectName).(string); ok && projectName != "" {
+			span.SetAttribute(schemas.AttrBifrostProjectName, projectName)
+		}
 		if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
 			span.SetAttribute(schemas.AttrBifrostTeamIDs, teamIDs)
 		}
@@ -6713,10 +6723,45 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
+	// Native redaction codecs are valid only while the matching Anthropic body
+	// and response stream are forwarded; converted fallbacks must not inherit them.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// clearAnthropicPassthroughForUnsupportedStructuredOutput disables Anthropic raw-body passthrough
+// when the resolved provider cannot serve native structured outputs but the request carries a
+// schema. The raw body would forward output_config.format verbatim and the provider answers 400
+// "output_config.format: Extra inputs are not permitted"; typed conversion instead rewrites the
+// schema into the synthetic bf_so_* tool these providers do accept. Gated on the final resolved
+// provider so it fires however that was picked (prefix, key alias, governance, routing rule) and
+// re-runs per attempt for fallbacks — the ingress guard in the Anthropic integration only sees a
+// provider the caller spelled out in the model string, so an alias or routing rule hides it.
+func clearAnthropicPassthroughForUnsupportedStructuredOutput(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, req *schemas.BifrostRequest) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
+		return
+	}
+	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !useRawBody {
+		return
+	}
+	if !anthropic.ProviderRequiresSyntheticStructuredOutput(baseProvider) {
+		return
+	}
+	// Read the bytes that would go on the wire rather than Params.Text: plugins run before
+	// the worker and can drop the typed field (compat's drop-params) while the raw body still
+	// carries it. The Anthropic Messages integration always builds a Responses request.
+	if req == nil || req.ResponsesRequest == nil {
+		return
+	}
+	rawBody := req.ResponsesRequest.GetRawRequestBody()
+	if !providerUtils.JSONFieldExists(rawBody, "output_config.format") && !providerUtils.JSONFieldExists(rawBody, "output_format") {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 }
 
 // applyRawCaptureSignals writes this attempt's raw-payload capture signals, merging provider
@@ -7087,6 +7132,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				req.SetModel(resolvedModel)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				// Disable it too when this attempt's provider has no native structured outputs.
+				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
@@ -7189,6 +7236,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				req.SetModel(resolvedModel)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				// Disable it too when this attempt's provider has no native structured outputs.
+				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
@@ -7354,6 +7403,19 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
+				responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
+				response.ResponsesResponse = responsesResponse
+				break
+			}
+		}
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -7717,6 +7779,15 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				// The providers' chat streaming handler re-assembles Responses events from the
+				// chat chunks when this flag is set, so the caller still gets a Responses stream.
+				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+			}
+		}
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)

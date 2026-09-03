@@ -529,6 +529,28 @@ LogStats:
       format: int64
       description: Number of semantic local-cache hits
 
+LogStatsResponse:
+  description: >-
+    Log statistics for the requested window. The current period's fields are at
+    the top level, so a request without `compare_to_previous` returns exactly the
+    LogStats shape.
+  allOf:
+    - $ref: '#/LogStats'
+    - type: object
+      properties:
+        has_previous_period:
+          type: boolean
+          description: >-
+            True when `previous` is populated. False when the comparison was not
+            requested, the window is unbounded, or the previous-period query failed.
+        previous:
+          allOf:
+            - $ref: '#/LogStats'
+          description: >-
+            The same statistics for the preceding window of equal length, ending
+            immediately before the requested window starts. Present only when
+            `compare_to_previous` is true and `has_previous_period` is true.
+
 DroppedRequestsResponse:
   type: object
   description: Dropped requests response
@@ -922,6 +944,9 @@ HistogramDimension:
     - customer_id
     - user_id
     - business_unit_id
+    - project_id
+    - app
+    - user_agent
 
 DimensionCostHistogramBucket:
   type: object
@@ -1240,8 +1265,11 @@ RankingDimension:
     - team
     - customer
     - business_unit
+    - project
     - user
     - virtual_key
+    - app
+    - user_agent
 
 DimensionRankingEntry:
   type: object
@@ -1392,7 +1420,8 @@ DashboardResult:
       type: object
       description: |
         Ranking tables keyed by dimension (`team`, `user`, `virtual_key`,
-        `customer`, `business_unit`); each value is that dimension's rankings.
+        `customer`, `business_unit`, `project`, `app`, `user_agent`); each
+        value is that dimension's rankings.
       additionalProperties:
         $ref: '#/DimensionRankingResult'
     mcp:

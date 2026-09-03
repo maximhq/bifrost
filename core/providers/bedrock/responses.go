@@ -2385,7 +2385,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		inferenceConfig := &BedrockInferenceConfig{}
 
 		if bifrostReq.Params.MaxOutputTokens != nil {
-			inferenceConfig.MaxTokens = bifrostReq.Params.MaxOutputTokens
+			inferenceConfig.MaxTokens = clampMaxTokens(ctx, bifrostReq.Params.MaxOutputTokens, caps)
 		}
 		if bifrostReq.Params.Temperature != nil {
 			inferenceConfig.Temperature = bifrostReq.Params.Temperature
@@ -2466,6 +2466,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 
 					bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
+				} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+					// Converse exposes no token budget for these models, so express the
+					// budget as the effort it corresponds to.
+					defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+					if inferenceConfig.MaxTokens != nil {
+						defaultMaxTokens = *inferenceConfig.MaxTokens
+					}
+					effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, defaultMaxTokens)
+					setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, effort)
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
@@ -2533,22 +2542,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								"budget_tokens": budgetTokens,
 							})
 						}
-					} else {
-						modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
-						defaultMaxTokens := modelDefaultMaxTokens
-						if inferenceConfig.MaxTokens != nil {
-							defaultMaxTokens = *inferenceConfig.MaxTokens
-						} else {
-							inferenceConfig.MaxTokens = schemas.Ptr(modelDefaultMaxTokens)
-						}
-						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, defaultMaxTokens)
-						if err != nil {
-							return nil, err
-						}
-						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
-							"type":          "enabled",
-							"budget_tokens": budgetTokens,
-						})
+					} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+						setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
 					}
 				} else {
 					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
@@ -2563,10 +2558,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
-					} else {
-						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
-							"type": "disabled",
-						})
+					} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
+						setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, "none")
 					}
 				}
 			}

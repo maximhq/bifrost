@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -108,6 +109,30 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	}
 	if session != nil {
 		t.Fatalf("expected nil session for raw SDP /calls request, got %s", string(session))
+	}
+}
+
+// The relay is the request kept alive, so the turns derived from it must find the grant the
+// request was settled with; governance refuses a turn that carries none.
+func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
+	requestCtx, requestCancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer requestCancel()
+	lib.RecordCredential(requestCtx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-relay"))
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+
+	if relayCtx.Grant() != requestCtx.Grant() {
+		t.Fatal("relay context should carry the request's grant")
+	}
+	if got := relayCtx.Grant().Identity().Credential(); got.Value != "sk-bf-relay" {
+		t.Fatalf("credential = %+v, want the request's virtual key", got)
+	}
+
+	bare, bareCancel := newRealtimeRelayContext(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	defer bareCancel()
+	if bare.Grant() != nil {
+		t.Fatal("relay of a request with no grant should carry none")
 	}
 }
 

@@ -510,6 +510,22 @@ export interface BatchAccountingDebug {
 
 // Batch detail for batch rows. `accounting` is present only on the aggregate
 // cost row written when a settled batch is priced.
+/** Video-kind detail on a log row. `accounting` is set only on the aggregate cost
+ * row a settled video writes, which is what tells it apart from the submission it
+ * settles — the two are otherwise identical but for a cost. */
+export interface VideoDebug {
+	video_id?: string;
+	status?: string; // Provider video lifecycle status, e.g. "queued" / "completed"
+	accounting?: VideoAccountingDebug;
+}
+
+export interface VideoAccountingDebug {
+	seconds?: number;
+	size?: string;
+	output_count?: number;
+	incomplete?: boolean;
+}
+
 export interface BatchDebug {
 	batch_id?: string;
 	status?: string; // Provider batch lifecycle status, e.g. "in_progress" / "completed"
@@ -623,6 +639,7 @@ export interface LogEntry {
 	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
 	// counts Bifrost's own cross-provider failover attempts.
 	server_side_fallback_model?: string;
+	served_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
@@ -642,6 +659,8 @@ export interface LogEntry {
 	customer_names?: string[];
 	business_unit_ids?: string[];
 	business_unit_names?: string[];
+	project_id?: string;
+	project_name?: string;
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
@@ -688,6 +707,7 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	batch_debug?: BatchDebug;
+	video_debug?: VideoDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
@@ -750,6 +770,7 @@ export interface LogFilters {
 	team_ids?: string[];
 	customer_ids?: string[];
 	business_unit_ids?: string[];
+	project_ids?: string[];
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
@@ -774,6 +795,15 @@ export interface LogStats {
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
 	semantic_cache_hits?: number | null;
+}
+
+// LogStatsResponse is the GET /api/logs/stats payload. The current period's
+// fields stay at the top level, so this is a superset of LogStats: `previous` and
+// `has_previous_period` are only populated when the caller passes
+// compare_to_previous and the window is bounded.
+export interface LogStatsResponse extends LogStats {
+	previous?: LogStats;
+	has_previous_period?: boolean;
 }
 
 export interface LogSessionDetailResponse {
@@ -1415,7 +1445,7 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

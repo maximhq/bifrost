@@ -1643,6 +1643,10 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPClient"
     MCPClientConfig:
       $ref: "./schemas/management/mcp.yaml#/MCPClientConfig"
+    MCPConnectionFailure:
+      $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPInstanceState:
+      $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
       $ref: "./schemas/management/mcp.yaml#/ExecuteToolRequest"
     MCPAuthType:
@@ -1841,6 +1845,8 @@ components:
       $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
       $ref: "./schemas/management/logging.yaml#/LogStats"
+    LogStatsResponse:
+      $ref: "./schemas/management/logging.yaml#/LogStatsResponse"
     DeleteLogsRequest:
       $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:

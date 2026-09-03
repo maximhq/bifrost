@@ -43,7 +43,7 @@ export interface ProviderConfigCardValue {
 	keyIds: string[];
 	budgets: ProviderConfigBudgetLine[];
 	rateLimit?: ProviderConfigRateLimit | null;
-	/** Only rendered when `showModelBudgets` is set (Access Profile only). */
+	/** Only rendered when `showModelBudgets` is set. */
 	modelBudgets?: ProviderConfigModelBudget[];
 }
 
@@ -61,7 +61,7 @@ interface ProviderConfigCardBaseProps {
 	iconProvider: ProviderIconType;
 	/** Keys available for this provider. `null` = still loading (keep section visible). */
 	providerKeys: ProviderKeyInfo[] | null;
-	/** Renders the per-model budgets tree (Access Profile). Off for Virtual Keys. */
+	/** Renders the per-model budgets tree when `showModelBudgets` is enabled. */
 	showModelBudgets?: boolean;
 	/** Read-only global provider cap shown on the Provider budget row (Access Profile). */
 	globalProviderCap?: { max_limit: number; reset_duration?: string };
@@ -386,6 +386,7 @@ export function ProviderConfigCard({
 														data-testid={`${tid}-model-budget-lines-${index}-${mbIndex}`}
 														label="Model Budget"
 														lines={(mb.budgets || []).map((b) => ({
+															id: b.id,
 															max_limit: b.max_limit,
 															reset_duration: b.reset_duration || "1d",
 															reset_config: b.reset_config,
@@ -395,13 +396,14 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																				...m,
-																				budgets: lines.map((l) => ({
-																					max_limit: l.max_limit,
-																					reset_duration: l.reset_duration,
-																					reset_config: l.reset_config,
-																				})),
-																			}
+																			...m,
+																			budgets: lines.map((l) => ({
+																				id: l.id,
+																				max_limit: l.max_limit,
+																				reset_duration: l.reset_duration,
+																				reset_config: l.reset_config,
+																			})),
+																		}
 																		: m,
 																),
 															});
@@ -420,13 +422,13 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																				...m,
-																				rate_limit: {
-																					...(m.rate_limit || {}),
-																					token_max_limit: v,
-																					token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
-																				},
-																			}
+																			...m,
+																			rate_limit: {
+																				...(m.rate_limit || {}),
+																				token_max_limit: v,
+																				token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
+																			},
+																		}
 																		: m,
 																),
 															});
@@ -453,13 +455,13 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																				...m,
-																				rate_limit: {
-																					...(m.rate_limit || {}),
-																					request_max_limit: v,
-																					request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
-																				},
-																			}
+																			...m,
+																			rate_limit: {
+																				...(m.rate_limit || {}),
+																				request_max_limit: v,
+																				request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
+																			},
+																		}
 																		: m,
 																),
 															});
@@ -493,7 +495,7 @@ export function ProviderConfigCard({
 												if (!model) return;
 												if (modelBudgets.some((m) => m.model_name === model)) return;
 												update({
-													modelBudgets: [...modelBudgets, { model_name: model, budgets: [{ max_limit: undefined, reset_duration: "1d" }] }],
+													modelBudgets: [...modelBudgets, { model_name: model, budgets: [] }],
 												});
 												setOpenModelEditor(model);
 											}}
@@ -551,15 +553,15 @@ export function ProviderConfigCard({
 									const selectedProviderKeys = hasWildcard
 										? [allKeyOptions[0]]
 										: keys
-												.filter((key) => configKeyIds.includes(key.key_id))
-												.map((key) => ({
-													label: key.name,
-													value: key.key_id,
-													description:
-														key.models == null || key.models.includes("*")
-															? "All models"
-															: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-												}));
+											.filter((key) => configKeyIds.includes(key.key_id))
+											.map((key) => ({
+												label: key.name,
+												value: key.key_id,
+												description:
+													key.models == null || key.models.includes("*")
+														? "All models"
+														: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+											}));
 									return (
 										<div className="w-[260px] shrink-0 space-y-1.5">
 											<div className="flex h-5 items-center">

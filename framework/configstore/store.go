@@ -415,6 +415,10 @@ type ConfigStore interface {
 	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 	// DeleteModelConfigsForScope deletes all model configs (and their owned budgets/rate-limits) for a scope owner. Must run inside the owner-delete transaction.
 	DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error
+	// GetModelConfigsForScope loads all model configs (with Budgets/RateLimit) for a scope owner
+	// within the given transaction, so a caller mid-transaction sees its own uncommitted writes
+	// (e.g. deletions staged earlier in the same tx) rather than the last-committed state.
+	GetModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error)
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
@@ -667,14 +671,18 @@ type ConfigStore interface {
 	// per-user-named methods on this merged table, see GetOauthUserTokenByMode's
 	// comment), this is not scoped away from 'shared' — the tokenID handed in
 	// always comes from an internal lookup already, never an arbitrary
-	// caller-supplied ID.
-	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// caller-supplied ID. reason is recorded as the row's StatusReason (the
+	// provider's rejection, e.g. "provider rejected the refresh (HTTP 400,
+	// invalid_grant: Token has been expired or revoked)") so the UI and the
+	// client's connection-failure record can say what actually failed rather
+	// than only that the row is no longer usable.
+	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
 	// invalidates every existing holder's cached credential (shared, per-user,
 	// vk, session, admin alike), not just the shared one.
-	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error
 	// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
 	// 'needs_reauth' on a token_exchange client's retained admin bootstrap
 	// credential (auth_mode='admin', mcp_client_id=<id>, oauth_config_id='' —
@@ -687,7 +695,7 @@ type ConfigStore interface {
 	// cached in-memory only, never persisted (see GetExchangedAccessToken's
 	// doc comment) — the admin row is the only persisted state a
 	// token_exchange config edit can invalidate.
-	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error
+	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error
 	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
 	// place when ANY of them differs from what's stored (client_id,
 	// client_secret, authorize_url, token_url, registration_url, resource,
@@ -893,15 +901,15 @@ type ConfigStore interface {
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
-	UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error
-	GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error)
-	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error)
-	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
-	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
-	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
-	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
-	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
+	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
+	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

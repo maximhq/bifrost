@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -581,6 +581,36 @@ func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, 
 	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, modelProviders(access.GrantedProvidersForModel(modelStr)))
 }
 
+// namedProjectNothingScoped reports whether the request named a project and ended up scoped by
+// none, and what it named it.
+//
+// The same shape as presentedGrantBearingCredential above, for the same reason: what the request
+// asked for is read off its own input, and only comparing that against what resolution produced can
+// tell "asked for nothing" from "asked for something that is not there". A project named with no
+// resolved project behind it was not granted (it does not exist, or it does not admit this caller),
+// and those are not told apart here, exactly as a credential that resolves to nothing does not say
+// whether it never existed or was revoked.
+//
+// A header that arrived empty still counts as having asked. It named no project, so no project can
+// be resolved from it, and treating it as not having asked would serve the request against the
+// caller's own access instead of refusing a scope it could not be given.
+//
+// The resolved id rather than the scoping slot, because that id is set at exactly the moment a
+// project is admitted. Reading the slot would answer this question wrongly the moment anything other
+// than a project fills it.
+func namedProjectNothingScoped(ctx *schemas.BifrostContext) (string, bool) {
+	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID) != "" {
+		return "", false
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
+		if named, sent := headers[header]; sent {
+			return strings.TrimSpace(named), true
+		}
+	}
+	return "", false
+}
+
 // Evaluate is the governance verdict for a request: whether it may proceed, and why not when it
 // may not. It is the one entry point: every hook and every caller outside the pipeline arrives
 // here, which is also why it resolves what the request may reach if nothing has yet.
@@ -612,7 +642,11 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// streaming, realtime-turn and MCP pipelines run no request hook, and this is the funnel they
 	// all pass through. Everything downstream, the checks below and the co-payers named for the
 	// log, then reads one settled set instead of assembling its own.
-	limits := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	//
+	// A settling error is held rather than refused on the spot: the ordering below puts identity
+	// refusals first, and a caller whose credential is dead must be told that before anything about
+	// how the request would have been funded.
+	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
 
 	// The order of everything below is load bearing:
 	//
@@ -639,7 +673,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// grant nothing is a different answer, reported by the identity step below; telling a caller who
 	// supplied a key to supply one is not a useful refusal.
 	p.cfgMutex.RLock()
-	if !presentedGrantBearingCredential(ctx) && !hasDirectKeyAuth(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !PresentedAnyCredential(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -660,6 +694,20 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// than resolving a key again. A caller that presented a credential no permit could be built for
 	// is refused here: no permit means nothing authorised the request, which is a different answer
 	// from having presented nothing.
+	//
+	// Two ways a request can end up with nothing where it expected something, and they are the same
+	// question asked of each slot: it presented a credential and nothing granted it, or it named a
+	// project and nothing scoped it. Neither is reported by whatever resolved it: a resolver answers
+	// with what it found, and this is where not finding it becomes a refusal.
+	//
+	// The second is why a project the request may not use cannot simply be dropped: doing that would
+	// serve the request against the caller's own access, which is more than they asked for and not
+	// what they asked for. Like the first, it does not say which of "no such project" and "not
+	// yours" it was, because a caller who may not use a project has no business learning it exists.
+	//
+	// This is the funnel every pipeline passes through, including the streaming, realtime-turn and
+	// MCP ones that run no request hook, so refusing here is what makes the answer the same on all
+	// of them.
 	if refusal := unusablePermit(access); refusal != nil {
 		return p.decide(ctx, refusal)
 	}
@@ -669,9 +717,30 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 			Reason:   "access not found. The provided credential does not exist or has been revoked.",
 		})
 	}
+	// Blocked rather than not-found, though the shape of the question is the same. A credential that
+	// resolves to nothing is an authentication failure and says so; a caller who authenticated fine
+	// and named a project they may not have is being refused, not asked to identify themselves again.
+	if named, nothingScoped := namedProjectNothingScoped(ctx); nothingScoped {
+		return p.decide(ctx, &EvaluationResult{
+			Decision: DecisionAccessBlocked,
+			Reason:   fmt.Sprintf("project %q not found. It does not exist or does not admit this request.", named),
+		})
+	}
 
 	// Step 3: what the request may reach.
 	result := p.resolver.evaluateAccess(ctx, evaluationRequest, access)
+
+	// A request whose payers could not be settled is refused before any limit is consulted: there
+	// is no list to check, and serving it would spend money nothing agreed to spend. After the
+	// access step, so a request that was never allowed to reach the pair is told that instead.
+	// Skipped for a request that asked not to be checked against anything it answers to: it spends
+	// nothing, so an unsettled payer list is not something it depends on either.
+	if result.Decision == DecisionAllow && limitsErr != nil && !spendingChecksSkipped(ctx) {
+		result = &EvaluationResult{
+			Decision: DecisionAccessBlocked,
+			Reason:   limitsErr.Error(),
+		}
+	}
 
 	// Step 4: what the request can afford. One check over every limit covering this attempt, the
 	// deployment's provider limits, the model configs that apply, and whatever the permits are
@@ -708,25 +777,36 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	return p.decide(ctx, result)
 }
 
-// unusablePermit is the refusal for a request whose caller holds a permit that may not be used:
-// one that is inactive, or has expired. Whether it may be used is settled when the permit is built,
-// so this reads the answer off it. Nil when every permit the caller holds may be used, or they hold
+// unusablePermit is the refusal for a request that carries a permit that may not be used: one that
+// is inactive, or has expired. Whether it may be used is settled when the permit is built, so this
+// reads the answer off it. Nil when every permit the request carries may be used, or it carries
 // none, which the funnel answers separately by what was presented.
+//
+// Every slot is judged, because a request scoped by a second permit answers to both, and a permit
+// that has been deactivated or has expired grants nothing whichever slot it sits in. Nothing in the
+// fold reads either flag (it answers what a permit enumerates, not whether the permit may still be
+// used), so a scoping permit nobody checked here would go on permitting everything it names.
 func unusablePermit(access schemas.Access) *EvaluationResult {
 	if access == nil {
 		return nil
 	}
-	for _, base := range access.Bases() {
-		if !base.IsActive() {
+	permits := make([]schemas.Permit, 0, len(access.Bases())+1)
+	permits = append(permits, access.Bases()...)
+	permits = append(permits, access.Scoping())
+	for _, permit := range permits {
+		if permit == nil {
+			continue
+		}
+		if !permit.IsActive() {
 			return &EvaluationResult{
 				Decision: DecisionAccessBlocked,
-				Reason:   fmt.Sprintf("%s is inactive", grant.PermitType(base.Type()).PrettyString()),
+				Reason:   fmt.Sprintf("%s is inactive", grant.PermitType(permit.Type()).PrettyString()),
 			}
 		}
-		if base.IsExpired() {
+		if permit.IsExpired() {
 			return &EvaluationResult{
 				Decision: DecisionAccessBlocked,
-				Reason:   fmt.Sprintf("%s has expired", grant.PermitType(base.Type()).PrettyString()),
+				Reason:   fmt.Sprintf("%s has expired", grant.PermitType(permit.Type()).PrettyString()),
 			}
 		}
 	}
@@ -905,57 +985,23 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 // A request carrying no access is still subject to the deployment's own limits, and they are
 // settled for it the same way. A context carrying no grant is a wiring fault evaluation has
 // already refused by the time this runs; it settles nothing.
-func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) schemas.Limits {
+//
+// What the list holds is the store's to assemble (see GovernanceStore.GatherLimits): a store that
+// composes several possible payers settles there on who pays, and this only records the answer. An
+// error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
+// funnel refuses it rather than serving it against half an answer.
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
-		return nil
+		return nil, nil
 	}
-	budgets, rateLimits := gatherLimits(ctx, store, g.Access(), provider, model)
+	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	if err != nil {
+		return nil, err
+	}
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
-	return limits
-}
-
-// gatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
-// every permit the request carries, what funds the holder and the holder's own model limits; and
-// for every permit that pays for the pair, what funds its use of the provider.
-//
-// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
-// whose budget is spent is spent, however the request reached the provider. Only what is funded
-// per provider follows the pair, and which permits pay for it is the access's to say (see
-// PermitsForModel).
-//
-// The deployment's own come first, because that is the order refusals report in: what the
-// deployment imposes before what the holder is funded by.
-func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
-	budgets, rateLimits = store.ProviderAndModelLimits(ctx, nil, provider, model)
-	if access == nil {
-		return budgets, rateLimits
-	}
-	carried := access.Bases()
-	if scoping := access.Scoping(); scoping != nil {
-		carried = append(carried, scoping)
-	}
-	for _, permit := range carried {
-		heldBudgets, heldRateLimits := store.HolderLimits(ctx, permit)
-		budgets = append(budgets, heldBudgets...)
-		rateLimits = append(rateLimits, heldRateLimits...)
-
-		// The holder's own model limits, gathered per permit because they are keyed by the permit's
-		// identity. The deployment's and the user's come back with them and are settled once, since
-		// one limit reached twice is still one limit.
-		modelBudgets, modelRateLimits := store.ProviderAndModelLimits(ctx, permit, provider, model)
-		budgets = append(budgets, modelBudgets...)
-		rateLimits = append(rateLimits, modelRateLimits...)
-	}
-	if provider != "" {
-		for _, permit := range access.PermitsForModel(string(provider), model) {
-			providerBudgets, providerRateLimits := store.ProviderLimits(ctx, permit, provider)
-			budgets = append(budgets, providerBudgets...)
-			rateLimits = append(rateLimits, providerRateLimits...)
-		}
-	}
-	return budgets, rateLimits
+	return limits, nil
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -1144,7 +1190,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A caller can ask for the holder's usage not to be counted, leaving what the deployment and the
 	// user answer to still counted.
 	skipHolderUsage := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking)
-	if requestedModel != "" {
+	// A passthrough call is charged when the provider reported something billable on it, whether or
+	// not a model was ever named. A Vertex custom endpoint names one nowhere — not in the path, which
+	// carries an endpoint id, and not in the body — yet the limits it answers to were settled on its
+	// grant before the call, and the holder's own limits never depended on a model to begin with:
+	// HolderLimits takes no model at all.
+	//
+	// Reported usage, rather than the request type, is what admits it. The raw routes carry metadata
+	// traffic too — a file retrieve, a job status poll — and those spend nothing, so counting them
+	// would make polling consume a caller's request allowance for nothing. Charging what was measured
+	// keeps the two apart without this having to know one provider's route shapes from another's.
+	chargeablePassthrough := result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil
+	if requestedModel != "" || chargeablePassthrough {
 		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
@@ -1512,7 +1569,7 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }
 
-func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) error {
+func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
 	if usage.Cost > 0 {
@@ -1560,15 +1617,15 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // They are missing from usage.BudgetIDs by construction: those ids were collected
 // while the request was in flight, and a batch create carries no top-level model
 // (each input-file row names its own), so only the all-models wildcards matched.
-// An access profile's per-model limits materialise as user-scoped configs naming
-// exactly one model and provider, which is why a model-level budget never moved for
-// a batch. Settlement does know the models, so each one is resolved and charged with
-// its own share here.
+// A downstream consumer's per-model limits (e.g. an access profile's, registered via
+// RegisterExtraScopedIDsResolver) materialise as configs naming exactly one model and
+// provider, which is why a model-level budget never moved for a batch. Settlement does
+// know the models, so each one is resolved and charged with its own share here.
 //
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
-func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage jobaccounting.UsageReport) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}

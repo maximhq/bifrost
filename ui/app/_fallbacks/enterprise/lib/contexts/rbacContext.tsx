@@ -28,6 +28,7 @@ export enum RbacResource {
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
 	AccessProfiles = "AccessProfiles",
+	Projects = "Projects",
 	APIKeys = "APIKeys",
 	Inference = "Inference",
 	Metrics = "Metrics",

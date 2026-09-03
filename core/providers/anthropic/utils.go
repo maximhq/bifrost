@@ -111,6 +111,15 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 	return keep, dropped
 }
 
+// ProviderRequiresSyntheticStructuredOutput reports whether a provider's Anthropic Messages
+// surface rejects native structured outputs (output_config.format) and must receive the schema as
+// the synthetic bf_so_* tool instead. Single source of truth for the typed converters and for the
+// raw-body passthrough guards, which have to agree: a body the converter would have rewritten must
+// never reach the provider verbatim ("output_config.format: Extra inputs are not permitted").
+func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
+	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
+}
+
 // ValidateResponsesToolsForProvider is the Responses-path mirror of
 // ValidateChatToolsForProvider. It partitions []schemas.ResponsesTool into a
 // keep-set (function/custom tools + server tools supported on the target
@@ -2641,6 +2650,21 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 		return providerReason
 	}
 	return AnthropicStopReason(bifrostReason)
+}
+
+// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Anthropic stop_reason, for terminal events that carry no explicit stop reason.
+func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+	if details == nil {
+		return ""
+	}
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return AnthropicStopReasonMaxTokens
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return AnthropicStopReasonRefusal
+	}
+	return ""
 }
 
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format

@@ -3530,6 +3530,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 		Bytes:          sizeBytes,
 		CreatedAt:      createdAt,
 		Filename:       geminiResp.DisplayName,
+		ContentType:    geminiResp.MimeType,
 		Purpose:        request.Purpose,
 		Status:         ToBifrostFileStatus(geminiResp.State),
 		StorageBackend: schemas.FileStorageAPI,
@@ -3628,15 +3629,16 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 		}
 
 		bifrostResp.Data[i] = schemas.FileObject{
-			ID:        file.Name,
-			Object:    "file",
-			Bytes:     sizeBytes,
-			CreatedAt: createdAt,
-			UpdatedAt: updatedAt,
-			Filename:  file.DisplayName,
-			Purpose:   schemas.FilePurposeVision,
-			Status:    ToBifrostFileStatus(file.State),
-			ExpiresAt: expiresAt,
+			ID:          file.Name,
+			Object:      "file",
+			Bytes:       sizeBytes,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			Filename:    file.DisplayName,
+			ContentType: file.MimeType,
+			Purpose:     schemas.FilePurposeVision,
+			Status:      ToBifrostFileStatus(file.State),
+			ExpiresAt:   expiresAt,
 		}
 	}
 
@@ -3783,6 +3785,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 		Filename:       geminiResp.DisplayName,
+		ContentType:    geminiResp.MimeType,
 		Purpose:        schemas.FilePurposeVision,
 		Status:         ToBifrostFileStatus(geminiResp.State),
 		StorageBackend: schemas.FileStorageAPI,
@@ -3907,10 +3910,7 @@ func (provider *GeminiProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	// Gemini doesn't support direct file content download
 	// Files are referenced by their URI in requests
-	return nil, providerUtils.NewBifrostOperationError(
-		"Gemini Files API doesn't support direct content download. Use the file URI in your requests instead.",
-		nil,
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }
 
 // CountTokens performs a token counting request to Gemini's countTokens endpoint.

@@ -175,6 +175,21 @@ func hasTerminalMarkerInTopLevelObject(root map[string]any) bool {
 		return true
 	}
 
+	// Anthropic (incl. via Vertex :streamRawPredict) ends with message_stop and carries no
+	// finishReason. message_delta is deliberately not terminal: it holds the final usage.
+	if eventType, ok := root["type"].(string); ok {
+		switch eventType {
+		case "message_stop", "error":
+			return true
+		}
+	}
+
+	// Google/Vertex error payloads ({"error":{"code":...,"status":...}}, sometimes wrapped in a
+	// top-level array) are terminal: nothing follows them, but the upstream body can stay open.
+	if hasGoogleErrorObject(root) {
+		return true
+	}
+
 	// Gemini/Vertex streamGenerateContent often signals terminal state in
 	// top-level candidates[*].finishReason.
 	if candidatesValue, ok := root["candidates"]; ok {
@@ -271,4 +286,25 @@ func findLastSSEFrameDelimiter(data []byte) (idx int, delimLen int) {
 
 func containsSSEFrameDelimiter(data []byte) bool {
 	return bytes.Contains(data, sseFrameDelimiterLF) || bytes.Contains(data, sseFrameDelimiterCRLF)
+}
+
+// hasGoogleErrorObject reports whether a payload is a Google/Vertex API error envelope. It
+// requires code or status alongside a message so a benign "error" string field in a normal
+// event is not mistaken for a terminal error.
+func hasGoogleErrorObject(root map[string]any) bool {
+	errValue, ok := root["error"]
+	if !ok {
+		return false
+	}
+	errMap, ok := errValue.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, ok := errMap["code"]; ok {
+		return true
+	}
+	if status, ok := errMap["status"].(string); ok && strings.TrimSpace(status) != "" {
+		return true
+	}
+	return false
 }
