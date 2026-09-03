@@ -902,6 +902,41 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 	})
 }
 
+func TestSchemaMCPClientEndpointSlug(t *testing.T) {
+	schema := loadSchema(t)
+
+	t.Run("mcp_client_config includes endpoint_slug property", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "mcp_client_config", "properties", "endpoint_slug")
+		if !found {
+			t.Error("$defs/mcp_client_config is missing 'endpoint_slug' — MCPClientConfig Go struct serializes this field")
+		}
+	})
+
+	clientConfig := func(slug string) string {
+		return fmt.Sprintf(`{
+			"mcp": {
+				"client_configs": [
+					{"name": "example", "connection_type": "http", "connection_string": "https://example.com/mcp", "endpoint_slug": %s}
+				]
+			}
+		}`, slug)
+	}
+
+	t.Run("client config with valid endpoint_slug validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, clientConfig(`"my-server-1"`)); err != nil {
+			t.Errorf("client config with endpoint_slug should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("client config with non-url-safe endpoint_slug rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, clientConfig(`"My Server"`)); err == nil {
+			t.Error("non-url-safe endpoint_slug must be rejected by the schema")
+		}
+	})
+}
+
 func TestSchemaVKRotationCooldownBounds(t *testing.T) {
 	compiled := compileSchema(t)
 

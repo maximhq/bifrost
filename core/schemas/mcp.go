@@ -439,6 +439,7 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 type MCPClientConfig struct {
 	ID                string            `json:"client_id"`                     // Client ID
 	Name              string            `json:"name"`                          // Client name
+	EndpointSlug      string            `json:"endpoint_slug"`                 // URL-safe, immutable; serves /mcp/<slug>
 	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
 	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString  *SecretVar        `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)

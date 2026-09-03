@@ -487,6 +487,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
 	{IDs: []string{"add_github_copilot_config_columns"}, run: migrationAddGithubCopilotConfigColumns},
+	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -1905,7 +1906,7 @@ func backfillVirtualMCPEndpointSlugs(tx *gorm.DB) error {
 	}
 
 	for i := range rows {
-		slug := uniqueVirtualMCPSlug(VirtualMCPSlugify(rows[i].Name), rows[i].ID, taken)
+		slug := uniqueSlug(Slugify(rows[i].Name), fmt.Sprintf("vmcp-%d", rows[i].ID), taken)
 		taken[slug] = true
 		if err := tx.Model(&tables.TableVirtualMCP{}).
 			Where("id = ?", rows[i].ID).
@@ -1916,9 +1917,102 @@ func backfillVirtualMCPEndpointSlugs(tx *gorm.DB) error {
 	return nil
 }
 
-// VirtualMCPSlugify lowercases a name and collapses non-alphanumeric runs to
-// single hyphens, trimmed at the ends.
-func VirtualMCPSlugify(name string) string {
+// migrationAddMCPClientEndpointSlug adds and backfills endpoint_slug on config_mcp_clients. Runs after
+// add_virtual_mcp_tables so the backfill can seed uniqueness from existing Virtual MCP slugs.
+func migrationAddMCPClientEndpointSlug(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_endpoint_slug"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	// Column + backfill run transactionally; the backfill must de-duplicate before the unique index.
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "endpoint_slug"); err != nil {
+				return fmt.Errorf("failed to add endpoint_slug column: %w", err)
+			}
+			if err := backfillMCPClientEndpointSlugs(tx); err != nil {
+				return fmt.Errorf("failed to backfill MCP client endpoint slugs: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	// The unique index is built non-transactionally (UseTransaction=false) with CREATE UNIQUE INDEX
+	// CONCURRENTLY on postgres so it does not take a ShareLock that blocks writes to
+	// config_mcp_clients for the duration of the build. SQLite does not support CONCURRENTLY, so it
+	// uses the plain form. Idempotent via IF NOT EXISTS. The name matches gorm's uniqueIndex tag.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName + "_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE UNIQUE INDEX IF NOT EXISTS idx_config_mcp_clients_endpoint_slug ON config_mcp_clients (endpoint_slug)"
+			} else {
+				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_config_mcp_clients_endpoint_slug ON config_mcp_clients (endpoint_slug)"
+			}
+			return tx.Exec(stmt).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP INDEX IF EXISTS idx_config_mcp_clients_endpoint_slug`).Error
+		},
+	}); err != nil {
+		return fmt.Errorf("failed to create endpoint_slug index: %w", err)
+	}
+	return nil
+}
+
+// backfillMCPClientEndpointSlugs gives every slug-less MCP client a unique slug from its name. The
+// taken-set includes existing Virtual MCP slugs, since both serve at /mcp/<slug>. No-ops on a fresh table.
+func backfillMCPClientEndpointSlugs(tx *gorm.DB) error {
+	var rows []tables.TableMCPClient
+	if err := tx.Where("endpoint_slug IS NULL OR endpoint_slug = ?", "").Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	taken := map[string]bool{}
+	var clientSlugs, vmcpSlugs []string
+	if err := tx.Model(&tables.TableMCPClient{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &clientSlugs).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&tables.TableVirtualMCP{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &vmcpSlugs).Error; err != nil {
+		return err
+	}
+	for _, s := range clientSlugs {
+		taken[s] = true
+	}
+	for _, s := range vmcpSlugs {
+		taken[s] = true
+	}
+
+	for i := range rows {
+		slug := uniqueSlug(Slugify(rows[i].Name), fmt.Sprintf("mcp-%d", rows[i].ID), taken)
+		taken[slug] = true
+		if err := tx.Model(&tables.TableMCPClient{}).
+			Where("id = ?", rows[i].ID).
+			Update("endpoint_slug", slug).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Slugify lowercases a name and collapses non-alphanumeric runs to single
+// hyphens, trimmed at the ends.
+func Slugify(name string) string {
 	var b strings.Builder
 	prevHyphen := false
 	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
@@ -1935,11 +2029,11 @@ func VirtualMCPSlugify(name string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// uniqueVirtualMCPSlug returns base, a numbered variant if taken, or an
-// id-based slug if base is empty.
-func uniqueVirtualMCPSlug(base string, id uint, taken map[string]bool) string {
+// uniqueSlug returns base, a numbered variant if base is taken, or fallback
+// (then numbered) when base is empty. taken records slugs already in use.
+func uniqueSlug(base, fallback string, taken map[string]bool) string {
 	if base == "" {
-		base = fmt.Sprintf("vmcp-%d", id)
+		base = fallback
 	}
 	if !taken[base] {
 		return base

@@ -15,6 +15,7 @@ import (
 type mockInMemoryStore struct {
 	allowedByDefaultClients map[string]string // clientID → clientName
 	clientNames             map[string]string // clientID → clientName, configured clients that are not allowed by default
+	clientSlugs             map[string]string // endpoint slug → clientID
 	configuredProviders     map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
@@ -33,6 +34,14 @@ func (m *mockInMemoryStore) GetMCPClientNames() map[string]string {
 	maps.Copy(names, m.clientNames)
 	maps.Copy(names, m.allowedByDefaultClients)
 	return names
+}
+
+func (m *mockInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
+	id, ok := m.clientSlugs[slug]
+	if !ok {
+		return "", "", false
+	}
+	return id, m.GetMCPClientNames()[id], true
 }
 
 // accessFor builds the access a key carries on its own, with the given clients open to every

@@ -67,6 +67,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
+	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
+	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualMCP{}, &tables.TableVirtualKeyVirtualMCP{}), "Failed to migrate virtual MCP tables")
+
 	// Setup join table
 	err = db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{})
 	require.NoError(t, err, "Failed to setup join table")

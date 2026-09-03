@@ -5560,6 +5560,11 @@
           "type": "string",
           "description": "Name of the MCP client"
         },
+        "endpoint_slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe, immutable slug that serves this client at /mcp/<slug>. Derived from the name when omitted; must be unique across MCP clients and Virtual MCPs."
+        },
         "is_code_mode_client": {
           "type": "boolean",
           "description": "Whether this client is a code mode client"
