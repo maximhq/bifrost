@@ -712,6 +712,18 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
 		}
+
+		if key.GithubCopilotKeyConfig != nil {
+			// The private key is the whole credential, so it is redacted like any other
+			// secret rather than surfaced in a config read.
+			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
+				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
+				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
+				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
+				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
+				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
+			}
+		}
 	}
 	return &redactedConfig
 }
@@ -905,6 +917,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash DatabricksKeyConfig
 	if key.DatabricksKeyConfig != nil {
 		data, err := sonic.Marshal(key.DatabricksKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GithubCopilotKeyConfig
+	if key.GithubCopilotKeyConfig != nil {
+		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
 		if err != nil {
 			return "", err
 		}
