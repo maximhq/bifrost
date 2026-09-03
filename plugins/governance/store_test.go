@@ -1791,8 +1791,8 @@ func TestResolveLimits(t *testing.T) {
 		require.NotNil(t, access)
 		require.Len(t, access.Bases(), 1)
 
-		openaiBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
-		bedrockBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
+		openaiBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
+		bedrockBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
 		assert.Equal(t, []string{"b-key-openai"}, limitIDsOf(openaiBudgets))
 		assert.Equal(t, []string{"b-key-bedrock"}, limitIDsOf(bedrockBudgets))
 		assert.Nil(t, ctx.Grant().Limits(), "nothing is settled yet, which is not the same as nothing applying")

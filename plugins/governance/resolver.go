@@ -161,7 +161,10 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 	if limits != nil {
 		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
 	} else {
-		budgets, rateLimits = r.store.ProviderAndModelLimits(ctx, nil, evaluationRequest.Provider, evaluationRequest.Model)
+		budgets, rateLimits = r.store.GlobalProviderLimits(ctx, evaluationRequest.Provider)
+		modelBudgets, modelRateLimits := r.store.GlobalModelLimits(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+		budgets = append(budgets, modelBudgets...)
+		rateLimits = append(rateLimits, modelRateLimits...)
 	}
 
 	// Rate limits before budgets, as they always have been: a rate limit refuses a request that

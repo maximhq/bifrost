@@ -499,26 +499,28 @@ func settleTestIdentity(ctx *schemas.BifrostContext) {
 // checkDeploymentBudgets checks the limits that apply to every request regardless of what granted
 // it: the provider's own and the global model configs that cover the pair.
 func checkDeploymentBudgets(gs *LocalGovernanceStore, ctx context.Context, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
-	budgets, _ := gs.ProviderAndModelLimits(ctx, nil, provider, model)
-	return gs.CheckBudgets(ctx, budgets, baselines)
+	budgets, _ := gs.GlobalProviderLimits(ctx, provider)
+	modelBudgets, _ := gs.GlobalModelLimits(ctx, provider, model)
+	return gs.CheckBudgets(ctx, append(budgets, modelBudgets...), baselines)
 }
 
 // checkDeploymentRateLimits is checkDeploymentBudgets for rate limits.
 func checkDeploymentRateLimits(gs *LocalGovernanceStore, ctx context.Context, provider schemas.ModelProvider, model string, tokens, requests map[string]int64) (Decision, error) {
-	_, rateLimits := gs.ProviderAndModelLimits(ctx, nil, provider, model)
-	return gs.CheckRateLimits(ctx, rateLimits, tokens, requests)
+	_, rateLimits := gs.GlobalProviderLimits(ctx, provider)
+	_, modelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	return gs.CheckRateLimits(ctx, append(rateLimits, modelRateLimits...), tokens, requests)
 }
 
 // checkScopedBudgets checks the model configs a named holder set for its own traffic, which is what
 // a grant of that identity resolves to.
 func checkScopedBudgets(gs *LocalGovernanceStore, ctx context.Context, permitType grant.PermitType, scopeID string, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
-	budgets, _ := gs.ProviderAndModelLimits(ctx, grant.NewPermit(permitType, scopeID, "", true, false, nil, nil), provider, model)
+	budgets, _ := gs.PermitModelLimits(ctx, grant.NewPermit(permitType, scopeID, "", true, false, nil, nil), provider, model)
 	return gs.CheckBudgets(ctx, budgets, baselines)
 }
 
 // checkScopedRateLimits is checkScopedBudgets for rate limits.
 func checkScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, permitType grant.PermitType, scopeID string, provider schemas.ModelProvider, model string, tokens, requests map[string]int64) (Decision, error) {
-	_, rateLimits := gs.ProviderAndModelLimits(ctx, grant.NewPermit(permitType, scopeID, "", true, false, nil, nil), provider, model)
+	_, rateLimits := gs.PermitModelLimits(ctx, grant.NewPermit(permitType, scopeID, "", true, false, nil, nil), provider, model)
 	return gs.CheckRateLimits(ctx, rateLimits, tokens, requests)
 }
 
@@ -529,13 +531,15 @@ func checkScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, permit
 // chargeDeploymentBudgets bills a cost to the limits every request to this provider and model
 // answers to regardless of what granted it, and chargeDeploymentRateLimits counts one against them.
 func chargeDeploymentBudgets(gs *LocalGovernanceStore, ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error {
-	budgets, _ := gs.ProviderAndModelLimits(ctx, nil, provider, model)
-	return gs.ChargeBudgets(ctx, budgets, cost)
+	budgets, _ := gs.GlobalProviderLimits(ctx, provider)
+	modelBudgets, _ := gs.GlobalModelLimits(ctx, provider, model)
+	return gs.ChargeBudgets(ctx, append(budgets, modelBudgets...), cost)
 }
 
 func chargeDeploymentRateLimits(gs *LocalGovernanceStore, ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
-	_, rateLimits := gs.ProviderAndModelLimits(ctx, nil, provider, model)
-	return gs.ChargeRateLimits(ctx, rateLimits, tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
+	_, rateLimits := gs.GlobalProviderLimits(ctx, provider)
+	_, modelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	return gs.ChargeRateLimits(ctx, append(rateLimits, modelRateLimits...), tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
 }
 
 // scopedModelLimits is what one named scope's model configs impose on a request to this provider
@@ -574,14 +578,14 @@ func chargeScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, scope
 func chargeGrantBudgets(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
 	permit := gs.permitForVirtualKey(ctx, vk)
 	heldBudgets, _ := gs.HolderLimits(ctx, permit)
-	providerBudgets, _ := gs.ProviderLimits(ctx, permit, provider)
+	providerBudgets, _ := gs.PermitProviderLimits(ctx, permit, provider)
 	return gs.ChargeBudgets(ctx, append(heldBudgets, providerBudgets...), cost)
 }
 
 func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
 	permit := gs.permitForVirtualKey(ctx, vk)
 	_, heldRateLimits := gs.HolderLimits(ctx, permit)
-	_, providerRateLimits := gs.ProviderLimits(ctx, permit, provider)
+	_, providerRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
 	return gs.ChargeRateLimits(ctx, append(heldRateLimits, providerRateLimits...), tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
 }
 
@@ -591,6 +595,6 @@ func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *co
 func checkGrantBudgets(gs *LocalGovernanceStore, bifrostCtx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
 	permit := gs.permitForVirtualKey(bifrostCtx, vk)
 	heldBudgets, _ := gs.HolderLimits(bifrostCtx, permit)
-	providerBudgets, _ := gs.ProviderLimits(bifrostCtx, permit, provider)
+	providerBudgets, _ := gs.PermitProviderLimits(bifrostCtx, permit, provider)
 	return gs.CheckBudgets(bifrostCtx, append(heldBudgets, providerBudgets...), baselines)
 }

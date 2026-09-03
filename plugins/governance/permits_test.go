@@ -264,7 +264,7 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 
 	// Each config's limits are answered for that provider, so which provider they answer for is
 	// what was asked rather than something to filter on.
-	openaiBudgets, openaiRateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	openaiBudgets, openaiRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, openaiBudgets, 1, "the openai config's own")
 	assert.Equal(t, schemas.Limit{
 		ID: "budget-openai", HolderKind: string(grant.LimitHolderVirtualKeyProviderConfig),
@@ -272,11 +272,11 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 	}, openaiBudgets[0])
 	assert.Equal(t, []string{"rl-openai"}, limitIDsOf(openaiRateLimits))
 
-	anthropicBudgets, anthropicRateLimits := gs.ProviderLimits(ctx, permit, schemas.Anthropic)
+	anthropicBudgets, anthropicRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.Anthropic)
 	assert.Empty(t, anthropicBudgets, "a config governed by nothing of its own")
 	assert.Empty(t, anthropicRateLimits)
 
-	noProviderBudgets, _ := gs.ProviderLimits(ctx, permit, "")
+	noProviderBudgets, _ := gs.PermitProviderLimits(ctx, permit, "")
 	assert.Empty(t, noProviderBudgets, "and there is no unscoped bucket to find the key's own in")
 
 	// The key's own limits are HolderLimits' to answer.
@@ -317,7 +317,7 @@ func TestPermitForVirtualKey_LimitsOfTwoConfigsForOneProvider(t *testing.T) {
 	ctx := emptyCtx()
 	permit := gs.permitForVirtualKey(ctx, vk)
 
-	budgets, rateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	budgets, rateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, budgets, 2, "both configs govern openai traffic")
 	assert.Equal(t, []string{"budget-first", "budget-second"}, []string{budgets[0].ID, budgets[1].ID})
 	assert.Equal(t, []string{"1", "2"}, []string{budgets[0].HolderID, budgets[1].HolderID},
@@ -1325,7 +1325,7 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 	require.Len(t, bases, 1)
 	require.Equal(t, string(grant.PermitVirtualKey), bases[0].Type(), "the type production stamps, not a scope name")
 
-	budgets, _ := store.ProviderAndModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
+	budgets, _ := store.PermitModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
 
 	assert.Contains(t, limitIDsOf(budgets), "b-vk-model",
 		"a key's own model budget must be found through the permit production builds for it")
