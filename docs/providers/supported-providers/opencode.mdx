@@ -6,11 +6,12 @@ icon: "code"
 
 ## Overview
 
-OpenCode provides two AI gateway providers — **OpenCode Zen** (pay-as-you-go) and **OpenCode Go** (subscription-based). Both expose an OpenAI-compatible API that proxies to a curated set of models from multiple underlying providers (OpenAI, Anthropic, Google, DeepSeek, xAI, Kimi, Qwen, MiniMax, GLM, and more). 
+OpenCode provides two AI gateway providers — **OpenCode Zen** (pay-as-you-go) and **OpenCode Go** (subscription-based). Both expose an OpenAI-compatible API that proxies to a curated set of models from multiple underlying providers (OpenAI, Anthropic, Google, DeepSeek, xAI, Kimi, Qwen, MiniMax, GLM, and more).
 
 Bifrost implements both providers through a shared codebase, differing only in default base URL and provider key.
 
 Key features:
+
 - **Full OpenAI compatibility** — Standard Chat Completions `/v1/chat/completions` format
 - **Multi-model access** — GPT, Claude, Gemini, DeepSeek, Grok, Kimi, Qwen, and more through a single API key
 - **Curated quality** — Models are tested and verified by the OpenCode team for coding agent performance
@@ -21,7 +22,7 @@ Key features:
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Endpoint |
-|-----------|---------------|-----------|----------|
+| ----------- | --------------- | ----------- | ---------- |
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Responses API | ✅ | ✅ | `/v1/chat/completions` (converted) |
 | List Models | ✅ | - | `/v1/models` |
@@ -41,7 +42,7 @@ Key features:
 ### Choosing a Gateway
 
 | | OpenCode Zen | OpenCode Go |
-|---|---|---|
+| --- | --- | --- |
 | **Billing** | Pay-as-you-go (per token) | Subscription-based |
 | **Base URL** | `https://opencode.ai/zen` | `https://opencode.ai/zen/go` |
 | **Provider key** | `opencode-zen` | `opencode-go` |
@@ -142,6 +143,7 @@ OpenCode Zen and Go use standard OpenAI Chat Completions format. For full parame
 ## Request Parameters
 
 All standard OpenAI chat completion parameters are supported, including:
+
 - `model` — Model ID (e.g., `deepseek-v4-flash`, `gpt-5.5`, `claude-sonnet-4-6`)
 - `messages` — Standard message array with `role` and `content`
 - `max_tokens` — Maximum output tokens
@@ -198,7 +200,7 @@ All chat models return standard OpenAI response format:
 OpenCode returns comprehensive token usage data:
 
 | Field | Description |
-|-------|-------------|
+| ------- | ------------- |
 | `usage.prompt_tokens` | Input tokens consumed |
 | `usage.completion_tokens` | Output tokens generated |
 | `usage.total_tokens` | Total tokens for the request |
@@ -224,7 +226,7 @@ OpenCode uses a custom error format that differs from standard OpenAI errors:
 Bifrost's custom error converter parses this format transparently. Error types include:
 
 | Error Type | HTTP Status | Description |
-|-----------|-------------|-------------|
+| ----------- | ------------- | ------------- |
 | `AuthError` | 401 | Invalid or missing API key |
 | `ModelError` | 400/404 | Requested model is not available |
 | `insufficient_quota` | 429 | Quota exceeded |
@@ -301,7 +303,7 @@ For context window sizes and model capability metadata, point `pricing_url` and 
 ## Unsupported Features
 
 | Feature | Reason |
-|---------|--------|
+| --------- | -------- |
 | Embedding | Not offered by OpenCode API |
 | Image Generation | Not offered by OpenCode API |
 | Speech/TTS | Not offered by OpenCode API |
@@ -311,6 +313,30 @@ For context window sizes and model capability metadata, point `pricing_url` and 
 | WebSocket Responses | Not offered by OpenCode API |
 
 ---
+
+## Session Affinity (`x-opencode-session`)
+
+OpenCode's subscription gateway (Go) expects an `x-opencode-session` request header carrying one stable ID per conversation. OpenCode uses it for session-level attribution on shared subscription backends, which is how resold subscriptions get caught (unrelated sessions piling up on one key). Header-less Go requests may be rejected outright. Zen, the pay-as-you-go API, does not enforce it. Bifrost sends the header to both gateways anyway: Zen ignores it, and uniform emission keeps zen-go fallbacks identical.
+
+Bifrost resolves the value once per request and forwards it upstream on every inference call (chat, responses, streaming — but not `ListModels`):
+
+1. A client-sent `x-opencode-session` header is forwarded verbatim (preferred — e.g. Hermes past 0.21.0 sends this automatically).
+2. Otherwise the request's existing session identity is reused (`x-bf-session-id`, then harness headers such as `x-session-affinity` / `x-session-id`).
+3. Otherwise Bifrost synthesizes a one-off UUID so the request stays compliant (no cache benefit — multi-turn warmth requires the client to send a stable session).
+
+```bash
+# One stable ID per conversation
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $BIFROST_VK" \
+  -H "x-opencode-session: my-conversation-123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "opencode-go/glm-5", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+Two details worth knowing:
+
+- **Per-tenant namespacing** — the upstream value is scoped to your virtual key (`sha256(vk, session)` prefix), so identical session strings from different tenants never share cache warmth or hotspot a backend. Without a virtual key the raw value is used.
+- **Opencode-only** — the header is never forwarded to other providers, even if you reuse a session ID across them. Likewise, do not set a static `x-opencode-session` in `network_config.extra_headers`: a single fixed value would pin every conversation to one session and defeat affinity.
 
 ## Caveats
 
