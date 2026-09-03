@@ -126,7 +126,8 @@ interface CustomersTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
-	isFetching?: boolean;
+	/** Lets the page pause background polling while an edit sheet is open. */
+	onSheetOpenChange?: (open: boolean) => void;
 }
 
 export default function CustomersTable({
@@ -139,7 +140,7 @@ export default function CustomersTable({
 	offset,
 	limit,
 	onOffsetChange,
-	isFetching,
+	onSheetOpenChange,
 }: CustomersTableProps) {
 	const t = useT();
 	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
@@ -152,6 +153,12 @@ export default function CustomersTable({
 	const hasDeleteAccess = useRbac(RbacResource.Customers, RbacOperation.Delete);
 
 	const [deleteCustomer, { isLoading: isDeleting }] = useDeleteCustomerMutation();
+
+	// Derived from the single source of truth rather than each open/close call
+	// site, so the two can never drift apart.
+	useEffect(() => {
+		onSheetOpenChange?.(showCustomerSheet);
+	}, [showCustomerSheet, onSheetOpenChange]);
 
 	const handleDelete = async (customerId: string) => {
 		try {
@@ -185,34 +192,28 @@ export default function CustomersTable({
 
 	const hasActiveFilters = debouncedSearch;
 
-	// Rendered on the empty branch too, not just the populated one: PageTitle
-	// draws nothing inline, and leaving it out drops the topbar to the
-	// route-derived fallback.
+	const [hasLoadedRows, setHasLoadedRows] = useState(false);
+	useEffect(() => {
+		if (totalCount > 0) setHasLoadedRows(true);
+	}, [totalCount]);
+
+	// Hoisted above the empty/populated branch: PageTitle draws nothing inline,
+	// and leaving it out of either branch drops the topbar to the route-derived
+	// fallback.
 	const pageTitle = <PageTitle title="Customers">{t("governance.customers.pageDescription")}</PageTitle>;
 
-	// True empty state: no customers at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters && !isFetching) {
-		return (
-			<>
-				{pageTitle}
-				<TooltipProvider>
-					<CustomerSheet
-						open={showCustomerSheet}
-						onOpenChange={(open) => {
-							setShowCustomerSheet(open);
-							if (!open) setEditingCustomer(null);
-						}}
-						customer={editingCustomer}
-						onSuccess={handleCustomerSaved}
-					/>
-					<CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />
-				</TooltipProvider>
-			</>
-		);
-	}
+	// True empty state: no customers at all (not just filtered to zero). Rendered
+	// as a branch *inside* the tree rather than an early return with a different
+	// shape, because a shape change here made React remount CustomerSheet and wipe
+	// whatever was being typed. Latched on `hasLoadedRows` rather than the query's
+	// in-flight flag: that flag flips on every background poll, which would toggle
+	// the layout every few seconds on a genuinely empty page, while the latch still
+	// suppresses the empty card during the uncached fetch of a later page.
+	const isTrulyEmpty = totalCount === 0 && !hasActiveFilters && !hasLoadedRows;
 
 	return (
 		<>
+			{pageTitle}
 			<TooltipProvider>
 				<CustomerSheet
 					open={showCustomerSheet}
@@ -232,148 +233,196 @@ export default function CustomersTable({
 					customer={viewingCustomer}
 				/>
 
-				<div className="flex grow flex-col">
-					<div className="mb-4 flex flex-wrap items-center gap-3">
-						{pageTitle}
-						<div className="relative max-w-sm flex-1">
-							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-							<Input
-								aria-label={t("governance.customers.searchAria")}
-								placeholder={t("governance.customers.searchPlaceholder")}
-								value={search}
-								onChange={(e) => onSearchChange(e.target.value)}
-								className="pl-9"
-								data-testid="customers-search-input"
-							/>
+				{isTrulyEmpty && <CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />}
+
+				{!isTrulyEmpty && (
+					<div className="flex grow flex-col">
+						<div className="mb-4 flex flex-wrap items-center gap-3">
+							<div className="relative max-w-sm flex-1">
+								<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+								<Input
+									aria-label={t("governance.customers.searchAria")}
+									placeholder={t("governance.customers.searchPlaceholder")}
+									value={search}
+									onChange={(e) => onSearchChange(e.target.value)}
+									className="pl-9"
+									data-testid="customers-search-input"
+								/>
+							</div>
+							<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
+								<Plus className="h-4 w-4" />
+								{t("governance.customers.add")}
+							</Button>
 						</div>
-						<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
-							<Plus className="h-4 w-4" />
-							{t("governance.customers.add")}
-						</Button>
-					</div>
 
-					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">
-						<Table className="min-w-[1100px]">
-							<TableHeader>
-								<TableRow>
-									<TableHead>{t("governance.shared.name")}</TableHead>
-									<TableHead>{t("governance.customers.teams")}</TableHead>
-									<TableHead>{t("governance.shared.budget")}</TableHead>
-									<TableHead>{t("governance.shared.rateLimit")}</TableHead>
-									<TableHead>{t("governance.shared.virtualKeys")}</TableHead>
-									<TableHead className={`bg-muted ${ACTIONS_COLUMN_CLASS}`}></TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{customers.length === 0 ? (
+						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">
+							<Table className="min-w-[1100px]">
+								<TableHeader>
 									<TableRow>
-										<TableCell colSpan={6} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">{t("governance.customers.noMatching")}</span>
-										</TableCell>
+										<TableHead>{t("governance.shared.name")}</TableHead>
+										<TableHead>{t("governance.customers.teams")}</TableHead>
+										<TableHead>{t("governance.shared.budget")}</TableHead>
+										<TableHead>{t("governance.shared.rateLimit")}</TableHead>
+										<TableHead>{t("governance.shared.virtualKeys")}</TableHead>
+										<TableHead className={`bg-muted ${ACTIONS_COLUMN_CLASS}`}></TableHead>
 									</TableRow>
-								) : (
-									customers.map((customer) => {
-										const customerTeams = getTeamsForCustomer(customer.id);
-										const vkCount = customer.virtual_key_count ?? 0;
+								</TableHeader>
+								<TableBody>
+									{customers.length === 0 ? (
+										<TableRow>
+											<TableCell colSpan={6} className="h-24 text-center">
+												<span className="text-muted-foreground text-sm">{t("governance.customers.noMatching")}</span>
+											</TableCell>
+										</TableRow>
+									) : (
+										customers.map((customer) => {
+											const customerTeams = getTeamsForCustomer(customer.id);
+											const vkCount = customer.virtual_key_count ?? 0;
 
-										// Budget calculations (most-exhausted budget drives the row highlight)
-										const budgets = customer.budgets ?? [];
-										const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
+											// Budget calculations (most-exhausted budget drives the row highlight)
+											const budgets = customer.budgets ?? [];
+											const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
-										// Rate limit calculations
-										const isTokenLimitExhausted =
-											customer.rate_limit?.token_max_limit &&
-											customer.rate_limit.token_max_limit > 0 &&
-											customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit;
-										const isRequestLimitExhausted =
-											customer.rate_limit?.request_max_limit &&
-											customer.rate_limit.request_max_limit > 0 &&
-											customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit;
-										const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
-										const tokenPercentage =
-											customer.rate_limit?.token_max_limit && customer.rate_limit.token_max_limit > 0
-												? Math.min((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100, 100)
-												: 0;
-										const requestPercentage =
-											customer.rate_limit?.request_max_limit && customer.rate_limit.request_max_limit > 0
-												? Math.min((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100, 100)
-												: 0;
+											// Rate limit calculations
+											const isTokenLimitExhausted =
+												customer.rate_limit?.token_max_limit &&
+												customer.rate_limit.token_max_limit > 0 &&
+												customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit;
+											const isRequestLimitExhausted =
+												customer.rate_limit?.request_max_limit &&
+												customer.rate_limit.request_max_limit > 0 &&
+												customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit;
+											const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
+											const tokenPercentage =
+												customer.rate_limit?.token_max_limit && customer.rate_limit.token_max_limit > 0
+													? Math.min((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100, 100)
+													: 0;
+											const requestPercentage =
+												customer.rate_limit?.request_max_limit && customer.rate_limit.request_max_limit > 0
+													? Math.min((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100, 100)
+													: 0;
 
-										const isExhausted = isBudgetExhausted || isRateLimitExhausted;
+											const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
-										return (
-											<TableRow
-												key={customer.id}
-												data-testid={`customer-row-${customer.name}`}
-												className={cn(
-													"group cursor-pointer transition-colors",
-													isExhausted ? "bg-red-500/5 hover:bg-red-500/10" : "hover:bg-muted/50",
-												)}
-												role="button"
-												tabIndex={0}
-												onClick={() => setViewingCustomer(customer)}
-												onKeyDown={(e) => {
-													if (e.target !== e.currentTarget) return;
-													if (e.key === "Enter" || e.key === " ") {
-														e.preventDefault();
-														setViewingCustomer(customer);
-													}
-												}}
-											>
-												<TableCell className="max-w-[200px] py-4">
-													<div className="flex flex-col gap-2">
-														<span className="truncate font-medium">{customer.name}</span>
-														{isExhausted && (
-															<Badge variant="destructive" className="w-fit text-xs">
-																{t("governance.shared.limitReached")}
-															</Badge>
-														)}
-													</div>
-												</TableCell>
-												<TableCell>
-													{customerTeams?.length > 0 ? (
-														<div className="flex items-center gap-2">
-															<Tooltip>
-																<TooltipTrigger>
-																	<Badge variant="outline" className="text-xs">
-																		{t(
-																			customerTeams.length === 1
-																				? "governance.customers.teamCount_one"
-																				: "governance.customers.teamCount_other",
-																			{ count: customerTeams.length },
-																		)}
-																	</Badge>
-																</TooltipTrigger>
-																<TooltipContent>{customerTeams.map((team) => team.name).join(", ")}</TooltipContent>
-															</Tooltip>
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
+											return (
+												<TableRow
+													key={customer.id}
+													data-testid={`customer-row-${customer.name}`}
+													className={cn(
+														"group cursor-pointer transition-colors",
+														isExhausted ? "bg-red-500/5 hover:bg-red-500/10" : "hover:bg-muted/50",
 													)}
-												</TableCell>
-												<TableCell className="min-w-[180px]">
-													{budgets.length > 0 ? (
-														<div className="space-y-2">
-															{budgets.map((budget) => {
-																const pct = budget.max_limit > 0 ? Math.min((budget.current_usage / budget.max_limit) * 100, 100) : 0;
-																const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
-																return (
-																	<Tooltip key={budget.id}>
+													role="button"
+													tabIndex={0}
+													onClick={() => setViewingCustomer(customer)}
+													onKeyDown={(e) => {
+														if (e.target !== e.currentTarget) return;
+														if (e.key === "Enter" || e.key === " ") {
+															e.preventDefault();
+															setViewingCustomer(customer);
+														}
+													}}
+												>
+													<TableCell className="max-w-[200px] py-4">
+														<div className="flex flex-col gap-2">
+															<span className="truncate font-medium">{customer.name}</span>
+															{isExhausted && (
+																<Badge variant="destructive" className="w-fit text-xs">
+																	{t("governance.shared.limitReached")}
+																</Badge>
+															)}
+														</div>
+													</TableCell>
+													<TableCell>
+														{customerTeams?.length > 0 ? (
+															<div className="flex items-center gap-2">
+																<Tooltip>
+																	<TooltipTrigger>
+																		<Badge variant="outline" className="text-xs">
+																			{t(
+																				customerTeams.length === 1
+																					? "governance.customers.teamCount_one"
+																					: "governance.customers.teamCount_other",
+																				{ count: customerTeams.length },
+																			)}
+																		</Badge>
+																	</TooltipTrigger>
+																	<TooltipContent>{customerTeams.map((team) => team.name).join(", ")}</TooltipContent>
+																</Tooltip>
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell className="min-w-[180px]">
+														{budgets.length > 0 ? (
+															<div className="space-y-2">
+																{budgets.map((budget) => {
+																	const pct = budget.max_limit > 0 ? Math.min((budget.current_usage / budget.max_limit) * 100, 100) : 0;
+																	const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
+																	return (
+																		<Tooltip key={budget.id}>
+																			<TooltipTrigger asChild>
+																				<div className="space-y-1">
+																					<div className="flex items-center justify-between gap-4">
+																						<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
+																						<span className="text-muted-foreground text-xs">
+																							{formatResetDuration(budget.reset_duration)}
+																						</span>
+																					</div>
+																					<Progress
+																						value={pct}
+																						className={cn(
+																							"bg-muted/70 dark:bg-muted/30 h-1.5",
+																							exhausted
+																								? "[&>div]:bg-red-500/70"
+																								: pct > 80
+																									? "[&>div]:bg-amber-500/70"
+																									: "[&>div]:bg-emerald-500/70",
+																						)}
+																					/>
+																				</div>
+																			</TooltipTrigger>
+																			<TooltipContent>
+																				<p className="font-medium">
+																					{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
+																				</p>
+																				<p className="text-primary-foreground/80 text-xs">
+																					{t("governance.shared.resets", { period: formatResetDuration(budget.reset_duration) })}
+																				</p>
+																			</TooltipContent>
+																		</Tooltip>
+																	);
+																})}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell className="min-w-[180px]">
+														{customer.rate_limit ? (
+															<div className="space-y-2.5">
+																{customer.rate_limit.token_max_limit && (
+																	<Tooltip>
 																		<TooltipTrigger asChild>
-																			<div className="space-y-1">
-																				<div className="flex items-center justify-between gap-4">
-																					<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">
-																						{formatResetDuration(budget.reset_duration)}
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("governance.shared.tokensCount", {
+																							count: customer.rate_limit.token_max_limit.toLocaleString(),
+																						})}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
-																					value={pct}
+																					value={tokenPercentage}
 																					className={cn(
-																						"bg-muted/70 dark:bg-muted/30 h-1.5",
-																						exhausted
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						isTokenLimitExhausted
 																							? "[&>div]:bg-red-500/70"
-																							: pct > 80
+																							: tokenPercentage > 80
 																								? "[&>div]:bg-amber-500/70"
 																								: "[&>div]:bg-emerald-500/70",
 																					)}
@@ -382,189 +431,144 @@ export default function CustomersTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
+																				{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
+																				{t("governance.shared.tokensCount", {
+																					count: customer.rate_limit.token_max_limit.toLocaleString(),
+																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				{t("governance.shared.resets", { period: formatResetDuration(budget.reset_duration) })}
+																				{t("governance.shared.resets", {
+																					period: formatResetDuration(customer.rate_limit.token_reset_duration || "1h"),
+																				})}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
-																);
-															})}
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell className="min-w-[180px]">
-													{customer.rate_limit ? (
-														<div className="space-y-2.5">
-															{customer.rate_limit.token_max_limit && (
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">
-																					{t("governance.shared.tokensCount", {
-																						count: customer.rate_limit.token_max_limit.toLocaleString(),
-																					})}
-																				</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
-																				</span>
+																)}
+																{customer.rate_limit.request_max_limit && (
+																	<Tooltip>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("governance.shared.reqShort", {
+																							count: customer.rate_limit.request_max_limit.toLocaleString(),
+																						})}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
+																					</span>
+																				</div>
+																				<Progress
+																					value={requestPercentage}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						isRequestLimitExhausted
+																							? "[&>div]:bg-red-500/70"
+																							: requestPercentage > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
 																			</div>
-																			<Progress
-																				value={tokenPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					isTokenLimitExhausted
-																						? "[&>div]:bg-red-500/70"
-																						: tokenPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																			{t("governance.shared.tokensCount", {
-																				count: customer.rate_limit.token_max_limit.toLocaleString(),
-																			})}
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			{t("governance.shared.resets", {
-																				period: formatResetDuration(customer.rate_limit.token_reset_duration || "1h"),
-																			})}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															)}
-															{customer.rate_limit.request_max_limit && (
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">
-																					{t("governance.shared.reqShort", {
-																						count: customer.rate_limit.request_max_limit.toLocaleString(),
-																					})}
-																				</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
-																				</span>
-																			</div>
-																			<Progress
-																				value={requestPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					isRequestLimitExhausted
-																						? "[&>div]:bg-red-500/70"
-																						: requestPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																			{t("governance.shared.requestsCount", {
-																				count: customer.rate_limit.request_max_limit.toLocaleString(),
-																			})}
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			{t("governance.shared.resets", {
-																				period: formatResetDuration(customer.rate_limit.request_reset_duration || "1h"),
-																			})}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															)}
-														</div>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell>
-													{vkCount > 0 ? (
-														<Badge variant="outline" className="text-xs">
-															{t(vkCount === 1 ? "governance.shared.keyCount_one" : "governance.shared.keyCount_other", {
-																count: vkCount,
-															})}
-														</Badge>
-													) : (
-														<span className="text-muted-foreground text-sm">-</span>
-													)}
-												</TableCell>
-												<TableCell
-													className={cn(
-														"dark:bg-card dark:group-hover:bg-muted",
-														isExhausted ? "bg-red-500/5 group-hover:bg-red-500/10" : "bg-white group-hover:bg-muted",
-														ACTIONS_COLUMN_CLASS,
-													)}
-												>
-													<CustomerActionsMenu
-														customer={customer}
-														canUpdate={hasUpdateAccess}
-														canDelete={hasDeleteAccess}
-														onEdit={handleEditCustomer}
-														onDelete={setConfirmDeleteCustomer}
-													/>
-												</TableCell>
-											</TableRow>
-										);
-									})
-								)}
-							</TableBody>
-						</Table>
-					</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
+																				{t("governance.shared.requestsCount", {
+																					count: customer.rate_limit.request_max_limit.toLocaleString(),
+																				})}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				{t("governance.shared.resets", {
+																					period: formatResetDuration(customer.rate_limit.request_reset_duration || "1h"),
+																				})}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																)}
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell>
+														{vkCount > 0 ? (
+															<Badge variant="outline" className="text-xs">
+																{t(vkCount === 1 ? "governance.shared.keyCount_one" : "governance.shared.keyCount_other", {
+																	count: vkCount,
+																})}
+															</Badge>
+														) : (
+															<span className="text-muted-foreground text-sm">-</span>
+														)}
+													</TableCell>
+													<TableCell
+														className={cn(
+															"dark:bg-card dark:group-hover:bg-muted",
+															isExhausted ? "bg-red-500/5 group-hover:bg-red-500/10" : "bg-white group-hover:bg-muted",
+															ACTIONS_COLUMN_CLASS,
+														)}
+													>
+														<CustomerActionsMenu
+															customer={customer}
+															canUpdate={hasUpdateAccess}
+															canDelete={hasDeleteAccess}
+															onEdit={handleEditCustomer}
+															onDelete={setConfirmDeleteCustomer}
+														/>
+													</TableCell>
+												</TableRow>
+											);
+										})
+									)}
+								</TableBody>
+							</Table>
+						</div>
 
-					{/* Pagination */}
-					{totalCount > 0 && (
-						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-							<div className="text-muted-foreground flex items-center gap-2">
-								{t("governance.shared.paginationRange", {
-									from: (offset + 1).toLocaleString(),
-									to: Math.min(offset + limit, totalCount).toLocaleString(),
-									total: totalCount.toLocaleString(),
-								})}
-							</div>
-
-							<div className="flex items-center gap-2">
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-									disabled={offset === 0}
-									data-testid="customers-pagination-prev-btn"
-									aria-label={t("governance.shared.previousPage")}
-								>
-									<ChevronLeft className="size-3" />
-								</Button>
-
-								<div className="flex items-center gap-1">
-									<span>{t("governance.shared.page")}</span>
-									<span>{Math.floor(offset / limit) + 1}</span>
-									<span>{t("governance.shared.pageOf", { total: Math.ceil(totalCount / limit) })}</span>
+						{/* Pagination */}
+						{totalCount > 0 && (
+							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+								<div className="text-muted-foreground flex items-center gap-2">
+									{t("governance.shared.paginationRange", {
+										from: (offset + 1).toLocaleString(),
+										to: Math.min(offset + limit, totalCount).toLocaleString(),
+										total: totalCount.toLocaleString(),
+									})}
 								</div>
 
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(offset + limit)}
-									disabled={offset + limit >= totalCount}
-									data-testid="customers-pagination-next-btn"
-									aria-label={t("governance.shared.nextPage")}
-								>
-									<ChevronRight className="size-3" />
-								</Button>
+								<div className="flex items-center gap-2">
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+										disabled={offset === 0}
+										data-testid="customers-pagination-prev-btn"
+										aria-label={t("governance.shared.previousPage")}
+									>
+										<ChevronLeft className="size-3" />
+									</Button>
+
+									<div className="flex items-center gap-1">
+										<span>{t("governance.shared.page")}</span>
+										<span>{Math.floor(offset / limit) + 1}</span>
+										<span>{t("governance.shared.pageOf", { total: Math.ceil(totalCount / limit) })}</span>
+									</div>
+
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => onOffsetChange(offset + limit)}
+										disabled={offset + limit >= totalCount}
+										data-testid="customers-pagination-next-btn"
+										aria-label={t("governance.shared.nextPage")}
+									>
+										<ChevronRight className="size-3" />
+									</Button>
+								</div>
 							</div>
-						</div>
-					)}
-				</div>
+						)}
+					</div>
+				)}
 
 				<AlertDialog open={!!confirmDeleteCustomer} onOpenChange={(open) => !open && setConfirmDeleteCustomer(null)}>
 					<AlertDialogContent>

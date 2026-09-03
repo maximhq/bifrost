@@ -135,7 +135,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 
 	return (
 		<>
-			<SheetHeader className="flex shrink-0 flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+			<SheetHeader className="flex shrink-0 flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 				<SheetTitle>{t("providers.addCustom")}</SheetTitle>
 				<SheetDescription>{t("providers.addCustomSheet.description")}</SheetDescription>
 			</SheetHeader>

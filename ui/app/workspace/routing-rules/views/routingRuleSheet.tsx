@@ -339,7 +339,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
-				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{isEditing ? t("routing.routingRules.edit") : t("routing.routingRules.create")}</SheetTitle>
 					<SheetDescription>{isEditing ? t("routing.routingRules.editDesc") : t("routing.routingRules.createDesc")}</SheetDescription>
 				</SheetHeader>

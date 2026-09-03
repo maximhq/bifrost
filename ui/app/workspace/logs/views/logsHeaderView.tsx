@@ -275,7 +275,10 @@ export function LogsHeaderView({
 	const isIdSearch = isLogIdSearch(localSearch);
 
 	return (
-		<div className="flex grow flex-wrap items-center justify-between gap-2">
+		// justify-between only once the row can hold everything: while the controls
+		// wrap, spreading them pushes the last row's two icon buttons to opposite
+		// edges of the card and burns a whole row on two buttons.
+		<div className="flex grow flex-wrap lg:flex-nowrap items-center justify-start gap-2 lg:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
@@ -321,7 +324,9 @@ export function LogsHeaderView({
 					This grouped view may load more slowly than the flat view for very large log tables.
 				</TooltipContent>
 			</Tooltip>
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
+			{/* Full width while the row wraps, so the search field owns its own line
+			    instead of squeezing to its 12rem minimum beside the date picker. */}
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border lg:basis-auto">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
@@ -346,7 +351,7 @@ export function LogsHeaderView({
 			</div>
 
 			<DateTimePickerWithRange
-				buttonClassName="w-full sm:w-auto"
+				buttonClassName="w-auto"
 				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}

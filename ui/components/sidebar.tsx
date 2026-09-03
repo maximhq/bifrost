@@ -15,6 +15,7 @@ import {
 	DatabaseZap,
 	Flag,
 	FolderGit,
+	FolderKanban,
 	Gavel,
 	GitCompareArrows,
 	Globe,
@@ -539,6 +540,7 @@ export default function AppSidebar() {
 	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
 	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+	const hasProjectsAccess = useRbac(RbacResource.Projects, RbacOperation.View);
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
 		hasTeamsAccess ||
@@ -547,6 +549,7 @@ export default function AppSidebar() {
 		hasBusinessUnitsAccess ||
 		hasRbacAccess ||
 		hasAccessProfilesAccess ||
+		hasProjectsAccess ||
 		hasGovernanceLegacyAccess;
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
@@ -778,6 +781,11 @@ export default function AppSidebar() {
 						icon: ShieldCheck,
 						hasAccess: hasAccessProfilesAccess,
 					}),
+					nav("Projects", "nav.projects", "nav.projectsDescription", {
+						url: "/workspace/governance/projects",
+						icon: FolderKanban,
+						hasAccess: hasProjectsAccess,
+					}),
 					nav("Audit Logs", "nav.auditLogs", "nav.auditLogsDescription", {
 						url: "/workspace/audit-logs",
 						icon: ScrollText,
@@ -963,6 +971,7 @@ export default function AppSidebar() {
 		hasPromptRepositoryAccess,
 		hasSkillsRepositoryAccess,
 		hasAccessProfilesAccess,
+		hasProjectsAccess,
 		hasFeatureFlagsAccess,
 		hasDevicesAccess,
 		hasInventoryAccess,
@@ -1390,7 +1399,7 @@ export default function AppSidebar() {
 				</div>
 			</div>
 			<SidebarContent className="overflow-hidden">
-				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-3">
+				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pt-0.5 pr-3">
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {

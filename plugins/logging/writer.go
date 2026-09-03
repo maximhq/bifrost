@@ -574,6 +574,7 @@ func applyOutputFieldsToEntry(
 	customerID, customerName string,
 	userID, userName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	numberOfRetries int,
 	latency int64,
 	upstreamLatency, overheadLatency *int64,
@@ -625,6 +626,12 @@ func applyOutputFieldsToEntry(
 	}
 	if businessUnitName != "" {
 		entry.BusinessUnitName = &businessUnitName
+	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
 	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries

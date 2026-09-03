@@ -280,6 +280,8 @@ var defaultBifrostLabelNames = []string{
 	"customer_name",
 	"business_unit_id",
 	"business_unit_name",
+	"project_id",
+	"project_name",
 }
 
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
@@ -298,6 +300,8 @@ var defaultMCPLabelNames = []string{
 	"customer_name",
 	"business_unit_id",
 	"business_unit_name",
+	"project_id",
+	"project_name",
 }
 
 // mcpOperationDurationBuckets: the OTel MCP semconv boundaries, matching plugins/otel
@@ -833,6 +837,8 @@ func (p *PrometheusPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		"customer_name":      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
 		"business_unit_id":   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID),
 		"business_unit_name": bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName),
+		"project_id":         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		"project_name":       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	}
 	p.applyCustomLabels(ctx, labelValues)
 
@@ -962,6 +968,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	teamIDs, teamNames := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
 	customerID, customerName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
 	businessUnitID, businessUnitName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+	// A request is scoped to at most one project, so there is no plural form to canonicalize.
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
@@ -983,6 +992,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"customer_name":       customerName,
 		"business_unit_id":    businessUnitID,
 		"business_unit_name":  businessUnitName,
+		"project_id":          projectID,
+		"project_name":        projectName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.

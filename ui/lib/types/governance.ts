@@ -421,6 +421,7 @@ export interface ModelConfig {
 	scope?: string; // "global" (default) or "virtual_key"
 	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
 	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
+	managed_by?: string; // Resolved label for what externally manages this config, e.g. an access profile name (read-only)
 	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships

@@ -340,8 +340,8 @@ Vertex's API surface for Gemini largely mirrors AI Studio's generateContent — 
 
 - [x] Claude Opus 4.7 in user's region (`global` / `us-east5` / `europe-west1`)
 - [~] **Claude Sonnet 4.6 / 4.5 / Haiku 4.5** (regional gating - must use `global` or `us-east5`; Sonnet 4.6 cross-cut variants added in Cross-Cut Round 4 covering structured output, function calling, streaming, vision, tool_choice, stop sequences, multi-turn, system message, web search, PDF, sampling-params; Haiku 4.5 + Sonnet 4.5 still uncovered)
-- [ ] **`anthropic_version: "vertex-2023-10-16"` in body** (Vertex-specific replacement for the header)
-- [ ] **Vertex `:streamRawPredict` endpoint** for SSE streaming
+- [x] **`anthropic_version: "vertex-2023-10-16"` in body** (Vertex-specific replacement for the header) — folder 62 (PR #6639), `[PREVIEW]` rows
+- [x] **Vertex `:streamRawPredict` endpoint** for SSE streaming — folder 62 (PR #6639): terminates on `message_stop`, usage via the Anthropic parser (`[PREVIEW]`)
 - [ ] **Beta headers via body field** (`anthropic_beta` instead of HTTP header)
 - [ ] **Anthropic on multi-region endpoints** (`https://aiplatform.us.rep.googleapis.com`, `eu.rep`)
 

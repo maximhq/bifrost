@@ -581,6 +581,36 @@ func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, 
 	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, modelProviders(access.GrantedProvidersForModel(modelStr)))
 }
 
+// namedProjectNothingScoped reports whether the request named a project and ended up scoped by
+// none, and what it named it.
+//
+// The same shape as presentedGrantBearingCredential above, for the same reason: what the request
+// asked for is read off its own input, and only comparing that against what resolution produced can
+// tell "asked for nothing" from "asked for something that is not there". A project named with no
+// resolved project behind it was not granted (it does not exist, or it does not admit this caller),
+// and those are not told apart here, exactly as a credential that resolves to nothing does not say
+// whether it never existed or was revoked.
+//
+// A header that arrived empty still counts as having asked. It named no project, so no project can
+// be resolved from it, and treating it as not having asked would serve the request against the
+// caller's own access instead of refusing a scope it could not be given.
+//
+// The resolved id rather than the scoping slot, because that id is set at exactly the moment a
+// project is admitted. Reading the slot would answer this question wrongly the moment anything other
+// than a project fills it.
+func namedProjectNothingScoped(ctx *schemas.BifrostContext) (string, bool) {
+	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID) != "" {
+		return "", false
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
+		if named, sent := headers[header]; sent {
+			return strings.TrimSpace(named), true
+		}
+	}
+	return "", false
+}
+
 // Evaluate is the governance verdict for a request: whether it may proceed, and why not when it
 // may not. It is the one entry point: every hook and every caller outside the pipeline arrives
 // here, which is also why it resolves what the request may reach if nothing has yet.
@@ -660,6 +690,20 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// than resolving a key again. A caller that presented a credential no permit could be built for
 	// is refused here: no permit means nothing authorised the request, which is a different answer
 	// from having presented nothing.
+	//
+	// Two ways a request can end up with nothing where it expected something, and they are the same
+	// question asked of each slot: it presented a credential and nothing granted it, or it named a
+	// project and nothing scoped it. Neither is reported by whatever resolved it: a resolver answers
+	// with what it found, and this is where not finding it becomes a refusal.
+	//
+	// The second is why a project the request may not use cannot simply be dropped: doing that would
+	// serve the request against the caller's own access, which is more than they asked for and not
+	// what they asked for. Like the first, it does not say which of "no such project" and "not
+	// yours" it was, because a caller who may not use a project has no business learning it exists.
+	//
+	// This is the funnel every pipeline passes through, including the streaming, realtime-turn and
+	// MCP ones that run no request hook, so refusing here is what makes the answer the same on all
+	// of them.
 	if refusal := unusablePermit(access); refusal != nil {
 		return p.decide(ctx, refusal)
 	}
@@ -667,6 +711,15 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 		return p.decide(ctx, &EvaluationResult{
 			Decision: DecisionAccessNotFound,
 			Reason:   "access not found. The provided credential does not exist or has been revoked.",
+		})
+	}
+	// Blocked rather than not-found, though the shape of the question is the same. A credential that
+	// resolves to nothing is an authentication failure and says so; a caller who authenticated fine
+	// and named a project they may not have is being refused, not asked to identify themselves again.
+	if named, nothingScoped := namedProjectNothingScoped(ctx); nothingScoped {
+		return p.decide(ctx, &EvaluationResult{
+			Decision: DecisionAccessBlocked,
+			Reason:   fmt.Sprintf("project %q not found. It does not exist or does not admit this request.", named),
 		})
 	}
 
@@ -708,25 +761,36 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	return p.decide(ctx, result)
 }
 
-// unusablePermit is the refusal for a request whose caller holds a permit that may not be used:
-// one that is inactive, or has expired. Whether it may be used is settled when the permit is built,
-// so this reads the answer off it. Nil when every permit the caller holds may be used, or they hold
+// unusablePermit is the refusal for a request that carries a permit that may not be used: one that
+// is inactive, or has expired. Whether it may be used is settled when the permit is built, so this
+// reads the answer off it. Nil when every permit the request carries may be used, or it carries
 // none, which the funnel answers separately by what was presented.
+//
+// Every slot is judged, because a request scoped by a second permit answers to both, and a permit
+// that has been deactivated or has expired grants nothing whichever slot it sits in. Nothing in the
+// fold reads either flag (it answers what a permit enumerates, not whether the permit may still be
+// used), so a scoping permit nobody checked here would go on permitting everything it names.
 func unusablePermit(access schemas.Access) *EvaluationResult {
 	if access == nil {
 		return nil
 	}
-	for _, base := range access.Bases() {
-		if !base.IsActive() {
+	permits := make([]schemas.Permit, 0, len(access.Bases())+1)
+	permits = append(permits, access.Bases()...)
+	permits = append(permits, access.Scoping())
+	for _, permit := range permits {
+		if permit == nil {
+			continue
+		}
+		if !permit.IsActive() {
 			return &EvaluationResult{
 				Decision: DecisionAccessBlocked,
-				Reason:   fmt.Sprintf("%s is inactive", grant.PermitType(base.Type()).PrettyString()),
+				Reason:   fmt.Sprintf("%s is inactive", grant.PermitType(permit.Type()).PrettyString()),
 			}
 		}
-		if base.IsExpired() {
+		if permit.IsExpired() {
 			return &EvaluationResult{
 				Decision: DecisionAccessBlocked,
-				Reason:   fmt.Sprintf("%s has expired", grant.PermitType(base.Type()).PrettyString()),
+				Reason:   fmt.Sprintf("%s has expired", grant.PermitType(permit.Type()).PrettyString()),
 			}
 		}
 	}
@@ -1144,7 +1208,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A caller can ask for the holder's usage not to be counted, leaving what the deployment and the
 	// user answer to still counted.
 	skipHolderUsage := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking)
-	if requestedModel != "" {
+	// A passthrough call is charged when the provider reported something billable on it, whether or
+	// not a model was ever named. A Vertex custom endpoint names one nowhere — not in the path, which
+	// carries an endpoint id, and not in the body — yet the limits it answers to were settled on its
+	// grant before the call, and the holder's own limits never depended on a model to begin with:
+	// HolderLimits takes no model at all.
+	//
+	// Reported usage, rather than the request type, is what admits it. The raw routes carry metadata
+	// traffic too — a file retrieve, a job status poll — and those spend nothing, so counting them
+	// would make polling consume a caller's request allowance for nothing. Charging what was measured
+	// keeps the two apart without this having to know one provider's route shapes from another's.
+	chargeablePassthrough := result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil
+	if requestedModel != "" || chargeablePassthrough {
 		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
@@ -1560,10 +1635,10 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 // They are missing from usage.BudgetIDs by construction: those ids were collected
 // while the request was in flight, and a batch create carries no top-level model
 // (each input-file row names its own), so only the all-models wildcards matched.
-// An access profile's per-model limits materialise as user-scoped configs naming
-// exactly one model and provider, which is why a model-level budget never moved for
-// a batch. Settlement does know the models, so each one is resolved and charged with
-// its own share here.
+// A downstream consumer's per-model limits (e.g. an access profile's, registered via
+// RegisterExtraScopedIDsResolver) materialise as configs naming exactly one model and
+// provider, which is why a model-level budget never moved for a batch. Settlement does
+// know the models, so each one is resolved and charged with its own share here.
 //
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would

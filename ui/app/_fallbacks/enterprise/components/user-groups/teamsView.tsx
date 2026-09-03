@@ -34,7 +34,6 @@ export function TeamsView() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
-		isFetching,
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
@@ -43,7 +42,10 @@ export function TeamsView() {
 		},
 		{
 			skip: !hasTeamsAccess,
-			pollingInterval: POLLING_INTERVAL,
+			// Hold the poll while the team sheet is open so a background refetch
+			// can't reset the form under an in-progress edit.
+			pollingInterval: urlState.selected_team ? 0 : POLLING_INTERVAL,
+			skipPollingIfUnfocused: true,
 		},
 	);
 
@@ -86,7 +88,6 @@ export function TeamsView() {
 				setUrlState({ selected_team: team?.id ?? null });
 			}}
 			onDialogClose={() => setUrlState({ selected_team: null })}
-			isLoading={isFetching}
 		/>
 	);
 }

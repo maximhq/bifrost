@@ -138438,6 +138438,857 @@
           }
         }
       ]
+    },
+    {
+      "name": "63. Responses -> Chat Completions Routing (Mantle datasheet + Azure DeepSeek UA) (responses-chat-routing)",
+      "description": "Two independent responses->chat mechanisms landed in PR #6326, plus the datasheet provider-matching fix underneath one of them.\n\n1. Bedrock Mantle, datasheet-driven (core/providers/bedrock/mantle.go, core/providers/bedrockmantle/bedrockmantle.go, schemas.ModelCaps.SupportsResponsesEndpoint): a Responses request for a model whose datasheet row lists supported_endpoints WITHOUT /v1/responses is served from chat completions and converted back with ToBifrostResponsesResponse(). This only works because framework/modelcatalog/datasheet/params.go now compares the raw row provider before normalizeProvider - which folds every row containing \"bedrock\" (including \"bedrock_mantle\") onto \"bedrock\", so a bedrock_mantle capability lookup previously matched nothing and silently fell back to the permissive default.\n\n2. Azure DeepSeek, user-agent-driven (plugins/compat/azure.go, plugins/compat/main.go, plugins/compat/dropparams.go, core/bifrost.go): Azure splits capabilities across its two DeepSeek endpoints - /v1/responses has web search but rejects reasoning.effort, /v1/chat/completions is the reverse - so a blanket fallback is wrong. compat's PreLLMHook sets BifrostContextKeyChangeRequestType=chat_completion when the caller is a coding harness (Claude Code, Codex, Cursor, OpenCode) and core performs the conversion; every other caller keeps /v1/responses. There is deliberately NO datasheet-driven fallback on Azure.\n\nStreaming on both mechanisms sets BifrostContextKeyIsResponsesToChatCompletionFallback so the chat streaming handler re-assembles Responses events; the streaming rows fail if raw chat.completion.chunk frames reach a Responses route. The Mantle streaming rows additionally pin the openai.go break on finish_reason + usage, without which a Mantle stream (which never sends [DONE]) hangs until the idle timeout.\n\nModel choices are load-bearing: bedrock_mantle/openai.gpt-oss-safeguard-20b (supported_endpoints [\"/v1/chat/completions\"]) and bedrock_mantle/nvidia.nemotron-nano-3-30b ([\"/v1/chat/completions\", \"/v1/batch\"]) both take the fallback, while bedrock_mantle/openai.gpt-5.6-sol lists /v1/responses and is already covered natively by folder 33.",
+      "item": [
+        {
+          "name": "bedrock_mantle/openai.gpt-oss-safeguard-20b native /v1/responses is served from chat completions (datasheet has no /v1/responses) - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-safeguard-20b\",\n  \"input\": \"Reply with exactly: OK\",\n  \"max_output_tokens\": 64\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Datasheet row for bedrock_mantle/openai.gpt-oss-safeguard-20b lists supported_endpoints: [\"/v1/chat/completions\"],",
+                  "// so ModelCaps.SupportsResponsesEndpoint(true) is false and the Mantle provider serves the",
+                  "// request from chat completions, converting the reply back with ToBifrostResponsesResponse().",
+                  "// Before PR #6326 the datasheet lookup folded bedrock_mantle rows onto bedrock, the capability",
+                  "// check silently fell back to true, and the request hit Mantle's /responses endpoint and 4xx'd.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('mantle gpt-oss-safeguard-20b: served without an upstream rejection - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'a 4xx here means the Responses request still went to Mantle /responses for a model whose datasheet lists no /v1/responses: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('mantle gpt-oss-safeguard-20b: reply is Responses-shaped, not a chat completion - responses-chat-routing', function () {",
+                  "  pm.expect(j.object, dump).to.eql('response');",
+                  "  pm.expect(j, dump).to.not.have.property('choices');",
+                  "  pm.expect(j.output, dump).to.be.an('array');",
+                  "  pm.expect(j.output.length, dump).to.be.above(0);",
+                  "});",
+                  "pm.test('mantle gpt-oss-safeguard-20b: converted response carries id / model / status - responses-chat-routing', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.model, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.status, dump).to.be.a('string').and.to.not.be.empty;",
+                  "});",
+                  "pm.test('mantle gpt-oss-safeguard-20b: usage is Responses-shaped (input_tokens/output_tokens) - responses-chat-routing', function () {",
+                  "  pm.expect(j.usage, dump).to.be.an('object');",
+                  "  pm.expect(j.usage, dump).to.have.property('input_tokens');",
+                  "  pm.expect(j.usage, dump).to.have.property('output_tokens');",
+                  "  pm.expect(j.usage, 'chat-shaped usage leaked through the conversion: ' + dump).to.not.have.property('prompt_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-oss-safeguard-20b native /v1/responses streaming re-assembles Responses events - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-safeguard-20b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// mantleResponsesStream sets BifrostContextKeyIsResponsesToChatCompletionFallback and",
+                  "// dispatches ChatCompletionStream; HandleOpenAIChatCompletionStreaming must emit Responses",
+                  "// events, and must break once finish_reason AND usage are seen (Mantle never sends [DONE],",
+                  "// so without that break the stream hangs until the idle timeout).",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('mantle gpt-oss-safeguard-20b streaming: stream succeeded - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('mantle gpt-oss-safeguard-20b streaming: frames are Responses events, never chat.completion.chunk - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
+                  "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
+                  "});",
+                  "pm.test('mantle gpt-oss-safeguard-20b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/nvidia.nemotron-nano-3-30b native /v1/responses is served from chat completions (datasheet has no /v1/responses) - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/nvidia.nemotron-nano-3-30b\",\n  \"input\": \"Reply with exactly: OK\",\n  \"max_output_tokens\": 64\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Datasheet row for bedrock_mantle/nvidia.nemotron-nano-3-30b lists supported_endpoints: [\"/v1/chat/completions\", \"/v1/batch\"],",
+                  "// so ModelCaps.SupportsResponsesEndpoint(true) is false and the Mantle provider serves the",
+                  "// request from chat completions, converting the reply back with ToBifrostResponsesResponse().",
+                  "// Before PR #6326 the datasheet lookup folded bedrock_mantle rows onto bedrock, the capability",
+                  "// check silently fell back to true, and the request hit Mantle's /responses endpoint and 4xx'd.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('mantle nemotron-nano-3-30b: served without an upstream rejection - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'a 4xx here means the Responses request still went to Mantle /responses for a model whose datasheet lists no /v1/responses: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('mantle nemotron-nano-3-30b: reply is Responses-shaped, not a chat completion - responses-chat-routing', function () {",
+                  "  pm.expect(j.object, dump).to.eql('response');",
+                  "  pm.expect(j, dump).to.not.have.property('choices');",
+                  "  pm.expect(j.output, dump).to.be.an('array');",
+                  "  pm.expect(j.output.length, dump).to.be.above(0);",
+                  "});",
+                  "pm.test('mantle nemotron-nano-3-30b: converted response carries id / model / status - responses-chat-routing', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.model, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.status, dump).to.be.a('string').and.to.not.be.empty;",
+                  "});",
+                  "pm.test('mantle nemotron-nano-3-30b: usage is Responses-shaped (input_tokens/output_tokens) - responses-chat-routing', function () {",
+                  "  pm.expect(j.usage, dump).to.be.an('object');",
+                  "  pm.expect(j.usage, dump).to.have.property('input_tokens');",
+                  "  pm.expect(j.usage, dump).to.have.property('output_tokens');",
+                  "  pm.expect(j.usage, 'chat-shaped usage leaked through the conversion: ' + dump).to.not.have.property('prompt_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/nvidia.nemotron-nano-3-30b native /v1/responses streaming re-assembles Responses events - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/nvidia.nemotron-nano-3-30b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// mantleResponsesStream sets BifrostContextKeyIsResponsesToChatCompletionFallback and",
+                  "// dispatches ChatCompletionStream; HandleOpenAIChatCompletionStreaming must emit Responses",
+                  "// events, and must break once finish_reason AND usage are seen (Mantle never sends [DONE],",
+                  "// so without that break the stream hangs until the idle timeout).",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('mantle nemotron-nano-3-30b streaming: stream succeeded - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('mantle nemotron-nano-3-30b streaming: frames are Responses events, never chat.completion.chunk - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
+                  "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
+                  "});",
+                  "pm.test('mantle nemotron-nano-3-30b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "azure/DeepSeek-V4-Flash-0731 /v1/chat/completions accepts reasoning_effort (the capability the conversion protects) - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"reasoning_effort\": \"low\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Baseline for the Azure split: reasoning works on Azure's chat completions endpoint and is",
+                  "// rejected on its Responses endpoint. This row pins the half the harness conversion routes to.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('azure DeepSeek chat completions: 2xx with reasoning_effort - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('azure DeepSeek chat completions: chat-shaped reply - responses-chat-routing', function () {",
+                  "  pm.expect(j.object, dump).to.eql('chat.completion');",
+                  "  pm.expect(j.choices, dump).to.be.an('array');",
+                  "  pm.expect(j.choices.length, dump).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "azure/DeepSeek-V4-Flash-0731 /openai/v1/responses from a codex-cli UA converts to chat completions - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "user-agent",
+                "value": "codex-cli/0.5.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Reply with exactly: OK\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 256\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Route matters: ExtractAndSetUserAgentFromHeaders runs only in the integration routers (openai.go / anthropic.go / genai.go / cursor.go), so the native /v1/responses never populates BifrostContextKeyUserAgent and isCodingHarnessRequest can never match there.",
+                  "// compat's PreLLMHook sets BifrostContextKeyChangeRequestType=chat_completion for an Azure",
+                  "// DeepSeek Responses request from a coding harness; core/bifrost.go performs the conversion.",
+                  "// The reasoning-drop branch in dropparams.go must NOT fire on the converted path.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('azure DeepSeek codex UA: Azure accepted the converted body - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'a 4xx here usually means reasoning.effort reached Azure /responses, which rejects it: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var ef = j.extra_fields || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('azure DeepSeek codex UA: converted_request_type is chat_completion - responses-chat-routing', function () {",
+                  "  pm.expect(ef.converted_request_type, 'the coding-harness conversion did not fire: ' + JSON.stringify(ef).slice(0, 400)).to.eql('chat_completion');",
+                  "});",
+                  "pm.test('azure DeepSeek codex UA: reasoning survived the conversion - responses-chat-routing', function () {",
+                  "  var dropped = ef.dropped_compat_plugin_params || [];",
+                  "  pm.expect(dropped, 'reasoning was dropped even though the request was converted to chat completions').to.not.include('reasoning');",
+                  "});",
+                  "pm.test('azure DeepSeek codex UA: caller still gets a Responses body - responses-chat-routing', function () {",
+                  "  pm.expect(j.object, dump).to.eql('response');",
+                  "  pm.expect(j, dump).to.not.have.property('choices');",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.status, dump).to.be.a('string').and.to.not.be.empty;",
+                  "  pm.expect(j.usage, dump).to.have.property('input_tokens');",
+                  "  pm.expect(j.usage, 'chat-shaped usage leaked through the conversion: ' + dump).to.not.have.property('prompt_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "azure/DeepSeek-V4-Flash-0731 /openai/v1/responses streaming from a codex-desktop UA re-assembles Responses events - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "user-agent",
+                "value": "codex-desktop/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Count from 1 to 5.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Route matters: ExtractAndSetUserAgentFromHeaders runs only in the integration routers (openai.go / anthropic.go / genai.go / cursor.go), so the native /v1/responses never populates BifrostContextKeyUserAgent and isCodingHarnessRequest can never match there.",
+                  "// handleProviderStreamRequest converts the ResponsesStreamRequest and sets",
+                  "// BifrostContextKeyIsResponsesToChatCompletionFallback. If that flag is ever not honored the",
+                  "// caller receives raw chat chunks on a Responses endpoint - a silent protocol break.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('azure DeepSeek codex-desktop streaming: stream succeeded - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('azure DeepSeek codex-desktop streaming: frames are Responses events, never chat.completion.chunk - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
+                  "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
+                  "});",
+                  "pm.test('azure DeepSeek codex-desktop streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
+                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "azure/DeepSeek-V4-Flash-0731 /openai/v1/responses from a non-harness UA stays on Azure's Responses endpoint - responses-chat-routing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "user-agent",
+                "value": "bifrost-harness/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Reply with exactly: OK\",\n  \"max_output_tokens\": 64\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Route matters: ExtractAndSetUserAgentFromHeaders runs only in the integration routers (openai.go / anthropic.go / genai.go / cursor.go), so the native /v1/responses never populates BifrostContextKeyUserAgent and isCodingHarnessRequest can never match there.",
+                  "// The other half of the design: Azure's Responses endpoint is the only one with web search, so",
+                  "// a blanket responses->chat fallback would cost every non-harness caller that capability. Only",
+                  "// a coding-harness user agent may be converted; everyone else keeps /v1/responses.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('azure DeepSeek plain UA: 2xx on the native Responses endpoint - responses-chat-routing', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var ef = j.extra_fields || {};",
+                  "pm.test('azure DeepSeek plain UA: no responses->chat conversion - responses-chat-routing', function () {",
+                  "  pm.expect(ef.converted_request_type, 'a non-harness caller was converted to chat completions and would lose web search').to.not.eql('chat_completion');",
+                  "});",
+                  "pm.test('azure DeepSeek plain UA: Responses-shaped reply - responses-chat-routing', function () {",
+                  "  pm.expect(j.object, JSON.stringify(j).slice(0, 400)).to.eql('response');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "64. Anthropic-on-Vertex Passthrough Usage + Stream Terminal Detection (vertex-anthropic-passthrough)",
+      "description": "Vertex passthrough classified every response by path only loosely, and parsed all of them with the Gemini usage parser. Anthropic on Vertex is served from the anthropic publisher via :rawPredict / :streamRawPredict and speaks Anthropic Messages shapes, so the Gemini parser found no usage: passthrough calls to Claude on Vertex logged zero tokens and zero cost. PR #6639 dispatches on the publisher segment (anthropic -> Anthropic parsers, mistralai and /endpoints/openapi/ -> OpenAI parsers, everything else -> Gemini) and teaches the stream terminal detector three new shapes: Anthropic's message_stop, Google's {\"error\":{code|status}} envelope, and streams with no SSE framing at all (:streamGenerateContent?alt=json sends one JSON array, so the \\n\\n frame loop never fired and the stream hung until the idle timeout).\n\nEvery row is [PREVIEW]-tagged (run with INCLUDE_PREVIEW=1): the Vertex passthrough URL is project-scoped, so {{vertexProject}} must be overridden from its replace-me-project default, and {{vertexLocation}} must be a region where Claude is served (global or us-east5 for most accounts).\n\nThe usage assertions are the point of the folder and are made by the dbverify reporter, not by the test scripts: each row sends x-bf-expect-cost with an x-request-id, and dbverify requires the resulting logs row to have cost>0 and total_tokens>0. The in-script assertions only establish that usage was on the wire for the parser to find.\n\nCloses two HARNESS_COVERAGE_BACKLOG entries: Vertex :streamRawPredict endpoint for SSE streaming, and anthropic_version: \"vertex-2023-10-16\" in body.",
+      "item": [
+        {
+          "name": "[PREVIEW] vertex :rawPredict Anthropic passthrough records usage via the Anthropic parser - vertex-anthropic-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "vertex-anthropic-rawpredict-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"vertex-2023-10-16\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/anthropic/models/claude-sonnet-4-6:rawPredict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "anthropic",
+                "models",
+                "claude-sonnet-4-6:rawPredict"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Anthropic on Vertex is served from the anthropic publisher via :rawPredict, whose payloads are",
+                  "// Anthropic Messages shapes - not Gemini ones. Before PR #6639 every Vertex passthrough response",
+                  "// went through ExtractGeminiPassthroughUsage, which finds nothing in a Messages body, so the log",
+                  "// row persisted zero tokens and zero cost. The cost/token assertion is performed by the dbverify",
+                  "// reporter against the logs row keyed on x-request-id (x-bf-expect-cost).",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex anthropic rawPredict: 2xx - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex anthropic rawPredict: body forwarded verbatim as an Anthropic Messages reply - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(j.type, dump).to.eql('message');",
+                  "  pm.expect(j.content, dump).to.be.an('array');",
+                  "});",
+                  "pm.test('vertex anthropic rawPredict: usage is on the wire for the parser to read - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(j.usage, dump).to.be.an('object');",
+                  "  pm.expect(Number(j.usage.input_tokens), dump).to.be.above(0);",
+                  "  pm.expect(Number(j.usage.output_tokens), dump).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] vertex :streamRawPredict Anthropic passthrough terminates on message_stop and records usage - vertex-anthropic-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "vertex-anthropic-streamrawpredict-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"vertex-2023-10-16\",\n  \"max_tokens\": 128,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 5.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "anthropic",
+                "models",
+                "claude-sonnet-4-6:streamRawPredict"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Anthropic streams end on message_stop and carry no finishReason, so the Gemini terminal",
+                  "// detector never fired and the passthrough stream sat on the upstream body until the idle",
+                  "// timeout. PR #6639 makes message_stop terminal (message_delta deliberately is not - it holds",
+                  "// the final usage) and routes usage through AnthropicPassthroughStreamUsage.ObserveEvent.",
+                  "// dbverify asserts cost>0 && tokens>0 on the logs row keyed by x-request-id.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('vertex anthropic streamRawPredict: stream succeeded - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('vertex anthropic streamRawPredict: frames forwarded unmodified - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body, 'no message_start frame: ' + body.slice(0, 400)).to.include('message_start');",
+                  "  pm.expect(body, 'no content_block_delta frames: ' + body.slice(0, 400)).to.include('content_block_delta');",
+                  "});",
+                  "pm.test('vertex anthropic streamRawPredict: terminated on message_stop, not the idle timeout - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body, 'stream never reached message_stop: ' + body.slice(-400)).to.include('message_stop');",
+                  "});",
+                  "pm.test('vertex anthropic streamRawPredict: final usage is on the wire - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body, 'no output_tokens in the terminal message_delta: ' + body.slice(-400)).to.include('output_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] vertex :rawPredict Anthropic passthrough with ?alt=json still classified as Anthropic - vertex-anthropic-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "vertex-anthropic-rawpredict-altjson-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"vertex-2023-10-16\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/anthropic/models/claude-sonnet-4-6:rawPredict?alt=json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "anthropic",
+                "models",
+                "claude-sonnet-4-6:rawPredict"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "json"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// isAnthropicPassthroughPath truncates at '?' before matching /publishers/anthropic/. Without",
+                  "// that, a query string sends the response back to the Gemini parser and usage is lost again.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex anthropic rawPredict alt=json: 2xx - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex anthropic rawPredict alt=json: Anthropic Messages reply with usage - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(j.type, dump).to.eql('message');",
+                  "  pm.expect(Number((j.usage || {}).input_tokens), dump).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] vertex :streamGenerateContent?alt=json undelimited JSON array still terminates and bills - vertex-anthropic-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "vertex-gemini-streamgenerate-altjson-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Count from 1 to 5.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/google/models/{{vertexModel}}:streamGenerateContent?alt=json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "{{vertexModel}}:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "json"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// alt=json sends the whole response as one JSON array with no SSE framing, so drainFrames' \\n\\n",
+                  "// loop never fires and neither usage nor the terminal marker was ever observed. observeUndelimited",
+                  "// parses the buffered array and observes each element like an SSE event. Gemini rows are the",
+                  "// control for the Anthropic ones above: the default Gemini parser must still be selected here.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('vertex alt=json stream: 2xx - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('vertex alt=json stream: response is an undelimited JSON array - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body.replace(/^\\s+/, '').charAt(0), 'expected a top-level JSON array: ' + body.slice(0, 200)).to.eql('[');",
+                  "});",
+                  "pm.test('vertex alt=json stream: terminal finishReason observed - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body, 'no finishReason in the array - the terminal detector had nothing to fire on: ' + body.slice(-400)).to.include('finishReason');",
+                  "});",
+                  "pm.test('vertex alt=json stream: usageMetadata is on the wire - vertex-anthropic-passthrough', function () {",
+                  "  pm.expect(body, 'no usageMetadata: ' + body.slice(-400)).to.include('usageMetadata');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

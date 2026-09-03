@@ -596,6 +596,12 @@ export const createColumns = (
 				/>
 			),
 		},
+		{
+			id: "project",
+			header: "Project",
+			size: 150,
+			cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
+		},
 	];
 
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({

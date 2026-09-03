@@ -5,7 +5,9 @@
 package compat
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -20,6 +22,7 @@ type Config struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	AzureDeepseek          bool `json:"azure_deepseek"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -29,6 +32,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		AzureDeepseek          *bool `json:"azure_deepseek"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -38,12 +42,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -120,6 +125,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
+	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -140,21 +146,37 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
+	// supports on Azure, so their Responses requests are converted by core (see azure.go).
+	// This must run before the param drop below, which reads the conversion decision.
+	// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
+	if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+	}
+
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
 		_, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {
+			supportedParams := p.modelCatalog.GetSupportedParameters(model)
+			if supportedParams == nil {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
+			} else {
 				droppedParams := dropUnsupportedParams(ctx, modifiedReq, supportedParams)
-				if len(droppedParams) > 0 {
+				if len(droppedParams) == 0 {
+					ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("no unsupported params to drop for model %s", model))
+				} else {
 					ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, droppedParams)
 					p.logger.Debug("compat: dropped unsupported params for model %s: %v", model, droppedParams)
+					ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d unsupported param(s) for model %s: %s", len(droppedParams), model, strings.Join(droppedParams, ", ")))
 					// service_tier decides what the caller is billed. Dropping it
 					// downgrades the request to the provider's default tier with no
 					// upstream error and no difference in the response body, so it
 					// is worth surfacing above Debug.
 					if slices.Contains(droppedParams, "service_tier") {
-						p.logger.Warn("compat: dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
+						msg := fmt.Sprintf("dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
+						p.logger.Warn("compat: " + msg)
+						ctx.Log(schemas.LogLevelWarn, msg)
 					}
 				}
 			}
@@ -162,7 +184,9 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	if (shouldConvertParamsOverride && shouldConvertParamsOverrideEnabled) || p.config.ShouldConvertParams {
-		applyParameterConversion(modifiedReq)
+		if applied := applyParameterConversion(modifiedReq); len(applied) > 0 {
+			ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("converted params for provider compatibility: %s", strings.Join(applied, ", ")))
+		}
 	}
 
 	return modifiedReq, nil, nil
@@ -211,9 +235,11 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 		}
 	} else {
 		p.logger.Debug("compat: model calalog is nil")
+		ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog unavailable, skipping %s -> %s conversion check for model %s", currentType, targetType, model))
 	}
 
 	if shouldConvert {
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
+		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support %s, converting request to %s", model, provider, currentType, targetType))
 	}
 }

@@ -13,7 +13,7 @@ import (
 const (
 	ModelConfigScopeGlobal     = "global"
 	ModelConfigScopeVirtualKey = "virtual_key"
-	ModelConfigScopeUser       = "user"
+	ModelConfigScopeProject    = "project"
 )
 
 // ModelConfigAllModels is the model_name sentinel meaning "all models". Combined with a
@@ -23,13 +23,14 @@ const ModelConfigAllModels = "*"
 
 // validModelConfigScopes is the runtime registry of accepted scope values.
 // OSS seeds it with global + virtual_key; downstream consumers (e.g. the
-// enterprise build registering "user") extend it at startup via
+// enterprise build registering "access_profile") extend it at startup via
 // RegisterModelConfigScope. Guarded by validModelConfigScopesMu.
 var (
 	validModelConfigScopesMu sync.RWMutex
 	validModelConfigScopes   = map[string]bool{
 		ModelConfigScopeGlobal:     true,
 		ModelConfigScopeVirtualKey: true,
+		ModelConfigScopeProject:    true,
 	}
 )
 
@@ -74,6 +75,11 @@ type TableModelConfig struct {
 	// the scope target (e.g. the virtual key's name) so the UI can render a label
 	// instead of an opaque scope_id. Populated by the HTTP layer on read.
 	ScopeName string `gorm:"-" json:"scope_name,omitempty"`
+	// ManagedBy is a non-persisted, API-only field carrying a human-readable label for
+	// what externally manages this config (e.g. "Engineering" for an access profile),
+	// distinct from ScopeName's "who this applies to". Empty when nothing manages it
+	// or no resolver is registered for the scope. Populated by the HTTP layer on read.
+	ManagedBy string `gorm:"-" json:"managed_by,omitempty"`
 	// BudgetIDs is a config-file-only field listing pre-declared budget IDs (from
 	// governance.budgets) to link to this model config. Not persisted; used by the
 	// config sync path to set model_config_id on each referenced budget row.

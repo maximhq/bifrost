@@ -613,6 +613,8 @@ func HandleOpenAITextCompletionStreaming(
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
+				// The body is fully consumed, so the deferred release must not drain it again.
+				ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				break
 			}
 			jsonData := string(data)
@@ -1255,6 +1257,8 @@ func HandleOpenAIChatCompletionStreaming(
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
+				// The body is fully consumed, so the deferred release must not drain it again.
+				ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				break
 			}
 			jsonData := string(data)
@@ -1380,6 +1384,18 @@ func HandleOpenAIChatCompletionStreaming(
 					lastChunkTime = time.Now()
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				}
+
+				// Bedrock Mantle ends the stream after finish_reason and never sends [DONE], so
+				// unlike the chat branch below this one has no marker to exit on. Without this it
+				// waits on the connection until the idle timeout.
+				//
+				// Mantle sends usage in the chunk *after* the one carrying finish_reason, and usage
+				// is attached to the terminal event at stream end - breaking on finish_reason alone
+				// drops it, and with it the cost.
+				if fallbackFinishReasonSeen && usageSeen &&
+					(providerName == schemas.BedrockMantle || providerName == schemas.Bedrock) {
+					break
 				}
 			} else {
 				if postResponseConverter != nil {

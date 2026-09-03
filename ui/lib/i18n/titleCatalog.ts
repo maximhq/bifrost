@@ -68,6 +68,7 @@ const PAGE_TITLE_KEYS: Record<string, MessageKey> = {
 	Plugins: "nav.plugins",
 	"Pricing Configuration": "titles.pricingConfiguration",
 	"Pricing Overrides": "nav.pricingOverrides",
+	Projects: "nav.projects",
 	"Prompt Repository": "nav.promptRepository",
 	Providers: "nav.guardrailProviders",
 	Proxy: "nav.proxy",

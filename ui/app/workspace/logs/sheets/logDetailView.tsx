@@ -1822,6 +1822,22 @@ export function LogDetailView({
 									}
 								/>
 							)}
+							{log.project_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Project"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", project_ids: [log.project_id!] })}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid={`logdetails-project-link-${log.project_id}`}
+										>
+											{log.project_name || log.project_id}
+										</Link>
+									}
+								/>
+							)}
 							{log.user_id && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -2644,7 +2660,8 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
+                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button

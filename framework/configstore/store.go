@@ -415,6 +415,10 @@ type ConfigStore interface {
 	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 	// DeleteModelConfigsForScope deletes all model configs (and their owned budgets/rate-limits) for a scope owner. Must run inside the owner-delete transaction.
 	DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error
+	// GetModelConfigsForScope loads all model configs (with Budgets/RateLimit) for a scope owner
+	// within the given transaction, so a caller mid-transaction sees its own uncommitted writes
+	// (e.g. deletions staged earlier in the same tx) rather than the last-committed state.
+	GetModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error)
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)

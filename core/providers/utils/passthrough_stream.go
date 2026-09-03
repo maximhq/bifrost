@@ -3,9 +3,11 @@ package utils
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -95,6 +97,39 @@ func StreamPassthrough(
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)
 		}
 
+		// observeUndelimited handles streams that carry no SSE framing. Vertex
+		// :streamGenerateContent?alt=json sends the whole response as a single JSON array, so no
+		// "\n\n" delimiter ever arrives and drainFrames' loop never fires. Once the buffer holds a
+		// complete JSON value, each array element is observed like an SSE event.
+		observeUndelimited := func(payload []byte) bool {
+			p := bytes.TrimSpace(payload)
+			if len(p) == 0 {
+				return false
+			}
+			// Cheap gate before the full parse: a complete JSON value ends in ] or }.
+			if last := p[len(p)-1]; last != ']' && last != '}' {
+				return false
+			}
+			if p[0] == '[' {
+				var elems []json.RawMessage
+				if sonic.Unmarshal(p, &elems) != nil {
+					return false
+				}
+				terminal := false
+				for _, elem := range elems {
+					if observe(elem) {
+						terminal = true
+					}
+				}
+				return terminal
+			}
+			var obj map[string]any
+			if sonic.Unmarshal(p, &obj) != nil {
+				return false
+			}
+			return observe(p)
+		}
+
 		// drainFrames extracts every complete SSE event currently buffered and observes each.
 		// Returns true when a terminal event is seen.
 		drainFrames := func() bool {
@@ -109,6 +144,9 @@ func StreamPassthrough(
 				if observe(extractSSEDataPayload(frame)) {
 					return true
 				}
+			}
+			if params.UseTerminalDetector && observeUndelimited(pending.Bytes()) {
+				return true
 			}
 			// Bound the buffer. A single SSE event can be large — e.g. an
 			// image_generation.completed event carries the full base64 image with `usage` at
@@ -186,11 +224,15 @@ func StreamPassthrough(
 }
 
 // isTerminalSSEPayload reports whether a framed SSE data payload signals stream completion
-// via a finishReason/usage terminal marker. ([DONE] is handled by the SSE readers as EOF.)
+// via [DONE] or a finishReason/usage terminal marker. Passthrough forwards raw bytes and never
+// runs the native SSE readers, so [DONE] must be recognized here.
 func isTerminalSSEPayload(payload []byte) bool {
 	p := bytes.TrimSpace(payload)
 	if len(p) == 0 {
 		return false
+	}
+	if bytes.Equal(p, sseDoneMarker) {
+		return true
 	}
 	return hasFinishReasonMarker(p)
 }

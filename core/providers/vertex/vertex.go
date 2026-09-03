@@ -4574,16 +4574,12 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		region := keyRegion
-		// Replace fully-qualified model paths that have placeholder project/location
-		// e.g. "projects/None/locations/None/publishers/..." -> "projects/real-id/locations/real-region/..."
-		body := req.Body
-		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(body), "${1}projects/"+projectID)
-		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+region)
-		// Expand short-form model names: "models/X" -> "projects/P/locations/L/publishers/google/models/X"
-		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
-			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
-		fasthttpReq.SetBodyString(bodyStr)
+		// Replace placeholder project/location and expand short-form model names.
+		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
+			fasthttpReq.SetBodyRaw(rewritten)
+		} else {
+			fasthttpReq.SetBody(req.Body)
+		}
 	} else if len(req.Body) > 0 {
 		fasthttpReq.SetBody(req.Body)
 	}
@@ -4610,7 +4606,16 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		switch {
+		case isAnthropicPassthroughPath(req.Path):
+			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
+		case isMistralPassthroughPath(req.Path):
+			passthroughUsage = openai.ExtractOAIChatUsage(body)
+		case isOpenAICompatPassthroughPath(req.Path):
+			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
+		default:
+			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		}
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -4720,11 +4725,11 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(req.Body), "${1}projects/"+projectID)
-		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+keyRegion)
-		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
-			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
-		fasthttpReq.SetBodyString(bodyStr)
+		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
+			fasthttpReq.SetBodyRaw(rewritten)
+		} else {
+			fasthttpReq.SetBody(req.Body)
+		}
 	} else if len(req.Body) > 0 {
 		fasthttpReq.SetBody(req.Body)
 	}
@@ -4771,6 +4776,30 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	// Anthropic on Vertex streams Anthropic Messages events, so usage is merged across
+	// by the Anthropic accumulator instead of the Gemini parser.
+	hasUsage := gemini.HasGeminiPassthroughUsage
+	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
+		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
+	}
+	switch {
+	case isAnthropicPassthroughPath(req.Path):
+		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
+		hasUsage = anthropic.HasAnthropicPassthroughUsage
+		observe = messagesUsage.ObserveEvent
+	case isMistralPassthroughPath(req.Path):
+		hasUsage = openai.HasOpenAIPassthroughUsage
+		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
+			return openai.ExtractOAIChatUsage(event)
+		}
+	case isOpenAICompatPassthroughPath(req.Path):
+		hasUsage = openai.HasOpenAIPassthroughUsage
+		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
+			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+		}
+	}
+
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
 		providerUtils.PassthroughStreamParams{
@@ -4782,10 +4811,8 @@ func (provider *VertexProvider) PassthroughStream(
 			StartTime:           time.Now(),
 			UseTerminalDetector: true,
 			Logger:              provider.logger,
-			HasUsage:            gemini.HasGeminiPassthroughUsage,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
-			},
+			HasUsage:            hasUsage,
+			Observe:             observe,
 		},
 	), nil
 }

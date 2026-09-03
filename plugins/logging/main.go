@@ -230,6 +230,8 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
 	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
 	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
 	if userID != "" {
 		entry.UserID = &userID
 	}
@@ -241,6 +243,12 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	}
 	if businessUnitID != "" {
 		entry.BusinessUnitID = &businessUnitID
+	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
 	}
 }
 
@@ -1799,6 +1807,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 				entry.MetadataParsed["isAsyncRequest"] = true
 			}
+			if projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID); projectID != "" {
+				entry.ProjectID = &projectID
+			}
+			if projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName); projectName != "" {
+				entry.ProjectName = &projectName
+			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
@@ -1875,6 +1889,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
 
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
@@ -1921,7 +1937,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ServerSideFallbackModel = &m
 		}
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {

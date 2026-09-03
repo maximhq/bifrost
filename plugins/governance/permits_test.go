@@ -1334,3 +1334,161 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 		}
 	}
 }
+
+// TestEvaluateJudgesEveryPermit covers the state check on the permit scoping a request, not just
+// on the ones its caller holds.
+//
+// A scoping permit that has been deactivated or has expired grants nothing, exactly as a base permit
+// in that state does. Nothing in the fold reads either flag (it answers what a permit enumerates,
+// not whether the permit may still be used), so if this step asks only about the bases, a dead
+// scoping permit goes on permitting everything it names, with nothing anywhere to catch it.
+func TestEvaluateJudgesEveryPermit(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	base := permitWithProviders("other", "h1", "Holder", "openai")
+	request := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	scopingIn := func(isActive, isExpired bool) *permitStore {
+		providers := permitWithProviders("scope", "s1", "Scope", "openai").ProviderPermits()
+		scoping := grant.NewPermit("scope", "s1", "Scope", isActive, isExpired, providers, nil)
+		return &permitStore{baseOverride: base, scoping: scoping, mode: grant.Intersect}
+	}
+
+	for name, tc := range map[string]struct {
+		isActive  bool
+		isExpired bool
+		want      string
+	}{
+		"deactivated": {isActive: false, isExpired: false, want: "scope is inactive"},
+		"expired":     {isActive: true, isExpired: true, want: "scope has expired"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, scopingIn(tc.isActive, tc.isExpired))
+
+			result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+			require.NotNil(t, bifrostErr, "a scoping permit that can no longer be used still scoped the request")
+			assert.Equal(t, DecisionAccessBlocked, result.Decision)
+			assert.Equal(t, tc.want, result.Reason)
+		})
+	}
+
+	t.Run("a scoping permit in good standing is left alone", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, scopingIn(true, false))
+
+		result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+}
+
+// TestEvaluateRefusesARequestNothingScoped is the mirror of the credential rule beside it: a
+// request that named a project and ended up scoped by nothing is refused, not served.
+//
+// Dropping the project instead would serve the request against the caller's own access, which is
+// more than they asked for and not what they asked for. The refusal does not say whether the project
+// was missing or merely not theirs, for the same reason the credential one does not distinguish
+// "does not exist" from "has been revoked".
+func TestEvaluateRefusesARequestNothingScoped(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	base := permitWithProviders("other", "h1", "Holder", "openai")
+
+	// A request names a project by header, and whatever resolves it stamps the resolved id once the
+	// project has admitted the caller. Those two facts, and the gap between them, are the whole
+	// mechanism, so the test supplies them the way a request does.
+	newCtx := func(headers map[string]string, resolvedProjectID string) *schemas.BifrostContext {
+		ctx := emptyCtx()
+		if headers != nil {
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+		}
+		if resolvedProjectID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, resolvedProjectID)
+		}
+		return ctx
+	}
+	named := map[string]string{schemas.HeaderGovernanceProjectName: "Atlas"}
+	chat := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	t.Run("named a project and nothing scoped it", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(named, ""), chat)
+
+		require.NotNil(t, bifrostErr, "a request whose project went missing was served against the caller's own access")
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+		assert.Equal(t, `project "Atlas" not found. It does not exist or does not admit this request.`, result.Reason)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, 403, *bifrostErr.StatusCode, "the caller authenticated fine; what they asked for is refused")
+	})
+
+	t.Run("named a project and it scoped the request", func(t *testing.T) {
+		scoping := permitWithProviders(grant.PermitProject, "s1", "Atlas", "openai")
+		plugin := newAccessTestPlugin(t, vk, &permitStore{
+			baseOverride: base, scoping: scoping, mode: grant.Intersect,
+		})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(named, "s1"), chat)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("named no project", func(t *testing.T) {
+		// Every ordinary request carries no scoping permit, so the rule must key off having named one
+		// rather than off the empty slot, or it refuses everything.
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(nil, ""), chat)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("named a project with an empty header", func(t *testing.T) {
+		// It named no project, so none can be resolved from it. Treating that as not having asked
+		// would serve the request against the caller's own access.
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(map[string]string{schemas.HeaderGovernanceProjectID: ""}, ""), chat)
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+	})
+}
+
+// A project fills the scoping slot, and limits are gathered for every permit a request carries, so a
+// project's own per-model limits come off its permit the way any other holder's do. The scope name
+// and the holder kind are the project's, so its per-model spend is looked up where it is stored and
+// attributed to the project rather than to somebody else.
+//
+// The permit is only ever built once a project has been resolved and admitted, so a request that
+// named one it may not use is refused before this ever runs.
+func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
+	scopeNamed := func(scopes []limitScope, name string) (limitScope, bool) {
+		for _, scope := range scopes {
+			if scope.name == name {
+				return scope, true
+			}
+		}
+		return limitScope{}, false
+	}
+
+	t.Run("the project's permit", func(t *testing.T) {
+		project := permitWithProviders(grant.PermitProject, "proj-1", "Atlas", "openai")
+
+		scope, found := scopeNamed(modelConfigScopesFor(emptyCtx(), project), configstoreTables.ModelConfigScopeProject)
+
+		require.True(t, found, "a request running inside a project answers to none of its per-model limits")
+		assert.Equal(t, "proj-1", scope.id)
+		assert.Equal(t, grant.LimitHolderProjectModelConfig, scope.kind,
+			"a project's per-model spend would be attributed to somebody else")
+	})
+
+	t.Run("a permit that is not a project's", func(t *testing.T) {
+		key := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai")
+
+		_, found := scopeNamed(modelConfigScopesFor(emptyCtx(), key), configstoreTables.ModelConfigScopeProject)
+
+		assert.False(t, found, "a request outside every project was held to a project's per-model limits")
+	})
+}

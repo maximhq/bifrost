@@ -872,6 +872,8 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyGovernanceTeamName,
 	schemas.BifrostContextKeyGovernanceBusinessUnitID,
 	schemas.BifrostContextKeyGovernanceBusinessUnitName,
+	schemas.BifrostContextKeyGovernanceProjectID,
+	schemas.BifrostContextKeyGovernanceProjectName,
 	schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
 	schemas.BifrostContextKeyGovernancePluginName,
 	schemas.BifrostContextKeyRoutingEnginesUsed,

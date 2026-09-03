@@ -126,6 +126,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
 	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
 	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	putIfPresent(m, "project_id", l.ProjectID)
+	putIfPresent(m, "project_name", l.ProjectName)
 	if l.Cost != nil {
 		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
 	}

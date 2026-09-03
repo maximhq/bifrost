@@ -31,22 +31,18 @@ const (
 	LimitHolderVirtualKeyProviderConfig LimitHolderKind = "vk_provider_config"
 	LimitHolderVirtualKeyModelConfig    LimitHolderKind = "vk_model_config"
 
-	// Held by a profile attached to a caller.
-	LimitHolderAccessProfile               LimitHolderKind = "access_profile"
-	LimitHolderAccessProfileProviderConfig LimitHolderKind = "access_profile_provider_config"
+	// Held by an access profile attached to a user. Named for the user rather than generically,
+	// because a profile is currently only attachable to a user; if it becomes attachable to other
+	// kinds of holder, each will need its own kind so a refusal can say whose profile it was.
+	LimitHolderUserAccessProfile               LimitHolderKind = "user_access_profile"
+	LimitHolderUserAccessProfileProviderConfig LimitHolderKind = "user_access_profile_provider_config"
+	LimitHolderUserAccessProfileModelConfig    LimitHolderKind = "user_access_profile_model_config"
 
-	// Held by the user a request is attributed to. Kept apart from the key's kinds because a caller
-	// can be told to stop counting a request against the key that granted it while still counting
-	// it against the user who made it; one kind covering both would make that unexpressible.
-	//
-	// This kind covers two different origins that share the user's scope: a per-model limit
-	// assigned to the user directly, and one a deployment derived from something the user holds and
-	// stored against them. They are not the same money and they do not share a lifecycle, since
-	// detaching whatever produced the derived one removes it while the directly assigned one
-	// survives, but at this level they are indistinguishable, so a refusal naming this kind cannot
-	// say which of the two ran out. Telling them apart needs whatever recorded the derivation,
-	// which is the deployment's to know; a deployment that wants the distinction in its refusals
-	// declares a kind for it.
+	// Held by the user a request is attributed to, directly — a per-model limit assigned straight
+	// to the user rather than derived from an access profile they hold. Kept distinct from the
+	// LimitHolderUserAccessProfile* kinds because a refusal has to say which one ran out, and from
+	// LimitHolderVirtualKey because a caller can be told to stop counting a request against the key
+	// that granted it while still counting it against the user who made it.
 	LimitHolderUserModelConfig LimitHolderKind = "user_model_config"
 
 	// Held by the organization above the caller. Spent by every request made under anything they

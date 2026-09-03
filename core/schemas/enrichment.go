@@ -72,6 +72,10 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "customer_name", SpanAttr: AttrBifrostCustomerName, MetricSafe: true},
 	{Name: "business_unit_id", SpanAttr: AttrBifrostBusinessUnitID, MetricSafe: true},
 	{Name: "business_unit_name", SpanAttr: AttrBifrostBusinessUnitName, MetricSafe: true},
+	// A request is scoped to at most one project, so unlike team/customer/business
+	// unit there is no array form of this dimension.
+	{Name: "project_id", SpanAttr: AttrBifrostProjectID, MetricSafe: true},
+	{Name: "project_name", SpanAttr: AttrBifrostProjectName, MetricSafe: true},
 	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, MetricSafe: true},
 
 	// --- Record/trace tier only: high cardinality, NOT metric-safe. Present on

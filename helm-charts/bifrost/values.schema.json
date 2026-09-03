@@ -449,6 +449,10 @@
                 "shouldConvertParams": {
                   "type": "boolean",
                   "description": "Converts model parameter values that are not supported by the model."
+                },
+                "azureDeepseek": {
+                  "type": "boolean",
+                  "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses."
                 }
               },
               "additionalProperties": false

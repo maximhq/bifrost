@@ -142,6 +142,12 @@ type GovernanceStore interface {
 	// Answering with nothing means one of two things the funnel tells apart by what was presented: a
 	// request that presented nothing carries no access and is governed as unrestricted, and one that
 	// presented something this store resolves permits from, which resolved to nothing, is refused.
+	//
+	// A store that resolves a project the request named answers the same way about that: the scoping
+	// slot is filled when the request may be scoped by the project it named, and left empty when it
+	// may not. Which of those happened is not this store's to report: the funnel refuses a request
+	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
+	// credential nothing granted.
 	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
 	// ProviderAndModelLimits reports the deployment's own limits on a provider plus whichever model
 	// configs cover the pair, for the deployment and for the permit's holder. Resolved per attempt
@@ -3213,7 +3219,6 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 
 	scopes := []struct{ name, id string }{
 		{configstoreTables.ModelConfigScopeGlobal, ""},
-		{configstoreTables.ModelConfigScopeUser, userID},
 		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
 	}
 	for _, scope := range scopes {
@@ -3224,7 +3229,67 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 			addModelConfigIDs(mc)
 		}
 	}
+	// Downstream-registered scopes (e.g. enterprise's per-access-profile per-model
+	// budgets, keyed by a user-access-profile association ID rather than the raw
+	// user/VK ID) — see RegisterExtraScopedIDsResolver.
+	for _, pair := range collectExtraScopedIDs(ctx, virtualKeyID, userID) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr) {
+			addModelConfigIDs(mc)
+		}
+	}
 	return budgetIDs, rateLimitIDs
+}
+
+// ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
+// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
+// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
+// budget/rate-limit IDs, since that path never attributes a limit to a holder.
+type ScopedID struct {
+	Scope   string
+	ScopeID string
+	Kind    grant.LimitHolderKind
+}
+
+// ExtraScopedIDsResolver returns additional (scope, scope_id) pairs to check for
+// model-config-based budgets/rate-limits on a request, given its virtual key and
+// user IDs. Lets downstream consumers (e.g. enterprise access profiles) graft
+// extra scopes onto CollectModelScopedGovernanceIDs's built-in global/
+// virtual_key set without this package needing to know their scope semantics.
+// Must be fast and non-blocking (in-memory only) — called on every request.
+//
+// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
+// is what a refusal names as the holder of the limit that ran out — see ScopedID.
+type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
+
+var (
+	extraScopedIDsResolversMu sync.RWMutex
+	extraScopedIDsResolvers   []ExtraScopedIDsResolver
+)
+
+// RegisterExtraScopedIDsResolver adds fn to the resolvers consulted by
+// CollectModelScopedGovernanceIDs. Intended to be called once at process
+// startup; safe to call concurrently.
+func RegisterExtraScopedIDsResolver(fn ExtraScopedIDsResolver) {
+	if fn == nil {
+		return
+	}
+	extraScopedIDsResolversMu.Lock()
+	extraScopedIDsResolvers = append(extraScopedIDsResolvers, fn)
+	extraScopedIDsResolversMu.Unlock()
+}
+
+func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []ScopedID {
+	extraScopedIDsResolversMu.RLock()
+	resolvers := extraScopedIDsResolvers
+	extraScopedIDsResolversMu.RUnlock()
+	if len(resolvers) == 0 {
+		return nil
+	}
+	var out []ScopedID
+	for _, fn := range resolvers {
+		out = append(out, fn(ctx, virtualKeyID, userID)...)
+	}
+	return out
 }
 
 // PUBLIC API METHODS
@@ -4374,13 +4439,25 @@ func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitSco
 		kind: grant.LimitHolderModelConfig,
 	}}
 	// The user the request was made as, when there is one. A user is not the permit holder, since a
-	// request can be made as a user through a key, so it is a scope of its own rather than one
-	// derived from the permit.
-	if userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); userID != "" {
+	// request can be made as a user through a key, so downstream-registered scopes keyed off it
+	// (e.g. enterprise's per-access-profile per-model budgets — see RegisterExtraScopedIDsResolver)
+	// are scopes of their own rather than derived from the permit.
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	vkID := ""
+	if permit != nil && permit.Type() == string(grant.PermitVirtualKey) {
+		vkID = permit.ID()
+	}
+	for _, extra := range collectExtraScopedIDs(ctx, vkID, userID) {
+		// An empty Kind is a legitimate value for a batch-only caller (see ScopedID's
+		// doc comment), but this is the request-time path: a blank holder kind here
+		// would let a refusal name an empty holder. Skip rather than propagate it.
+		if extra.Kind == "" {
+			continue
+		}
 		scopes = append(scopes, limitScope{
-			name: configstoreTables.ModelConfigScopeUser,
-			id:   userID,
-			kind: grant.LimitHolderUserModelConfig,
+			name: extra.Scope,
+			id:   extra.ScopeID,
+			kind: extra.Kind,
 		})
 	}
 	if permit == nil || permit.ID() == "" {
@@ -4404,6 +4481,8 @@ func modelConfigScopeFor(permitType string) string {
 	switch permitType {
 	case string(grant.PermitVirtualKey):
 		return configstoreTables.ModelConfigScopeVirtualKey
+	case string(grant.PermitProject):
+		return configstoreTables.ModelConfigScopeProject
 	default:
 		return permitType
 	}
@@ -4418,7 +4497,7 @@ func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
 	case string(grant.PermitProject):
 		return grant.LimitHolderProjectModelConfig
 	default:
-		return grant.LimitHolderUserModelConfig
+		return grant.LimitHolderUserAccessProfileModelConfig
 	}
 }
 

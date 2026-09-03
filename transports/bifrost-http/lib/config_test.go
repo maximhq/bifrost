@@ -1388,6 +1388,10 @@ func (m *MockConfigStore) DeleteModelConfigsForScope(ctx context.Context, tx *go
 	return nil
 }
 
+func (m *MockConfigStore) GetModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
 // Budget/Rate limit usage
 func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
 	return nil
@@ -20162,6 +20166,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
 	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
 	require.Equal(t, false, cc.Compat.ShouldConvertParams, "Compat.ShouldConvertParams should default to false")
+	require.Equal(t, false, cc.Compat.AzureDeepseek, "Compat.AzureDeepseek should default to false")
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 

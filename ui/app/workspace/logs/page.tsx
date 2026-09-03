@@ -93,6 +93,7 @@ export default function LogsPage() {
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
+			project_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
 			request_id: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
@@ -143,6 +144,7 @@ export default function LogsPage() {
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
+			project_ids: urlState.project_ids,
 			content_search: urlState.content_search,
 			request_id: urlState.request_id,
 			missing_cost_only: urlState.missing_cost_only,
@@ -182,6 +184,7 @@ export default function LogsPage() {
 			urlState.team_ids,
 			urlState.customer_ids,
 			urlState.business_unit_ids,
+			urlState.project_ids,
 			urlState.content_search,
 			urlState.request_id,
 			urlState.parent_request_id,
@@ -242,6 +245,7 @@ export default function LogsPage() {
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
+				project_ids: newFilters.project_ids || [],
 				content_search: newFilters.content_search || "",
 				request_id: newFilters.request_id || "",
 				missing_cost_only: newFilters.missing_cost_only ?? false,
@@ -582,7 +586,7 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit"],
+		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
 		[],
 	);
 
@@ -731,16 +735,20 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
+		// Below lg the strip, the volume chart and the table cannot all share one
+		// viewport-height column - the table collapses to a couple of rows. There the
+		// page itself scrolls and each section keeps its natural height; from lg up
+		// the fixed-height, inner-scrolling layout is untouched.
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] overflow-y-auto lg:overflow-y-visible">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (
-				<div className="bg-background flex h-full w-full grow gap-3">
+				<div className="bg-background flex min-h-full w-full grow gap-3 lg:h-full">
 					{/* Sidebar Filters */}
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 rounded-md border p-4 pb-2 lg:overflow-hidden">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}
@@ -806,7 +814,10 @@ export default function LogsPage() {
 							</Alert>
 						)}
 
-						<div className="min-h-0 flex-1">
+						{/* The min-height is what makes the table usable on a scrolling page:
+						    without it the flex child shrinks to its content and the strip plus
+						    the chart leave it a few rows tall. */}
+						<div className="min-h-[28rem] flex-1 lg:min-h-0">
 							<LogsDataTable
 								columns={columns}
 								data={displayLogs}

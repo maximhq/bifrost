@@ -265,18 +265,18 @@ func newModelScopedFixture(t *testing.T) *modelScopedFixture {
 	t.Helper()
 	logger := NewMockLogger()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("model-budget", 1_000_000.0, 0.0, "1d")
 	perModelRL := buildRateLimit("model-rl", 1_000_000_000, 1_000_000)
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, perModelRL)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, perModelRL)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("wildcard-budget", 1_000_000.0, 0.0, "1d")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
@@ -303,12 +303,13 @@ func TestReportUsage_ChargesPerModelBudgets(t *testing.T) {
 	// What a settled batch looks like: the wildcard budget was collected at create
 	// time (and so is already charged the full total), the per-model budget was not.
 	report := jobaccounting.UsageReport{
-		RequestID:  "batch-cost:openai:batch-models",
-		Provider:   schemas.OpenAI,
-		Cost:       30.0,
-		TokensUsed: 300,
-		BudgetIDs:  []string{"wildcard-budget"},
-		UserID:     "user-alice",
+		RequestID:    "batch-cost:openai:batch-models",
+		Provider:     schemas.OpenAI,
+		Cost:         30.0,
+		TokensUsed:   300,
+		BudgetIDs:    []string{"wildcard-budget"},
+		UserID:       "user-alice",
+		VirtualKeyID: "vk-alice",
 		ModelUsage: []jobaccounting.ModelUsage{
 			{Model: "gpt-5", Cost: 20.0, TokensUsed: 200},
 			{Model: "gpt-4o", Cost: 10.0, TokensUsed: 100},
@@ -430,5 +431,198 @@ func countableResponse() *schemas.BifrostResponse {
 				OriginalModelRequested: "gpt-4o",
 			},
 		},
+	}
+}
+
+// governedPassthroughFixture builds a plugin over a virtual key whose own rate limit
+// is the only thing governing it — no model configs — so what a request moves can be
+// read without a model being involved anywhere.
+func governedPassthroughFixture(t *testing.T) (*GovernancePlugin, GovernanceStore) {
+	t.Helper()
+	logger := NewMockLogger()
+
+	rl := buildRateLimit("rl-vk", 1_000_000, 1_000_000)
+	vk := buildVirtualKeyWithRateLimit("vk-pt", "sk-bf-pt", "Passthrough VK", rl)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin, store
+}
+
+// passthroughResponseWithUsage is what a provider returns for a raw forwarded route,
+// carrying billable tokens and, optionally, the model the caller named.
+func passthroughResponseWithUsage(requestType schemas.RequestType, model string, tokens int) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            requestType,
+				Provider:               schemas.Vertex,
+				OriginalModelRequested: model,
+				ResolvedModelUsed:      model,
+			},
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				LLMUsage: &schemas.BifrostLLMUsage{
+					PromptTokens:     tokens,
+					CompletionTokens: 0,
+					TotalTokens:      tokens,
+				},
+			},
+		},
+	}
+}
+
+// settleAccounting waits for the accounting the post hook handed to a goroutine, rather than
+// guessing at a duration that passes on an idle machine and flakes on a loaded one.
+//
+// Cleanup is the join: it waits on the same wait group PostLLMHook adds to. It is guarded by a
+// sync.Once, so the fixture's own deferred Cleanup is a no-op afterwards and a test may cross
+// this barrier once, at the end. The plugin is spent once it returns.
+func settleAccounting(t *testing.T, plugin *GovernancePlugin) {
+	t.Helper()
+	require.NoError(t, plugin.Cleanup())
+}
+
+// A passthrough request that names no model is still charged to the limits it was
+// checked against. A Vertex custom endpoint names a model nowhere — not in the path,
+// which carries an endpoint id, and not in the body, which carries instances — yet the
+// virtual key's own limits never depended on a model to begin with: they are the key's,
+// and HolderLimits takes no model at all. Dropping the usage left such a request checked
+// against a counter it could never move, so a workload made entirely of them ran without
+// bound while the key reported nothing spent.
+// Both forwarding request types are covered, because both are charged by the same branch and
+// a streaming one settles differently: it is billed once, on the chunk that closes the stream.
+func TestAccounting_ModellessPassthroughIsCharged(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.RequestType
+	}{
+		{"unary", schemas.PassthroughRequest},
+		{"streaming", schemas.PassthroughStreamRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A fixture per case: settling the accounting spends the plugin.
+			plugin, store := governedPassthroughFixture(t)
+
+			ctx := presentCtx("sk-bf-pt")
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+				RequestType: tc.requestType,
+				PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.Vertex,
+					Method:   "POST",
+					Path:     "/v1/projects/p/locations/l/endpoints/123456:predict",
+				},
+			})
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit, "the key permits this provider and can afford the request")
+
+			if tc.requestType == schemas.PassthroughStreamRequest {
+				// A stream is billed on the chunk that ends it, which is the only one carrying
+				// the usage for the whole call.
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+
+			_, _, err = plugin.PostLLMHook(ctx, passthroughResponseWithUsage(tc.requestType, "", 5000), nil)
+			require.NoError(t, err)
+			settleAccounting(t, plugin)
+
+			rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+			assert.Equal(t, int64(5000), rateLimit.TokenCurrentUsage,
+				"tokens a model-less passthrough spent count against the key that spent them")
+			assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage,
+				"one call is one request, however many chunks carried it")
+
+			// The same list is what the log row records, which is what lets a node's usage be
+			// reconciled from logs after the fact. Stamping nothing loses it for good.
+			rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+			assert.Contains(t, rateLimitIDs, "rl-vk",
+				"the limits charged are recorded on the request for the log row")
+		})
+	}
+}
+
+// A call that spent nothing is charged nothing, and being forwarded raw does not change that.
+// The passthrough routes carry metadata traffic as well as inference — a job status poll, a file
+// retrieve — and an agent polling one of those would otherwise drain a caller's request allowance
+// without ever reaching a model. What admits a call to accounting is the usage the provider
+// reported on it, not the shape of the route it arrived on.
+func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.RequestType
+		request     *schemas.BifrostRequest
+		response    *schemas.BifrostResponse
+	}{
+		{
+			name:        "passthrough poll carrying no usage",
+			requestType: schemas.PassthroughRequest,
+			request: &schemas.BifrostRequest{
+				RequestType: schemas.PassthroughRequest,
+				PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.Vertex,
+					Method:   "GET",
+					Path:     "/v1/projects/p/locations/l/operations/987654",
+				},
+			},
+			response: &schemas.BifrostResponse{
+				PassthroughResponse: &schemas.BifrostPassthroughResponse{
+					StatusCode: 200,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType: schemas.PassthroughRequest,
+						Provider:    schemas.Vertex,
+					},
+					// No PassthroughUsage: the provider reported nothing billable.
+				},
+			},
+		},
+		{
+			name:        "file listing",
+			requestType: schemas.FileListRequest,
+			request: &schemas.BifrostRequest{
+				RequestType:     schemas.FileListRequest,
+				FileListRequest: &schemas.BifrostFileListRequest{Provider: schemas.Vertex},
+			},
+			response: &schemas.BifrostResponse{
+				FileListResponse: &schemas.BifrostFileListResponse{
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType: schemas.FileListRequest,
+						Provider:    schemas.Vertex,
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, store := governedPassthroughFixture(t)
+
+			// Through the request hook first, so the key's limits are settled onto the grant exactly
+			// as a real call's are. Without that the assertion below is worth nothing: a post hook
+			// reached with an empty grant charges nothing whatever accounting decides, so the test
+			// would hold just as well if these requests were being billed.
+			ctx := presentCtx("sk-bf-pt")
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, tc.request)
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit, "the call is permitted and costs nothing")
+			require.NotEmpty(t, ctx.Grant().Limits().RateLimits(),
+				"the request carries the limits it would be charged against, so not charging it is a decision")
+
+			_, _, err = plugin.PostLLMHook(ctx, tc.response, nil)
+			require.NoError(t, err)
+			settleAccounting(t, plugin)
+
+			rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+			assert.Equal(t, int64(0), rateLimit.RequestCurrentUsage,
+				"a call that spent nothing must not consume the key's request allowance")
+			assert.Equal(t, int64(0), rateLimit.TokenCurrentUsage)
+		})
 	}
 }

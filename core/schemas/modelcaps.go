@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -516,4 +517,18 @@ func (c ModelCaps) MinOutputTokens(fallback int) int {
 		return *c.record.MinOutputTokens
 	}
 	return fallback
+}
+
+// SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
+// includes the Responses API.
+func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {
+	if c.record == nil || len(c.record.SupportedEndpoints) == 0 {
+		return fallback
+	}
+	for _, endpoint := range c.record.SupportedEndpoints {
+		if strings.Contains(endpoint, "/v1/responses") {
+			return true
+		}
+	}
+	return false
 }

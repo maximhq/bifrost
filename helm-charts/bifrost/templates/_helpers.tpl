@@ -311,6 +311,9 @@ false
 {{- if hasKey .Values.bifrost.client.compat "shouldConvertParams" }}
 {{- $_ := set $compat "should_convert_params" .Values.bifrost.client.compat.shouldConvertParams }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client.compat "azureDeepseek" }}
+{{- $_ := set $compat "azure_deepseek" .Values.bifrost.client.compat.azureDeepseek }}
+{{- end }}
 {{- $_ := set $client "compat" $compat }}
 {{- end }}
 {{- if .Values.bifrost.client.prometheusLabels }}

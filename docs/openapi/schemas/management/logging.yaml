@@ -944,6 +944,9 @@ HistogramDimension:
     - customer_id
     - user_id
     - business_unit_id
+    - project_id
+    - app
+    - user_agent
 
 DimensionCostHistogramBucket:
   type: object
@@ -1262,8 +1265,11 @@ RankingDimension:
     - team
     - customer
     - business_unit
+    - project
     - user
     - virtual_key
+    - app
+    - user_agent
 
 DimensionRankingEntry:
   type: object
@@ -1414,7 +1420,8 @@ DashboardResult:
       type: object
       description: |
         Ranking tables keyed by dimension (`team`, `user`, `virtual_key`,
-        `customer`, `business_unit`); each value is that dimension's rankings.
+        `customer`, `business_unit`, `project`, `app`, `user_agent`); each
+        value is that dimension's rankings.
       additionalProperties:
         $ref: '#/DimensionRankingResult'
     mcp:
