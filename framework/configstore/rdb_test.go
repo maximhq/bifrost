@@ -3272,6 +3272,59 @@ func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testi
 	assert.InDelta(t, 0.12, *row.OutputCostPerImageAbove64Megapixels, 1e-9)
 }
 
+func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
+	// Same pricingSyncUpdateColumns regression as the megapixel test above, for
+	// the peak/off-peak columns. peak_hours additionally exercises the
+	// serializer:json round-trip, which the plain *float64 columns do not.
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{
+			Model:                 "deepseek-v4-flash",
+			Provider:              "deepseek",
+			Mode:                  "chat",
+			InputCostPerToken:     cost(0.00000044),
+			OutputCostPerToken:    cost(0.00000132),
+			OffPeakCostMultiplier: cost(0.5),
+			PeakHours: &tables.PeakHoursSchedule{
+				Timezone: "UTC",
+				Windows: []tables.PeakHoursWindow{
+					{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+					{Days: []int{1, 2, 3, 4, 5}, Start: "06:00", End: "10:00"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	// Re-upsert the same row (the next scheduled datasheet sync) with a changed
+	// multiplier to exercise the ON CONFLICT update path.
+	pricing[0].OffPeakCostMultiplier = cost(0.6)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.OffPeakCostMultiplier)
+	assert.InDelta(t, 0.6, *row.OffPeakCostMultiplier, 1e-9) // survived resync with the updated value
+
+	require.NotNil(t, row.PeakHours)
+	assert.Equal(t, "UTC", row.PeakHours.Timezone)
+	require.Len(t, row.PeakHours.Windows, 2)
+	assert.Equal(t, []int{1, 2, 3, 4, 5}, row.PeakHours.Windows[0].Days)
+	assert.Equal(t, "01:00", row.PeakHours.Windows[0].Start)
+	assert.Equal(t, "04:00", row.PeakHours.Windows[0].End)
+	assert.Equal(t, "06:00", row.PeakHours.Windows[1].Start)
+	assert.Equal(t, "10:00", row.PeakHours.Windows[1].End)
+}
+
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelParameters{}))
