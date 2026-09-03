@@ -1261,6 +1261,7 @@ const (
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
+	ChatContentBlockTypeVideo      ChatContentBlockType = "video_url"
 )
 
 // ChatContentBlock represents a content block in a message.
@@ -1269,6 +1270,7 @@ type ChatContentBlock struct {
 	Text           *string              `json:"text,omitempty"`
 	Refusal        *string              `json:"refusal,omitempty"`
 	ImageURLStruct *ChatInputImage      `json:"image_url,omitempty"`
+	VideoURLStruct *ChatInputVideo      `json:"video_url,omitempty"`
 	InputAudio     *ChatInputAudio      `json:"input_audio,omitempty"`
 	File           *ChatInputFile       `json:"file,omitempty"`
 
@@ -1500,6 +1502,13 @@ type ChatInputImage struct {
 	URL    string  `json:"url,omitempty"`
 	FileID *string `json:"file_id,omitempty"` // Reference to an uploaded file (in place of URL)
 	Detail *string `json:"detail,omitempty"`
+}
+
+// ChatInputVideo represents video data in a message (vLLM/Qwen-style `video_url`
+// content parts). Not part of OpenAI's published schema, but accepted by
+// OpenAI-compatible multimodal backends (vLLM, SGLang, Dashscope).
+type ChatInputVideo struct {
+	URL string `json:"url,omitempty"` // Remote URL, or data: URI with base64-encoded video
 }
 
 // ChatInputAudio represents audio data in a message.
