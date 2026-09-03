@@ -406,6 +406,9 @@
         "azure": {
           "$ref": "#/$defs/provider_with_azure_config"
         },
+        "databricks": {
+          "$ref": "#/$defs/provider_with_databricks_config"
+        },
         "vertex": {
           "$ref": "#/$defs/provider_with_vertex_config"
         },
@@ -2576,7 +2579,8 @@
                         "perplexity",
                         "replicate",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "databricks"
                       ]
                     },
                     "embedding_model": {
@@ -4631,6 +4635,51 @@
         }
       ]
     },
+    "databricks_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "databricks_key_config": {
+              "type": "object",
+              "properties": {
+                "workspace_url": {
+                  "type": "string",
+                  "description": "Databricks workspace URL, e.g. https://dbc-1234abcd-5678.cloud.databricks.com (can use env. prefix). A scheme and trailing path are tolerated."
+                },
+                "api_format": {
+                  "type": "string",
+                  "enum": ["auto", "model_serving", "ai_gateway"],
+                  "description": "Which Databricks inference surface to target. 'model_serving' uses /serving-endpoints (Foundation Model APIs, provisioned throughput). 'ai_gateway' uses /ai-gateway/mlflow/v1 (Unity AI Gateway model services). 'auto' (default) picks by model name: a dotted name such as system.ai.claude-sonnet-4-5 goes to the AI Gateway, anything else to Model Serving."
+                },
+                "client_id": {
+                  "type": "string",
+                  "description": "OAuth M2M service principal client ID (can use env. prefix). Set together with client_secret, and leave the key value empty, to authenticate without a personal access token."
+                },
+                "client_secret": {
+                  "type": "string",
+                  "description": "OAuth M2M service principal client secret (can use env. prefix)"
+                },
+                "forward_gateway_tags": {
+                  "type": "boolean",
+                  "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution (default: false)"
+                }
+              },
+              "required": ["workspace_url"],
+              "dependentRequired": {
+                "client_id": ["client_secret"],
+                "client_secret": ["client_id"]
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["databricks_key_config"]
+        }
+      ]
+    },
     "vertex_key": {
       "allOf": [
         {
@@ -4838,6 +4887,45 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/replicate_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_databricks_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/databricks_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
