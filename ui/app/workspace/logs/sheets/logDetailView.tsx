@@ -44,6 +44,7 @@ import {
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import { countAtOrAboveEachLevel, LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
@@ -60,12 +61,13 @@ import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
+import LogLevelTabs from "../views/logLevelTabs";
 import OCRView from "../views/ocrView";
 import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { resolveRawJsonNoticeState } from "./logDetailView.utils";
+import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -835,45 +837,66 @@ const messageRoleLabel: Record<MessageRole, string> = {
 
 function RoutingDecisionLogs({ logs }: { logs: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
+	const lines = useMemo(
+		() =>
+			logs
+				.split("\n")
+				.filter((line) => line.trim())
+				.map(parseRoutingDecisionLine),
+		[logs],
+	);
+	// Rows written before the level was recorded carry none, so there is nothing to filter on.
+	const hasLevels = lines.some((line) => line.level !== null);
+	const counts = useMemo(() => countAtOrAboveEachLevel(lines.map((line) => line.level)), [lines]);
+	const visible = hasLevels ? lines.filter((line) => meetsMinLogLevel(line.level, minLevel)) : lines;
+
 	return (
 		<div className="w-full rounded-sm border">
-			<div className="flex items-center justify-between border-b py-2 pl-6">
+			<div className="flex items-center justify-between gap-3 border-b py-2 pl-6">
 				<div className="text-sm font-medium">Routing Decision Logs</div>
-				<button
-					type="button"
-					onClick={() => copy(logs)}
-					className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
-				>
-					<Copy className="h-3 w-3" />
-				</button>
+				<div className="flex items-center gap-1">
+					{hasLevels && <LogLevelTabs value={minLevel} onChange={setMinLevel} counts={counts} testId="routing-logs-level-filter" />}
+					<button
+						type="button"
+						onClick={() => copy(logs)}
+						className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
+					>
+						<Copy className="h-3 w-3" />
+					</button>
+				</div>
 			</div>
 			<div>
-				{logs
-					.split("\n")
-					.filter((l) => l.trim())
-					.map((line, i) => {
-						const m = line.match(/^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/);
-						const ts = m ? Number(m[1]) : null;
-						const scope = m ? m[2] : null;
-						const message = m ? m[3] : line;
-						return (
-							<div key={i} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
-								{ts != null ? <span className="text-muted-foreground shrink-0">{format(new Date(ts), "HH:mm:ss.SSS")}</span> : null}
-								{scope ? (
-									<span
-										className={cn(
-											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
-											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
+				{visible.length === 0 ? (
+					<div className="text-muted-foreground px-4 py-3 text-center text-xs">No routing logs at or above {minLevel}.</div>
+				) : (
+					visible.map((line, i) => (
+						<div key={i} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
+							{line.timestamp != null ? (
+								<span className="text-muted-foreground shrink-0">{format(new Date(line.timestamp), "HH:mm:ss.SSS")}</span>
+							) : null}
+							{line.engine ? (
+								<span
+									className={cn(
+										"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
+										RoutingEngineUsedColors[line.engine as keyof typeof RoutingEngineUsedColors] ??
 											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-										)}
-									>
-										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
-									</span>
-								) : null}
-								<span className="break-words whitespace-pre-wrap">{message}</span>
-							</div>
-						);
-					})}
+									)}
+								>
+									{RoutingEngineUsedLabels[line.engine as keyof typeof RoutingEngineUsedLabels] ?? line.engine}
+								</span>
+							) : null}
+							{line.level ? (
+								<span
+									className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", LOG_LEVEL_BADGE_CLASSES[line.level])}
+								>
+									{line.level}
+								</span>
+							) : null}
+							<span className="break-words whitespace-pre-wrap">{line.message}</span>
+						</div>
+					))
+				)}
 			</div>
 		</div>
 	);
