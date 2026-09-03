@@ -50,6 +50,37 @@ Two entirely separate credential-resolution paths exist for per-user auth types,
 `pending_tools` and a bare `connected`/`disconnected` naming existed in older versions of this doc set — the current state names are exactly the seven above. If you see `connected`, `disconnected`, `connecting`, or `pending_tools` referenced anywhere else in these docs, that's stale and maps to `healthy`, `unstable`, (nothing — was never a real state), and (removed — an empty `healthy` tool map already communicates the same thing) respectively.
 </Note>
 
+### Why a server is in a state
+
+When Bifrost's own connection handling has failed for a server, the state carries its explanation. `GET /api/mcp/clients` returns it as `last_failure`, and the UI shows the same record behind the state badge (click it) and at the top of the server sheet. The field is present only after the serving instance has attempted a connect or check that failed; it is absent while `healthy`, and absent when a state changed without such an attempt.
+
+```json
+"state": "unstable",
+"last_failure": {
+  "stage": "list_tools",
+  "message": "context deadline exceeded",
+  "at": "2026-09-03T10:41:12Z",
+  "since": "2026-09-03T10:32:04Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stage` | Which step of Bifrost's own connection handling failed: `connect` (dial, initialize, connect gate, or the initial `list_tools` a new connection must pass), `ping` and `list_tools` (the periodic check over a sticky connection), `tool_discovery` (the periodic check's ephemeral connect-discover-close cycle for per-call auth types), `transport_lost` (a live SSE stream dropped), or `credential` (the credential the connection depends on was rejected upstream or rotated by an admin). |
+| `message` | The error that step failed with, whitespace-collapsed and capped at 512 characters. |
+| `at` | The most recent failed attempt. While a server is `unstable` the check retries every 10 seconds, so this keeps moving for as long as the outage lasts. |
+| `since` | The first failed attempt of the current unhealthy run. Answers "how long has this been going on". |
+
+A few properties worth knowing:
+
+- **It is the serving instance's own record.** It describes what *this* Bifrost instance last ran into, never the outcome of real tool calls made through the server.
+- **It clears on the first passing check.** A `healthy` server never carries a stale reason; the record is gone the moment the state flips back.
+- **It can lag a credential-driven state.** A `needs_reauth` that comes from a credential row dying in the store (a rejected refresh, a rotation) shows no reason until the server's next scheduled check actually hits the dead credential, at which point the provider's rejection is recorded. Shared-OAuth servers hit it on their next reconnect; per-user servers on their next tool-discovery check.
+- **A single failed check is enough.** There is no consecutive-failure counter across checks. Each check already retries with backoff internally (three retries per operation), and that budget is what absorbs an ordinary blip. A check that exhausts it marks the server `unstable` and records why.
+- **Reasons are logged once per transition.** The state-change log line at `INFO` carries the stage and message. Individual failed checks during an outage log at `DEBUG` only, so a long outage does not flood the log.
+
+**Distributed deployments.** Each instance reports its own state and `last_failure` through the shared node-state heartbeat. When instances disagree, `state` is `degraded` and `node_states` maps each instance ID to its own `{ "state", "last_failure" }`. The same map is also attached when every instance agrees on `unstable`, because their reasons can still differ (one pod missing a binary, another timing out). The UI folds that map by state and reason, so three instances failing the same way read as one line with a count; the per-instance detail stays available in the API.
+
 ---
 
 ## Lifecycle: sticky server-level (`needs_session_stickiness: true`, or `sse`/`stdio`)

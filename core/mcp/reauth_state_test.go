@@ -80,6 +80,13 @@ func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
 	m.mu.RUnlock()
 	require.True(t, exists)
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State)
+	// The state carries its own explanation: a dead credential, not a
+	// generic connect failure, so the UI can say what needs a human.
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageCredential, state.LastFailure.Stage)
+	assert.Contains(t, state.LastFailure.Message, schemas.ErrOAuth2TokenExpired.Error())
+	assert.False(t, state.LastFailure.At.IsZero())
+	assert.Equal(t, state.LastFailure.At, state.LastFailure.Since, "a first failure starts its own run")
 }
 
 // TestConnectToMCPClient_GenericFailure_StaysDisconnected is the control
@@ -120,6 +127,9 @@ func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
 	m.mu.RUnlock()
 	require.True(t, exists)
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageConnect, state.LastFailure.Stage)
+	assert.Contains(t, state.LastFailure.Message, "connection refused")
 }
 
 // TestUpdateClientState_PreservesNeedsReauth covers healthmonitor.go's
@@ -143,16 +153,18 @@ func TestSetState_PreservesNeedsReauth(t *testing.T) {
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 
 	// A failed check tick (recordFailure's path) tries to write Unstable first.
-	checker.setState(schemas.MCPConnectionStateUnstable, 0)
+	checker.setState(schemas.MCPConnectionStateUnstable, 0, schemas.MCPConnectionFailureStagePing, fmt.Errorf("ping failed"))
 	m.mu.RLock()
 	stateAfterFailureTick := m.clientMap[config.ID].State
+	failureAfterFailureTick := m.clientMap[config.ID].LastFailure
 	m.mu.RUnlock()
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterFailureTick, "a failed check tick must not clobber NeedsReauth back to Unstable")
+	assert.Nil(t, failureAfterFailureTick, "a rejected state write must not overwrite the credential failure that put the client in NeedsReauth")
 
 	// A successful check (recordSuccess's path) tries to write Healthy — this
 	// must also be rejected: the check succeeding against a stale/absent
 	// transport does not mean the credential is fixed.
-	checker.setState(schemas.MCPConnectionStateHealthy, 0)
+	checker.setState(schemas.MCPConnectionStateHealthy, 0, "", nil)
 	m.mu.RLock()
 	stateAfterSuccessTick := m.clientMap[config.ID].State
 	m.mu.RUnlock()
@@ -204,7 +216,7 @@ func TestSetState_StillPreservesDisabled(t *testing.T) {
 	m.mu.Unlock()
 
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
-	checker.setState(schemas.MCPConnectionStateHealthy, 0)
+	checker.setState(schemas.MCPConnectionStateHealthy, 0, "", nil)
 
 	m.mu.RLock()
 	state := m.clientMap[config.ID].State

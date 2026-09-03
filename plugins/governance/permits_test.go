@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -216,13 +217,13 @@ func TestPermitForVirtualKey_ProviderPermits(t *testing.T) {
 
 	openai := permit.ProviderPermits()[0]
 	assert.Equal(t, "openai", openai.Provider)
-	assert.Equal(t, []string{"gpt-4o"}, openai.AllowedModels)
-	assert.Equal(t, []string{"gpt-4o-mini"}, openai.BlacklistedModels)
-	assert.Equal(t, []string{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
+	assert.Equal(t, schemas.WhiteList{"gpt-4o"}, openai.AllowedModels)
+	assert.Equal(t, schemas.BlackList{"gpt-4o-mini"}, openai.BlacklistedModels)
+	assert.Equal(t, schemas.WhiteList{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
 	assert.Equal(t, schemas.Ptr(0.7), openai.Weight)
 
 	anthropic := permit.ProviderPermits()[1]
-	assert.Equal(t, []string{"key-a", "key-b"}, anthropic.KeyIDs)
+	assert.Equal(t, schemas.WhiteList{"key-a", "key-b"}, anthropic.KeyIDs)
 	assert.Nil(t, anthropic.Weight, "no weight configured stays no weight")
 
 	bedrock := permit.ProviderPermits()[2]
@@ -263,7 +264,7 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 
 	// Each config's limits are answered for that provider, so which provider they answer for is
 	// what was asked rather than something to filter on.
-	openaiBudgets, openaiRateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	openaiBudgets, openaiRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, openaiBudgets, 1, "the openai config's own")
 	assert.Equal(t, schemas.Limit{
 		ID: "budget-openai", HolderKind: string(grant.LimitHolderVirtualKeyProviderConfig),
@@ -271,11 +272,11 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 	}, openaiBudgets[0])
 	assert.Equal(t, []string{"rl-openai"}, limitIDsOf(openaiRateLimits))
 
-	anthropicBudgets, anthropicRateLimits := gs.ProviderLimits(ctx, permit, schemas.Anthropic)
+	anthropicBudgets, anthropicRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.Anthropic)
 	assert.Empty(t, anthropicBudgets, "a config governed by nothing of its own")
 	assert.Empty(t, anthropicRateLimits)
 
-	noProviderBudgets, _ := gs.ProviderLimits(ctx, permit, "")
+	noProviderBudgets, _ := gs.PermitProviderLimits(ctx, permit, "")
 	assert.Empty(t, noProviderBudgets, "and there is no unscoped bucket to find the key's own in")
 
 	// The key's own limits are HolderLimits' to answer.
@@ -316,7 +317,7 @@ func TestPermitForVirtualKey_LimitsOfTwoConfigsForOneProvider(t *testing.T) {
 	ctx := emptyCtx()
 	permit := gs.permitForVirtualKey(ctx, vk)
 
-	budgets, rateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	budgets, rateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, budgets, 2, "both configs govern openai traffic")
 	assert.Equal(t, []string{"budget-first", "budget-second"}, []string{budgets[0].ID, budgets[1].ID})
 	assert.Equal(t, []string{"1", "2"}, []string{budgets[0].HolderID, budgets[1].HolderID},
@@ -363,7 +364,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		permit := vkPermit(vk, open)
 
 		require.Len(t, permit.MCPPermits(), 3)
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
 		assert.Empty(t, permit.MCPPermits()[1].Tools, "an empty config stays empty")
 		assert.Equal(t, "slack-id", permit.MCPPermits()[2].Client, "only the unconfigured client is added")
 	})
@@ -1324,7 +1325,7 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 	require.Len(t, bases, 1)
 	require.Equal(t, string(grant.PermitVirtualKey), bases[0].Type(), "the type production stamps, not a scope name")
 
-	budgets, _ := store.ProviderAndModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
+	budgets, _ := store.PermitModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
 
 	assert.Contains(t, limitIDsOf(budgets), "b-vk-model",
 		"a key's own model budget must be found through the permit production builds for it")
@@ -1476,7 +1477,7 @@ func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
 	t.Run("the project's permit", func(t *testing.T) {
 		project := permitWithProviders(grant.PermitProject, "proj-1", "Atlas", "openai")
 
-		scope, found := scopeNamed(modelConfigScopesFor(emptyCtx(), project), configstoreTables.ModelConfigScopeProject)
+		scope, found := scopeNamed(modelConfigScopesFor(project), configstoreTables.ModelConfigScopeProject)
 
 		require.True(t, found, "a request running inside a project answers to none of its per-model limits")
 		assert.Equal(t, "proj-1", scope.id)
@@ -1487,8 +1488,65 @@ func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
 	t.Run("a permit that is not a project's", func(t *testing.T) {
 		key := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai")
 
-		_, found := scopeNamed(modelConfigScopesFor(emptyCtx(), key), configstoreTables.ModelConfigScopeProject)
+		_, found := scopeNamed(modelConfigScopesFor(key), configstoreTables.ModelConfigScopeProject)
 
 		assert.False(t, found, "a request outside every project was held to a project's per-model limits")
+	})
+}
+
+// settlingErrorStore wraps a real store so GatherLimits fails the way a store composing several
+// possible payers can: the payers could not be settled at all, not a limit being exhausted.
+type settlingErrorStore struct {
+	GovernanceStore
+	err error
+}
+
+func (s *settlingErrorStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit, error) {
+	return nil, nil, s.err
+}
+
+// newSettlingErrorTestPlugin builds a plugin whose store fails to settle limits with err.
+func newSettlingErrorTestPlugin(t *testing.T, err error) *GovernancePlugin {
+	t.Helper()
+	vk := buildVKForMCPStamping(nil)
+	logger := NewMockLogger()
+	local, localErr := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, localErr)
+
+	plugin, initErr := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, &settlingErrorStore{GovernanceStore: local, err: err}, nil, nil, nil, nil)
+	require.NoError(t, initErr)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
+// TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped covers the store.GatherLimits error
+// path for a request that asked not to be checked against anything it answers to (e.g. a read-only
+// list-models call). LocalGovernanceStore never returns one, but the interface allows a store
+// composing several possible payers to fail this way, and such a request spends nothing, so an
+// unsettled payer list is not something it depends on either.
+func TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped(t *testing.T) {
+	request := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	t.Run("a settling error still blocks a request that did not skip spending checks", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+
+		result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+		require.NotNil(t, bifrostErr, "a request whose payers could not be settled was served anyway")
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+	})
+
+	t.Run("a request that skipped spending checks is not blocked by it", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+		ctx := emptyCtx()
+		ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
+		result, bifrostErr := plugin.Evaluate(ctx, request)
+
+		assert.Nil(t, bifrostErr, "a read-only request was blocked by a settling failure it does not depend on")
+		assert.Equal(t, DecisionAllow, result.Decision)
 	})
 }

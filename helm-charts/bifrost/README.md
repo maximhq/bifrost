@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added `bifrost.client.compat.azureDeepseek` (default `false`) — converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses. Renders into `client.compat.azure_deepseek`.
+- Removed the `version` field from every plugin (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`, `bigquery`, `kafka`, `pubsub`, `splunk` and `birost.plugins.custom[]`).
 
 ### 2.1.37
 

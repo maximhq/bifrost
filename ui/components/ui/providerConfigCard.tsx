@@ -493,7 +493,7 @@ export function ProviderConfigCard({
 												if (!model) return;
 												if (modelBudgets.some((m) => m.model_name === model)) return;
 												update({
-													modelBudgets: [...modelBudgets, { model_name: model, budgets: [{ max_limit: undefined, reset_duration: "1d" }] }],
+													modelBudgets: [...modelBudgets, { model_name: model, budgets: [] }],
 												});
 												setOpenModelEditor(model);
 											}}

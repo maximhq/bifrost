@@ -563,6 +563,19 @@ func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.Resolved
 	}
 }
 
+// applyServedModel records the model the provider named on the response body when
+// it differs from the one the caller addressed.
+func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil {
+		return
+	}
+	served := result.ServedModel()
+	if served == "" || served == entry.Model {
+		return
+	}
+	entry.ServedModel = &served
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,

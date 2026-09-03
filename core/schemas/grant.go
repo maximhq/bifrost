@@ -214,14 +214,15 @@ type Limits interface {
 // with it. It mirrors the semantics of a virtual key's provider config, expressed independently of
 // any particular source.
 //
-// The lists have the semantics of the configuration lists they are built from: a list holding only
-// "*" is unrestricted, an empty list holds nothing, and membership ignores case. Key IDs are the
-// exception, matched exactly by whoever selects a key.
+// The lists are the same types the configuration lists are, and carry their semantics with them: a
+// list holding only "*" is unrestricted, an empty list holds nothing. Key IDs are identifiers
+// rather than names, so whoever selects a key matches them exactly; the case-folding membership
+// methods are for the model and tool lists.
 type ProviderPermit struct {
-	Provider          string   // provider name, as configured
-	AllowedModels     []string // ["*"] allows all models; empty allows none (deny by default)
-	BlacklistedModels []string // blocked models; wins over AllowedModels
-	KeyIDs            []string // ["*"] allows all keys of the provider; empty allows none.
+	Provider          string    // provider name, as configured
+	AllowedModels     WhiteList // ["*"] allows all models; empty allows none (deny by default)
+	BlacklistedModels BlackList // blocked models; wins over AllowedModels
+	KeyIDs            WhiteList // ["*"] allows all keys of the provider; empty allows none.
 	//                             Composes with the other side's list, but only where that side also
 	//                             authorizes the request for the provider: a permit the request is not
 	//                             proceeding on does not get to say which keys serve it.
@@ -235,8 +236,9 @@ type ProviderPermit struct {
 type MCPPermit struct {
 	Client string // stable client identifier; identifies the client across renames and
 	//                decides which permit applies to a client
-	ClientName string   // client name, as used in "<client>-<tool>" tool patterns
-	Tools      []string // ["*"] allows every tool of the client; empty allows none
+	ClientName string    // client name, as used in "<client>-<tool>" tool patterns
+	Tools      WhiteList // ["*"] allows every tool of the client; empty allows none. Matched
+	//                       against the tool's own name, after the "<client>-" prefix is trimmed.
 }
 
 // ProviderCandidate is one way a request could be served: a provider, with the weight and keys it
@@ -248,11 +250,11 @@ type MCPPermit struct {
 // candidate costs is gathered against Access.PermitsForModel, given its provider and the model.
 type ProviderCandidate struct {
 	Provider string
-	Weight   *float64 // nil means the candidate has no weight assigned
-	KeyIDs   []string // ["*"] allows all keys of the provider; per candidate, so two permits for
-	//                   one provider can carry different keys. Consumers stamping a key restriction
-	//                   for the request use Access.KeysForModel instead: it answers for the request, not
-	//                   per candidate.
+	Weight   *float64  // nil means the candidate has no weight assigned
+	KeyIDs   WhiteList // ["*"] allows all keys of the provider; per candidate, so two permits for
+	//                    one provider can carry different keys. Consumers stamping a key restriction
+	//                    for the request use Access.KeysForModel instead: it answers for the request,
+	//                    not per candidate.
 }
 
 // Limit is one budget or one rate limit a request answers to: what to load when enforcing it, and

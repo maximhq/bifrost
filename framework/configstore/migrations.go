@@ -481,6 +481,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
 	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
 	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
+	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
+	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -3177,6 +3179,37 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error while running add additional config hash columns migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationClearPluginConfigHashes clears config_plugins.config_hash on every row, putting
+// them all in the "no config.json baseline recorded" state that startup treats as legacy.
+//
+// The column has never held a usable baseline. migrationAddAdditionalConfigHashColumns only
+// populates it on databases predating the column, and it populates it from the stored row
+// rather than from config.json - so a row edited through the UI since carries a hash that
+// disagrees with the file and reads as "config.json changed". Every other row was written by
+// a path that never set the column at all. Clearing is what makes the state honest: startup
+// then seeds each row with the hash of its current config.json entry and keeps the stored
+// config, so UI/API edits survive and only a later file edit reconciles.
+func migrationClearPluginConfigHashes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "clear_plugin_config_hashes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if !tx.Migrator().HasTable(&tables.TablePlugin{}) {
+				return nil
+			}
+			return tx.WithContext(ctx).
+				Session(&gorm.Session{AllowGlobalUpdate: true}).
+				Model(&tables.TablePlugin{}).
+				Where("config_hash IS NOT NULL AND config_hash <> ?", "").
+				UpdateColumn("config_hash", "").Error
+		},
+		// Nothing to restore: the cleared values were never a valid config.json baseline.
+		Rollback: func(tx *gorm.DB) error { return nil },
+	})
 }
 
 // migrationAdd200kTokenPricingColumns adds pricing columns for 200k token tier models
@@ -12708,4 +12741,30 @@ func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 		WHERE pc.relname = ? AND ic.relname = ?
 	`, table, index).Scan(&valid).Error
 	return valid, err
+}
+
+// migrationAddMCPOauthTokenStatusReasonColumn adds mcp_oauth_tokens.status_reason:
+// the explanation behind a row's Status leaving 'active' (the provider's
+// refresh rejection, a credential rotation, a failed admin exchange), which
+// the credential block and the client's connection-failure record surface
+// so an admin can tell a revoked grant from a misconfigured client. Nullable
+// text, no backfill: rows that are already needs_reauth simply have no
+// recorded reason until their next transition.
+func migrationAddMCPOauthTokenStatusReasonColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_oauth_token_status_reason_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthToken{}, "status_reason")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthToken{}, "status_reason")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }

@@ -1617,6 +1617,9 @@ export function LogDetailView({
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
+							{!isContainer && log.served_model && (
+								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
+							)}
 							{detectedApp && (
 								<LogEntryDetailsView
 									className="w-full"

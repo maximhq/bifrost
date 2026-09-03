@@ -10,6 +10,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
@@ -102,6 +103,14 @@ type mcpSessionRow struct {
 	LastRefreshedAt *string            `json:"last_refreshed_at,omitempty"` // OAuth token rows only; nil if never refreshed
 	UpdatedAt       *string            `json:"updated_at,omitempty"`        // Headers rows: timestamp of last submission/edit
 	OauthConfigID   string             `json:"oauth_config_id,omitempty"`   // OAuth rows only
+	// Scopes are the scopes the provider reported when it issued the token.
+	// Token rows only; empty when the provider omitted them from its token
+	// response, which many do when granted equals requested.
+	Scopes []string `json:"scopes,omitempty"`
+	// HasRefreshToken reports whether the provider issued a refresh token for
+	// this credential. Token rows only. Without one the access token cannot be
+	// renewed at use time, so the row must be re-authenticated once it expires.
+	HasRefreshToken *bool `json:"has_refresh_token,omitempty"`
 	// CanReauth mirrors the server-side identity gate on POST /reauth: user-mode
 	// rows are only reauthable by the bound user (admin DAC scope is enough to
 	// see the row, but reauthing mints credentials for whoever clicks the URL).
@@ -939,7 +948,37 @@ func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 		s := t.LastRefreshedAt.UTC().Format(rfc3339Nano)
 		row.LastRefreshedAt = &s
 	}
+	row.Scopes = parseOauthScopesJSON(t.Scopes)
+	hasRefreshToken := t.RefreshToken != ""
+	row.HasRefreshToken = &hasRefreshToken
 	return row
+}
+
+// parseOauthScopesJSON decodes the JSON scope list stored on an oauth token
+// row. The column holds a JSON array of strings, but a token issued by a
+// provider that omitted the scope field is stored as "null", and rows created
+// before scopes were captured may hold "". Every such shape, along with
+// malformed content, decodes to nil rather than an error: the scope list is
+// display-only and an unreadable one must not fail a listing.
+func parseOauthScopesJSON(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(raw), &scopes); err != nil {
+		return nil
+	}
+	out := scopes[:0]
+	for _, s := range scopes {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // flowRow maps an oauth_user_sessions (pending flow) row to the wire shape.

@@ -201,6 +201,7 @@ type TableMCPOauthToken struct {
 	VirtualKeyID     *string    `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
 	UserID           *string    `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows; populated by enterprise middleware/governance)
 	Status           string     `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_reauth' — only 'active' satisfies a runtime lookup; the others are surfaced in the UI with distinct copy
+	StatusReason     string     `gorm:"type:text" json:"status_reason,omitempty"`                 // Why Status left 'active': the provider's refresh rejection (HTTP status plus the OAuth error and description), a credential rotation, or a failed admin exchange. Empty while active; cleared whenever the row becomes active again
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                              // Encrypted access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                       // Encrypted refresh token (optional)
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`              // "Bearer"

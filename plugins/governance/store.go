@@ -149,11 +149,29 @@ type GovernanceStore interface {
 	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
 	// credential nothing granted.
 	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
-	// ProviderAndModelLimits reports the deployment's own limits on a provider plus whichever model
-	// configs cover the pair, for the deployment and for the permit's holder. Resolved per attempt
-	// because a request can fail over to another provider or have its model rewritten, so they are
-	// not facts about the permit.
-	ProviderAndModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// GatherLimits assembles every limit an attempt answers to, once its provider and model are
+	// known: the deployment's own for the pair, what funds each holder the request carries, and what
+	// funds their use of the provider. Which holders pay is the store's to say: a store that composes
+	// several possible payers settles here on who pays, and everything downstream (the checks, the
+	// co-payers named on the log row, the charge) reads that one settled answer off the grant rather
+	// than assembling its own.
+	//
+	// An error is a request whose payers cannot be settled at all, which the funnel refuses as such;
+	// it is not a limit being exhausted, which the checks report.
+	GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error)
+	// The gather primitives below are one vocabulary: who holds the money (the deployment, or a
+	// permit's holder) crossed with what scopes it (a provider, or a model on a provider), plus
+	// HolderLimits for what funds the holder whichever provider serves. GatherLimits composes them;
+	// nothing else decides who is charged. All are resolved per attempt because a request can fail
+	// over to another provider or have its model rewritten, so none of them are facts about the
+	// permit.
+
+	// GlobalProviderLimits reports the deployment's own limits on a provider, spent by every
+	// request that provider serves whatever granted it.
+	GlobalProviderLimits(ctx context.Context, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// GlobalModelLimits reports the deployment's own model-config limits covering the pair,
+	// wildcard tiers included.
+	GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit)
 	// HolderLimits reports what funds a permit's holder whichever provider serves the request: for a
 	// virtual key, its own limits plus its team's and customer's. Not on the permit because these
 	// cannot tell one provider from another, so load balancing has no use for them and asking once
@@ -162,12 +180,17 @@ type GovernanceStore interface {
 	// This is the seam a deployment reimplements to fund requests from something other than a key.
 	// Nothing downstream asks what kind of holder answered.
 	HolderLimits(ctx context.Context, permit schemas.Permit) (budgets []schemas.Limit, rateLimits []schemas.Limit)
-	// ProviderLimits reports what funds a permit's use of one provider: the limits configured against
-	// that provider on the holder, and no other. These are the limits that can tell one provider
-	// from another, which is what load balancing asks about, and they are gathered again with the
-	// rest once the attempt's provider is settled. A permit describes what may be reached; what that
-	// costs is the store's to know, keyed by the permit's identity.
-	ProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// PermitProviderLimits reports what funds a permit's use of one provider: the limits configured
+	// against that provider on the holder, and no other. These are the limits that can tell one
+	// provider from another, which is what load balancing asks about, and they are gathered again
+	// with the rest once the attempt's provider is settled. A permit describes what may be reached;
+	// what that costs is the store's to know, keyed by the permit's identity.
+	PermitProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// PermitModelLimits reports the permit holder's own model-config limits covering the pair,
+	// keyed by the permit's identity the way PermitProviderLimits is. The deployment's are not
+	// folded in, so a caller composing several holders can ask about each without gathering the
+	// same deployment rows once per holder.
+	PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit)
 	// CheckBudgets reports whether any of the given budgets is exhausted, and CheckRateLimits the
 	// same for rate limits. What to check is the caller's to assemble; these only evaluate, so
 	// neither knows what kind of holder is paying.
@@ -260,10 +283,11 @@ type GovernanceStore interface {
 	// limits are settled, one pair at a time, so it gathers rather than reads the settled set.
 	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	// CollectModelScopedGovernanceIDs returns the budget and rate-limit IDs owned by
-	// model configs matching (provider, model) across the global, user and virtual-key
-	// scopes. It takes the virtual key's ID rather than its value, so a caller settling
-	// long after the request — batch accounting, which has only a stored row — can
-	// still reach the same configs.
+	// model configs matching (provider, model) across the global and virtual-key scopes,
+	// plus whatever scopes a registered resolver derives from the IDs (see
+	// RegisterExtraScopedIDsResolver). It takes the virtual key's ID rather than its
+	// value, so a caller settling long after the request — batch accounting, which has
+	// only a stored row — can still reach the same configs.
 	CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
@@ -1324,18 +1348,19 @@ func recordVirtualKeyIdentity(ctx *schemas.BifrostContext, virtualKey *configsto
 // Only spending decides here: what a candidate may reach was already settled by the grant it came from.
 //
 // It asks about the limits that can tell one candidate from another, and only those: the deployment's
-// own limits on that provider, and what the grant's configs for it are funded by. A limit that covers
+// own limits on that provider, its model configs scoped to the provider, and what the grant's configs
+// for it are funded by, the holder's provider-scoped model configs included. A limit that covers
 // every provider answers the same for all of them, so it cannot make one candidate better than
 // another: it can only exclude every candidate at once, which is a refusal, and the funnel states it
-// with a reason rather than load balancing quietly running out of options.
+// with a reason rather than load balancing quietly running out of options. That is why the
+// provider-less model-config tiers stay out (see ProviderScopedModelLimits).
 //
 // So load balancing routes around a provider that is out of room, and being out of money overall is
 // left to the funnel, which is the only place that can say so.
 //
-// The model is what says which permits pay for the candidate: every permit that permits the model on
-// the candidate's provider is funded on it, and a candidate is affordable only when all of them have
-// room. A limit scoped to the model itself applies to every candidate serving it and is not asked
-// about here, since it cannot discriminate.
+// The model says two things here: which permits pay for the candidate (every permit that permits the
+// model on the candidate's provider is funded on it, and a candidate is affordable only when all of
+// them have room), and which per-model configs cover the pair on this provider and no other.
 func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error) {
 	if spendingChecksSkipped(ctx) {
 		return DecisionAllow, nil
@@ -1343,11 +1368,17 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 
 	provider := schemas.ModelProvider(candidate.Provider)
 	budgets, rateLimits := gs.GlobalProviderLimits(ctx, provider)
+	modelBudgets, modelRateLimits := gs.ProviderScopedModelLimits(ctx, nil, provider, model)
+	budgets = append(budgets, modelBudgets...)
+	rateLimits = append(rateLimits, modelRateLimits...)
 	if access != nil {
 		for _, permit := range access.PermitsForModel(candidate.Provider, model) {
-			permitBudgets, permitRateLimits := gs.ProviderLimits(ctx, permit, provider)
+			permitBudgets, permitRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
 			budgets = append(budgets, permitBudgets...)
 			rateLimits = append(rateLimits, permitRateLimits...)
+			permitModelBudgets, permitModelRateLimits := gs.ProviderScopedModelLimits(ctx, permit, provider, model)
+			budgets = append(budgets, permitModelBudgets...)
+			rateLimits = append(rateLimits, permitModelRateLimits...)
 		}
 	}
 
@@ -1371,7 +1402,7 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 // The result is a snapshot for one attempt. Provider permits carry a copy of the config they came
 // from, so a key reloaded mid-attempt cannot change what that attempt has already resolved. A later
 // attempt builds its own and picks the reload up. What funds the key is not here: see HolderLimits
-// and ProviderLimits, which read it by the permit's identity when an attempt's provider is known.
+// and PermitProviderLimits, which read it by the permit's identity when an attempt's provider is known.
 func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *configstoreTables.TableVirtualKey) *grant.Permit {
 	if vk == nil {
 		return nil
@@ -1455,11 +1486,11 @@ func (gs *LocalGovernanceStore) virtualKeyOf(ctx context.Context, permit schemas
 	return vk
 }
 
-// ProviderLimits reports what funds a key's use of one provider: the limits of every provider config
+// PermitProviderLimits reports what funds a key's use of one provider: the limits of every provider config
 // the key holds for it. Every config, not the first: two configs for one provider are funded
 // separately, and a request served by that provider draws on both. A config keeps its own row
 // identity as holder, because nothing makes a provider unique within a key.
-func (gs *LocalGovernanceStore) ProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func (gs *LocalGovernanceStore) PermitProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	vk := gs.virtualKeyOf(ctx, permit)
 	if vk == nil || provider == "" {
 		return nil, nil
@@ -1483,7 +1514,7 @@ func (gs *LocalGovernanceStore) ProviderLimits(ctx context.Context, permit schem
 // when its permit is built, because these limits cannot tell one provider from another. Load
 // balancing asks which provider still has room; a limit that answers the same for every provider
 // cannot help it choose, and asking it once per candidate is how the same question gets answered N
-// times. ProviderLimits answers what discriminates, and this answers the rest.
+// times. PermitProviderLimits answers what discriminates, and this answers the rest.
 //
 // This is the seam a deployment reimplements to fund requests from something other than a key.
 // Nothing downstream asks what kind of holder came back, so answering with a project's limits, or a
@@ -3181,7 +3212,8 @@ func limitIDsOf(lists ...[]schemas.Limit) []string {
 }
 
 // CollectModelScopedGovernanceIDs returns only the model-config-owned IDs for a
-// (provider, model) pair, across the global, user and virtual-key scopes.
+// (provider, model) pair, across the global and virtual-key scopes plus whatever
+// scopes a registered resolver derives from the IDs (see RegisterExtraScopedIDsResolver).
 //
 // It exists for delayed settlement. A request's limits are settled while it is in
 // flight, and a batch create carries no top-level model (each input-file row names
@@ -4310,8 +4342,52 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 // GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
 // for the pair, from the store and the access on its grant, and reports the fullest budget and rate
 // limit among them. A request with no access still answers to the deployment's own limits.
+// GatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
+// every permit the request carries, what funds the holder and the holder's own model limits; and
+// for every permit that pays for the pair, what funds its use of the provider.
+//
+// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
+// whose budget is spent is spent, however the request reached the provider. Only what is funded
+// per provider follows the pair, and which permits pay for it is the access's to say (see
+// PermitsForModel).
+//
+// The deployment's own come first, because that is the order refusals report in: what the
+// deployment imposes before what the holder is funded by. Every carried permit is gathered: this
+// store resolves one permit per credential, so there is nothing to pick between, and one limit
+// reached twice is still one limit once the list is settled.
+func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
+	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	budgets = append(budgets, globalModelBudgets...)
+	rateLimits = append(rateLimits, globalModelRateLimits...)
+	if access == nil {
+		return budgets, rateLimits, nil
+	}
+	carried := access.Bases()
+	if scoping := access.Scoping(); scoping != nil {
+		carried = append(carried, scoping)
+	}
+	for _, permit := range carried {
+		heldBudgets, heldRateLimits := gs.HolderLimits(ctx, permit)
+		budgets = append(budgets, heldBudgets...)
+		rateLimits = append(rateLimits, heldRateLimits...)
+
+		// The holder's own model limits, gathered per permit because they are keyed by the
+		// permit's identity.
+		modelBudgets, modelRateLimits := gs.PermitModelLimits(ctx, permit, provider, model)
+		budgets = append(budgets, modelBudgets...)
+		rateLimits = append(rateLimits, modelRateLimits...)
+	}
+	for _, permit := range access.PermitsForModel(string(provider), model) {
+		providerBudgets, providerRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
+		budgets = append(budgets, providerBudgets...)
+		rateLimits = append(rateLimits, providerRateLimits...)
+	}
+	return budgets, rateLimits, nil
+}
+
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	budgets, rateLimits := gatherLimits(ctx, gs, ctx.Grant().Access(), provider, model)
+	budgets, rateLimits, _ := gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
 	status := &BudgetAndRateLimitStatus{}
 
 	for _, limit := range budgets {
@@ -4356,12 +4432,11 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.Bifrost
 // provider configs that can tell one provider apart from another, which is what makes them the pair
 // load balancing asks about.
 //
-// Exported so a store that answers ResolvePermits from something other than a key can ask the same
-// narrow question over its own baseline-aware checks, which this package's cannot answer for it. It
-// exists so load balancing can ask that narrower question without naming a model. Asking
-// ProviderAndModelLimits with an empty one would answer the same, but it would say the model is
-// unknown where in fact it is known and deliberately not consulted, and the obvious repair to that
-// is to pass the model, which quietly puts model limits back into load balancing.
+// Exported alongside the other gather primitives so a store that answers ResolvePermits from
+// something other than a key can ask the same narrow question over its own baseline-aware checks,
+// which this package's cannot answer for it. GlobalModelLimits answers with every model-config
+// tier, including the ones that cover every provider, and those cannot tell one candidate from
+// another; the model-config limits that can are ProviderScopedModelLimits's to report.
 func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
 	if providerName == "" {
@@ -4379,35 +4454,48 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 		grant.LimitsHeldBy(grant.LimitHolderProvider, providerName, providerName, providerName, "", idOrEmpty(providerTable.RateLimitID)...)
 }
 
-// ProviderAndModelLimits returns the limits that apply only once a request's provider and model are known:
-// the deployment's own provider limits, its global model-config limits, and the grant holder's
-// per-model ones.
+// ProviderScopedModelLimits reports the model-config limits that can tell one
+// load-balancing candidate from another for this model: the configs scoped to the candidate's
+// provider, exact pair and all-models-on-the-provider, in the scope the permit selects (the
+// deployment's own for nil, the holder's otherwise).
 //
-// These are resolved per attempt rather than carried on the grant. A grant is built before a
-// provider is chosen, and an attempt can fail over to a different provider or have its model
-// rewritten, so which of them apply is not a fact about the holder; it is a fact about the attempt.
-// Resolving them here costs four keyed lookups per scope instead of a scan over every model config
-// the deployment has.
+// The provider-less tiers are deliberately absent, and this method rather than
+// ProviderAndModelLimits is what routing asks so they stay absent: a limit covering every provider
+// answers the same for every candidate, so it can only exclude all of them at once, which is a
+// refusal for the funnel to state with a reason rather than load balancing quietly running out of
+// options.
 //
-// The caller gathers these into the attempt's settled limits rather than storing them anywhere
-// longer-lived, so one attempt's limits are never charged to the next.
-func (gs *LocalGovernanceStore) ProviderAndModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+// The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which configs cover
+// a pair has exactly one answer and routing's subset of it cannot drift from the funnel's.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
-	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
+	for _, scope := range modelConfigScopesFor(permit) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
+			if mc == nil || mc.Provider == nil {
+				continue
+			}
+			budgets = append(budgets, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
+			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+		}
+	}
+	return budgets, rateLimits
+}
 
-	// Model configs, most specific tier first, in every scope that applies: the deployment's own,
-	// then the grant holder's. collectModelConfigsFor walks the four tiers: exact pair, exact
-	// model on any provider, any model on this provider, any model anywhere.
-	//
-	// A request with no model still walks the scopes: only the wildcard tiers can match then,
-	// and an all-models budget covers a request whatever it runs. Batch creation is the case
-	// that carries no top-level model, and skipping the walk there left the unscoped budget a
-	// key was created with unchecked and never bumped.
+// modelLimitsInScopes names the model-config limits covering the pair in the given scopes.
+// collectModelConfigsFor walks the four tiers, most specific first: exact pair, exact model on any
+// provider, any model on this provider, any model anywhere.
+//
+// A request with no model still walks the scopes: only the wildcard tiers can match then, and an
+// all-models budget covers a request whatever it runs. Batch creation is the case that carries no
+// top-level model, and skipping the walk there left the unscoped budget a key was created with
+// unchecked and never bumped.
+func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	providerName := string(provider)
 	var providerArg *string
 	if providerName != "" {
 		providerArg = &providerName
 	}
-	for _, scope := range modelConfigScopesFor(ctx, permit) {
+	for _, scope := range scopes {
 		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg) {
 			if mc == nil {
 				continue
@@ -4419,6 +4507,45 @@ func (gs *LocalGovernanceStore) ProviderAndModelLimits(ctx context.Context, perm
 	return budgets, rateLimits
 }
 
+// GlobalModelLimits reports the deployment's own model-config limits covering the pair.
+//
+// Resolved per attempt rather than carried on the grant. A grant is built before a provider is
+// chosen, and an attempt can fail over to a different provider or have its model rewritten, so
+// which configs apply is a fact about the attempt. Resolving them here costs four keyed lookups
+// per scope instead of a scan over every model config the deployment has. The caller gathers these
+// into the attempt's settled limits rather than storing them anywhere longer-lived, so one
+// attempt's limits are never charged to the next.
+func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model)
+}
+
+// PermitModelLimits reports the permit holder's own model-config limits covering the pair, in the
+// scope the permit's identity selects and no other: the deployment's rows are GlobalModelLimits's
+// to report, so a caller composing several holders never gathers them once per holder. Per attempt
+// for the reasons on GlobalModelLimits.
+func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	if permit == nil || permit.ID() == "" {
+		// A permit selects the scope, so no permit selects nothing: falling through would answer
+		// with the deployment's rows under a method that promised one holder's.
+		return nil, nil
+	}
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
+// to the given holder kind.
+//
+// The scope is named directly rather than derived from a permit, because a scope can belong to an
+// identity no permit stands for: a store layered on this one may impose per-model limits on the
+// caller themselves, whose rows are keyed by a scope this package has no permit type for. What
+// covers a pair stays modelLimitsInScopes's single answer.
+func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
 // limitScope is one model-config scope to resolve limits from, with the holder kind its limits are
 // attributed to.
 type limitScope struct {
@@ -4427,47 +4554,25 @@ type limitScope struct {
 	kind grant.LimitHolderKind
 }
 
-// modelConfigScopesFor lists the model-config scopes an attempt is subject to: the deployment's
-// global one, the user's when the request was made as one, and the permit holder's own when the
-// permit came from a holder that has one.
+// modelConfigScopesFor lists the model-config scopes one permit selects: the deployment's global
+// scope for a nil permit, and the permit holder's own scope otherwise.
 //
 // The holder's scope is keyed by the permit's identity rather than by a virtual key, so a permit
 // from any other kind of holder is looked up the same way without this needing to know what it is.
-func modelConfigScopesFor(ctx context.Context, permit schemas.Permit) []limitScope {
-	scopes := []limitScope{{
-		name: configstoreTables.ModelConfigScopeGlobal,
-		kind: grant.LimitHolderModelConfig,
-	}}
-	// The user the request was made as, when there is one. A user is not the permit holder, since a
-	// request can be made as a user through a key, so downstream-registered scopes keyed off it
-	// (e.g. enterprise's per-access-profile per-model budgets — see RegisterExtraScopedIDsResolver)
-	// are scopes of their own rather than derived from the permit.
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-	vkID := ""
-	if permit != nil && permit.Type() == string(grant.PermitVirtualKey) {
-		vkID = permit.ID()
-	}
-	for _, extra := range collectExtraScopedIDs(ctx, vkID, userID) {
-		// An empty Kind is a legitimate value for a batch-only caller (see ScopedID's
-		// doc comment), but this is the request-time path: a blank holder kind here
-		// would let a refusal name an empty holder. Skip rather than propagate it.
-		if extra.Kind == "" {
-			continue
-		}
-		scopes = append(scopes, limitScope{
-			name: extra.Scope,
-			id:   extra.ScopeID,
-			kind: extra.Kind,
-		})
-	}
+// One permit, one holder's scope: whoever gathers an attempt's limits asks once per permit it means
+// to charge, which is what lets it charge one holder among several without collecting the others.
+func modelConfigScopesFor(permit schemas.Permit) []limitScope {
 	if permit == nil || permit.ID() == "" {
-		return scopes
+		return []limitScope{{
+			name: configstoreTables.ModelConfigScopeGlobal,
+			kind: grant.LimitHolderModelConfig,
+		}}
 	}
-	return append(scopes, limitScope{
+	return []limitScope{{
 		name: modelConfigScopeFor(permit.Type()),
 		id:   permit.ID(),
 		kind: scopedModelConfigKind(permit.Type()),
-	})
+	}}
 }
 
 // modelConfigScopeFor is the scope a permit holder's own model configs are stored under.

@@ -3270,16 +3270,6 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
-	// Check if plugin exists and compare versions
-	// If the plugin exists and the version is lower, do nothing
-	var existing tables.TablePlugin
-	err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error
-	if err == nil {
-		// Plugin exists, check version
-		if plugin.Version < existing.Version {
-			return nil
-		}
-	}
 	// Upsert plugin (create or update if exists based on unique name)
 	if err := txDB.WithContext(ctx).Clauses(
 		clause.OnConflict{
@@ -3310,8 +3300,11 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
+	// Lock the row before reading it: everything preserved below is a read-modify-write
+	// feeding a delete-and-recreate, so two concurrent edits would otherwise both read the
+	// pre-state and the second would drop the first's fields, or race on the unique name.
 	var existing tables.TablePlugin
-	if err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error; err != nil {
+	if err := dbForUpdate(txDB.WithContext(ctx)).Where("name = ?", plugin.Name).First(&existing).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			if localTx {
 				txDB.Rollback()
@@ -3320,10 +3313,24 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		}
 		// not found — nothing to delete
 	} else {
-		// This is a delete-and-reinsert, so the new row would otherwise be stamped
-		// with a fresh created_at. Carry the original forward: gorm's autoCreateTime
-		// only fills a zero value, so a non-zero CreatedAt survives Create.
-		plugin.CreatedAt = existing.CreatedAt
+		// Preserve the config.json hash and version across this delete-and-recreate: callers
+		// that do not set them (UI/API edits) would otherwise clear them, making the next
+		// startup read the file as changed and revert the edit.
+		if plugin.ConfigHash == "" {
+			plugin.ConfigHash = existing.ConfigHash
+		}
+		// Placement and order are DB-only - the UI has no control over them and config.json
+		// is documented as ignoring them - so a caller that sends neither is not asking to
+		// clear them.
+		if plugin.Placement == nil {
+			plugin.Placement = existing.Placement
+		}
+		if plugin.Order == nil {
+			plugin.Order = existing.Order
+		}
+		if plugin.Version == 0 {
+			plugin.Version = existing.Version
+		}
 		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
 			if localTx {
 				txDB.Rollback()
@@ -6904,6 +6911,7 @@ func (s *RDBConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oau
 			admin.Scopes = shared.Scopes
 			admin.EncryptionStatus = shared.EncryptionStatus
 			admin.Status = "active"
+			admin.StatusReason = ""
 			admin.LastRefreshedAt = &now
 			if err := tx.Save(&admin).Error; err != nil {
 				return fmt.Errorf("failed to update admin oauth token for config %s: %w", oauthConfigID, err)
@@ -7494,6 +7502,24 @@ func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schem
 	return &token, nil
 }
 
+// statusReasonMaxLen bounds mcp_oauth_tokens.status_reason. A provider's
+// rejection body can be a whole error page; the reason travels in every
+// client-list response and, through the connection-failure record, in every
+// node-state heartbeat, so it is cut here at the one place every writer goes
+// through.
+const statusReasonMaxLen = 512
+
+// needsReauthColumns is the column set every needs_reauth flip writes: the
+// status itself and the reason behind it, so a row never reads needs_reauth
+// with a reason left over from an earlier, different transition.
+func needsReauthColumns(reason string) map[string]any {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if runes := []rune(reason); len(runes) > statusReasonMaxLen {
+		reason = string(runes[:statusReasonMaxLen-1]) + "…"
+	}
+	return map[string]any{"status": "needs_reauth", "status_reason": reason}
+}
+
 // MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single
 // token row, regardless of auth_mode. Called by the unified refresh function
 // when the upstream credential is permanently rejected: the row stays
@@ -7504,14 +7530,14 @@ func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schem
 // (a token row just loaded by its own refresh path), never an arbitrary
 // caller-supplied ID, so a 'shared' row is just as safe to flip here as a
 // per-identity one.
-func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error {
 	if tokenID == "" {
 		return nil
 	}
 	result := s.DB().WithContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("id = ?", tokenID).
-		Update("status", "needs_reauth")
+		Updates(needsReauthColumns(reason))
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark oauth user token %s needs_reauth: %w", tokenID, result.Error)
 	}
@@ -7526,7 +7552,7 @@ func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, 
 // cached credential equally, since rotation is typically security-driven and
 // must not leave any holder silently still trusted. Precedent for the
 // single-statement bulk UPDATE shape: reconcileVKDirectTokensDB.
-func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
+func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error {
 	if oauthConfigID == "" {
 		return nil
 	}
@@ -7539,7 +7565,7 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 	result := txDB.WithContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("oauth_config_id = ?", oauthConfigID).
-		Update("status", "needs_reauth")
+		Updates(needsReauthColumns(reason))
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark tokens needs_reauth for oauth config %s: %w", oauthConfigID, result.Error)
 	}
@@ -7554,14 +7580,14 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 // per_user_oauth client's admin row, which is keyed by mcp_client_id too but
 // carries a real oauth_config_id and is already covered by
 // MarkTokensNeedsReauthByConfigID.
-func (s *RDBConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error {
+func (s *RDBConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error {
 	if mcpClientID == "" {
 		return nil
 	}
 	result := s.DB().WithContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("mcp_client_id = ? AND auth_mode = ? AND oauth_config_id = ?", mcpClientID, "admin", "").
-		Update("status", "needs_reauth")
+		Updates(needsReauthColumns(reason))
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark admin exchange token needs_reauth for mcp client %s: %w", mcpClientID, result.Error)
 	}
@@ -7683,7 +7709,7 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 		if err := s.UpdateOauthConfig(ctx, existingOauthConfig, tx); err != nil {
 			return fmt.Errorf("failed to update oauth config: %w", err)
 		}
-		if err := s.MarkTokensNeedsReauthByConfigID(ctx, oauthConfigID, tx); err != nil {
+		if err := s.MarkTokensNeedsReauthByConfigID(ctx, oauthConfigID, "OAuth client credentials were rotated; tokens issued under the previous credentials must be re-authorized", tx); err != nil {
 			return fmt.Errorf("failed to invalidate existing tokens: %w", err)
 		}
 		return nil

@@ -55,18 +55,25 @@ func RecordUser(bifrostCtx *schemas.BifrostContext, user *schemas.UserRef) {
 	g.SetIdentity(identityWith(g.Identity(), schemas.Credential{}, user))
 }
 
-// settleIdentity records who the request is from what the middlewares left on the context, all at
+// SettleIdentity records who the request is from what the middlewares left on the context, all at
 // once, on a grant installed here. The middlewares run before any request context exists, so they
 // hand over what they verified as context values and this is the one place those are read: the
 // user under its own keys, and any credential other than a header virtual key under
 // BifrostContextKeyAuthCredential. The identity is recorded even when nothing was presented, so
 // everything after the transport can tell "settled: nobody" from "not settled".
 //
+// ConvertToBifrostContext calls it for every request context it builds. It is exported for the
+// paths that build a request context of their own, as a connection that authenticates at upgrade
+// or an endpoint that evaluates a request it never forwards: they stamp what they know under the
+// same context keys and settle it here, so what governance reads off them is what it reads off
+// any other request. Settling again replaces the identity whole, so it is called once the last
+// layer that can name the user or the credential has run.
+//
 // A virtual key presented in a header goes first, whatever else was recorded: a request that
 // presents a key goes by the key, and whoever resolves the request's access decides how the user a
 // session named relates to it. A direct key is not a credential at all: it selects which provider
 // key serves the request and says nothing about who made it.
-func settleIdentity(bifrostCtx *schemas.BifrostContext) {
+func SettleIdentity(bifrostCtx *schemas.BifrostContext) {
 	g := contextGrant(bifrostCtx)
 	if g == nil {
 		return

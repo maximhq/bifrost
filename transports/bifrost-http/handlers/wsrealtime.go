@@ -275,6 +275,10 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	// routing engine logs, raw-storage header overrides, and other values set by
 	// HTTPTransportPreHook plugins (governance, prompts, etc.).
 	applyRealtimeMiddlewareValues(bifrostCtx, middlewareValues)
+	// The middleware values are where the user the upgrade authenticated arrives, after the
+	// session context settled its identity from the headers alone, so it is settled again now
+	// that everything the connection presented is on it.
+	lib.SettleIdentity(bifrostCtx)
 
 	// Resolve ephemeral key mapping to restore virtual key context.
 	token := extractRealtimeBearerTokenFromHeader(auth.authorization)

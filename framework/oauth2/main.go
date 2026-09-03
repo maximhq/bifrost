@@ -192,7 +192,7 @@ func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.T
 	// (pending/authorized/failed) and is never consulted here — matching how
 	// GetUserAccessTokenByMode has always worked.
 	if token.Status != "active" {
-		return "", fmt.Errorf("oauth token is not active, status: %s: %w", token.Status, schemas.ErrOAuth2TokenExpired)
+		return "", inactiveTokenError(token)
 	}
 
 	// Refresh only when the token has known expiry and a renewal path: a
@@ -343,7 +343,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 			// the singleflight entry indefinitely if the store hangs.
 			statusCtx, cancel := context.WithTimeout(context.Background(), terminalStatusUpdateTimeout)
 			defer cancel()
-			if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(statusCtx, token.ID); markErr != nil {
+			if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(statusCtx, token.ID, refreshRejectionReason(permErr)); markErr != nil {
 				return fmt.Errorf("oauth refresh permanently rejected but status update failed (mcp_client=%s auth_mode=%s upstream_status=%d): %w",
 					token.MCPClientID, token.AuthMode, permErr.StatusCode, markErr)
 			}
@@ -443,7 +443,7 @@ func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, co
 		// needs_reauth short-circuits locally instead of attempting a live
 		// refresh call that's doomed to fail.
 		if token.Status != "active" {
-			return fmt.Errorf("oauth token is not active, status: %s: %w", token.Status, schemas.ErrOAuth2TokenExpired)
+			return inactiveTokenError(token)
 		}
 		return p.RefreshAccessToken(ctx, token.ID)
 	case schemas.MCPAuthTypePerUserOauth:
@@ -820,6 +820,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		Status:        "pending",
 		ExpiresAt:     expiresAt,
 	}
+
+	// Resolve env var reference to actual value for use in the authorize URL.
+	resolvedClientID := clientID.GetValue()
+
 	if err := p.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Create(oauthConfigRecord).Error; err != nil {
 			return fmt.Errorf("failed to create oauth config: %w", err)
@@ -837,10 +841,6 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	}); err != nil {
 		return nil, err
 	}
-
-	// Resolve env var reference to actual value for use in the authorize URL.
-	// The reference ("env.MY_VAR") is stored in DB; the resolved value is sent to the provider.
-	resolvedClientID := clientID.GetValue()
 
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
 	authURL := p.buildAuthorizeURLWithPKCE(
@@ -1201,6 +1201,37 @@ type PermanentOAuthError struct {
 
 func (e *PermanentOAuthError) Error() string {
 	return fmt.Sprintf("permanent oauth error (status %d): %s", e.StatusCode, e.Body)
+}
+
+// refreshRejectionReason is what gets recorded on the token row when a
+// refresh is permanently rejected: the HTTP status the provider answered
+// with plus the standard OAuth error and error_description from its body
+// (RFC 6749 §5.2), and nothing else from the body, which may be an error
+// page. It is what lets an admin tell "the grant was revoked" from "the
+// client is no longer authorized" without reading the provider's logs.
+func refreshRejectionReason(permErr *PermanentOAuthError) string {
+	var oauthErr struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal([]byte(permErr.Body), &oauthErr); err != nil || oauthErr.Error == "" {
+		return fmt.Sprintf("provider rejected the refresh (HTTP %d)", permErr.StatusCode)
+	}
+	if oauthErr.ErrorDescription == "" {
+		return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s)", permErr.StatusCode, oauthErr.Error)
+	}
+	return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s: %s)", permErr.StatusCode, oauthErr.Error, oauthErr.ErrorDescription)
+}
+
+// inactiveTokenError is the error every access-token lookup returns for a
+// row whose Status is not 'active'. It carries the row's StatusReason when
+// one was recorded, so the message a failed connect or check ends up
+// storing on the client says what the provider actually said.
+func inactiveTokenError(token *tables.TableMCPOauthToken) error {
+	if token.StatusReason != "" {
+		return fmt.Errorf("oauth token is not active, status: %s (%s): %w", token.Status, token.StatusReason, schemas.ErrOAuth2TokenExpired)
+	}
+	return fmt.Errorf("oauth token is not active, status: %s: %w", token.Status, schemas.ErrOAuth2TokenExpired)
 }
 
 // sleepIfNotLastAttempt waits with exponential backoff between retry attempts.

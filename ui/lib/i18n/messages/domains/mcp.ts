@@ -217,6 +217,14 @@ export const mcpEn = {
 			"The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use Refresh admin credential from the server's actions menu to fix it.",
 		descNeedsReauth:
 			"This connection's credentials need to be re-authorized. Use Reauthorize from the server's actions menu to redo the OAuth consent flow.",
+		descNeedsReauthExchange:
+			"The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. Callers' tool calls are unaffected. Use Re-verify as me from the server's actions menu to fix it.",
+		descNeedsReauthReason: "Reason: {{message}}",
+		descUnstable:
+			"Bifrost's last connection check failed. Tool calls are still attempted normally; the next check runs within about 10 seconds.",
+		descUnstableWithFailure:
+			"Bifrost's last connection check failed {{ago}} ago while {{stage}}. Tool calls are still attempted normally; the next check runs within about 10 seconds.",
+		descDegraded: "Instances of this deployment disagree about this server's state. Tool calls are still attempted on every instance.",
 		descDefault: "MCP server configuration and available tools",
 		entityLabel: "server",
 		tabGeneral: "General",
@@ -508,9 +516,15 @@ export const mcpEn = {
 			"The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header).",
 		statusTooltip:
 			"Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored.",
+		colScopes: "Scopes",
+		scopesTooltip:
+			"Scopes the provider granted at sign-in, as reported in its token response. Shown as a dash when the provider did not report them. Header submissions and pending sign-ins have no scopes.",
 		colExpiry: "Access token expiry",
 		expiryTooltip:
-			"When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes.",
+			"When the current access token expires. With a refresh token, Bifrost renews it on the next request, so an active row past its expiry silently mints a new token at use time. Without one, a past expiry means the row must be re-authenticated. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes.",
+		colRefreshToken: "Refresh token",
+		refreshTokenTooltip:
+			"Whether the provider issued a refresh token. Present: Bifrost renews the access token automatically at use time. Not issued: the row must be re-authenticated once the access token expires. Rejected upstream: the provider refused the last refresh, so the row needs re-auth. Header rows and pending sign-ins have no token.",
 		colCreated: "Created",
 		noMatch: "No sessions match these filters.",
 		empty:
@@ -765,6 +779,12 @@ export const mcpZh: McpMessages = {
 		descNeedsReauthPerUser:
 			"Bifrost 用于刷新此服务器工具列表的管理员凭据需要修复。终端用户凭据与工具调用不受影响。请从服务器操作菜单选择「刷新管理员凭据」。",
 		descNeedsReauth: "此连接的凭据需要重新授权。请从服务器操作菜单选择「重新授权」以重新完成 OAuth 同意流程。",
+		descNeedsReauthExchange:
+			"Bifrost 用于刷新此服务器工具列表的管理员凭据需要修复。调用方的工具调用不受影响。请从服务器操作菜单选择「以我的身份重新验证」。",
+		descNeedsReauthReason: "原因：{{message}}",
+		descUnstable: "Bifrost 最近一次连接检查失败。仍会正常尝试工具调用；下次检查约在 10 秒内进行。",
+		descUnstableWithFailure: "Bifrost 最近一次连接检查在 {{ago}} 前于「{{stage}}」阶段失败。仍会正常尝试工具调用；下次检查约在 10 秒内进行。",
+		descDegraded: "此部署的实例对此服务器状态意见不一致。每个实例仍会尝试工具调用。",
 		descDefault: "MCP 服务器配置与可用工具",
 		entityLabel: "服务器",
 		tabGeneral: "常规",
@@ -1045,9 +1065,15 @@ export const mcpZh: McpMessages = {
 			"此凭据绑定的身份：终端用户（通过 SSO）、虚拟密钥（使用该 VK 的任何人共享），或客户端签发的会话 ID（通过 x-bf-mcp-session-id 请求头声明）。",
 		statusTooltip:
 			"有效：凭据可用。进行中：OAuth 流程进行中，用户需完成登录。需要重新认证：上游凭据已过期或在提供商处被撤销，用户必须重新连接。需要更新：管理员更改了必需请求头，用户必须重新提交。孤立：用户失去对此 MCP 的访问（例如访问配置更改）；凭据会保留，访问恢复后将自动变为有效。",
+		colScopes: "作用域",
+		scopesTooltip:
+			"提供商在登录时授予的作用域，以其令牌响应为准。提供商未报告时显示为短横线。请求头提交与进行中的登录没有作用域。",
 		colExpiry: "访问令牌过期",
 		expiryTooltip:
-			"当前访问令牌的过期时间。Bifrost 会在下一次请求时用刷新令牌自动续期，因此已过期但仍有效的行会在使用时静默签发新令牌。请求头行没有上游过期时间；其值在撤销或 schema 更改前一直有效。",
+			"当前访问令牌的过期时间。若有刷新令牌，Bifrost 会在下一次请求时续期，因此已过期但仍有效的行会在使用时静默签发新令牌。若没有刷新令牌，过期后必须重新认证。请求头行没有上游过期时间；其值在撤销或 schema 更改前一直有效。",
+		colRefreshToken: "刷新令牌",
+		refreshTokenTooltip:
+			"提供商是否签发了刷新令牌。已签发：Bifrost 会在使用时自动续期访问令牌。未签发：访问令牌过期后必须重新认证。上游拒绝：提供商拒绝了最近一次刷新，该行需要重新认证。请求头行与进行中的登录没有令牌。",
 		colCreated: "创建时间",
 		noMatch: "没有符合这些筛选条件的会话。",
 		empty: "暂无会话。当推理请求或 MCP 网关调用触发按用户认证（OAuth 或请求头提交）时，会话会出现在这里。",

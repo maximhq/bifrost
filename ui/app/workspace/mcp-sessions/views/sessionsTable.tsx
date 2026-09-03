@@ -19,6 +19,8 @@
 
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
+import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Button } from "@/components/ui/button";
 import {
 	AlertDialog,
@@ -40,6 +42,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useT, type TranslateFn } from "@/lib/i18n";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
+import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
+import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 
@@ -163,7 +167,13 @@ export default function SessionsTable({
 									<HeaderWithTooltip label={t("common.status")} tooltip={t("mcp.sessions.statusTooltip")} />
 								</TableHead>
 								<TableHead>
+									<HeaderWithTooltip label={t("mcp.sessions.colScopes")} tooltip={t("mcp.sessions.scopesTooltip")} />
+								</TableHead>
+								<TableHead>
 									<HeaderWithTooltip label={t("mcp.sessions.colExpiry")} tooltip={t("mcp.sessions.expiryTooltip")} />
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip label={t("mcp.sessions.colRefreshToken")} tooltip={t("mcp.sessions.refreshTokenTooltip")} />
 								</TableHead>
 								<TableHead>{t("mcp.sessions.colCreated")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
@@ -172,7 +182,7 @@ export default function SessionsTable({
 						<TableBody>
 							{sessions.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={7} className="h-24 text-center">
+									<TableCell colSpan={9} className="h-24 text-center">
 										{hasActiveFilters ? (
 											<div className="text-muted-foreground text-sm">{t("mcp.sessions.noMatch")}</div>
 										) : (
@@ -193,6 +203,9 @@ export default function SessionsTable({
 										<TableCell>
 											<StatusBadge status={row.status} />
 										</TableCell>
+										<TableCell>
+											<ScopesCell row={row} />
+										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
 											<div className="flex flex-col">
 												<span>{formatAccessExpiry(row, t)}</span>
@@ -202,6 +215,9 @@ export default function SessionsTable({
 													</span>
 												)}
 											</div>
+										</TableCell>
+										<TableCell className="text-sm">
+											<RefreshTokenCell row={row} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at, t)}</TableCell>
 										<TableCell
@@ -313,6 +329,24 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 	return <span className="text-muted-foreground text-sm">{t("mcp.sessions.sessionBound")}</span>;
 }
 
+// Granted scopes on token rows. A dash when the provider reported none, and
+// for header rows and pending sign-ins, which have no token.
+function ScopesCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || !row.scopes?.length) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <ScopeChips scopes={row.scopes} />;
+}
+
+// Refresh token presence on token rows; a dash for header rows and pending
+// sign-ins, which have no token.
+function RefreshTokenCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || row.has_refresh_token === undefined) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <RefreshTokenStatus hasRefreshToken={row.has_refresh_token} status={row.status} />;
+}
+
 function TypeBadge({ authKind }: { authKind: string }) {
 	const t = useT();
 	if (authKind === "headers") {
@@ -321,35 +355,24 @@ function TypeBadge({ authKind }: { authKind: string }) {
 	return <Badge variant="outline">{t("mcp.sessions.typeOauth")}</Badge>;
 }
 
+// Colors come from the shared credential palette so a session's status reads
+// the same as the credential block in the server sheet and the server state
+// badge in the registry: green for usable, red for "a human must act", amber
+// and gray for informational.
 function StatusBadge({ status }: { status: string }) {
 	const t = useT();
-	if (status === "pending") {
-		return <Badge variant="secondary">{t("mcp.sessions.pending")}</Badge>;
-	}
-	if (status === "orphaned") {
-		// Muted amber: distinct from destructive (red, action-required) and
-		// secondary (gray, in-progress). Signals "informational, no action
-		// needed from you" — the auto-restore cascade handles it.
-		return (
-			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				{t("mcp.sessions.orphaned")}
-			</Badge>
-		);
-	}
-	if (status === "needs_reauth") {
-		return <Badge variant="destructive">{t("mcp.sessions.needsReauth")}</Badge>;
-	}
-	if (status === "needs_update") {
-		// Outlined red: signals user action required, but visually distinct from
-		// needs_reauth's solid destructive badge (which represents a hard auth failure).
-		// Distinct copy so the row affordance ("Update values") matches.
-		return (
-			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				{t("mcp.sessions.needsUpdate")}
-			</Badge>
-		);
-	}
-	return <Badge>{t("mcp.sessions.active")}</Badge>;
+	const labels: Record<string, string> = {
+		pending: t("mcp.sessions.pending"),
+		orphaned: t("mcp.sessions.orphaned"),
+		needs_reauth: t("mcp.sessions.needsReauth"),
+		needs_update: t("mcp.sessions.needsUpdate"),
+		active: t("mcp.sessions.active"),
+	};
+	return (
+		<Badge className={MCP_CREDENTIAL_STATUS_COLORS[status] ?? MCP_CREDENTIAL_STATUS_COLORS.unknown}>
+			{labels[status] ?? titleCaseFromSnakeCase(status)}
+		</Badge>
+	);
 }
 
 interface RowActionsProps {
@@ -514,12 +537,13 @@ function formatAccessExpiry(row: MCPSessionRow, t: TranslateFn): string {
 		const ts = new Date(row.expires_at).getTime();
 		if (Number.isNaN(ts)) return row.expires_at;
 		const diffMs = ts - Date.now();
-		if (diffMs < 0) {
-			// Active rows auto-refresh on next use via the refresh token.
-			// Orphaned rows still hold a valid upstream credential — the past
-			// expiry just means the cached access token is stale; if access
-			// is restored, refresh kicks in. Only 'needs_reauth' is genuinely
-			// expired (the refresh token itself is dead).
+		if (diffMs <= 0) {
+			// A past expiry only reads as expired when nothing can renew the
+			// token: needs_reauth, or no refresh token at all. With one, an
+			// active row refreshes on next use, and an orphaned row still
+			// holds a valid upstream credential that refreshes once access
+			// is restored.
+			if (row.has_refresh_token === false) return t("mcp.sessions.expired");
 			switch (row.status) {
 				case "active":
 					return t("mcp.sessions.refreshesOnNextUse");

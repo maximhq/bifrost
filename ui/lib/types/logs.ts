@@ -639,6 +639,7 @@ export interface LogEntry {
 	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
 	// counts Bifrost's own cross-provider failover attempts.
 	server_side_fallback_model?: string;
+	served_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history

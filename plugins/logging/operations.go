@@ -2122,6 +2122,15 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry))
 
+	// Put the served model back on the response body, which the reconstructed
+	// response leaves empty. Pricing reads it in one place — the Azure Model Router
+	// split, which bills the router's own row plus the model it routed to — so
+	// without this a recalc drops the underlying model's leg. Every other row is
+	// priced off RoutingInfo and is unaffected.
+	if logEntry.ServedModel != nil {
+		setResponseModel(resp, *logEntry.ServedModel)
+	}
+
 	// Patch modality-specific output fields that are not captured in BifrostLLMUsage
 	// but are required for accurate cost calculation.
 
@@ -2201,6 +2210,24 @@ func servedTierFromLog(logEntry *logstore.Log) servedTier {
 		tier.serviceTier = &st
 	}
 	return tier
+}
+
+// setResponseModel writes model onto whichever response field the reconstructed
+// response carries, covering the types schemas.BifrostResponse.ServedModel reads.
+func setResponseModel(resp *schemas.BifrostResponse, model string) {
+	if resp == nil {
+		return
+	}
+	switch {
+	case resp.ChatResponse != nil:
+		resp.ChatResponse.Model = model
+	case resp.ResponsesResponse != nil:
+		resp.ResponsesResponse.Model = model
+	case resp.ResponsesStreamResponse != nil && resp.ResponsesStreamResponse.Response != nil:
+		resp.ResponsesStreamResponse.Response.Model = model
+	case resp.TextCompletionResponse != nil:
+		resp.TextCompletionResponse.Model = model
+	}
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response

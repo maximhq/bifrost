@@ -364,3 +364,32 @@ func TestCandidateExclusionReason(t *testing.T) {
 	assert.Equal(t, "budget 'team-daily' is exhausted",
 		candidateExclusionReason(DecisionAllow, errors.New("budget 'team-daily' is exhausted")))
 }
+
+// A model budget scoped to one provider can tell candidates apart, so exclusion consults it and
+// routes around exactly that provider. A model budget covering every provider cannot: it excludes
+// nobody here, and running out of it is the funnel's refusal to state with a reason.
+func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
+	openai := "openai"
+	spentOnOpenAI := buildBudgetWithUsage("mc-openai-b", 100.0, 150.0, "1h")
+	spentEverywhere := buildBudgetWithUsage("mc-any-b", 100.0, 150.0, "1h")
+	pairConfig := buildModelConfig("mc-openai", "gpt-5", &openai, spentOnOpenAI, nil)
+	modelWideConfig := buildModelConfig("mc-any", "gpt-5", nil, spentEverywhere, nil)
+
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*pairConfig, *modelWideConfig},
+		Budgets:      []configstoreTables.TableBudget{*spentOnOpenAI, *spentEverywhere},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	permit := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai", "azure")
+	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+
+	decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-5")
+	require.Error(t, exclusionErr, "the exact-pair budget is spent, so openai cannot serve the model")
+	assert.NotEqual(t, DecisionAllow, decision)
+
+	decision, exclusionErr = store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "azure"}, "gpt-5")
+	require.NoError(t, exclusionErr)
+	assert.Equal(t, DecisionAllow, decision,
+		"the spent budget covering every provider excludes no candidate; that refusal is the funnel's to state")
+}

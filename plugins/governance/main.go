@@ -642,7 +642,11 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// streaming, realtime-turn and MCP pipelines run no request hook, and this is the funnel they
 	// all pass through. Everything downstream, the checks below and the co-payers named for the
 	// log, then reads one settled set instead of assembling its own.
-	limits := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	//
+	// A settling error is held rather than refused on the spot: the ordering below puts identity
+	// refusals first, and a caller whose credential is dead must be told that before anything about
+	// how the request would have been funded.
+	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
 
 	// The order of everything below is load bearing:
 	//
@@ -725,6 +729,18 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 
 	// Step 3: what the request may reach.
 	result := p.resolver.evaluateAccess(ctx, evaluationRequest, access)
+
+	// A request whose payers could not be settled is refused before any limit is consulted: there
+	// is no list to check, and serving it would spend money nothing agreed to spend. After the
+	// access step, so a request that was never allowed to reach the pair is told that instead.
+	// Skipped for a request that asked not to be checked against anything it answers to: it spends
+	// nothing, so an unsettled payer list is not something it depends on either.
+	if result.Decision == DecisionAllow && limitsErr != nil && !spendingChecksSkipped(ctx) {
+		result = &EvaluationResult{
+			Decision: DecisionAccessBlocked,
+			Reason:   limitsErr.Error(),
+		}
+	}
 
 	// Step 4: what the request can afford. One check over every limit covering this attempt, the
 	// deployment's provider limits, the model configs that apply, and whatever the permits are
@@ -969,57 +985,23 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 // A request carrying no access is still subject to the deployment's own limits, and they are
 // settled for it the same way. A context carrying no grant is a wiring fault evaluation has
 // already refused by the time this runs; it settles nothing.
-func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) schemas.Limits {
+//
+// What the list holds is the store's to assemble (see GovernanceStore.GatherLimits): a store that
+// composes several possible payers settles there on who pays, and this only records the answer. An
+// error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
+// funnel refuses it rather than serving it against half an answer.
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
-		return nil
+		return nil, nil
 	}
-	budgets, rateLimits := gatherLimits(ctx, store, g.Access(), provider, model)
+	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	if err != nil {
+		return nil, err
+	}
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
-	return limits
-}
-
-// gatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
-// every permit the request carries, what funds the holder and the holder's own model limits; and
-// for every permit that pays for the pair, what funds its use of the provider.
-//
-// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
-// whose budget is spent is spent, however the request reached the provider. Only what is funded
-// per provider follows the pair, and which permits pay for it is the access's to say (see
-// PermitsForModel).
-//
-// The deployment's own come first, because that is the order refusals report in: what the
-// deployment imposes before what the holder is funded by.
-func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
-	budgets, rateLimits = store.ProviderAndModelLimits(ctx, nil, provider, model)
-	if access == nil {
-		return budgets, rateLimits
-	}
-	carried := access.Bases()
-	if scoping := access.Scoping(); scoping != nil {
-		carried = append(carried, scoping)
-	}
-	for _, permit := range carried {
-		heldBudgets, heldRateLimits := store.HolderLimits(ctx, permit)
-		budgets = append(budgets, heldBudgets...)
-		rateLimits = append(rateLimits, heldRateLimits...)
-
-		// The holder's own model limits, gathered per permit because they are keyed by the permit's
-		// identity. The deployment's and the user's come back with them and are settled once, since
-		// one limit reached twice is still one limit.
-		modelBudgets, modelRateLimits := store.ProviderAndModelLimits(ctx, permit, provider, model)
-		budgets = append(budgets, modelBudgets...)
-		rateLimits = append(rateLimits, modelRateLimits...)
-	}
-	if provider != "" {
-		for _, permit := range access.PermitsForModel(string(provider), model) {
-			providerBudgets, providerRateLimits := store.ProviderLimits(ctx, permit, provider)
-			budgets = append(budgets, providerBudgets...)
-			rateLimits = append(rateLimits, providerRateLimits...)
-		}
-	}
-	return budgets, rateLimits
+	return limits, nil
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes

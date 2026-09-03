@@ -28,13 +28,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
-import { useT } from "@/lib/i18n";
+import { useT, type TranslateFn } from "@/lib/i18n";
 import { IS_ENTERPRISE, MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -44,6 +45,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { ConnectionFailureBlock } from "./mcpConnectionFailure";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { TokenExchangeFields } from "./tokenExchangeFields";
@@ -55,6 +58,44 @@ interface MCPClientSheetProps {
 	onNavigate?: (direction: "prev" | "next") => void;
 	hasPrev?: boolean;
 	hasNext?: boolean;
+}
+
+// stateDescription is the sentence under the sheet title. The pending and
+// needs_reauth prose is unchanged; unstable and degraded gain a sentence
+// naming what Bifrost's last check ran into, and needs_reauth appends the
+// recorded reason so the explanation sits next to the instruction.
+function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean, t: TranslateFn): string {
+	const failure = mcpClient.last_failure;
+	switch (mcpClient.state) {
+		case "pending_verification":
+			return mcpClient.config.auth_type === "token_exchange"
+				? t("mcp.sheet.descPendingExchange")
+				: mcpClient.config.auth_type === "per_user_oauth"
+					? t("mcp.sheet.descPendingPerUserOauth")
+					: t("mcp.sheet.descPendingOauth");
+		case "needs_reauth": {
+			// Each auth type names the repair action the actions menu actually
+			// offers for it, matching the credential block below.
+			const base =
+				mcpClient.config.auth_type === "token_exchange"
+					? t("mcp.sheet.descNeedsReauthExchange")
+					: isPerUserAuth
+						? t("mcp.sheet.descNeedsReauthPerUser")
+						: t("mcp.sheet.descNeedsReauth");
+			return failure ? `${base} ${t("mcp.sheet.descNeedsReauthReason", { message: failure.message })}` : base;
+		}
+		case "unstable":
+			return failure
+				? t("mcp.sheet.descUnstableWithFailure", {
+						ago: formatDurationSince(failure.at),
+						stage: failureStageLabel(failure.stage).toLowerCase(),
+					})
+				: t("mcp.sheet.descUnstable");
+		case "degraded":
+			return t("mcp.sheet.descDegraded");
+		default:
+			return t("mcp.sheet.descDefault");
+	}
 }
 
 /** API sends tool_sync_interval as nanoseconds (Go time.Duration). Normalize to minutes for form/store. */
@@ -114,6 +155,12 @@ export default function MCPClientSheet({
 	const isPerUserAuth =
 		mcpClient.config.auth_type === "per_user_oauth" ||
 		mcpClient.config.auth_type === "per_user_headers" ||
+		mcpClient.config.auth_type === "token_exchange";
+	// Auth types whose server holds an OAuth credential of its own: the shared
+	// token, or the retained admin token used to refresh the tool list.
+	const holdsOwnOauthCredential =
+		mcpClient.config.auth_type === "oauth" ||
+		mcpClient.config.auth_type === "per_user_oauth" ||
 		mcpClient.config.auth_type === "token_exchange";
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
 
@@ -617,19 +664,7 @@ export default function MCPClientSheet({
 									{mcpClient.config.name}
 									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{titleCaseFromSnakeCase(mcpClient.state)}</Badge>
 								</SheetTitle>
-								<SheetDescription>
-									{mcpClient.state === "pending_verification"
-										? mcpClient.config.auth_type === "token_exchange"
-											? t("mcp.sheet.descPendingExchange")
-											: mcpClient.config.auth_type === "per_user_oauth"
-												? t("mcp.sheet.descPendingPerUserOauth")
-												: t("mcp.sheet.descPendingOauth")
-										: mcpClient.state === "needs_reauth"
-											? isPerUserAuth
-												? t("mcp.sheet.descNeedsReauthPerUser")
-												: t("mcp.sheet.descNeedsReauth")
-											: t("mcp.sheet.descDefault")}
-								</SheetDescription>
+								<SheetDescription>{stateDescription(mcpClient, isPerUserAuth, t)}</SheetDescription>
 							</div>
 							<SheetNavigationButtons
 								hasPrev={hasPrev}
@@ -663,6 +698,15 @@ export default function MCPClientSheet({
 									</div>
 
 									<TabsContent value="general" className="space-y-6 pb-10">
+										{hasStateReason(mcpClient) && (
+											<div className="space-y-4">
+												<SectionHeader
+													title={mcpClient.node_states ? "Connection checks across instances" : "Last connection check"}
+													description={stateReasonTitle(mcpClient.state, !!mcpClient.node_states)}
+												/>
+												<ConnectionFailureBlock client={mcpClient} />
+											</div>
+										)}
 										<div className="space-y-4">
 											<SectionHeader title={t("mcp.basicInfo")} description={t("mcp.sheet.basicInfoDesc")} />
 											<FormField
@@ -1050,6 +1094,13 @@ export default function MCPClientSheet({
 											</>
 										)}
 
+										{mcpClient.config.auth_type === "per_user_headers" && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
 										<DottedSeparator />
 										<div className="space-y-4">
 											<SectionHeader title={t("mcp.sheet.allowedExtraHeaders")} description={t("mcp.sheet.allowedExtraHeadersDesc")} />
@@ -1085,6 +1136,20 @@ export default function MCPClientSheet({
 												)}
 											/>
 										</div>
+
+										{holdsOwnOauthCredential && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
+										{(mcpClient.config.auth_type === "per_user_oauth" || mcpClient.config.auth_type === "per_user_headers") && (
+											<>
+												<DottedSeparator />
+												<MCPClientSessionsSection mcpClient={mcpClient} />
+											</>
+										)}
 
 										{(() => {
 											const showTLS = mcpClient.config.connection_type === "http" || mcpClient.config.connection_type === "sse";

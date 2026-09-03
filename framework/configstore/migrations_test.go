@@ -3464,3 +3464,34 @@ func TestMigrationAddProviderJobKindColumns_Rollback(t *testing.T) {
 		})
 	}
 }
+
+// TestMigrationClearPluginConfigHashes verifies the migration wipes every stored plugin
+// config hash, including one the released config_hash migration populated from the row.
+// That is what puts the rows in the "no config.json baseline" state startup relies on, so
+// UI/API edits are not reverted on the first boot after upgrade.
+func TestMigrationClearPluginConfigHashes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TablePlugin{}))
+
+	ctx := context.Background()
+	require.NoError(t, db.Create(&tables.TablePlugin{
+		Name: "with-hash", Enabled: true, ConfigHash: "hash-from-released-migration",
+	}).Error)
+	require.NoError(t, db.Create(&tables.TablePlugin{
+		Name: "without-hash", Enabled: true,
+	}).Error)
+
+	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
+
+	var plugins []tables.TablePlugin
+	require.NoError(t, db.Order("name").Find(&plugins).Error)
+	require.Len(t, plugins, 2)
+	for _, plugin := range plugins {
+		require.Empty(t, plugin.ConfigHash, "plugin %s should have no baseline after the migration", plugin.Name)
+	}
+
+	// Running it again must be a no-op rather than an error (gormigrate skips by ID, but the
+	// statement itself has to stay safe to replay).
+	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
+}

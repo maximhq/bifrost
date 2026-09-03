@@ -110,6 +110,9 @@ func TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState(t *testing.T)
 	assert.Nil(t, state.CancelFunc)
 	assert.Nil(t, state.Conn)
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State)
+	require.NotNil(t, state.LastFailure, "needs_reauth carries its own explanation")
+	assert.Equal(t, schemas.MCPConnectionFailureStageCredential, state.LastFailure.Stage)
+	assert.Equal(t, errCredentialRotated.Error(), state.LastFailure.Message)
 }
 
 // TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback
@@ -140,7 +143,7 @@ func TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback(t *te
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true, errors.New("oauth2 token expired"))
 
 	require.Len(t, calls, 1, "the callback must fire exactly once for a genuine state transition")
 	assert.Equal(t, config.ID, calls[0].clientID)
@@ -175,7 +178,7 @@ func TestFailConnectAttempt_NoStateChange_DoesNotFireCallback(t *testing.T) {
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false, errors.New("connection refused"))
 
 	assert.False(t, fired, "the callback must not fire when the transition is a no-op")
 }

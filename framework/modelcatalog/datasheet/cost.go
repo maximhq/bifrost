@@ -483,7 +483,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
@@ -492,24 +492,6 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 	}
 
 	return cost
-}
-
-// azureModelRouterServedModel reads the model Azure Model Router actually
-// routed to off the response body's own model field separate from the "model-router"
-// deployment name carried on RoutingInfo.Model.
-func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
-	switch {
-	case result.ChatResponse != nil:
-		return result.ChatResponse.Model
-	case result.ResponsesResponse != nil:
-		return result.ResponsesResponse.Model
-	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
-		return result.ResponsesStreamResponse.Response.Model
-	case result.TextCompletionResponse != nil:
-		return result.TextCompletionResponse.Model
-	default:
-		return ""
-	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
