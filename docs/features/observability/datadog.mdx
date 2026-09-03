@@ -545,7 +545,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `source_of_truth: "config.json"` makes the file authoritative.
 
 **Filter modes:**
 
@@ -559,7 +559,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected. The filter applies to APM trace spans only; it does not change DogStatsD metrics, which are never derived from plugin spans.
 
 <Note>
-  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set a higher `version` on the Datadog plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set `source_of_truth: "config.json"`. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for details.
 </Note>
 
 ---

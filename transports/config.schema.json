@@ -2312,20 +2312,20 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 32767,
-            "description": "DB-Backed Only. Version metadata persisted on TablePlugin (default: 1). In DB-backed sync, version metadata is considered for plugin replacement/reload decisions.",
+            "description": "Integer version for a plugin (deprecated)",
             "optional": true,
             "default": 1
           },
           "placement": {
             "type": "string",
             "enum": ["pre_builtin", "post_builtin", "builtin"],
-            "description": "DB-Backed Only. Whether this plugin runs before, after, or as a built-in. Default: post_builtin. Ignored in config.json.",
+            "description": "DB-Backed Only. Whether this plugin runs before, after, or as a built-in. Default: post_builtin. Setting or changing it here reloads the plugin entry from config.json; omit it and the stored value is kept.",
             "optional": true,
             "default": "post_builtin"
           },
           "order": {
             "type": "integer",
-            "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
+            "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Setting or changing it here reloads the plugin entry from config.json; omit it and the stored value is kept.",
             "optional": true,
             "default": 0
           },
