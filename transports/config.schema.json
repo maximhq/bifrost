@@ -3974,11 +3974,31 @@
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
+        },
+        "session": {
+          "$ref": "#/$defs/complexity_session_config"
         }
       },
       "required": ["keywords"],
-      "required": ["keywords"],
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "session": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["enabled"]
+              }
+            },
+            "required": ["session"]
+          },
+          "then": {
+            "required": ["semantic"]
+          }
+        },
         {
           "description": "Selecting the llm fallback without configuring the classifier it names loads a semantic classifier whose non-answers have nothing to fall back to; the loader rejects it for the same reason.",
           "if": {
@@ -3999,6 +4019,18 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "complexity_session_config": {
+      "type": "object",
+      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+        }
+      },
+      "required": ["enabled"],
       "additionalProperties": false
     },
     "complexity_semantic_config": {

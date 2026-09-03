@@ -406,11 +406,15 @@ bifrost:
         message_history_count: 1
         count_toward_budgets: false
         vector_store: "embedded"
+      session:
+        enabled: true
       keywords:
         simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
         medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
         complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
 ```
+
+`session.enabled` is optional and defaults to `false`. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
 
 <Note>
 In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.

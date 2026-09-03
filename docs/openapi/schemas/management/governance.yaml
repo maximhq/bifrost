@@ -2404,6 +2404,33 @@ ComplexityAnalyzerConfig:
   additionalProperties: false
   required:
     - keywords
+  allOf:
+    - if:
+        properties:
+          session:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - session
+      then:
+        required:
+          - semantic
+    - if:
+        properties:
+          semantic:
+            properties:
+              fallback:
+                const: llm
+            required:
+              - fallback
+        required:
+          - semantic
+      then:
+        required:
+          - llm
   properties:
     tier_boundaries:
       $ref: '#/ComplexityTierBoundaries'
@@ -2413,3 +2440,16 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexitySemanticConfig'
     llm:
       $ref: '#/ComplexityLLMConfig'
+    session:
+      $ref: '#/ComplexitySessionConfig'
+
+ComplexitySessionConfig:
+  type: object
+  description: Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.
+  additionalProperties: false
+  required:
+    - enabled
+  properties:
+    enabled:
+      type: boolean
+      description: Enable monotonic session tier retention. Requires semantic complexity classification; default is false.

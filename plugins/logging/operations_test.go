@@ -859,7 +859,7 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 
 	// Set by the governance plugin when a routing rule references complexity_tier.
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "lexical")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "semantic")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
 
 	statusCode := 500
@@ -888,8 +888,8 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 	if entry.ComplexityTier == nil || *entry.ComplexityTier != "COMPLEX" {
 		t.Fatalf("expected complexity_tier COMPLEX, got %v", entry.ComplexityTier)
 	}
-	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "lexical" {
-		t.Fatalf("expected complexity_mechanism lexical, got %v", entry.ComplexityMechanism)
+	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "semantic" {
+		t.Fatalf("expected complexity_mechanism semantic, got %v", entry.ComplexityMechanism)
 	}
 	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
 		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)

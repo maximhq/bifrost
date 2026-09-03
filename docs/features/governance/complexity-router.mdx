@@ -16,7 +16,7 @@ complexity_tier in ["MEDIUM", "COMPLEX"]
 
 This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model automatically, with no changes to your application code.
 
-Classification runs only when a routing rule actually references `complexity_tier`, so requests that never touch a complexity rule pay no embedding cost. Once semantic classification is configured, a request it cannot confidently match — a near miss, a timeout, an in-progress warmup — leaves `complexity_tier` unpublished. You can optionally configure an **LLM fallback classifier** to step in for exactly those requests — see [LLM fallback classifier](#llm-fallback-classifier). The fallback engages only after semantic classification has actually run; without semantic classification configured at all, Bifrost keeps the request on its existing routing path instead of guessing.
+Classification runs only when a routing rule actually references `complexity_tier`, so requests that never touch a complexity rule pay no embedding cost. Once semantic classification is configured, a request it cannot confidently match, such as a near miss or timeout, leaves `complexity_tier` unpublished. You can optionally configure an **LLM fallback classifier** to step in after semantic classification has run and returned no tier. See [LLM fallback classifier](#llm-fallback-classifier). Without semantic classification configured at all, Bifrost keeps the request on its existing routing path instead of guessing. When [session-aware routing](#session-aware-routing) is enabled and the request carries a recognized session identity, a turn that still produces no tier of its own reuses the tier already retained for that session, so `complexity_tier` goes unpublished only when neither classification nor session state supplies one.
 
 <Note>
 Complexity classification is **semantic** (embedding-based). The older lexical keyword scorer is retired. See [Lexical keyword classifier (retired)](#lexical-keyword-classifier-retired) for details and migration guidance.
@@ -55,16 +55,32 @@ With semantic classification configured, every tier must contain at least one ph
 
 `message_history_count` (default `1`) controls how many recent user messages are joined into the embedded text. Raising it lets a short follow-up like "and make it faster" inherit the intent of earlier turns, at the cost of diluting the latest message and embedding more tokens per request. Requests with fewer available turns embed what they have.
 
+### Session-aware routing
+
+Enable **Session-aware routing** to balance cost and quality with an upward-only complexity ladder inside an agent conversation. The first classifiable user turn that produces a tier establishes the session tier. Each later sequential human turn is classified normally and can raise that tier from Simple to Medium or Complex, while an easier follow-up keeps the stored higher tier. This avoids unnecessary tier-driven model changes that can reduce provider prompt-cache reuse. Once a session reaches Complex, Bifrost reuses Complex without another classifier call.
+
+Session state expires after **24 hours of inactivity**. Each participating conversational turn refreshes that inactivity window. After expiry, the next classifiable human request starts a new session epoch and is classified normally. Bifrost stores only the effective tier under a scoped hash of the session identity; it does not store prompts, similarity scores, reference phrases, model choices, or turn history as session state.
+
+Bifrost uses the explicit `x-bf-session-id` when supplied. For recognized agent harnesses it can also use their native, User-Agent-gated identity: `x-codex-turn-metadata.session_id` for Codex and `x-claude-code-session-id` for Claude Code. Codex background work (`prewarm`, `compaction`, and `memory`) bypasses session state. Supported conversational continuations with no new human text may reuse an existing tier, but never initialize or escalate one. Requests with no valid identity retain ordinary per-request classification.
+
+<Warning>
+Complexity Router does not currently classify Codex requests sent through native WebSocket Responses mode, so session-aware routing does not apply on that path. Codex over HTTP/SSE Responses, and WebSocket requests using Bifrost's HTTP bridge, remain supported.
+</Warning>
+
+<Note>
+Session-aware routing keeps the **complexity tier** stable; it does not pin a weighted routing target, provider key, or provider prompt-cache entry. Provider cache TTLs remain provider-owned and independent of the 24-hour routing-state lifetime.
+</Note>
+
 ---
 
 ## LLM fallback classifier
 
 By default, a request that matches no reference phrase confidently simply carries no `complexity_tier`. If you'd rather have a second opinion than let those requests fall through, set semantic classification's `fallback` to `llm` and configure a chat model to name the tier instead.
 
-The LLM fallback runs **only after** semantic classification produces no tier — never as the primary classifier, and never in parallel with it. It never sees a request that semantic classification already resolved.
+The LLM fallback runs **only after** semantic classification produces no tier: never as the primary classifier, and never in parallel with it. It never sees a request that semantic classification already resolved.
 
 <Warning>
-The cost of this classifier is latency, paid on every request it runs for. A request that reaches the fallback waits on one full chat completion from the configured model before it is routed. Pick a small, fast model, and use `timeout` to cap the wait — a timed-out classification skips complexity routing for that request, exactly like an unmatched semantic request without a fallback.
+The cost of this classifier is latency, paid on every request it runs for. A request that reaches the fallback waits on one full chat completion from the configured model before it is routed. Pick a small, fast model, and use `timeout` to cap the wait. A timed-out classification skips complexity routing for that request unless session-aware routing can reuse a tier already retained for its session, exactly like an unmatched semantic request without a fallback.
 </Warning>
 
 The fallback model is asked to answer with one of the three tier names, guided by a prompt you can edit (`prompt`, or **Fallback Classification Prompt** on the Complexity Router page). Bifrost always appends a fixed, non-editable section stating the tier names and the required JSON response shape, so your edits refine *what the tiers mean* to the model but can never break the response contract. Leaving `prompt` empty uses Bifrost's shipped default guidance.
@@ -72,7 +88,7 @@ The fallback model is asked to answer with one of the three tier names, guided b
 `message_history_count` behaves the same way it does for semantic classification: it controls how many of the most recent user messages (oldest first) are sent to the fallback model, independent of the semantic classifier's own `message_history_count`.
 
 <Note>
-An LLM-classified turn carries no similarity score — a chat completion has no equivalent of embedding-distance, and a synthetic one would invite comparisons against thresholds tuned for your vector backend. `complexity_score` is therefore absent on rows where `complexity_mechanism` is `llm`. See [Observability](#observability).
+An LLM-classified turn carries no similarity score. A chat completion has no equivalent of embedding-distance, and a synthetic one would invite comparisons against thresholds tuned for your vector backend. `complexity_score` is therefore absent on rows where `complexity_mechanism` is `llm`. See [Observability](#observability).
 </Note>
 
 ---
@@ -84,15 +100,15 @@ Semantic classification requires an embedding provider and model. The provider m
 <Tabs group="complexity-config">
 <Tab title="Web UI">
 
+![Embedding configuration](../../media/ui-complexity-router-embedding-configuration.png)
+
 Navigate to **Complexity Router** in the sidebar.
 
 - **Phrase to Tier Mapping**: add a phrase by typing it and pressing **Enter** in a tier's input; remove one with the × on its chip. Counts are shown per tier.
-- **Edit embedding configuration**: opens the embedding sheet (provider, model, similarity floor, history window, timeout, budgets, and phrase storage: **Embedded** keeps phrase vectors in Bifrost's own memory; **Vector Store** keeps them in the configured vector store so they survive restarts, falling back to Embedded when none is available). Setting **When no phrase matches confidently** to **LLM classifier** reveals a **Fallback classifier** section further down the same sheet — provider, model, timeout, history window, and budgets for the fallback model. Setting it back to **None** hides that section again; its settings are preserved either way.
+- **Session-aware routing**: retain the highest tier reached by each identified session for 24 hours of inactivity. The toggle is off by default and requires the semantic classifier.
+- **Edit embedding configuration**: opens the embedding sheet (provider, model, similarity floor, history window, timeout, budgets, and phrase storage: **Embedded** keeps phrase vectors in Bifrost's own memory; **Vector Store** keeps them in the configured vector store so they survive restarts, falling back to Embedded when none is available). Setting **When no phrase matches confidently** to **LLM classifier** reveals a **Fallback classifier** section further down the same sheet: provider, model, timeout, history window, and budgets for the fallback model. Setting it back to **None** hides that section again; its settings are preserved either way.
 - When the fallback is on, a **Fallback Classification Prompt** section appears on the main page below the phrase lists, with a **Reset to default** button. The model itself is configured in the embedding sheet; only the prompt text lives here, since it needs room to iterate.
 - The **Classifier status** badge in the header shows whether the classifier is ready to serve (see [Classifier status and warmup](#classifier-status-and-warmup)).
-- Click **Save changes** to apply (hot-reloaded, no restart), **Discard changes** to revert unsaved edits, or **Restore defaults** to restore the built-in reference phrases. Restore defaults keeps the embedding and fallback configuration.
-
-![Embedding configuration](../../media/ui-complexity-router-embedding-configuration.png)
 
 </Tab>
 <Tab title="API">
@@ -116,6 +132,9 @@ curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
       "count_toward_budgets": false,
       "vector_store": "embedded",
       "fallback": "none"
+    },
+    "session": {
+      "enabled": true
     },
     "keywords": {
       "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
@@ -147,7 +166,7 @@ curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
     }
   }'
 
-# Check classifier status (includes llm readiness and the default prompt when llm is configured)
+# Check classifier status (always includes llm readiness and the default prompt)
 curl http://localhost:8080/api/routing/complexity-analyzer-status
 
 # Restore built-in reference phrases (embedding configuration is preserved)
@@ -181,6 +200,9 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
         "message_history_count": 1,
         "count_toward_budgets": false
       },
+      "session": {
+        "enabled": true
+      },
       "keywords": {
         "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
         "medium_keywords": ["add api-key auth: hash the keys, reject revoked ones, and never log them."],
@@ -202,11 +224,12 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
 | `semantic.vector_store` | string | `embedded` | `embedded` uses Bifrost's built-in in-memory store and re-embeds phrases on restart. `vector_store` uses the configured top-level `vector_store`; if none is configured, it safely uses Embedded instead. |
 | `semantic.fallback` | string | `none` | What answers when semantic classification produces no tier: `none` records the request as skipped; `llm` asks the model configured in `llm` below. Requires `llm` to be set |
 | `llm.provider` | string | Required when `fallback` is `llm` | Provider used to run the classification chat completion; must have an enabled key |
-| `llm.model` | string | Required when `fallback` is `llm` | Chat model asked to name the tier. Pick a small, fast one — every fallback classification waits on one completion |
+| `llm.model` | string | Required when `fallback` is `llm` | Chat model asked to name the tier. Pick a small, fast one; every fallback classification waits on one completion |
 | `llm.timeout` | duration | `4s` | Ceiling on the classification completion; exceeding it skips tier routing for that request |
 | `llm.prompt` | string | Shipped default guidance | Replaces the shipped classification guidance (max 4,000 characters). The tier-name and response-format reinforcement is appended by Bifrost regardless and cannot be edited |
 | `llm.message_history_count` | integer | `1` | Number of recent user messages sent to the classifier, oldest first (1–10) |
 | `llm.count_toward_budgets` | boolean | `false` | Count classification completion cost toward virtual-key budgets (record-only, never enforced) |
+| `session.enabled` | boolean | `false` | Retain the highest observed tier across normally sequential turns for 24 hours of inactivity. Requires `semantic`; overlapping requests for the same session are best-effort |
 | `keywords.simple_keywords` | string[] | 50 built-in phrases | Reference phrases for the Simple tier |
 | `keywords.medium_keywords` | string[] | 50 built-in phrases | Reference phrases for the Medium tier |
 | `keywords.complex_keywords` | string[] | 50 built-in phrases | Reference phrases for the Complex tier |
@@ -243,7 +266,7 @@ The same response always also carries the LLM fallback classifier's own status, 
 
 | Field | Values | Meaning |
 |---|---|---|
-| `llm.state` | `disabled`, `ready` | `disabled` means no `llm` block is configured; `ready` means it is. Unlike semantic classification, the LLM fallback has no warmup — it makes its first provider call on the first classification it runs, so it is ready as soon as it is saved. |
+| `llm.state` | `disabled`, `ready` | `disabled` means no `llm` block is configured; `ready` means it is. Unlike semantic classification, the LLM fallback has no warmup: it makes its first provider call on the first classification it runs, so it is ready as soon as it is saved. |
 | `llm_default_prompt` | string | The shipped classification guidance, served so a configuration client (like the **Fallback Classification Prompt** editor) can seed itself and offer a reset without holding a copy that drifts from the gateway's. Present regardless of whether an `llm` block is configured. |
 
 ---
@@ -371,8 +394,8 @@ When a routing rule references `complexity_tier`, the classification outcome is 
 | Field | Values | Meaning |
 |---|---|---|
 | `complexity_tier` | `SIMPLE`, `MEDIUM`, `COMPLEX` | The tier the request was classified into |
-| `complexity_mechanism` | `semantic`, `llm`, `skipped` | How the tier was produced. `semantic` means an embedding match produced the tier; `llm` means the fallback chat model named the tier after semantic classification produced none; `skipped` means a rule demanded a tier but neither produced one (classifier not configured or not ready, unsupported input, failure/timeout, or a match below `min_similarity`) |
-| `complexity_score` | 0.0 – 1.0 | The similarity score of the nearest reference phrase. Never set when `complexity_mechanism` is `llm` — a chat completion has no equivalent similarity score |
+| `complexity_mechanism` | `semantic`, `llm`, `session`, `skipped` | How the effective tier was produced. `semantic` means an embedding match supplied it; `llm` means the fallback model named it; `session` means retained session state supplied it because the current turn was a continuation, proposed a lower tier, produced no tier, or followed the Complex ceiling; `skipped` means a rule demanded a tier but neither a classifier nor existing session state produced one |
+| `complexity_score` | 0.0 – 1.0 | The similarity score of the nearest reference phrase. Set only when the effective decision is the current semantic match; absent for `llm`, `session`, and `skipped` |
 
 The routing decision logs also record the matched reference phrase alongside the tier and similarity, so you can tell a genuine match from an accidental one. Long phrases are truncated to 120 characters in the log line.
 
@@ -399,19 +422,19 @@ curl "http://localhost:8080/api/logs?complexity_tiers=COMPLEX&complexity_mechani
 ```
 
 <Note>
-The raw `complexity_score` is displayed but not filterable; tier and mechanism are the supported filter dimensions. The mechanism filter offers `semantic`, `llm`, and `skipped`. Legacy `REASONING` tiers remain available in the logs filter.
+The raw `complexity_score` is displayed but not filterable; tier and mechanism are the supported filter dimensions. The mechanism filter offers `semantic`, `llm`, `session`, and `skipped`. Legacy `REASONING` tiers remain available in the logs filter.
 </Note>
 
 ### In telemetry
 
-The tier and mechanism are also emitted as the span attributes `bifrost.complexity_tier` and `bifrost.complexity_mechanism`, and as low-cardinality labels on Prometheus metrics. The raw score is deliberately excluded from metrics (unbounded cardinality). It lives only in the request logs.
+The tier and mechanism are also emitted as the span attributes `bifrost.complexity_tier` and `bifrost.complexity_mechanism`, and as low-cardinality labels on Prometheus metrics. The raw score is emitted as the span attribute `bifrost.complexity_score` and stored in request logs, but deliberately excluded from metrics because it has unbounded cardinality.
 
 Semantic routing's own embedding overhead is tracked separately with two Prometheus counters, labeled by the embedding provider, model, and `phase` (`request` classification vs `warmup` exemplar embedding):
 
 - `bifrost_routing_embedding_requests_total`
 - `bifrost_routing_embedding_cost_total` (USD; recorded whether or not `count_toward_budgets` is set)
 
-The LLM fallback classifier's own completion overhead is tracked separately too, with two Prometheus counters labeled by the fallback provider and model (no `phase` label — the fallback has no warmup):
+The LLM fallback classifier's own completion overhead is tracked separately too, with two Prometheus counters labeled by the fallback provider and model (no `phase` label; the fallback has no warmup):
 
 - `bifrost_routing_llm_requests_total`
 - `bifrost_routing_llm_cost_total` (USD; recorded whether or not `count_toward_budgets` is set)
@@ -424,7 +447,7 @@ See [Telemetry](../telemetry) and [Prometheus](../observability/prometheus) for 
 
 ### No tier is ever published (everything is `skipped`)
 
-The most common cause is that semantic classification is not configured. Without a configured semantic classifier, no fallback runs either — the LLM fallback only ever engages after semantic classification has actually been invoked, never as a substitute for missing semantic configuration. Check the classifier status badge or `GET /api/routing/complexity-analyzer-status`:
+The most common cause is that semantic classification is not configured. Without a configured semantic classifier, no fallback runs either; the LLM fallback only ever engages after semantic classification has actually been invoked, never as a substitute for missing semantic configuration. Check the classifier status badge or `GET /api/routing/complexity-analyzer-status`:
 
 - `disabled`: set an embedding provider and model, and make sure the provider has an enabled key.
 - `warming`: warmup is embedding the reference phrases. If `serving_previous` is true, the last good generation remains available while it runs.
@@ -436,11 +459,11 @@ Also verify a routing rule actually references `complexity_tier`; classification
 
 ### Setting `fallback` to `llm` is rejected
 
-Semantic classification's `fallback` field requires a companion `llm` block with at least `provider` and `model` set — the update endpoint rejects `fallback: "llm"` without one. Configure the LLM fallback classifier (Web UI: the **Fallback classifier** section inside the embedding sheet; API/config.json: the `llm` block) before or in the same request that sets `fallback` to `llm`.
+Semantic classification's `fallback` field requires a companion `llm` block with at least `provider` and `model` set; the update endpoint rejects `fallback: "llm"` without one. Configure the LLM fallback classifier (Web UI: the **Fallback classifier** section inside the embedding sheet; API/config.json: the `llm` block) before or in the same request that sets `fallback` to `llm`.
 
 ### LLM fallback times out or never runs
 
-Check `llm.state` on `GET /api/routing/complexity-analyzer-status`: `disabled` means no `llm` block is saved. If it's `ready` but classifications still show `complexity_mechanism: skipped`, check `llm.timeout` — the fallback model may be too slow for the configured budget. Provider errors and timeouts are recorded in the routing decision logs alongside the cause.
+Check `llm.state` on `GET /api/routing/complexity-analyzer-status`: `disabled` means no `llm` block is saved. If it's `ready` but classifications still show `complexity_mechanism: skipped`, check `llm.timeout`: the fallback model may be too slow for the configured budget. Provider errors and timeouts are recorded in the routing decision logs alongside the cause.
 
 ### Rule not matching when complexity_tier is set
 
@@ -450,7 +473,7 @@ If classification is unavailable for a request (unsupported input, mixed-modal c
 
 ### Which request types are supported
 
-Complexity routing currently runs only for **text-bearing** request families. This applies identically to the LLM fallback classifier — it shares the same input extraction as semantic classification, so a request semantic classification cannot analyze reaches the fallback in the same unclassifiable state. Supported inputs include:
+Complexity routing currently runs only for **text-bearing** request families. This applies identically to the LLM fallback classifier. It shares the same input extraction as semantic classification, so a request semantic classification cannot analyze reaches the fallback in the same unclassifiable state. Supported inputs include:
 
 - Chat Completions and other messages-style requests with text-only user content
 - Text Completions requests using `prompt`

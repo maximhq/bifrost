@@ -271,32 +271,28 @@ func llmClassifierShouldRetryWithResponses(bifrostErr *schemas.BifrostError) boo
 	}
 }
 
-// computeLLMComplexity runs the llm fallback classifier for one request —
-// always after a semantic non-answer, never as the primary — and publishes
-// its outcome, following the semantic branch's logging discipline: every
-// failure funnels to one MechanismSkipped and one routing-engine log line
-// naming the cause.
-func (p *RoutingPlugin) computeLLMComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput) *complexity.ComplexityResult {
+// classifyLLMComplexity runs the llm fallback classifier for one request —
+// always after a semantic non-answer, never as the primary — and returns a
+// proposal without publishing context telemetry. The caller applies monotonic
+// session state before publishing the effective tier.
+func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
 	result, err := p.llmClassifier.Classify(ctx, input)
 	if err == nil && result != nil {
 		// No score is published: a chat completion has no similarity, and a
 		// synthetic one would invite comparisons against thresholds tuned for
 		// the vector backends.
 		out := &complexity.ComplexityResult{Tier: result.Tier}
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, out.Tier)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismLLM)
-		ctx.AppendRoutingEngineLog(
-			schemas.RoutingEngineRoutingRule,
-			schemas.LogLevelInfo,
-			fmt.Sprintf("LLM complexity: tier=%s", out.Tier),
-		)
-		return out
+		return complexityProposal{
+			Result:     out,
+			Mechanism:  complexity.MechanismLLM,
+			LogLevel:   schemas.LogLevelInfo,
+			LogMessage: fmt.Sprintf("LLM complexity: tier=%s", out.Tier),
+		}
 	}
 
 	if err != nil && p.logger != nil {
 		p.logger.Debug("[Governance] LLM complexity classification unavailable: %v", err)
 	}
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 	// One line per decision, naming the cause. Every branch is an operator
 	// problem — a budget to raise, a model that ignores the response contract,
 	// or wiring that has not finished — so unlike the semantic branch there is
@@ -323,8 +319,11 @@ func (p *RoutingPlugin) computeLLMComplexity(ctx *schemas.BifrostContext, input 
 		// not have. Provider error strings carry no secrets.
 		unavailableLog = fmt.Sprintf("LLM complexity classification unavailable: %v; no complexity tier is published", err)
 	}
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelWarn, unavailableLog)
-	return nil
+	return complexityProposal{
+		Mechanism:  complexity.MechanismSkipped,
+		LogLevel:   schemas.LogLevelWarn,
+		LogMessage: unavailableLog,
+	}
 }
 
 // chatResponseText extracts the assistant text from the first choice of a
