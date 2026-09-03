@@ -6723,6 +6723,37 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
+// clearAnthropicPassthroughForUnsupportedStructuredOutput disables Anthropic raw-body passthrough
+// when the resolved provider cannot serve native structured outputs but the request carries a
+// schema. The raw body would forward output_config.format verbatim and the provider answers 400
+// "output_config.format: Extra inputs are not permitted"; typed conversion instead rewrites the
+// schema into the synthetic bf_so_* tool these providers do accept. Gated on the final resolved
+// provider so it fires however that was picked (prefix, key alias, governance, routing rule) and
+// re-runs per attempt for fallbacks — the ingress guard in the Anthropic integration only sees a
+// provider the caller spelled out in the model string, so an alias or routing rule hides it.
+func clearAnthropicPassthroughForUnsupportedStructuredOutput(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, req *schemas.BifrostRequest) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "anthropic" {
+		return
+	}
+	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !useRawBody {
+		return
+	}
+	if !anthropic.ProviderRequiresSyntheticStructuredOutput(baseProvider) {
+		return
+	}
+	// Read the bytes that would go on the wire rather than Params.Text: plugins run before
+	// the worker and can drop the typed field (compat's drop-params) while the raw body still
+	// carries it. The Anthropic Messages integration always builds a Responses request.
+	if req == nil || req.ResponsesRequest == nil {
+		return
+	}
+	rawBody := req.ResponsesRequest.GetRawRequestBody()
+	if !providerUtils.JSONFieldExists(rawBody, "output_config.format") && !providerUtils.JSONFieldExists(rawBody, "output_format") {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+}
+
 // applyRawCaptureSignals writes this attempt's raw-payload capture signals, merging provider
 // config with any per-request context overrides. Call it after
 // clearAnthropicPassthroughForNonNativeProvider: that helper can drop the passthrough overrides
@@ -7091,6 +7122,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				req.SetModel(resolvedModel)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				// Disable it too when this attempt's provider has no native structured outputs.
+				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
@@ -7193,6 +7226,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				req.SetModel(resolvedModel)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				// Disable it too when this attempt's provider has no native structured outputs.
+				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)

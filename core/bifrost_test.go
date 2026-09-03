@@ -3027,6 +3027,79 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 	}
 }
 
+// TestClearAnthropicPassthroughForUnsupportedStructuredOutput covers a Claude Code session-title
+// call (a one-field JSON schema in output_config.format) that a routing rule retargets to Bedrock
+// Mantle. The ingress guard in the Anthropic integration only sees a provider spelled out in the
+// caller's model string, so an alias or routing rule hides it and the raw body used to reach the
+// Mantle Messages API with output_config.format intact — 400 "Extra inputs are not permitted".
+// Only the raw request body is dropped: the raw response flags stay on, and the response path
+// keys off the synthetic bf_so_* tool name instead. Vertex and Azure take the same route.
+func TestClearAnthropicPassthroughForUnsupportedStructuredOutput(t *testing.T) {
+	const outputConfigBody = `{"model":"claude-sonnet-5","output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}}}}}}`
+	// Legacy beta shape: top-level output_format instead of output_config.format.
+	const outputFormatBody = `{"model":"claude-sonnet-5","output_format":{"type":"json_schema","schema":{"type":"object"}}}`
+	const noFormatBody = `{"model":"claude-sonnet-5","messages":[]}`
+
+	responsesRequest := func(rawBody string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			ResponsesRequest: &schemas.BifrostResponsesRequest{RawRequestBody: []byte(rawBody)},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		integrationType string
+		baseProvider    schemas.ModelProvider
+		useRawBody      bool
+		req             *schemas.BifrostRequest
+		wantCleared     bool
+	}{
+		{"bedrock mantle with output_config.format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), true},
+		{"bedrock mantle with legacy output_format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputFormatBody), true},
+		{"vertex with output_config.format clears", "anthropic", schemas.Vertex, true, responsesRequest(outputConfigBody), true},
+		{"azure with output_config.format clears", "anthropic", schemas.Azure, true, responsesRequest(outputConfigBody), true},
+		// Anthropic and Bedrock Converse serve the schema natively; nothing to rewrite.
+		{"anthropic with output_config.format preserved", "anthropic", schemas.Anthropic, true, responsesRequest(outputConfigBody), false},
+		{"bedrock with output_config.format preserved", "anthropic", schemas.Bedrock, true, responsesRequest(outputConfigBody), false},
+		{"bedrock mantle without a format preserved", "anthropic", schemas.BedrockMantle, true, responsesRequest(noFormatBody), false},
+		// Typed conversion is already in force — the raw body is never consulted.
+		{"passthrough already off stays off", "anthropic", schemas.BedrockMantle, false, responsesRequest(outputConfigBody), false},
+		{"non-anthropic integration preserved", "openai", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), false},
+		{"no integration type preserved", "", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.integrationType != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
+			}
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, tt.useRawBody)
+			ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+
+			clearAnthropicPassthroughForUnsupportedStructuredOutput(ctx, tt.baseProvider, tt.req)
+
+			useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			if want := tt.useRawBody && !tt.wantCleared; useRawBody != want {
+				t.Errorf("UseRawRequestBody = %v, want %v", useRawBody, want)
+			}
+
+			// The raw-response side is untouched: the Anthropic integration skips passthrough on
+			// the way back when a structured-output tool name is set, so clearing these here would
+			// only lose the caller's raw-response opt-in.
+			for _, k := range []schemas.BifrostContextKey{
+				schemas.BifrostContextKeySendBackRawResponse,
+				schemas.BifrostContextKeyPassthroughOverridesPresent,
+			} {
+				if flag, _ := ctx.Value(k).(bool); !flag {
+					t.Errorf("flag %v was cleared, want it preserved", k)
+				}
+			}
+		})
+	}
+}
+
 // TestClearCtxForFallback_DropsCallerSuppliedKey verifies that a raw key supplied via
 // x-bf-direct-key does not ride a fallback onto a different provider. Key selection resolves the
 // direct key before it ever reaches the provider's own pool, so an uncleared value would send the
