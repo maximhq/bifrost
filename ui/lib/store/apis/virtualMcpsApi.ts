@@ -56,12 +56,13 @@ export const virtualMcpsApi = baseApi.injectEndpoints({
 
 		attachVirtualMCPVirtualKey: builder.mutation<SuccessResponse, { id: number; vkId: string }>({
 			query: ({ id, vkId }) => ({ url: `/mcp/virtual-mcps/${id}/virtual-keys/${vkId}`, method: "POST" }),
-			invalidatesTags: (_result, _error, { id }) => ["VirtualMCPs", { type: "VirtualMCPs", id }],
+			// Also refresh the affected key's detail (its virtual_mcp_ids) so a reopened sheet sees the change.
+			invalidatesTags: (_result, _error, { id, vkId }) => ["VirtualMCPs", { type: "VirtualMCPs", id }, { type: "VirtualKeys", id: vkId }],
 		}),
 
 		detachVirtualMCPVirtualKey: builder.mutation<SuccessResponse, { id: number; vkId: string }>({
 			query: ({ id, vkId }) => ({ url: `/mcp/virtual-mcps/${id}/virtual-keys/${vkId}`, method: "DELETE" }),
-			invalidatesTags: (_result, _error, { id }) => ["VirtualMCPs", { type: "VirtualMCPs", id }],
+			invalidatesTags: (_result, _error, { id, vkId }) => ["VirtualMCPs", { type: "VirtualMCPs", id }, { type: "VirtualKeys", id: vkId }],
 		}),
 	}),
 });

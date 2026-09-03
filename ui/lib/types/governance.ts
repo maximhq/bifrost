@@ -102,6 +102,8 @@ export interface VirtualKey {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
+	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
+	virtual_mcp_ids?: number[];
 	team_id?: string;
 	customer_id?: string;
 	rate_limit_id?: string;

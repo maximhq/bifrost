@@ -375,6 +375,9 @@ type ConfigStore interface {
 	// GetVirtualKeyIDsForVirtualMCPs returns assigned virtual-key IDs for a set of Virtual MCPs in one
 	// query, grouped by Virtual MCP ID. Used by the list view to avoid a per-row lookup.
 	GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error)
+	// GetVirtualMCPIDsForVirtualKey returns the IDs of the Virtual MCPs a virtual key is assigned to,
+	// the reverse of GetVirtualKeyIDsForVirtualMCP, so the VK detail view can show its assignments.
+	GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error)
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
