@@ -1153,6 +1153,14 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		}
 	}
 
+	// The relay is the request that opened it, kept alive past the request: it carries that
+	// request's grant, not a copy, the same way a realtime turn carries its session's (see
+	// newRealtimeTurnContext). Every turn derives from the relay, so without this no turn would
+	// carry a grant and governance would refuse each one.
+	if g := requestCtx.Grant(); g != nil {
+		relayCtx.SetGrant(g)
+	}
+
 	// Tag the relay context with transport type for downstream logging/metadata.
 	relayCtx.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
 
