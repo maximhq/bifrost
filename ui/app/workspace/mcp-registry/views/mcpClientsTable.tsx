@@ -20,7 +20,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import {
 	getErrorMessage,
 	useDeleteMCPClientMutation,
@@ -32,7 +31,6 @@ import {
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
 import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
-import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -55,6 +53,7 @@ import { IconWrap, InfoBox } from "./authorizerUi";
 import MCPClientSheet from "./mcpClientSheet";
 import { authScopeOf } from "./mcpClientFormFields";
 import { canReconnectMCPClient } from "./mcpClientsTable.utils";
+import { StateBadge } from "./mcpConnectionFailure";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
@@ -1048,9 +1047,10 @@ export default function MCPClientsTable({
 												    per-user auth types, so this is just the badge uniformly,
 												    same as shared clients. Column-header tooltip above explains
 												    that "unstable" reflects Bifrost's own connection checks, not
-												    caller traffic. "degraded" additionally gets a drill-down —
-												    see StateBadge below. */}
-												<StateBadge state={c.state} nodeStates={c.node_states} />
+												    caller traffic. Any state with a recorded reason (or a
+												    per-instance breakdown) gets a drill-down, see StateBadge in
+												    mcpConnectionFailure.tsx. */}
+												<StateBadge client={c} />
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<Switch
@@ -1228,46 +1228,6 @@ export default function MCPClientsTable({
 				/>
 			)}
 		</div>
-	);
-}
-
-// StateBadge renders the plain state badge, except for "degraded" — a
-// distributed deployment's instances currently disagreeing about a client's
-// state — which additionally gets a hover drill-down showing the
-// per-instance breakdown behind the aggregate. summarizeNodeStates groups
-// instance IDs by their reported state so the drill-down reads as counts
-// ("2 instances: Healthy, 1 instance: Unstable") rather than a raw ID list.
-function summarizeNodeStates(nodeStates: Record<string, string>): string[] {
-	const countByState = new Map<string, number>();
-	for (const state of Object.values(nodeStates)) {
-		countByState.set(state, (countByState.get(state) ?? 0) + 1);
-	}
-	return Array.from(countByState.entries()).map(
-		([state, count]) => `${count} ${count === 1 ? "instance" : "instances"}: ${titleCaseFromSnakeCase(state)}`,
-	);
-}
-
-function StateBadge({ state, nodeStates }: { state: string; nodeStates?: Record<string, string> }) {
-	const badge = <Badge className={MCP_STATUS_COLORS[state]}>{titleCaseFromSnakeCase(state)}</Badge>;
-	if (state !== "degraded" || !nodeStates || Object.keys(nodeStates).length === 0) {
-		return badge;
-	}
-	return (
-		<Popover>
-			<PopoverTrigger asChild>
-				<button type="button" data-testid="mcp-client-state-degraded-trigger" className="cursor-help">
-					{badge}
-				</button>
-			</PopoverTrigger>
-			<PopoverContent className="w-xs text-xs" align="start">
-				<p className="text-muted-foreground mb-1.5">Instances disagree about this client&apos;s state:</p>
-				<ul className="space-y-0.5">
-					{summarizeNodeStates(nodeStates).map((line) => (
-						<li key={line}>{line}</li>
-					))}
-				</ul>
-			</PopoverContent>
-		</Popover>
 	);
 }
 

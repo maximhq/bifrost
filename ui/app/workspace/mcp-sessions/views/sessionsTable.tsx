@@ -19,6 +19,8 @@
 
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
+import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Button } from "@/components/ui/button";
 import {
 	AlertDialog,
@@ -374,34 +376,24 @@ function TypeBadge({ authKind }: { authKind: string }) {
 	return <Badge variant="outline">OAuth</Badge>;
 }
 
+// Colors come from the shared credential palette so a session's status reads
+// the same as the credential block in the server sheet and the server state
+// badge in the registry: green for usable, red for "a human must act", amber
+// and gray for informational.
+const SESSION_STATUS_LABELS: Record<string, string> = {
+	pending: "Pending",
+	orphaned: "Orphaned",
+	needs_reauth: "Needs re-auth",
+	needs_update: "Needs update",
+	active: "Active",
+};
+
 function StatusBadge({ status }: { status: string }) {
-	if (status === "pending") {
-		return <Badge variant="secondary">Pending</Badge>;
-	}
-	if (status === "orphaned") {
-		// Muted amber: distinct from destructive (red, action-required) and
-		// secondary (gray, in-progress). Signals "informational, no action
-		// needed from you" — the auto-restore cascade handles it.
-		return (
-			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				Orphaned
-			</Badge>
-		);
-	}
-	if (status === "needs_reauth") {
-		return <Badge variant="destructive">Needs re-auth</Badge>;
-	}
-	if (status === "needs_update") {
-		// Outlined red: signals user action required, but visually distinct from
-		// needs_reauth's solid destructive badge (which represents a hard auth failure).
-		// Distinct copy so the row affordance ("Update values") matches.
-		return (
-			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				Needs update
-			</Badge>
-		);
-	}
-	return <Badge>Active</Badge>;
+	return (
+		<Badge className={MCP_CREDENTIAL_STATUS_COLORS[status] ?? MCP_CREDENTIAL_STATUS_COLORS.unknown}>
+			{SESSION_STATUS_LABELS[status] ?? titleCaseFromSnakeCase(status)}
+		</Badge>
+	);
 }
 
 interface RowActionsProps {
