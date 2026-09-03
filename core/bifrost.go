@@ -6123,11 +6123,17 @@ func executeRequestWithRetries[T any](
 	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
-	// Attempts granted outside the configured retry budget. Only the encrypted-reasoning
-	// fail-soft below adds one: MaxRetries defaults to 0, and a request that would
-	// otherwise die on a rejected replay deserves its one stripped attempt regardless of
-	// how the retry budget is tuned.
+	// Attempts granted outside the configured retry budget. The reasoning-replay
+	// fail-softs below add them: MaxRetries defaults to 0, and a request that would
+	// otherwise die on a rejected replay deserves its repaired attempt regardless of how
+	// the retry budget is tuned.
 	extraAttempts := 0
+	// True once non-replayable reasoning item ids have been stripped from the request, so
+	// that repair fires at most once even if the upstream keeps rejecting the retry.
+	strippedReasoningItemIDs := false
+	// True iff the previous failure stripped reasoning item ids. The payload changed, so
+	// the next attempt does not need backoff.
+	lastWasReasoningItemIDStrip := false
 	// True once encrypted_content has been stripped from the request, so the fail-soft
 	// fires at most once per request and an upstream that keeps rejecting cannot loop.
 	strippedEncryptedContent := false
@@ -6299,7 +6305,7 @@ func executeRequestWithRetries[T any](
 			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
-			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasReasoningItemIDStrip || lastWasEncryptedContentStrip) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				time.Sleep(backoff)
@@ -6601,6 +6607,20 @@ func executeRequestWithRetries[T any](
 			}
 			trail[len(trail)-1].FailReason = &reason
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+		}
+
+		// Fail soft when the upstream cannot resolve a replayed reasoning item id but still
+		// accepts the item's stateless encrypted_content. Retry once on the same key without
+		// the server-side handle, preserving the encrypted reasoning and visible summary.
+		lastWasReasoningItemIDStrip = false
+		if !shouldRetry && !strippedReasoningItemIDs && isReasoningItemIDRejection(bifrostError) &&
+			stripResponsesReasoningItemIDs(ctx, req) {
+			strippedReasoningItemIDs = true
+			lastWasReasoningItemIDStrip = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("upstream rejected a replayed reasoning item id for %s/%s; retrying once without item ids", providerKey, model)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped non-replayable reasoning item IDs from the request to %s/%s and retrying once", providerKey, model))
 		}
 
 		// Fail soft when the upstream refuses replayed encrypted reasoning. The ciphertext

@@ -911,6 +911,55 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 	}
 }
 
+func TestIsReasoningItemIDRejection(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    bool
+	}{
+		{
+			name:    "OpenCode missing or expired reasoning item",
+			status:  400,
+			message: "Referenced reasoning item 'rs_provider:rs_turn' was not found or has expired.",
+			want:    true,
+		},
+		{
+			name:    "expired reasoning item",
+			status:  400,
+			message: "Referenced reasoning item rs_1 has expired",
+			want:    true,
+		},
+		{
+			name:    "unrelated missing resource",
+			status:  400,
+			message: "Referenced file item file_1 was not found",
+			want:    false,
+		},
+		{
+			name:    "server error with similar text",
+			status:  500,
+			message: "Referenced reasoning item rs_1 was not found",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &schemas.BifrostError{
+				StatusCode: schemas.Ptr(tt.status),
+				Error:      &schemas.ErrorField{Message: tt.message},
+			}
+			if got := isReasoningItemIDRejection(err); got != tt.want {
+				t.Fatalf("isReasoningItemIDRejection(%q) = %v, want %v", tt.message, got, tt.want)
+			}
+		})
+	}
+	if isReasoningItemIDRejection(nil) {
+		t.Fatal("nil error must not trigger a reasoning item id retry")
+	}
+}
+
 // Regression test for the production sequence a Claude Code session hit when its
 // Azure primary was saturated. Reconstructed from the request logs, which record
 // four attempts on azure/gpt-5.6-sol (all HTTP 429), a transition to
@@ -1194,6 +1243,120 @@ func TestResponsesFallbackHealsEncryptedContentRefusal(t *testing.T) {
 				t.Error("the fail-soft strip left no routing engine log entry for operators to trace")
 			}
 		})
+	}
+}
+
+// TestResponsesRetryDropsOnlyNonReplayableReasoningItemID reproduces the
+// OpenCode Go Responses failure seen on the second turn of a Prime session.
+// The upstream returns a stateless reasoning item with encrypted_content but an
+// item id that it will not resolve on the next request. Bifrost must retry once
+// without that server-side handle while preserving the encrypted reasoning and
+// visible summary that make stateless replay possible.
+func TestResponsesRetryDropsOnlyNonReplayableReasoningItemID(t *testing.T) {
+	const (
+		reasoningID      = "rs_provider:rs_turn"
+		encryptedContent = "opaque-stateless-reasoning"
+		refusalBody      = `{"error":{"type":"invalid_request_error","message":"Referenced reasoning item 'rs_provider:rs_turn' was not found or has expired."}}`
+	)
+
+	upstream := newRecordingServer(func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			writeJSON(w, http.StatusBadRequest, refusalBody)
+			return
+		}
+		writeJSON(w, http.StatusOK, successBody)
+	})
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "stateless-responses", upstream.URL, 0)
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	resp, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		// Use a reasoning-capable OpenAI model name so the converter preserves
+		// encrypted_content on the wire; the recording server stands in for the
+		// OpenCode-compatible endpoint that issued the non-replayable id.
+		Model: "gpt-5.6-sol",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("continue after the tool result"),
+				},
+			},
+			{
+				ID:   schemas.Ptr(reasoningID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "planning the next turn"},
+					},
+					EncryptedContent: schemas.Ptr(encryptedContent),
+				},
+			},
+		},
+	})
+
+	if bifrostErr != nil {
+		t.Fatalf("expected the non-replayable reasoning id to heal, got %s", bifrostErr.Error.Message)
+	}
+	if resp == nil {
+		t.Fatal("expected a response from the healed retry")
+	}
+
+	bodies := upstream.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("upstream attempts = %d, want 2 (refusal + id-less retry)", len(bodies))
+	}
+	if !strings.Contains(bodies[0], reasoningID) || !strings.Contains(bodies[0], encryptedContent) {
+		t.Fatalf("first attempt did not reproduce the replayed reasoning item: %s", bodies[0])
+	}
+	if strings.Contains(bodies[1], reasoningID) {
+		t.Errorf("healed retry still carries the non-replayable item id: %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], encryptedContent) {
+		t.Errorf("healed retry dropped stateless encrypted reasoning: %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], "planning the next turn") {
+		t.Errorf("healed retry dropped the reasoning summary: %s", bodies[1])
+	}
+
+	var stripLogged bool
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		if strings.Contains(entry.Message, "non-replayable reasoning item IDs") {
+			stripLogged = true
+			break
+		}
+	}
+	if !stripLogged {
+		t.Error("the id-only fail-soft left no routing engine log entry")
+	}
+}
+
+func TestStripResponsesReasoningItemIDsRewritesRawPassthrough(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	req := newEncryptedReasoningRequest("opaque-stateless-reasoning")
+	req.ResponsesRequest.RawRequestBody = []byte(`{"model":"muse-spark-1.2-contributor","input":[` +
+		`{"type":"message","id":"msg_keep","role":"user","content":"continue"},` +
+		`{"type":"reasoning","id":"rs_drop","summary":[{"type":"summary_text","text":"planning"}],"encrypted_content":"opaque-stateless-reasoning","provider_field":7}` +
+		`]}`)
+
+	if !stripResponsesReasoningItemIDs(ctx, req) {
+		t.Fatal("expected the raw passthrough body to be rewritten")
+	}
+	body := string(req.ResponsesRequest.RawRequestBody)
+	if strings.Contains(body, `"rs_drop"`) {
+		t.Errorf("expected the reasoning item id to be removed, got %s", body)
+	}
+	for _, preserved := range []string{`"msg_keep"`, `"opaque-stateless-reasoning"`, `"provider_field":7`, `"planning"`} {
+		if !strings.Contains(body, preserved) {
+			t.Errorf("expected %s to survive the id-only rewrite, got %s", preserved, body)
+		}
 	}
 }
 

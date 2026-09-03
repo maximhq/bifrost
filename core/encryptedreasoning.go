@@ -166,6 +166,20 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		containsAnyMarker(message, unsupportedFieldMarkers)
 }
 
+// isReasoningItemIDRejection reports whether an upstream refused a replayed
+// Responses reasoning item because its server-side id cannot be resolved. Some
+// OpenAI-compatible providers return encrypted_content for stateless replay but
+// issue item ids that are scoped to the response that created them. Replaying
+// the whole item then fails even though the encrypted payload remains usable.
+func isReasoningItemIDRejection(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(err.Error.Message)
+	return strings.Contains(message, "referenced reasoning item") &&
+		(strings.Contains(message, "not found") || strings.Contains(message, "expired"))
+}
+
 // encryptedReasoningCarriers returns the input array and raw body of the request
 // shape that replays reasoning items, or nils when this request carries none.
 //
@@ -192,6 +206,75 @@ func encryptedReasoningCarriers(req *schemas.BifrostRequest) (input *[]schemas.R
 	default:
 		return nil, nil
 	}
+}
+
+// stripResponsesReasoningItemIDs removes only the server-side handles from
+// replayed Responses reasoning items. The visible summary and encrypted_content
+// survive so providers that support stateless replay retain the prior turn's
+// reasoning state.
+func stripResponsesReasoningItemIDs(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
+	inputRef, rawBodyRef := encryptedReasoningCarriers(req)
+	if inputRef == nil {
+		return false
+	}
+	if ctx != nil {
+		if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+			return false
+		}
+		if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+			return stripRawResponsesReasoningItemIDs(rawBodyRef)
+		}
+	}
+
+	input := *inputRef
+	rewritten := make([]schemas.ResponsesMessage, len(input))
+	copy(rewritten, input)
+	changed := false
+	for i := range rewritten {
+		if rewritten[i].ID == nil || rewritten[i].ResponsesReasoning == nil {
+			continue
+		}
+		rewritten[i].ID = nil
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	*inputRef = rewritten
+	return true
+}
+
+func stripRawResponsesReasoningItemIDs(rawBody *[]byte) bool {
+	if rawBody == nil || len(*rawBody) == 0 {
+		return false
+	}
+	input := gjson.GetBytes(*rawBody, "input")
+	if !input.IsArray() {
+		return false
+	}
+
+	items := make([]string, 0, len(input.Array()))
+	changed := false
+	for _, item := range input.Array() {
+		rest := item.Raw
+		if gjson.Get(rest, "type").String() == string(schemas.ResponsesMessageTypeReasoning) &&
+			gjson.Get(rest, "id").Exists() {
+			if withoutID, err := sjson.Delete(rest, "id"); err == nil {
+				rest = withoutID
+				changed = true
+			}
+		}
+		items = append(items, rest)
+	}
+	if !changed {
+		return false
+	}
+	updated, err := sjson.SetRawBytes(*rawBody, "input", []byte("["+strings.Join(items, ",")+"]"))
+	if err != nil {
+		return false
+	}
+	*rawBody = updated
+	return true
 }
 
 // stripUnverifiableReasoning removes the parts of a replayed reasoning turn that only
