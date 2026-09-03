@@ -1,3 +1,4 @@
+- fix: default missing Responses stream message content to an empty array [@Alex-wangyang](https://github.com/Alex-wangyang)
 - [fix]: marshal required nullable response fields as null [@PSR94](https://github.com/PSR94)
 - fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
 - feat: add Baseten to Hugging Face inference provider discovery [@nicolastoulemont](https://github.com/nicolastoulemont)

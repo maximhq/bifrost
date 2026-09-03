@@ -3830,9 +3830,20 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	// Apply event-specific defaults
 	switch resp.Type {
 	case ResponsesStreamResponseTypeOutputItemAdded:
-		// Default item status to "in_progress"
-		if result.Item != nil && result.Item.Status == nil {
-			result.Item.Status = Ptr("in_progress")
+		if result.Item != nil {
+			itemCopy := *result.Item
+			result.Item = &itemCopy
+			// Default item status to "in_progress".
+			if result.Item.Status == nil {
+				result.Item.Status = Ptr("in_progress")
+			}
+			// OpenAI message items always carry a content array, even before the
+			// first content part is added. Some compatible upstreams omit it.
+			if result.Item.Type != nil && *result.Item.Type == ResponsesMessageTypeMessage && result.Item.Content == nil {
+				result.Item.Content = &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{},
+				}
+			}
 		}
 
 	case ResponsesStreamResponseTypeOutputTextDelta, ResponsesStreamResponseTypeOutputTextDone:
