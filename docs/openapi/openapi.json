@@ -41315,6 +41315,18 @@
                               }
                             }
                           },
+                          "supported_request_types": {
+                            "type": "array",
+                            "description": "Normalized request types supported by the model according to the model-parameters catalog.",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "chat_completion",
+                                "responses",
+                                "text_completion"
+                              ]
+                            }
+                          },
                           "additional_attributes": {
                             "type": "object",
                             "additionalProperties": {

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestModelParameterCandidates(t *testing.T) {
@@ -60,6 +62,82 @@ func TestModelParameterCandidates(t *testing.T) {
 				t.Fatalf("modelParameterCandidates(%q) = %v, want %v", tt.model, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetSupportedRequestTypes(t *testing.T) {
+	s := NewTestStore(nil)
+	applied := s.applyModelParameters(map[string]json.RawMessage{
+		"shared-model": json.RawMessage(`{
+			"provider":"openai",
+			"mode":"completion",
+			"supported_endpoints":["/v1/responses","/v1/chat/completions","/v1/responses"]
+		}`),
+		"azure/shared-model": json.RawMessage(`{
+			"provider":"azure",
+			"supported_endpoints":["/chat/completions"]
+		}`),
+		"azure/response-only": json.RawMessage(`{
+			"provider":"azure",
+			"supported_endpoints":["/responses"]
+		}`),
+		"metadata-only": json.RawMessage(`{
+			"provider":"openai",
+			"supports_reasoning":true
+		}`),
+		"together_ai/together-model": json.RawMessage(`{
+			"provider":"together_ai",
+			"supported_endpoints":["/chat/completions"]
+		}`),
+		"providerless": json.RawMessage(`{
+			"supported_endpoints":["/responses"]
+		}`),
+	})
+	if applied != 6 {
+		t.Fatalf("applied = %d, want 6", applied)
+	}
+
+	wantOpenAI := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+	gotOpenAI := s.GetSupportedRequestTypes(schemas.OpenAI, "shared-model")
+	if !slices.Equal(gotOpenAI, wantOpenAI) {
+		t.Fatalf("OpenAI request types = %v, want %v", gotOpenAI, wantOpenAI)
+	}
+
+	// The exact bare row belongs to OpenAI, so an Azure lookup must continue to
+	// the provider-qualified row rather than returning another provider's data.
+	wantAzure := []schemas.RequestType{schemas.ChatCompletionRequest}
+	gotAzure := s.GetSupportedRequestTypes(schemas.Azure, "shared-model")
+	if !slices.Equal(gotAzure, wantAzure) {
+		t.Fatalf("Azure request types = %v, want %v", gotAzure, wantAzure)
+	}
+
+	// A qualified row with only endpoint metadata must still be discoverable;
+	// it does not appear in the separate supported-parameters index.
+	gotQualified := s.GetSupportedRequestTypes(schemas.Azure, "response-only")
+	if !slices.Equal(gotQualified, []schemas.RequestType{schemas.ResponsesRequest}) {
+		t.Fatalf("qualified request types = %v, want [responses]", gotQualified)
+	}
+
+	gotOpenAI[0] = schemas.ImageGenerationRequest
+	if gotAgain := s.GetSupportedRequestTypes(schemas.OpenAI, "shared-model"); !slices.Equal(gotAgain, wantOpenAI) {
+		t.Fatalf("request types after caller mutation = %v, want %v", gotAgain, wantOpenAI)
+	}
+
+	if got := s.GetSupportedRequestTypes(schemas.OpenAI, "metadata-only"); got != nil {
+		t.Fatalf("metadata-only request types = %v, want nil", got)
+	}
+	if got := s.GetSupportedRequestTypes(schemas.OpenAI, "unknown"); got != nil {
+		t.Fatalf("unknown request types = %v, want nil", got)
+	}
+	if got := s.GetSupportedRequestTypes(schemas.ModelProvider("together"), "together-model"); !slices.Equal(got, wantAzure) {
+		t.Fatalf("normalized provider request types = %v, want %v", got, wantAzure)
+	}
+	if got := s.GetSupportedRequestTypes(schemas.OpenAI, "providerless"); got != nil {
+		t.Fatalf("providerless request types = %v, want nil", got)
 	}
 }
 
