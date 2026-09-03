@@ -24,6 +24,21 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// requestTimeoutOverrideMax bounds the per-request x-bf-request-timeout
+// override so a client cannot set a pathologically long deadline. Independent
+// of any clamp on x-bf-stream-idle-timeout (#4805) -- the two headers are
+// orthogonal, so their ceilings are set independently too. Tunable.
+const requestTimeoutOverrideMax = 30 * time.Minute
+
+// streamIdleTimeoutOverrideMax bounds the per-request x-bf-stream-idle-timeout
+// override so a client cannot disable idle detection (or set a pathologically
+// long window). For streaming, the per-chunk idle timer is the SOLE liveness
+// governor -- the providers' streaming HTTP client carries no ReadTimeout (see
+// the openai/vllm streamingClient field comments), so this clamp is the
+// effective ceiling. Independent of requestTimeoutOverrideMax -- the two
+// headers are orthogonal, so their ceilings are set independently too. Tunable.
+const streamIdleTimeoutOverrideMax = 30 * time.Minute
+
 const (
 	// FastHTTPUserValueBifrostContext stores the active *schemas.BifrostContext on fasthttp.RequestCtx.
 	// This allows transport middleware and request handlers to share the same context instance.
@@ -231,6 +246,18 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
+//
+// 10. Request Timeout Header:
+//   - x-bf-request-timeout: per-request total request/stream deadline (duration string e.g. "5m" or
+//     seconds integer). Independent of x-bf-stream-idle-timeout -- setting one does not affect the
+//     other. Clamped to requestTimeoutOverrideMax.
+//
+// 10a. Stream Idle Timeout Header:
+//   - x-bf-stream-idle-timeout: per-request override of the per-chunk stream idle timeout
+//     (duration string e.g. "540s"/"9m" or a seconds integer). Lets one consumer widen the
+//     idle window without changing the provider's global stream_idle_timeout_in_seconds
+//     (which affects every consumer of that provider). Independent of x-bf-request-timeout --
+//     setting one does not affect the other. Clamped to streamIdleTimeoutOverrideMax.
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -559,6 +586,67 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		// Per-request total request/stream deadline override (duration string or
+		// seconds integer). Independent of x-bf-stream-idle-timeout -- setting one
+		// does not affect the other; a caller wanting both dimensions extended
+		// must set both headers. Enforced in core (see armRequestTimeout).
+		if keyStr == "x-bf-request-timeout" {
+			valueStr := strings.TrimSpace(string(value))
+			var reqDuration time.Duration
+			var err error
+			if reqDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					// Clamp in seconds, before converting: seconds*time.Second
+					// overflows int64 past ~292 years and wraps, so a large
+					// value can land back on a small positive duration (or a
+					// negative one) that the clamp below would accept as-is.
+					if maxSeconds := int(requestTimeoutOverrideMax / time.Second); seconds > maxSeconds {
+						seconds = maxSeconds
+					}
+					reqDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && reqDuration > 0 {
+				if reqDuration > requestTimeoutOverrideMax {
+					reqDuration = requestTimeoutOverrideMax
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, reqDuration)
+			}
+			return true
+		}
+		// Per-request stream idle-timeout override (duration string e.g. "540s"/"9m"
+		// or a seconds integer). Lets one consumer -- scoped by the virtual key that
+		// selects sending this header -- widen the per-chunk idle window WITHOUT
+		// changing the provider's global stream_idle_timeout_in_seconds (which
+		// affects every consumer of that provider). Picked up downstream by
+		// providerUtils.GetStreamIdleTimeout, because SetStreamIdleTimeoutIfEmpty
+		// yields to a value already present on the context. Independent of
+		// x-bf-request-timeout -- setting one does not affect the other. Clamped
+		// to streamIdleTimeoutOverrideMax so a client cannot disable idle detection.
+		if keyStr == "x-bf-stream-idle-timeout" {
+			valueStr := strings.TrimSpace(string(value))
+			var idleDuration time.Duration
+			var err error
+			if idleDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					// Clamp in seconds, before converting -- see the identical
+					// overflow note on x-bf-request-timeout above.
+					if maxSeconds := int(streamIdleTimeoutOverrideMax / time.Second); seconds > maxSeconds {
+						seconds = maxSeconds
+					}
+					idleDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && idleDuration > 0 {
+				if idleDuration > streamIdleTimeoutOverrideMax {
+					idleDuration = streamIdleTimeoutOverrideMax
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleDuration)
 			}
 			return true
 		}
