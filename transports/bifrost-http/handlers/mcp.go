@@ -805,11 +805,23 @@ type MCPClientResponse struct {
 	Tools     []schemas.ChatToolFunction `json:"tools"`
 	State     schemas.MCPConnectionState `json:"state"`
 	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
-	// NodeStates is the per-instance breakdown behind State when it is
-	// schemas.MCPConnectionStateDegraded (instance ID -> that instance's own
-	// self-reported state). Only ever populated by a configured
-	// MCPClusterStateAggregator; nil in a single-instance deployment.
-	NodeStates map[string]string `json:"node_states,omitempty"`
+	// LastFailure is the instance serving this request's own record of what
+	// its connection handling last failed with: the step, the error, when it
+	// last happened and when the current run began (see
+	// schemas.MCPConnectionFailure). Nil while healthy. It is deliberately not
+	// derived from credential rows: when projectMCPCredentialState overlays
+	// needs_reauth onto a runtime that has recorded nothing yet, the state and
+	// the credential block already say why, and the next connect or check to
+	// hit the dead credential records the provider's real error here.
+	LastFailure *schemas.MCPConnectionFailure `json:"last_failure,omitempty"`
+	// NodeStates is the per-instance breakdown behind State in a distributed
+	// deployment (instance ID -> that instance's own self-reported state and
+	// failure). Present when instances disagree (State is then
+	// schemas.MCPConnectionStateDegraded) and when they agree on unstable, so
+	// each instance's own reason is visible; only ever populated by a
+	// configured MCPClusterStateAggregator, nil in a single-instance
+	// deployment.
+	NodeStates map[string]schemas.MCPInstanceState `json:"node_states,omitempty"`
 	// Credential is the read-only view of the credential the client holds on
 	// its own behalf (see MCPClientCredentialResponse). Nil when the client's
 	// auth type has no such credential (none, headers) or when none has been
@@ -827,6 +839,11 @@ type MCPClientResponse struct {
 type MCPClientCredentialResponse struct {
 	Kind   string `json:"kind"`   // "oauth" | "headers"
 	Status string `json:"status"` // oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	// StatusReason says why an oauth credential's status left active: the
+	// provider's rejection of the last refresh (HTTP status plus the OAuth
+	// error and description), a credential rotation, or a failed admin
+	// exchange. Empty while active and for headers credentials.
+	StatusReason string `json:"status_reason,omitempty"`
 	// ExpiresAt is the access token's expiry on oauth credentials; nil when
 	// the provider did not report one. Always nil for headers credentials.
 	ExpiresAt *string `json:"expires_at,omitempty"`
@@ -866,6 +883,7 @@ func mcpClientCredentialResponse(
 		resp := &MCPClientCredentialResponse{
 			Kind:            "oauth",
 			Status:          t.Status,
+			StatusReason:    t.StatusReason,
 			HasRefreshToken: t.RefreshToken != "",
 			Scopes:          parseOauthScopesJSON(t.Scopes),
 			CreatedAt:       t.CreatedAt.UTC().Format(rfc3339Nano),
@@ -910,17 +928,19 @@ func mcpClientCredentialResponse(
 }
 
 // MCPClusterStateAggregator is an optional capability the configured
-// MCPManager may additionally implement: given a client and the state its
-// own runtime already reports locally, it returns the cluster-aggregated
-// view — the same value when every instance agrees, or
-// schemas.MCPConnectionStateDegraded plus a per-instance breakdown when they
-// don't. A nil aggregated map means "agreement" or "not applicable"; a
-// non-nil one is only ever attached to the response when the returned state
-// is actually Degraded. Single-instance deployments never implement this,
-// so the type assertion in getMCPClientsPaginated simply misses and the
-// response is unchanged from today.
+// MCPManager may additionally implement: given a client's locally resolved
+// state and failure record, it folds in every other instance's self-reported
+// pair for the same client and returns the deployment-wide view. A nil
+// nodeStates means the local view stands as-is (every instance agrees on a
+// healthy state, or the state is one that is not compared per instance);
+// a non-nil one is the per-instance breakdown to attach, with state the
+// aggregate to show above it: schemas.MCPConnectionStateDegraded when the
+// instances disagree, or the agreed non-healthy state when they all report
+// it but may each have a different reason. Single-instance deployments never
+// implement this, so the type assertion in getMCPClientsPaginated simply
+// misses and the response is unchanged from today.
 type MCPClusterStateAggregator interface {
-	AggregateMCPClientState(clientID string, localState schemas.MCPConnectionState) (state schemas.MCPConnectionState, nodeStates map[string]string)
+	AggregateMCPClientState(clientID string, local schemas.MCPInstanceState) (state schemas.MCPConnectionState, nodeStates map[string]schemas.MCPInstanceState)
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
@@ -1473,14 +1493,16 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 				oauthTokenStatus(sharedToken),
 			)
 			resp := MCPClientResponse{
-				Config:     redactedConfig,
-				Tools:      sortedTools,
-				State:      resolvedState,
-				VKConfigs:  vkConfigs,
-				Credential: credential,
+				Config:      redactedConfig,
+				Tools:       sortedTools,
+				State:       resolvedState,
+				LastFailure: connectedClient.LastFailure,
+				VKConfigs:   vkConfigs,
+				Credential:  credential,
 			}
 			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
-				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, resolvedState); aggState == schemas.MCPConnectionStateDegraded {
+				local := schemas.MCPInstanceState{State: resolvedState, LastFailure: resp.LastFailure}
+				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, local); nodeStates != nil {
 					resp.State = aggState
 					resp.NodeStates = nodeStates
 				}
@@ -2908,7 +2930,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// comment) and no separate config table to update in the same
 	// transaction — the client row was already persisted above.
 	if shouldMarkExchangeNeedsReauth {
-		if err := h.store.ConfigStore.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, id); err != nil {
+		if err := h.store.ConfigStore.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, id, "token exchange settings were updated; the admin credential must be re-verified"); err != nil {
 			// Mirrors shouldRotateOAuthConfig's [PARTIAL SUCCESS] handling
 			// above: the rest of the update already committed, only the
 			// reauth marking failed.

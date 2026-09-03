@@ -1590,11 +1590,11 @@ func (m *MockConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx 
 	return nil
 }
 
-func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error {
 	return nil
 }
 
-func (m *MockConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
+func (m *MockConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error {
 	m.markTokensNeedsReauthCalls = append(m.markTokensNeedsReauthCalls, oauthConfigID)
 	for _, tok := range m.oauthTokensByConfigID[oauthConfigID] {
 		tok.Status = "needs_reauth"
@@ -1602,7 +1602,7 @@ func (m *MockConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, o
 	return nil
 }
 
-func (m *MockConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error {
+func (m *MockConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error {
 	return nil
 }
 
@@ -1641,7 +1641,7 @@ func (m *MockConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOaut
 	if err := m.UpdateOauthConfig(ctx, existingOauthConfig); err != nil {
 		return false, err
 	}
-	if err := m.MarkTokensNeedsReauthByConfigID(ctx, existingOauthConfig.ID); err != nil {
+	if err := m.MarkTokensNeedsReauthByConfigID(ctx, existingOauthConfig.ID, "rotated"); err != nil {
 		return false, err
 	}
 	return true, nil

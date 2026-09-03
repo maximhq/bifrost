@@ -4145,9 +4145,10 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		})
 
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
-			Config: client.ExecutionConfig,
-			Tools:  tools,
-			State:  client.State,
+			Config:      client.ExecutionConfig,
+			Tools:       tools,
+			State:       client.State,
+			LastFailure: client.LastFailure,
 		})
 	}
 

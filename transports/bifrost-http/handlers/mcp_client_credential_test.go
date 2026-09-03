@@ -68,7 +68,8 @@ func TestMCPClientCredentialResponse(t *testing.T) {
 
 	adminToken := &configstoreTables.TableMCPOauthToken{
 		ID: "admin", AuthMode: "admin", Status: "needs_reauth",
-		AccessToken: "secret", RefreshToken: "",
+		StatusReason: "provider rejected the refresh (HTTP 400, invalid_grant: Token has been expired or revoked.)",
+		AccessToken:  "secret", RefreshToken: "",
 		Scopes: "null", CreatedAt: created, UpdatedAt: updated,
 	}
 	sharedToken := &configstoreTables.TableMCPOauthToken{
@@ -93,7 +94,8 @@ func TestMCPClientCredentialResponse(t *testing.T) {
 	}
 	adminWant := &MCPClientCredentialResponse{
 		Kind: "oauth", Status: "needs_reauth", HasRefreshToken: false,
-		CreatedAt: "2026-08-12T10:00:00Z", UpdatedAt: "2026-08-12T11:00:00Z",
+		StatusReason: "provider rejected the refresh (HTTP 400, invalid_grant: Token has been expired or revoked.)",
+		CreatedAt:    "2026-08-12T10:00:00Z", UpdatedAt: "2026-08-12T11:00:00Z",
 	}
 	headersWant := &MCPClientCredentialResponse{
 		Kind: "headers", Status: "needs_update",

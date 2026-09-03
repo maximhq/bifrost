@@ -524,7 +524,7 @@ func TestGetUserAccessTokenByMode_FlushAfterNeedsReauth(t *testing.T) {
 
 	// Credential rotation marks every token row for the config
 	// needs_reauth, then the handler-level callback flushes the cache.
-	require.NoError(t, store.MarkTokensNeedsReauthByConfigID(ctx, "cfg-1"))
+	require.NoError(t, store.MarkTokensNeedsReauthByConfigID(ctx, "cfg-1", "rotated"))
 	provider.FlushUserTokenCache()
 
 	// The active-only lookup no longer matches the row, so the caller sees
