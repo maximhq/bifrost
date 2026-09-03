@@ -2207,72 +2207,145 @@ ListPricingOverridesResponse:
 
 ComplexityTierBoundaries:
   type: object
-  description: Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+  deprecated: true
+  description: |
+    Deprecated score thresholds for the retired lexical complexity classifier.
+    This block is optional and ignored by semantic classification, but remains
+    accepted for backward compatibility. When supplied, values must satisfy
+    0 < simple_medium < medium_complex < 1.
   additionalProperties: false
   required:
     - simple_medium
     - medium_complex
-    - complex_reasoning
   properties:
     simple_medium:
       type: number
-      description: Score boundary between SIMPLE and MEDIUM tiers
+      deprecated: true
+      description: Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)
       exclusiveMinimum: 0
       exclusiveMaximum: 1
     medium_complex:
       type: number
-      description: Score boundary between MEDIUM and COMPLEX tiers
-      exclusiveMinimum: 0
-      exclusiveMaximum: 1
-    complex_reasoning:
-      type: number
-      description: Score boundary between COMPLEX and REASONING tiers
+      deprecated: true
+      description: Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)
       exclusiveMinimum: 0
       exclusiveMaximum: 1
 
 ComplexityKeywordConfig:
   type: object
   description: |
-    Editable keyword lists used by the complexity analyzer. Only the four user-facing
-    dimensions are exposed; `reasoning_keywords` entries drive the reasoning tier
-    override. Matching is normalized to lowercase and duplicates are removed on save.
+    Reference phrases for semantic complexity classification, one list per tier.
+    Each request is embedded and takes the tier of its nearest phrase. Entries
+    should be whole example prompts rather than individual keywords. Each phrase
+    is limited to 2000 characters, and the same phrase cannot appear in two
+    tiers. The field names predate semantic classification and are kept for
+    backward compatibility.
   additionalProperties: false
   required:
-    - code_keywords
-    - reasoning_keywords
-    - technical_keywords
     - simple_keywords
+    - medium_keywords
+    - complex_keywords
   properties:
-    code_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    reasoning_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    technical_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
     simple_keywords:
       type: array
+      description: Reference phrases for the SIMPLE tier (50 built-in defaults)
       items:
         type: string
+        maxLength: 2000
       minItems: 1
+    medium_keywords:
+      type: array
+      description: Reference phrases for the MEDIUM tier (50 built-in defaults)
+      items:
+        type: string
+        maxLength: 2000
+      minItems: 1
+    complex_keywords:
+      type: array
+      description: Reference phrases for the COMPLEX tier (50 built-in defaults)
+      items:
+        type: string
+        maxLength: 2000
+      minItems: 1
+
+ComplexitySemanticConfig:
+  type: object
+  description: |
+    Embedding configuration for semantic complexity classification. When absent,
+    no complexity tier is published and rules referencing complexity_tier fall
+    through. The provider must have an enabled key.
+  additionalProperties: false
+  required:
+    - provider
+    - embedding_model
+  properties:
+    provider:
+      type: string
+      minLength: 1
+      description: Provider used for embedding calls (must have an enabled key)
+    embedding_model:
+      type: string
+      minLength: 1
+      description: Embedding model, e.g. text-embedding-3-small
+    timeout:
+      description: Ceiling on the inline embedding call. Accepts a duration string ("1.5s") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.
+      oneOf:
+        - type: string
+          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+        - type: number
+          exclusiveMinimum: 0
+    min_similarity:
+      type: number
+      minimum: 0
+      exclusiveMaximum: 1
+      description: Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate).
+    message_history_count:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded.
+    count_toward_budgets:
+      type: boolean
+      description: Whether embedding usage counts toward virtual-key budgets (default false)
+    vector_store:
+      type: string
+      enum: [embedded, vector_store]
+      description: |
+        Where reference-phrase embeddings live. `embedded` (default) uses the
+        built-in in-memory store, so phrases are re-embedded on every restart.
+        `vector_store` uses the top-level `vector_store` when one is configured
+        and falls back to the embedded store otherwise.
+ComplexitySemanticStatus:
+  type: object
+  description: Runtime status of the semantic complexity classifier. Never contains phrases, embeddings, or provider secrets.
+  properties:
+    state:
+      type: string
+      enum: [disabled, warming, ready, failed]
+      description: disabled = no embedding configuration; warming = reference phrases are being embedded; ready = serving the current configuration; failed = the desired configuration failed to warm
+    loaded:
+      type: integer
+      description: Reference phrases embedded so far in the current warmup
+    total:
+      type: integer
+      description: Total reference phrases to embed in the current warmup
+    serving_previous:
+      type: boolean
+      description: When true with state=failed, the previous generation is still serving while the new one failed to warm
+    error:
+      type: string
+      description: Warmup failure detail when state=failed
 
 ComplexityAnalyzerConfig:
   type: object
   description: Full runtime configuration for complexity routing analysis.
   additionalProperties: false
   required:
-    - tier_boundaries
     - keywords
   properties:
     tier_boundaries:
       $ref: '#/ComplexityTierBoundaries'
     keywords:
       $ref: '#/ComplexityKeywordConfig'
+    semantic:
+      $ref: '#/ComplexitySemanticConfig'

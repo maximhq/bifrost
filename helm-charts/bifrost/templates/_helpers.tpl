@@ -1215,6 +1215,17 @@ false
 {{- $_ := set $pineconeConfig "index_host" .Values.vectorStore.pinecone.external.indexHost }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $pineconeConfig }}
+{{- else if eq .Values.vectorStore.type "chromem" }}
+{{- $chromemConfig := dict }}
+{{- with .Values.vectorStore.chromem }}
+{{- if .path }}
+{{- $_ := set $chromemConfig "path" .path }}
+{{- end }}
+{{- if hasKey . "compress" }}
+{{- $_ := set $chromemConfig "compress" .compress }}
+{{- end }}
+{{- end }}
+{{- $_ := set $vectorStore "config" $chromemConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
