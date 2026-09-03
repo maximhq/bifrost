@@ -18,6 +18,26 @@ export type MCPConnectionState =
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
 
+// Which step of Bifrost's own connection handling failed. Mirrors the Go
+// MCPConnectionFailureStage constants.
+export type MCPConnectionFailureStage = "connect" | "ping" | "list_tools" | "tool_discovery" | "transport_lost" | "credential";
+
+// Why a server's state is not healthy: the step that failed, the error it
+// failed with, the most recent failed attempt, and when the current run of
+// failures began. Absent while healthy.
+export interface MCPConnectionFailure {
+	stage: MCPConnectionFailureStage;
+	message: string;
+	at: string;
+	since: string;
+}
+
+// One instance's own view of a server in a distributed deployment.
+export interface MCPInstanceState {
+	state: MCPConnectionState;
+	last_failure?: MCPConnectionFailure;
+}
+
 // Lifecycle states for a per-user MCP header credential row. Mirrors the
 // status column on mcp_per_user_header_credentials.
 //   - active:       caller-submitted, usable
@@ -161,6 +181,11 @@ export interface MCPClientCredential {
 	kind: "oauth" | "headers";
 	// oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
 	status: "active" | "orphaned" | "needs_reauth" | "needs_update";
+	// oauth only: why the status left active, as recorded when it flipped:
+	// the provider's rejection of the last refresh (HTTP status plus the
+	// OAuth error and description), a credential rotation, or a failed admin
+	// exchange. Absent while active.
+	status_reason?: string;
 	// oauth only: access token expiry; absent when the provider did not report one.
 	expires_at?: string | null;
 	// oauth only: set once the access token has been refreshed or the
@@ -182,10 +207,15 @@ export interface MCPClient {
 	tools: ToolFunction[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
-	// Per-instance breakdown behind `state` when it's "degraded" (instance ID
-	// -> that instance's own self-reported state). Only ever present in a
-	// distributed deployment; absent otherwise.
-	node_states?: Record<string, string>;
+	// The failure behind a `state` other than healthy, as recorded by the
+	// instance that served this request. Absent while healthy.
+	last_failure?: MCPConnectionFailure;
+	// Per-instance breakdown behind `state` in a distributed deployment
+	// (instance ID -> that instance's own state and failure). Present when
+	// instances disagree (`state` is then "degraded") and when they all
+	// report unstable, so each instance's own reason is visible. Never
+	// present in a single-instance deployment.
+	node_states?: Record<string, MCPInstanceState>;
 	// The credential this server holds on its own behalf. Absent for auth
 	// types without one (none, headers) and for servers that have not
 	// completed their one-time authorization yet.

@@ -8,6 +8,7 @@ import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
 import { useGetMCPSessionsQuery } from "@/lib/store";
 import { MCPClient, MCPClientCredential } from "@/lib/types/mcp";
 import {
@@ -17,6 +18,7 @@ import {
 	formatTokenExpiry,
 	missingHeaderKeys,
 } from "@/lib/utils/mcpCredential";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight } from "lucide-react";
 import { ReactNode } from "react";
@@ -72,6 +74,14 @@ function OAuthCredentialBlock({ mcpClient }: Props) {
 					<Row label="Status">
 						<CredentialStatusBadge status={credential.status} />
 						{credential.status === "needs_reauth" && <Hint>{copy.needsReauth}</Hint>}
+						{credential.status_reason && (
+							<div
+								className="text-muted-foreground mt-1 font-mono text-[11px] break-words"
+								data-testid="mcpclient-credential-status-reason"
+							>
+								{credential.status_reason}
+							</div>
+						)}
 					</Row>
 					<Row label="Access token expires">
 						{credential.expires_at ? (
@@ -268,27 +278,22 @@ function SessionsRow({ clientId, kind }: { clientId: string; kind: "token" | "he
 	);
 }
 
-// Status vocabulary and colors mirror the sessions table's StatusBadge so a
-// credential reads the same in both places.
+// Status vocabulary mirrors the sessions table's StatusBadge so a credential
+// reads the same in both places; colors come from the shared palette so the
+// badge matches the server state badge above it.
+const CREDENTIAL_STATUS_LABELS: Record<string, string> = {
+	active: "Active",
+	needs_reauth: "Needs re-auth",
+	needs_update: "Needs update",
+	orphaned: "Orphaned",
+};
+
 function CredentialStatusBadge({ status }: { status: MCPClientCredential["status"] }) {
-	switch (status) {
-		case "orphaned":
-			return (
-				<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-					Orphaned
-				</Badge>
-			);
-		case "needs_reauth":
-			return <Badge variant="destructive">Needs re-auth</Badge>;
-		case "needs_update":
-			return (
-				<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-					Needs update
-				</Badge>
-			);
-		default:
-			return <Badge>Active</Badge>;
-	}
+	return (
+		<Badge className={MCP_CREDENTIAL_STATUS_COLORS[status] ?? MCP_CREDENTIAL_STATUS_COLORS.unknown}>
+			{CREDENTIAL_STATUS_LABELS[status] ?? titleCaseFromSnakeCase(status)}
+		</Badge>
+	);
 }
 
 function DefinitionList({ children }: { children: ReactNode }) {
