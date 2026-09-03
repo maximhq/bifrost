@@ -786,17 +786,23 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// validated header-safe here, so providers can emit it verbatim. It is stored
 	// under a dedicated key — never in shared extra headers — so only the
 	// opencode provider family can forward it (see opencodeSessionSigner).
-	opencodeSession := ""
-	if v, ok := schemas.ValidateOpencodeSessionID(explicitOpencodeSession); ok {
-		opencodeSession = v
-	} else if v, ok := schemas.ValidateOpencodeSessionID(ehOpencodeSession); ok {
-		opencodeSession = v
-	} else if v, ok := schemas.ValidateOpencodeSessionID(sessionID); ok {
-		opencodeSession = v
-	} else {
-		opencodeSession = uuid.NewString()
+	// A configured header filter governs the session header like any other
+	// forwarded header: a denylist hit or allowlist miss suppresses capture
+	// entirely, including synthesis. matcher is nil-safe (nil allows all), so
+	// unconfigured setups behave exactly as before.
+	if matcher.ShouldAllow("x-opencode-session") {
+		opencodeSession := ""
+		if v, ok := schemas.ValidateOpencodeSessionID(explicitOpencodeSession); ok {
+			opencodeSession = v
+		} else if v, ok := schemas.ValidateOpencodeSessionID(ehOpencodeSession); ok {
+			opencodeSession = v
+		} else if v, ok := schemas.ValidateOpencodeSessionID(sessionID); ok {
+			opencodeSession = v
+		} else {
+			opencodeSession = uuid.NewString()
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyOpencodeSession, opencodeSession)
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyOpencodeSession, opencodeSession)
 
 	// Collect all request query params for downstream use (e.g., governance routing CEL rules
 	// that read params["..."]). Keys are lowercased for case-insensitive lookup.

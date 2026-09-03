@@ -670,11 +670,53 @@ func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
 // session value never leaks into provider-generic forwarding).
 func opencodeSessionFromContext(t *testing.T, ctx *fasthttp.RequestCtx) (string, map[string][]string) {
 	t.Helper()
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	return opencodeSessionFromContextWithStore(t, ctx, testHandlerStore{})
+}
+
+func opencodeSessionFromContextWithStore(t *testing.T, ctx *fasthttp.RequestCtx, store HandlerStore) (string, map[string][]string) {
+	t.Helper()
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, store)
 	defer cancel()
 	session, _ := bifrostCtx.Value(schemas.BifrostContextKeyOpencodeSession).(string)
 	extra, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 	return session, extra
+}
+
+func TestConvertToBifrostContext_OpencodeSessionRespectsHeaderFilter(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("x-opencode-session", "conv-1")
+		ctx.Request.Header.Set("x-bf-eh-x-opencode-session", "eh-1")
+		ctx.Request.Header.Set("x-bf-session-id", "sess-1")
+		return ctx
+	}
+
+	t.Run("denylist blocks all capture paths including synthesis", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Denylist: []string{"x-opencode-session"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "" {
+			t.Fatalf("denied opencode session = %q, want absent", got)
+		}
+	})
+
+	t.Run("allowlist miss blocks capture", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Allowlist: []string{"anthropic-beta"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "" {
+			t.Fatalf("non-allowlisted opencode session = %q, want absent", got)
+		}
+	})
+
+	t.Run("allowlist hit captures normally", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Allowlist: []string{"x-opencode-session"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "conv-1" {
+			t.Fatalf("allowlisted opencode session = %q, want conv-1", got)
+		}
+	})
 }
 
 func TestConvertToBifrostContext_OpencodeSessionCapture(t *testing.T) {
