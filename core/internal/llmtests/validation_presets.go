@@ -490,6 +490,11 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.CoreWeave:
+		// vLLM returns OpenAI-shaped usage on every response and stream tail.
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Databricks:
 		// Both Databricks surfaces return the OpenAI-shaped usage object.
 		expectations.ShouldHaveUsageStats = true
