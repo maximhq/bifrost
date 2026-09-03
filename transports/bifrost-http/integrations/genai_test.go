@@ -25,23 +25,100 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+const (
+	bytesPerKB        = 1024
+	testUploadLimitKB = 10
+)
+
+const testResumableUploadVirtualKey = "test-resumable-upload-key"
 
 type fileUploadTestHandlerStore struct {
 	*mockHandlerStore
 	kvStore *kvstore.Store
 }
 
-const (
-	bytesPerKB        = 1024
-	bytesPerMB        = 1024 * bytesPerKB
-	testUploadLimitKB = 100
-)
-
-func (m *fileUploadTestHandlerStore) GetKVStore() *kvstore.Store {
-	return m.kvStore
+func (s *fileUploadTestHandlerStore) GetKVStore() *kvstore.Store {
+	return s.kvStore
 }
+
+// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text and function-result values without touching metadata or function-call arguments.
+func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"systemInstruction":{"parts":[{"text":"system alice@example.com"}]},
+		"contents":[
+			{"role":"user","parts":[{"text":"first alice@example.com"}]},
+			{"role":"model","parts":[
+				{"thought":true,"text":"reason alice@example.com","thoughtSignature":"alice@example.com"},
+				{"functionCall":{"name":"lookup","args":{"email":"alice@example.com"}}}
+			]},
+			{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"output":"tool alice@example.com","nested.value":{"contact:key":"alice@example.com"}}}}]}
+		],
+		"instances":[{"prompt":"image alice@example.com"}],
+		"labels":{"owner":"alice@example.com"},
+		"tools":[{"functionDeclarations":[{"name":"lookup","description":"alice@example.com"}]}]
+	}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+
+	redactedPaths := []string{
+		"systemInstruction.parts.0.text",
+		"contents.0.parts.0.text",
+		"contents.1.parts.0.text",
+		"contents.2.parts.0.functionResponse.response.output",
+		`contents.2.parts.0.functionResponse.response.nested\.value.contact:key`,
+		"instances.0.prompt",
+	}
+	for _, path := range redactedPaths {
+		value := gjson.GetBytes(got, path).String()
+		assert.NotContains(t, value, "alice@example.com", path)
+		assert.Contains(t, value, "[EMAIL]", path)
+	}
+
+	untouchedPaths := []string{
+		"contents.1.parts.0.thoughtSignature",
+		"contents.1.parts.1.functionCall.args.email",
+		"labels.owner",
+		"tools.0.functionDeclarations.0.description",
+	}
+	for _, path := range untouchedPaths {
+		assert.Equal(t, "alice@example.com", gjson.GetBytes(got, path).String(), path)
+	}
+	assert.True(t, strings.Contains(string(got), `"labels":{"owner":"alice@example.com"}`))
+}
+
+// TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope verifies both documented envelope spelling and snake-case system instructions use the same content allowlist.
+func TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope(t *testing.T) {
+	rawBody := []byte(`{"generate_content_request":{"system_instruction":{"parts":[{"text":"system alice@example.com"}]},"contents":[{"parts":[{"text":"user alice@example.com"}]}]}}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assert.Equal(t, "system [EMAIL]", gjson.GetBytes(got, "generate_content_request.system_instruction.parts.0.text").String())
+	assert.Equal(t, "user [EMAIL]", gjson.GetBytes(got, "generate_content_request.contents.0.parts.0.text").String())
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral verifies a normalized runtime mutation cannot silently leave Gemini content unredacted.
+func TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.Error(t, err)
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys verifies unsupported key mutation fails closed inside a function-result subtree.
+func TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"functionResponse":{"response":{"alice@example.com":"value"}}}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.ErrorContains(t, err, "unsupported JSON object key")
+}
+
 func TestCreateGenAIRerankRouteConfig(t *testing.T) {
 	route := createGenAIRerankRouteConfig("/genai")
 
@@ -99,11 +176,15 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 	require.NoError(t, sonic.Unmarshal(rawBody, req))
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
+
 	err := extractAndSetModelAndRequestType(ctx, bifrostCtx, req)
 	require.NoError(t, err)
 
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, rawBody, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	assert.True(t, hasRewriter)
 }
 
 func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t *testing.T) {
@@ -120,11 +201,14 @@ func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t
 	require.NoError(t, sonic.Unmarshal(rawBody, req))
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
+
 	err := extractAndSetModelAndRequestType(ctx, bifrostCtx, req)
 	require.NoError(t, err)
 
 	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter))
 }
 
 func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testing.T) {
@@ -138,6 +222,8 @@ func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testi
 	require.NoError(t, sonic.Unmarshal(rawBody, req))
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
+
 	err := extractAndSetModelAndRequestType(ctx, bifrostCtx, req)
 	require.NoError(t, err)
 
@@ -149,6 +235,7 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	rawBody := []byte(`{"batch":{"inputConfig":{"requests":{"requests":[{"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"temperature":0.2}},"metadata":{"key":"req-1"}}]}}}}`)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.SetUserValue("model", "gemini-2.5-flash:batchGenerateContent")
+
 	ctx.Request.Header.SetMethod("POST")
 	ctx.Request.Header.Set("x-model-provider", "gemini")
 	ctx.Request.SetBody(rawBody)
@@ -156,6 +243,8 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	req := &gemini.GeminiBatchCreateRequest{}
 	require.NoError(t, sonic.Unmarshal(rawBody, req))
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
 
 	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
@@ -182,6 +271,8 @@ func TestGenAIBatchCreateConverterCarriesDisplayNameAndInlineTools(t *testing.T)
 	req := &gemini.GeminiBatchCreateRequest{}
 	require.NoError(t, sonic.Unmarshal(rawBody, req))
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
 
 	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
@@ -232,6 +323,8 @@ func TestGenAICachedContentCreateParserCarriesRawBody(t *testing.T) {
 	assert.Equal(t, "3600s", *createReq.TTL)
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	converted, err := route.CachedContentRequestConverter(bifrostCtx, req)
 	require.NoError(t, err)
 	require.NotNil(t, converted)
@@ -273,6 +366,7 @@ func TestGenAIRerankRequestConverter(t *testing.T) {
 	}
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	bifrostReq, err := route.RequestConverter(bifrostCtx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq)
@@ -330,6 +424,7 @@ func TestGenAIRerankRequestConverterRequestsDocuments(t *testing.T) {
 	require.NotNil(t, route.RequestConverter)
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	bifrostReq, err := route.RequestConverter(bifrostCtx, &vertex.VertexRankRequest{
 		Query:   "capital of france",
 		Records: []vertex.VertexRankRecord{{ID: "doc-paris", Content: new("Paris is capital of France")}},
@@ -365,6 +460,7 @@ func TestExtractGeminiModelMetadataParams(t *testing.T) {
 
 	listReq := &schemas.BifrostListModelsRequest{}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	err := extractGeminiModelMetadataParams(ctx, bifrostCtx, listReq)
 	require.NoError(t, err)
@@ -376,6 +472,7 @@ func TestExtractGeminiModelMetadataParams(t *testing.T) {
 func TestConvertGeminiModelMetadataResponse(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-2.5-pro")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	resp := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{{ID: "gemini/gemini-2.5-pro", Name: schemas.Ptr("Gemini 2.5 Pro")}},
@@ -393,6 +490,7 @@ func TestConvertGeminiModelMetadataResponse(t *testing.T) {
 func TestConvertGeminiModelMetadataResponse_MatchesRequestedModelNotFirst(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-3-pro-preview")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	resp := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
@@ -413,6 +511,8 @@ func TestConvertGeminiModelMetadataResponse_MatchesRequestedModelNotFirst(t *tes
 func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-3-pro-preview")
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	converted, err := convertGeminiModelMetadataResponse(bifrostCtx, &schemas.BifrostListModelsResponse{Data: []schemas.Model{}})
 	require.NoError(t, err)
@@ -446,6 +546,7 @@ func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 		Provider:    schemas.Gemini,
 		NextOffset:  0,
 		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
@@ -455,6 +556,8 @@ func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 		context.Background(),
 		schemas.NoDeadline,
 	)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	chunk := []byte("first upload chunk")
 
@@ -541,12 +644,15 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
 		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 	chunk := []byte("first upload chunk")
 
 	// First upload.
@@ -622,6 +728,7 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 		DisplayName: "finalize-test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
@@ -674,6 +781,7 @@ func TestFileUploadPostCallback_DeletesSessionAfterFinalization(t *testing.T) {
 		DisplayName: "finalize-test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
@@ -727,6 +835,8 @@ func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
 		context.Background(),
 		schemas.NoDeadline,
 	)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	fileReq, err := route.FileRequestConverter(bifrostCtx, req)
 
@@ -911,7 +1021,7 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	require.NoError(t, err)
 	defer startResponse.Body.Close()
 
-	require.Equal(t, http.StatusOK, startResponse.StatusCode)
+	require.Equal(t, fasthttp.StatusOK, startResponse.StatusCode)
 	assert.Equal(t, "active", startResponse.Header.Get("X-Goog-Upload-Status"))
 
 	uploadURL := startResponse.Header.Get("X-Goog-Upload-URL")
@@ -1023,55 +1133,101 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 }
 
 // A non-final upload chunk within the configured size limit should be accepted.
-func TestFileRequestConverter_AllowsNonFinalChunkWithinConfiguredLimit(t *testing.T) {
+func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing.T) {
 	t.Parallel()
+
+	const (
+		maxUploadSizeMB = 100
+		chunkSize       = 99 * 1024 * 1024
+		finalChunkSize  = 2 * 1024 * 1024
+	)
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
 	defer kvStore.Close()
 
 	handlerStore := &fileUploadTestHandlerStore{
-		mockHandlerStore: &mockHandlerStore{},
-		kvStore:          kvStore,
+		mockHandlerStore: &mockHandlerStore{
+			maxRequestBodySizeMB:     lib.DefaultMaxRequestBodySizeMB,
+			maxResumableUploadSizeMB: maxUploadSizeMB,
+		},
+		kvStore: kvStore,
 	}
+
 	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
-	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+	route := findGenAIRouteForTest(
+		t,
+		routes,
+		"/genai/upload/v1beta/files",
+		"POST",
+	)
 
-	uploadID := "large-intermediate-chunk"
-	require.NoError(t, kvStore.SetWithTTL(uploadID, &gemini.GeminiResumableUploadSession{
-		Provider: schemas.Gemini,
-		Chunks:   make(map[int64][]byte),
-	}, time.Minute))
+	uploadID := "cumulative-upload-exceeds-max-size"
 
-	const largeChunkSizeKB = 11
-	largeChunk := make([]byte, largeChunkSizeKB*bytesPerKB)
-	firstReq := &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        uploadID,
-		UploadCommand:   "upload",
-		HasUploadOffset: true,
-		FileData:        largeChunk,
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "large.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
-	fileReq, err := route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), firstReq)
+	require.NoError(
+		t,
+		kvStore.SetWithTTL(uploadID, session, time.Minute),
+	)
+
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	// First chunk: 99 MB.
+	firstChunk := make([]byte, chunkSize)
+
+	fileReq, err := route.FileRequestConverter(
+		bifrostCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload",
+			UploadOffset:    0,
+			HasUploadOffset: true,
+			FileData:        firstChunk,
+		},
+	)
+
 	require.NoError(t, err)
 	require.NotNil(t, fileReq)
 	assert.True(t, fileReq.Handled)
 
-	secondReq := &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        uploadID,
-		UploadCommand:   "upload",
-		HasUploadOffset: true,
-		UploadOffset:    int64(len(largeChunk)),
-		FileData:        []byte("tail"),
-	}
-	fileReq, err = route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), secondReq)
-	require.NoError(t, err)
-	require.NotNil(t, fileReq)
-	assert.True(t, fileReq.Handled)
+	// Second chunk would make the cumulative upload 101 MB,
+	// which must be rejected.
+	finalChunk := make([]byte, finalChunkSize)
 
-	stored, err := kvStore.Get(uploadID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(largeChunk)+len("tail")), stored.(*gemini.GeminiResumableUploadSession).NextOffset)
+	fileReq, err = route.FileRequestConverter(
+		bifrostCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload,finalize",
+			UploadOffset:    int64(chunkSize),
+			HasUploadOffset: true,
+			FileData:        finalChunk,
+		},
+	)
+
+	require.Error(t, err)
+	assert.Nil(t, fileReq)
+	assert.Contains(
+		t,
+		err.Error(),
+		"resumable upload exceeds maximum size of 100 MB",
+	)
 }
 
 func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
@@ -1100,6 +1256,7 @@ func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
 			0: []byte("original chunk"),
 		},
 		NextOffset: int64(len("original chunk")),
+		VirtualKey: testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
@@ -1109,6 +1266,8 @@ func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
 		context.Background(),
 		schemas.NoDeadline,
 	)
+
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
@@ -1134,7 +1293,7 @@ func TestFileRequestConverter_RejectsRetryWithDifferentData(t *testing.T) {
 	assert.Equal(t, int64(len("original chunk")), storedSession.NextOffset)
 }
 
-// missing offset
+// Test that the request is rejected when the upload command is missing.
 func TestFileRequestConverter_RejectsMissingUploadCommand(t *testing.T) {
 	t.Parallel()
 
@@ -1223,13 +1382,29 @@ func TestFileRequestConverter_ConcurrentRequestsSameUploadID(t *testing.T) {
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
 		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx1 := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+	ctx1.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	ctx2 := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+	ctx2.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
 
 	req1 := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
@@ -1303,13 +1478,29 @@ func TestFileRequestConverter_ConcurrentFinalizeRequestsOnlyOneReachesProvider(t
 		Chunks: map[int64][]byte{
 			0: []byte("chunk"),
 		},
+		VirtualKey: testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx1 := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+	ctx1.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	ctx2 := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+	ctx2.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
 
 	req1 := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
@@ -1345,12 +1536,14 @@ func TestFileRequestConverter_ConcurrentFinalizeRequestsOnlyOneReachesProvider(t
 
 	wg.Wait()
 
-	// One request should succeed (no error), the other should fail with "already being finalized" error
+	// Exactly one finalize request should succeed.
 	successCount := 0
+
 	if err1 == nil {
 		successCount++
 		require.NotNil(t, fileReq1)
 	}
+
 	if err2 == nil {
 		successCount++
 		require.NotNil(t, fileReq2)
@@ -1358,19 +1551,22 @@ func TestFileRequestConverter_ConcurrentFinalizeRequestsOnlyOneReachesProvider(t
 
 	assert.Equal(t, 1, successCount, "exactly one finalize request should succeed")
 
-	// Check that one has the error indicating concurrent finalization
+	// The other request should fail because the upload is already being finalized.
 	if err1 != nil {
 		assert.Contains(t, err1.Error(), "already being finalized")
 	}
+
 	if err2 != nil {
 		assert.Contains(t, err2.Error(), "already being finalized")
 	}
 
-	// Verify session is marked as finalizing
+	// Verify that the session is marked as finalizing.
 	storedValue, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 
-	storedSession := storedValue.(*gemini.GeminiResumableUploadSession)
+	storedSession, ok := storedValue.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
 	assert.True(t, storedSession.Finalizing, "session should be marked as finalizing")
 }
 
@@ -1398,11 +1594,13 @@ func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
 		Chunks: map[int64][]byte{
 			0: []byte("1234567890"),
 		},
+		VirtualKey: testResumableUploadVirtualKey,
 	}
 
 	require.NoError(t, kvStore.SetWithTTL(uploadID, session, time.Minute))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
@@ -1428,55 +1626,81 @@ func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
 // Total upload size exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 	t.Parallel()
-	const finalChunkSizeKB = 10
-	maxUploadSize := testUploadLimitKB * bytesPerKB
+
+	const maxUploadSizeMB = 100
+	const uploadSize = maxUploadSizeMB * 1024 * 1024
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
 	defer kvStore.Close()
 
 	handlerStore := &fileUploadTestHandlerStore{
-		mockHandlerStore: &mockHandlerStore{},
-		kvStore:          kvStore,
+		mockHandlerStore: &mockHandlerStore{
+			maxRequestBodySizeMB:     lib.DefaultMaxRequestBodySizeMB,
+			maxResumableUploadSizeMB: maxUploadSizeMB,
+		},
+		kvStore: kvStore,
 	}
 
-	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(maxUploadSize))
-	require.NotEmpty(t, routes)
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(
+		t,
+		routes,
+		"/genai/upload/v1beta/files",
+		"POST",
+	)
 
-	converter := routes[0].FileRequestConverter
-	require.NotNil(t, converter)
-
-	uploadID := "test-upload-max-size"
+	uploadID := "upload-at-max-size"
 
 	session := &gemini.GeminiResumableUploadSession{
-		DisplayName: "test.pdf",
+		DisplayName: "max-size.pdf",
 		MimeType:    "application/pdf",
-		Provider:    "gemini",
-		NextOffset:  int64(maxUploadSize - finalChunkSizeKB*bytesPerKB),
-		Chunks: map[int64][]byte{
-			0: make([]byte, maxUploadSize-finalChunkSizeKB*bytesPerKB),
+		Provider:    schemas.Gemini,
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
+	}
+
+	require.NoError(
+		t,
+		kvStore.SetWithTTL(uploadID, session, time.Minute),
+	)
+
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	fileData := make([]byte, uploadSize)
+
+	fileReq, err := route.FileRequestConverter(
+		bifrostCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload",
+			UploadOffset:    0,
+			HasUploadOffset: true,
+			FileData:        fileData,
 		},
-	}
-
-	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
-	require.NoError(t, err)
-
-	ctx := &schemas.BifrostContext{}
-
-	// Add the final chunk to reach the configured maximum.
-	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        uploadID,
-		UploadCommand:   "upload",
-		UploadOffset:    int64(maxUploadSize - finalChunkSizeKB*bytesPerKB),
-		HasUploadOffset: true,
-		FileData:        make([]byte, finalChunkSizeKB*bytesPerKB),
-	}
-
-	result, err := converter(ctx, req)
+	)
 
 	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.True(t, result.Handled)
+	require.NotNil(t, fileReq)
+	assert.True(t, fileReq.Handled)
+
+	storedValue, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	storedSession, ok := storedValue.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, int64(uploadSize), storedSession.NextOffset)
+	assert.Equal(t, fileData, storedSession.Chunks[0])
 }
 
 // Upload exceeding the 100 MB total size limit should fail.
@@ -1510,12 +1734,14 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 		Chunks: map[int64][]byte{
 			0: make([]byte, maxUploadSize-(finalChunkSizeKB-1)*bytesPerKB),
 		},
+		VirtualKey: testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
 	ctx := &schemas.BifrostContext{}
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	// The chunk itself is within the request limit, but the cumulative total exceeds the configured limit.
 	req := &gemini.GeminiFileUploadHandlerReq{
@@ -1536,63 +1762,102 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 // Multiple chunks that total exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 	t.Parallel()
-	const chunkSizeKB = 10
-	maxUploadSize := testUploadLimitKB * bytesPerKB
+
+	const (
+		maxUploadSizeMB = 100
+		chunkSize       = 50 * 1024 * 1024
+	)
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
 	defer kvStore.Close()
 
 	handlerStore := &fileUploadTestHandlerStore{
-		mockHandlerStore: &mockHandlerStore{},
-		kvStore:          kvStore,
+		mockHandlerStore: &mockHandlerStore{
+			maxRequestBodySizeMB:     lib.DefaultMaxRequestBodySizeMB,
+			maxResumableUploadSizeMB: maxUploadSizeMB,
+		},
+		kvStore: kvStore,
 	}
 
-	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(maxUploadSize))
-	require.NotEmpty(t, routes)
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	route := findGenAIRouteForTest(
+		t,
+		routes,
+		"/genai/upload/v1beta/files",
+		"POST",
+	)
 
-	converter := routes[0].FileRequestConverter
-	require.NotNil(t, converter)
-
-	uploadID := "test-upload-multiple-chunks"
+	uploadID := "multiple-chunks-up-to-max-size"
 
 	session := &gemini.GeminiResumableUploadSession{
-		DisplayName: "test.pdf",
+		DisplayName: "large.pdf",
 		MimeType:    "application/pdf",
-		Provider:    "gemini",
-		NextOffset:  int64(maxUploadSize - chunkSizeKB*bytesPerKB),
-		Chunks: map[int64][]byte{
-			0: make([]byte, maxUploadSize-chunkSizeKB*bytesPerKB),
+		Provider:    schemas.Gemini,
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
+	}
+
+	require.NoError(
+		t,
+		kvStore.SetWithTTL(uploadID, session, time.Minute),
+	)
+
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	firstChunk := make([]byte, chunkSize)
+
+	fileReq, err := route.FileRequestConverter(
+		bifrostCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload",
+			UploadOffset:    0,
+			HasUploadOffset: true,
+			FileData:        firstChunk,
 		},
-	}
-
-	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
-	require.NoError(t, err)
-
-	ctx := &schemas.BifrostContext{}
-
-	// Add one chunk to reach exactly the configured total upload limit.
-	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        uploadID,
-		UploadCommand:   "upload",
-		UploadOffset:    int64(maxUploadSize - chunkSizeKB*bytesPerKB),
-		HasUploadOffset: true,
-		FileData:        make([]byte, chunkSizeKB*bytesPerKB),
-	}
-
-	result, err := converter(ctx, req)
+	)
 
 	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.True(t, result.Handled)
+	require.NotNil(t, fileReq)
+	assert.True(t, fileReq.Handled)
 
-	// Verify the total uploaded size is exactly 100 MB.
-	value, err := kvStore.Get(uploadID)
+	secondChunk := make([]byte, chunkSize)
+
+	fileReq, err = route.FileRequestConverter(
+		bifrostCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload",
+			UploadOffset:    int64(chunkSize),
+			HasUploadOffset: true,
+			FileData:        secondChunk,
+		},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, fileReq)
+	assert.True(t, fileReq.Handled)
+
+	storedValue, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 
-	updatedSession, ok := value.(*gemini.GeminiResumableUploadSession)
+	storedSession, ok := storedValue.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
-	require.Equal(t, int64(maxUploadSize), updatedSession.NextOffset)
+
+	assert.Equal(t, int64(100*1024*1024), storedSession.NextOffset)
+	assert.Len(t, storedSession.Chunks, 2)
+	assert.Equal(t, firstChunk, storedSession.Chunks[0])
+	assert.Equal(t, secondChunk, storedSession.Chunks[int64(chunkSize)])
 }
 
 // A single-shot upload and finalize request within the configured size limit should succeed.
@@ -1608,24 +1873,31 @@ func TestFileRequestConverter_AllowsSingleShotFinalizeWithinConfiguredLimit(t *t
 		mockHandlerStore: &mockHandlerStore{},
 		kvStore:          kvStore,
 	}
+
 	routes := createGenAIFileRouteConfigs("/genai", handlerStore, uploadSize)
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
 
 	uploadID := "single-shot-over-ten-mb"
+
 	require.NoError(t, kvStore.SetWithTTL(uploadID, &gemini.GeminiResumableUploadSession{
 		DisplayName: "large.pdf",
 		MimeType:    "application/pdf",
 		Provider:    schemas.Gemini,
 		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}, time.Minute))
 
-	fileReq, err := route.FileRequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
+
+	fileReq, err := route.FileRequestConverter(bifrostCtx, &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload,finalize",
 		UploadOffset:    0,
 		HasUploadOffset: true,
 		FileData:        make([]byte, uploadSize),
-	})
+	},
+	)
 
 	require.NoError(t, err)
 	require.NotNil(t, fileReq)
@@ -1665,12 +1937,14 @@ func TestFileRequestConverter_RetryDoesNotIncreaseUploadSize(t *testing.T) {
 		Chunks: map[int64][]byte{
 			0: chunk,
 		},
+		VirtualKey: testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
 	ctx := &schemas.BifrostContext{}
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	// Retry the same 10 MB chunk.
 	req := &gemini.GeminiFileUploadHandlerReq{
@@ -1723,12 +1997,14 @@ func TestFileRequestConverter_RejectsRequestExceedingMaxSize(t *testing.T) {
 		Provider:    "gemini",
 		NextOffset:  0,
 		Chunks:      make(map[int64][]byte),
+		VirtualKey:  testResumableUploadVirtualKey,
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
 	ctx := &schemas.BifrostContext{}
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, testResumableUploadVirtualKey)
 
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
@@ -1755,9 +2031,12 @@ func TestFileRequestConverter_UsesConfiguredRequestBodyLimit(t *testing.T) {
 	defer kvStore.Close()
 
 	handlerStore := &fileUploadTestHandlerStore{
-		mockHandlerStore: &mockHandlerStore{maxRequestBodySizeMB: lib.DefaultMaxRequestBodySizeMB},
-		kvStore:          kvStore,
+		mockHandlerStore: &mockHandlerStore{
+			maxRequestBodySizeMB: lib.DefaultMaxRequestBodySizeMB,
+		},
+		kvStore: kvStore,
 	}
+
 	routes := createGenAIFileRouteConfigs("/genai", handlerStore, configuredLimitKB*bytesPerKB)
 	converter := routes[0].FileRequestConverter
 	require.NotNil(t, converter)
@@ -1766,16 +2045,31 @@ func TestFileRequestConverter_UsesConfiguredRequestBodyLimit(t *testing.T) {
 
 	underLimit := make([]byte, configuredLimitKB*bytesPerKB-1)
 	require.NoError(t, kvStore.SetWithTTL(underLimitID, &gemini.GeminiResumableUploadSession{
-		Provider: schemas.Gemini,
-		Chunks:   make(map[int64][]byte),
+		Provider:   schemas.Gemini,
+		Chunks:     make(map[int64][]byte),
+		VirtualKey: testResumableUploadVirtualKey,
 	}, time.Minute))
 
-	underLimitReq, err := converter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        underLimitID,
-		UploadCommand:   "upload",
-		HasUploadOffset: true,
-		FileData:        underLimit,
-	})
+	underLimitCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	underLimitCtx.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	underLimitReq, err := converter(
+		underLimitCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        underLimitID,
+			UploadCommand:   "upload",
+			HasUploadOffset: true,
+			FileData:        underLimit,
+		},
+	)
+
 	require.NoError(t, err)
 	require.NotNil(t, underLimitReq)
 	assert.True(t, underLimitReq.Handled)
@@ -1787,89 +2081,34 @@ func TestFileRequestConverter_UsesConfiguredRequestBodyLimit(t *testing.T) {
 	require.NotNil(t, defaultRoutes[0].FileRequestConverter)
 
 	overLimitID := "configured-limit-over"
+
 	require.NoError(t, kvStore.SetWithTTL(overLimitID, &gemini.GeminiResumableUploadSession{
-		Provider: schemas.Gemini,
-		Chunks:   make(map[int64][]byte),
+		Provider:   schemas.Gemini,
+		Chunks:     make(map[int64][]byte),
+		VirtualKey: testResumableUploadVirtualKey,
 	}, time.Minute))
 
-	overLimitReq, err := converter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        overLimitID,
-		UploadCommand:   "upload",
-		HasUploadOffset: true,
-		FileData:        make([]byte, configuredLimitKB*bytesPerKB+1),
-	})
+	overLimitCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	overLimitCtx.SetValue(
+		schemas.BifrostContextKeyVirtualKey,
+		testResumableUploadVirtualKey,
+	)
+
+	overLimitReq, err := converter(
+		overLimitCtx,
+		&gemini.GeminiFileUploadHandlerReq{
+			UploadID:        overLimitID,
+			UploadCommand:   "upload",
+			HasUploadOffset: true,
+			FileData:        make([]byte, configuredLimitKB*bytesPerKB+1),
+		},
+	)
+
 	require.Error(t, err)
 	assert.Nil(t, overLimitReq)
 	assert.Contains(t, err.Error(), "upload exceeds maximum size")
-}
-
-func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing.T) {
-	t.Parallel()
-
-	kvStore, err := kvstore.New(kvstore.Config{})
-	require.NoError(t, err)
-	defer kvStore.Close()
-
-	handlerStore := &fileUploadTestHandlerStore{
-		mockHandlerStore: &mockHandlerStore{},
-		kvStore:          kvStore,
-	}
-
-	routes := createGenAIFileRouteConfigs("/genai", handlerStore, int64(testUploadLimitKB*bytesPerKB))
-	require.NotEmpty(t, routes)
-
-	converter := routes[0].FileRequestConverter
-	require.NotNil(t, converter)
-
-	uploadID := "test-cumulative-upload-over-limit"
-
-	session := &gemini.GeminiResumableUploadSession{
-		DisplayName: "test.pdf",
-		MimeType:    "application/pdf",
-		Provider:    "gemini",
-		NextOffset:  0,
-		Chunks:      make(map[int64][]byte),
-	}
-
-	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
-	require.NoError(t, err)
-
-	ctx := &schemas.BifrostContext{}
-
-	// Upload 11 valid chunks of 9 MB each = 99 MB.
-	const chunkSizeKB = 9
-	const finalChunkSizeKB = 2
-	chunkSize := int64(chunkSizeKB * bytesPerKB)
-
-	for i := int64(0); i < 11; i++ {
-		req := &gemini.GeminiFileUploadHandlerReq{
-			UploadID:        uploadID,
-			UploadCommand:   "upload",
-			UploadOffset:    i * chunkSize,
-			HasUploadOffset: true,
-			FileData:        make([]byte, chunkSize),
-		}
-
-		result, err := converter(ctx, req)
-
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.True(t, result.Handled)
-	}
-
-	// 99 MB has already been uploaded.
-	// Adding a valid 2 MB chunk would make the total 101 MB.
-	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID:        uploadID,
-		UploadCommand:   "upload",
-		UploadOffset:    int64(11) * chunkSize,
-		HasUploadOffset: true,
-		FileData:        make([]byte, finalChunkSizeKB*bytesPerKB),
-	}
-
-	result, err := converter(ctx, req)
-
-	require.Error(t, err)
-	require.Nil(t, result)
-	require.Contains(t, err.Error(), "resumable upload exceeds maximum size")
 }

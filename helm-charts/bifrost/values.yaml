@@ -1197,7 +1197,8 @@ bifrost:
       #   apply_to: "both"  # input | output | both
       #   sampling_rate: 100
       #   timeout: 15        # Timeout in seconds for rule execution (default: 60)
-      #   max_turns_to_send: 8   # Historical turns sent to the provider (latest always included); 0 = all
+      #   send_all_conversation_turns: false  # true = all input history; false enables the previous-turn window below
+      #   max_turns_to_send: 8   # With the switch false: current input + 8 previous turns; 0 = current input only
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
       #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
       #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above

@@ -295,6 +295,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
 	{IDs: []string{"webhook_deliveries_add_filter_indexes_v1"}, run: migrationAddWebhookDeliveryFilterIndexes},
+	{IDs: []string{"logs_add_video_debug_column"}, run: migrationAddVideoDebugColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4463,6 +4464,33 @@ func migrationAddVideoEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding video edit input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVideoDebugColumn adds the video_debug column to the logs table. It
+// carries the video job id and lifecycle status on video rows, and on the aggregate
+// cost row the pricing detail that tells it apart from the submission it settles —
+// which is otherwise identical to it but for a cost. Nullable and unindexed, so this
+// is a metadata-only DDL change with no table rewrite and no backfill: rows written
+// before it simply have no video detail.
+func migrationAddVideoDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_video_debug_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding video_debug column: %s", err.Error())
 	}
 	return nil
 }

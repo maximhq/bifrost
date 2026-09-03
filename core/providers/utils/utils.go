@@ -223,6 +223,31 @@ func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
 }
 
+// setJSONStringFieldInPlaceOptions enables SJSON's owned-buffer fast path.
+// Keep this immutable because provider requests can be rewritten concurrently.
+var setJSONStringFieldInPlaceOptions = sjson.Options{
+	// Optimistic tells SJSON that the path already exists, enabling its faster
+	// direct search-and-replace path; it does not permit mutation by itself.
+	Optimistic: true,
+	// ReplaceInPlace permits SJSON to reuse and mutate caller-owned bytes when
+	// the replacement fits; otherwise SJSON returns a newly allocated buffer.
+	ReplaceInPlace: true,
+}
+
+// SetJSONStringFieldInPlace updates an existing JSON string in caller-owned bytes.
+// It is currently used only for native raw-request redaction on passthrough
+// integrations such as Claude Code/Anthropic and Gemini GenAI. Callers must use
+// the returned slice because SJSON may reuse the input or allocate a new buffer.
+// This reduces allocations and GC pressure, but each field still requires a path
+// search and may shift trailing bytes; this is not a bulk update.
+func SetJSONStringFieldInPlace(data []byte, path string, value string) ([]byte, error) {
+	encodedValue, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal JSON string field: %w", err)
+	}
+	return sjson.SetRawBytesOptions(data, path, encodedValue, &setJSONStringFieldInPlaceOptions)
+}
+
 // SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
 // inserting it verbatim instead of re-marshaling it.
 func SetRawJSONField(data []byte, path string, value []byte) ([]byte, error) {

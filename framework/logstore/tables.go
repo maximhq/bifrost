@@ -329,6 +329,11 @@ type Log struct {
 	// operational records rather than request content, so they must survive
 	// object-storage offload and content-hidden rows.
 	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+	// VideoDebug carries the video job id and lifecycle status, and on the aggregate
+	// cost row the pricing detail that distinguishes it from the submission it
+	// settles. Operational, like BatchDebug — it must survive object-storage offload
+	// and content-hidden rows.
+	VideoDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDebug
 
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
@@ -361,6 +366,7 @@ type Log struct {
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
+	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
@@ -725,6 +731,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.VideoDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.VideoDebugParsed); err != nil {
+			return err
+		} else {
+			l.VideoDebug = string(data)
+		}
+	}
+
 	if l.GuardrailDebugParsed != nil {
 		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
 			return err
@@ -1066,6 +1080,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.BatchDebug), &l.BatchDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.BatchDebugParsed = nil
+		}
+	}
+
+	if l.VideoDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoDebug), &l.VideoDebugParsed); err != nil {
+			l.VideoDebugParsed = nil
 		}
 	}
 

@@ -27,6 +27,7 @@ const (
 type inferenceProvider string
 
 const (
+	baseten       inferenceProvider = "baseten"
 	cerebras      inferenceProvider = "cerebras"
 	cohere        inferenceProvider = "cohere"
 	falAI         inferenceProvider = "fal-ai"
@@ -51,6 +52,7 @@ const (
 
 // List of supported inference providers (kept in sync with HF docs/JS SDK)
 var INFERENCE_PROVIDERS = []inferenceProvider{
+	baseten,
 	cerebras,
 	cohere,
 	falAI,

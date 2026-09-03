@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -639,7 +639,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// grant nothing is a different answer, reported by the identity step below; telling a caller who
 	// supplied a key to supply one is not a useful refusal.
 	p.cfgMutex.RLock()
-	if !presentedGrantBearingCredential(ctx) && !hasDirectKeyAuth(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !PresentedAnyCredential(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -1512,7 +1512,7 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }
 
-func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) error {
+func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
 	if usage.Cost > 0 {
@@ -1568,7 +1568,7 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 // Ids already charged above are subtracted rather than skipped by construction: the
 // wildcard tiers legitimately match both collections, and charging them twice would
 // bill the batch's whole cost a second time.
-func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) []error {
+func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage jobaccounting.UsageReport) []error {
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}

@@ -137,7 +137,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, tier))
+}
+
+func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -1783,6 +1787,111 @@ func TestComputeVideoCost_NilSeconds(t *testing.T) {
 	cost := computeVideoCostTotal(&p, usage, nil, serviceTier{})
 	// Only input tokens: 1000 * 0.000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
+}
+
+// sizedVideoPricing mirrors sora-2-pro's published rates: $0.30/s at 720p,
+// $0.50/s at 1024p, $0.70/s at 1080p, with the unbanded rate as the fallback.
+func sizedVideoPricing() configstoreTables.TableModelPricing {
+	return configstoreTables.TableModelPricing{
+		OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond480p:  bifrost.Ptr(0.10),
+		OutputCostPerVideoPerSecond720p:  bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond1024p: bifrost.Ptr(0.50),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	}
+}
+
+func TestComputeVideoCost_ResolutionBands(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	for _, tc := range []struct {
+		name string
+		size string
+		want float64
+	}{
+		{"720p landscape", "1280x720", 8 * 0.30},
+		{"720p portrait", "720x1280", 8 * 0.30},
+		{"1024p landscape", "1792x1024", 8 * 0.50},
+		{"1024p portrait", "1024x1792", 8 * 0.50},
+		{"1080p landscape", "1920x1080", 8 * 0.70},
+		{"1080p portrait", "1080x1920", 8 * 0.70},
+		{"4k", "3840x2160", 8 * 0.60},
+		// No band matches 480, so this must not round up into the 720p rate.
+		{"480p landscape", "854x480", 8 * 0.10},
+		{"480p portrait", "480x854", 8 * 0.10},
+		// 360 has no band, so it must not round up into the 480p rate.
+		{"unlisted resolution falls back", "640x360", 8 * 0.30},
+		{"malformed size falls back", "not-a-size", 8 * 0.30},
+		{"absent size falls back", "", 8 * 0.30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := computeVideoCostTotalSized(&p, nil, &seconds, tc.size, 1, serviceTier{})
+			assert.InDelta(t, tc.want, cost, 1e-12)
+		})
+	}
+}
+
+// A pricing row carrying no banded rates must price exactly as it did before the
+// bands existed.
+func TestComputeVideoCost_NoBandedRatesMatchesUnbanded(t *testing.T) {
+	p := configstoreTables.TableModelPricing{OutputCostPerVideoPerSecond: bifrost.Ptr(0.001)}
+	seconds := 30
+	assert.InDelta(t,
+		computeVideoCostTotal(&p, nil, &seconds, serviceTier{}),
+		computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 1, serviceTier{}),
+		1e-12)
+}
+
+// Seconds is one clip's duration, so a job returning several clips bills for each.
+func TestComputeVideoCost_MultipleOutputsBillPerClip(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	assert.InDelta(t, 3*8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 3, serviceTier{}), 1e-12)
+	// A job that has not yet produced its clips still owes one clip's worth.
+	assert.InDelta(t, 8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 0, serviceTier{}), 1e-12)
+}
+
+// Completion tokens win over the per-second path, and the clip multiplier belongs
+// only to the per-second branch — token usage already covers every output.
+func TestComputeVideoCost_CompletionTokensIgnoreClipCount(t *testing.T) {
+	p := sizedVideoPricing()
+	p.OutputCostPerToken = bifrost.Ptr(0.00002)
+	seconds := 8
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 1000, TotalTokens: 1000}
+
+	cost := computeVideoCostTotalSized(&p, usage, &seconds, "1920x1080", 4, serviceTier{})
+
+	assert.InDelta(t, 1000*0.00002, cost, 1e-12)
+}
+
+// End-to-end through the catalog: a 1080p sora-2-pro job must bill at the 1080p
+// rate rather than the base rate its model row carries.
+func TestCalculateCost_VideoResolutionBandEndToEnd(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): {
+			Model: "sora-2-pro", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+			OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("8"),
+			Size:    "1920x1080",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4")}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 5.60, s.CalculateCost(resp, nil), 1e-9)
 }
 
 // =========================================================================
@@ -4948,7 +5057,7 @@ func TestCalculateCostForUsage_BatchResults_InferenceGeoUSMultiplier(t *testing.
 }
 
 // TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge covers the
-// real batch-settlement entry point (used by batchaccounting.summarizeResults
+// real batch-settlement entry point (used by jobaccounting.summarizeResults
 // and the recalculate-costs path, unlike CalculateCostForUsage's batch branch
 // which only handles bare billed-usage on a failed retrieve). It must apply
 // the same flat per-request surcharge CalculateCostForUsage does, so the two
@@ -5212,4 +5321,221 @@ func TestParseImageDimensions(t *testing.T) {
 		assert.Equal(t, 0, w, bad)
 		assert.Equal(t, 0, h, bad)
 	}
+}
+
+// --- Video pricing dimensions (the settlement-time pricing basis) ---
+
+// newVideoDimensionTestStore is a catalog carrying the resolution-banded video
+// rates, so dimension-driven pricing is exercised against real lookup rather than
+// a hand-held pricing row.
+func newVideoDimensionTestStore(t *testing.T) *Store {
+	t.Helper()
+	banded := sizedVideoPricing()
+	banded.Model = "sora-2-pro"
+	banded.Provider = "openai"
+	banded.Mode = "video_generation"
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): banded,
+	})
+}
+
+func TestVideoPricingDimensions_MergedWithPrefersObserved(t *testing.T) {
+	eight, twelve := 8, 12
+	audio := true
+	captured := VideoPricingDimensions{
+		Model:       "veo-3.1",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &eight,
+		Size:        "1920x1080",
+		Audio:       &audio,
+		Extra:       map[string]any{"sample_count": 2},
+	}
+	// The provider clamped the duration and downscaled: what actually happened
+	// wins, because that is what the bill is for.
+	observed := VideoPricingDimensions{Seconds: &twelve, Size: "1280x720", OutputCount: 3}
+
+	merged := captured.MergedWith(observed)
+	require.NotNil(t, merged.Seconds)
+	assert.Equal(t, 12, *merged.Seconds)
+	assert.Equal(t, "1280x720", merged.Size)
+	assert.Equal(t, 3, merged.OutputCount)
+	// Everything the response stayed silent about survives from the request —
+	// which for most providers is nearly all of it.
+	assert.Equal(t, "veo-3.1", merged.Model)
+	assert.Equal(t, schemas.VideoGenerationRequest, merged.RequestType)
+	require.NotNil(t, merged.Audio)
+	assert.True(t, *merged.Audio)
+	assert.Equal(t, 2, merged.Extra["sample_count"])
+}
+
+func TestVideoPricingDimensions_MergedWithKeepsCapturedWhenResponseIsSilent(t *testing.T) {
+	eight := 8
+	captured := VideoPricingDimensions{Model: "veo-3.1", Seconds: &eight, Size: "1920x1080"}
+
+	// The common case: a retrieve that reports nothing but "done".
+	merged := captured.MergedWith(VideoPricingDimensions{})
+	require.NotNil(t, merged.Seconds)
+	assert.Equal(t, 8, *merged.Seconds)
+	assert.Equal(t, "1920x1080", merged.Size)
+	assert.Equal(t, "veo-3.1", merged.Model)
+	assert.Zero(t, merged.OutputCount, "a silent response must not claim the job produced clips")
+}
+
+func TestVideoDimensionsFromResponse(t *testing.T) {
+	seconds := "8"
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Model:   "sora-2-pro",
+		Seconds: &seconds,
+		Size:    "1920x1080",
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}, {Type: schemas.VideoOutputTypeURL}},
+	}
+	dims := VideoDimensionsFromResponse(resp)
+	assert.Equal(t, "sora-2-pro", dims.Model)
+	require.NotNil(t, dims.Seconds)
+	assert.Equal(t, 8, *dims.Seconds)
+	assert.Equal(t, "1920x1080", dims.Size)
+	assert.Equal(t, 2, dims.OutputCount)
+	assert.Nil(t, dims.ProviderCost)
+}
+
+func TestVideoDimensionsFromResponse_CarriesProviderCost(t *testing.T) {
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Model: "runware-video",
+		Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 1.23}},
+	}
+	dims := VideoDimensionsFromResponse(resp)
+	require.NotNil(t, dims.ProviderCost)
+	assert.InDelta(t, 1.23, *dims.ProviderCost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_ProviderCostWinsOverCatalogRate(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	providerCost := 0.42
+	dims := VideoPricingDimensions{
+		Model:        "sora-2-pro",
+		RequestType:  schemas.VideoGenerationRequest,
+		Seconds:      &seconds,
+		Size:         "1920x1080",
+		OutputCount:  1,
+		ProviderCost: &providerCost,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.True(t, details.Priced)
+	assert.True(t, details.ProviderCostUsed)
+	assert.InDelta(t, 0.42, details.Cost, 1e-12,
+		"a provider that reports its own figure is never overridden by an estimate")
+}
+
+func TestCalculateVideoCostDetails_UsesResolutionBandedRate(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{
+		Model:       "sora-2-pro",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &seconds,
+		Size:        "1920x1080",
+		OutputCount: 1,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.False(t, details.ProviderCostUsed)
+	assert.InDelta(t, 8*0.70, details.Cost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_BillsEveryClip(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{
+		Model:       "sora-2-pro",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &seconds,
+		Size:        "1280x720",
+		OutputCount: 3,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.InDelta(t, 3*8*0.30, details.Cost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_UnknownModelIsUnpriced(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{Model: "no-such-model", Seconds: &seconds, Size: "1920x1080"}
+
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.False(t, details.Priced, "no rate must read as unpriced, never as free")
+	assert.Zero(t, details.Cost)
+}
+
+func TestCalculateVideoCostDetails_NoDurationIsUnpriced(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	// An upscale job: no duration basis, and no upscale rate published yet. It must
+	// park as unpriced rather than be billed as a zero-length generation.
+	upscale := "upscale"
+	factor := 4
+	dims := VideoPricingDimensions{
+		Model:         "sora-2-pro",
+		RequestType:   schemas.VideoEditRequest,
+		Type:          &upscale,
+		UpscaleFactor: &factor,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.False(t, details.Priced)
+	assert.Zero(t, details.Cost)
+}
+
+// A queued video has produced nothing and may never produce anything. Billing it
+// at submission is the bug the job settler exists to fix: the charge belongs at
+// settlement, where the outcome is known.
+func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): {
+			Model: "sora-2-pro", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+			OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		},
+	})
+
+	newResp := func(status schemas.VideoStatus) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				Status:  status,
+				Seconds: bifrost.Ptr("8"),
+				Size:    "1920x1080",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.VideoGenerationRequest,
+					RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+				},
+			},
+		}
+	}
+
+	// Failed is included deliberately: it used to fall through to computeVideoCost,
+	// which bills max(1, clips) — so a failed 8s job was charged for a full clip,
+	// while VideoSettler.Settle recorded the same job at zero.
+	for _, status := range []schemas.VideoStatus{schemas.VideoStatusQueued, schemas.VideoStatusInProgress, schemas.VideoStatusFailed} {
+		assert.Zero(t, s.CalculateCost(newResp(status), nil), string(status))
+	}
+
+	// A provider-reported cost on an unfinished job is a quote, not a bill. This is
+	// the path that bypassed the gate entirely: extractCostInput routes VideoUsage
+	// into input.usage.Cost, which the provider-cost short-circuit returns before
+	// any status is consulted.
+	for _, status := range []schemas.VideoStatus{schemas.VideoStatusQueued, schemas.VideoStatusInProgress, schemas.VideoStatusFailed} {
+		quoted := newResp(status)
+		quoted.VideoGenerationResponse.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 3.21}}
+		assert.Zero(t, s.CalculateCost(quoted, nil), "provider cost on %s must not bill at submission", status)
+	}
+
+	// A completed job still honours the provider's own figure verbatim.
+	priced := newResp(schemas.VideoStatusCompleted)
+	priced.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
+	priced.VideoGenerationResponse.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 3.21}}
+	assert.InDelta(t, 3.21, s.CalculateCost(priced, nil), 1e-9)
+
+	// A terminal response still prices inline — that is what settlement drives.
+	terminal := newResp(schemas.VideoStatusCompleted)
+	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
+	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }

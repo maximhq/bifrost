@@ -7,8 +7,160 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
+func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Contact alice@example.com"},"usage":{"output_tokens":4}}`
+	event, eligible, err := codec.Inspect(raw)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !eligible || event.TargetID != "2" || event.Text != "Contact alice@example.com" {
+		t.Fatalf("Inspect() = (%+v, %v), want target 2 text event", event, eligible)
+	}
+
+	rewritten, err := codec.Rewrite(raw, "Contact [EMAIL]\nnext")
+	if err != nil {
+		t.Fatalf("Rewrite() error = %v", err)
+	}
+	if got := gjson.Get(rewritten, "delta.text").String(); got != "Contact [EMAIL]\nnext" {
+		t.Errorf("delta.text = %q", got)
+	}
+	if got := gjson.Get(rewritten, "type").String(); got != "content_block_delta" {
+		t.Errorf("type = %q", got)
+	}
+	if got := gjson.Get(rewritten, "usage.output_tokens").Int(); got != 4 {
+		t.Errorf("usage.output_tokens = %d", got)
+	}
+	if got := gjson.Get(raw, "delta.text").String(); got != "Contact alice@example.com" {
+		t.Errorf("provider-original raw event changed to %q", got)
+	}
+}
+
+// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning, tool JSON, and lifecycle events remain opaque.
+func TestAnthropicRawStreamTextCodecIgnoresNonTextEvents(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	cases := []string{
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"alice@example.com"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"alice@example.com"}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"email\":\"alice@example.com\"}"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_stop"}`,
+	}
+	for _, raw := range cases {
+		if event, eligible, err := codec.Inspect(raw); err != nil || eligible {
+			t.Errorf("Inspect(%s) = (%+v, %v, %v), want ineligible", raw, event, eligible, err)
+		}
+	}
+}
+
+// TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents verifies malformed native text events cannot be synchronized.
+func TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	cases := []string{
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta"}}`,
+		`{"type":"content_block_delta","index":"zero","delta":{"type":"text_delta","text":"hello"}}`,
+		`{"type":`,
+	}
+	for _, raw := range cases {
+		if _, _, err := codec.Inspect(raw); err == nil {
+			t.Errorf("Inspect(%q) error = nil", raw)
+		}
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content without touching request metadata or tool arguments.
+func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"model":"claude-sonnet-4-5",
+		"prompt":"legacy alice@example.com",
+		"system":[{"type":"text","text":"system alice@example.com"}],
+		"messages":[
+			{"role":"user","content":"first alice@example.com"},
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"reason alice@example.com","signature":"alice@example.com"},
+				{"type":"redacted_thinking","data":"alice@example.com"},
+				{"type":"compaction","content":"summary alice@example.com"},
+				{"type":"text","text":"answer alice@example.com"},
+				{"type":"tool_use","id":"call_1","name":"lookup","input":{"email":"alice@example.com"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_1","content":"tool alice@example.com"},
+				{"type":"mcp_tool_result","tool_use_id":"call_2","content":[{"type":"text","text":"nested alice@example.com"}]}
+			]}
+		],
+		"metadata":{"user_id":"alice@example.com"},
+		"tools":[{"name":"lookup","description":"alice@example.com","input_schema":{"type":"object"}}]
+	}`)
+
+	got, err := rewriteAnthropicRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBody() error = %v", err)
+	}
+
+	redactedPaths := []string{
+		"prompt",
+		"system.0.text",
+		"messages.0.content",
+		"messages.1.content.3.text",
+		"messages.2.content.0.content",
+		"messages.2.content.1.content.0.text",
+	}
+	for _, path := range redactedPaths {
+		if value := gjson.GetBytes(got, path).String(); strings.Contains(value, "alice@example.com") || !strings.Contains(value, "[EMAIL]") {
+			t.Errorf("%s = %q, want redacted content", path, value)
+		}
+	}
+
+	untouchedPaths := map[string]string{
+		"messages.1.content.0.thinking":    "reason alice@example.com",
+		"messages.1.content.0.signature":   "alice@example.com",
+		"messages.1.content.1.data":        "alice@example.com",
+		"messages.1.content.2.content":     "summary alice@example.com",
+		"messages.1.content.4.input.email": "alice@example.com",
+		"metadata.user_id":                 "alice@example.com",
+		"tools.0.description":              "alice@example.com",
+	}
+	for path, expected := range untouchedPaths {
+		if value := gjson.GetBytes(got, path).String(); value != expected {
+			t.Errorf("%s = %q, want untouched %q", path, value, expected)
+		}
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral verifies a normalized runtime mutation cannot silently leave native content unredacted.
+func TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want unmapped literal error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON verifies native rewrites never repair or forward a malformed body.
+func TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody([]byte(`{"messages":`), map[string]string{"alice@example.com": "[EMAIL]"})
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want malformed JSON error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys prevents parser precedence from selecting an unredacted duplicate value.
+func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"alice@example.com","content":"alice@example.com"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
+	}
+}
 
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
 // the Claude Code advisor/server-tool streaming bug: server tools (advisor,
@@ -189,7 +341,82 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 			if !tc.wantRawOff && !useRaw {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
 			}
+			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			_, hasStreamCodec := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
+			if tc.wantRawOff && hasRewriter {
+				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasRewriter {
+				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
+			}
+			if tc.wantRawOff && hasStreamCodec {
+				t.Errorf("expected raw stream text codec to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasStreamCodec {
+				t.Errorf("expected Anthropic raw stream text codec for %s", tc.model)
+			}
 		})
+	}
+}
+
+// TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec verifies
+// request-only Vertex escape hatches do not disable native Messages response rewriting.
+func TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec(t *testing.T) {
+	betaHeaders := []string{
+		anthropic.AnthropicPromptCachingScopeBetaHeader,
+		anthropic.AnthropicFastModeBetaHeader,
+	}
+
+	for _, betaHeader := range betaHeaders {
+		t.Run(betaHeader, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+			reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+			reqCtx.Request.Header.Set(anthropic.AnthropicBetaHeader, betaHeader)
+
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			req := &anthropic.AnthropicMessageRequest{
+				Model:     "vertex/claude-opus-4-6",
+				MaxTokens: 1024,
+			}
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				t.Fatalf("checkAnthropicPassthrough() error = %v", err)
+			}
+
+			if useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRaw {
+				t.Fatal("Vertex beta request kept raw request-body passthrough enabled")
+			}
+			if sendRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); !sendRaw {
+				t.Fatal("Vertex beta request disabled native response forwarding")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter); ok {
+				t.Fatal("Vertex beta request registered a raw request-body rewriter")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); !ok {
+				t.Fatal("Vertex beta request did not register the native response codec")
+			}
+		})
+	}
+}
+
+// TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec verifies only Messages streams register the native SSE codec.
+func TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec(t *testing.T) {
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+	reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	req := &anthropic.AnthropicTextRequest{Model: "anthropic/claude-haiku-4-5"}
+	if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+		t.Fatalf("checkAnthropicPassthrough() error = %v", err)
+	}
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); ok {
+		t.Fatal("legacy complete request registered a Messages raw stream codec")
 	}
 }
 

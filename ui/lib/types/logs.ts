@@ -510,6 +510,22 @@ export interface BatchAccountingDebug {
 
 // Batch detail for batch rows. `accounting` is present only on the aggregate
 // cost row written when a settled batch is priced.
+/** Video-kind detail on a log row. `accounting` is set only on the aggregate cost
+ * row a settled video writes, which is what tells it apart from the submission it
+ * settles — the two are otherwise identical but for a cost. */
+export interface VideoDebug {
+	video_id?: string;
+	status?: string; // Provider video lifecycle status, e.g. "queued" / "completed"
+	accounting?: VideoAccountingDebug;
+}
+
+export interface VideoAccountingDebug {
+	seconds?: number;
+	size?: string;
+	output_count?: number;
+	incomplete?: boolean;
+}
+
 export interface BatchDebug {
 	batch_id?: string;
 	status?: string; // Provider batch lifecycle status, e.g. "in_progress" / "completed"
@@ -688,6 +704,7 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	batch_debug?: BatchDebug;
+	video_debug?: VideoDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is

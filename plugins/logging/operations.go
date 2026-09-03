@@ -12,7 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/batchaccounting"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -1867,7 +1867,7 @@ func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
 	if batchID == "" {
 		return batchRowRoleAggregate
 	}
-	if logEntry.ID == batchaccounting.AccountingLogID(schemas.ModelProvider(logEntry.Provider), batchID) {
+	if logEntry.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.ModelProvider(logEntry.Provider), batchID) {
 		return batchRowRoleAggregate
 	}
 	return batchRowRoleEcho
@@ -1878,7 +1878,7 @@ func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
 // multiple models, and the row's own Model field is "mixed" in that case —
 // pricing that literal string against the catalog never finds an entry, so the
 // row prices at zero forever through the generic calculateCostForLog path.
-// Repricing per model, the same way settlement (batchaccounting.summarizeResults)
+// Repricing per model, the same way settlement (jobaccounting.summarizeResults)
 // originally priced each result item, is the only way a mixed-model batch — or a
 // single-model batch whose rate only arrived after settlement — can recover a
 // cost here.
@@ -1904,7 +1904,7 @@ func (p *LoggerPlugin) calculateBatchAggregateCost(logEntry *logstore.Log, refre
 	// rather than being guessed at.
 	requestType := schemas.RequestType(logEntry.Object)
 	if endpoint := logEntry.BatchDebugParsed.Endpoint; endpoint != "" {
-		requestType = batchaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
+		requestType = jobaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
 	}
 
 	var total float64
