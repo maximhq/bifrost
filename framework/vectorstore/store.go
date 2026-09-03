@@ -89,6 +89,16 @@ type VectorStore interface {
 	CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error
 	// DeleteNamespace deletes a namespace from the vector store.
 	DeleteNamespace(ctx context.Context, namespace string) error
+	// ListNamespaces returns the names of existing namespaces beginning with
+	// prefix, sorted. An empty prefix lists everything the backend exposes.
+	//
+	// Callers that create namespaces under a naming scheme of their own need
+	// this to find the ones they left behind: a name derived from content
+	// cannot be reconstructed once the content has changed, so without
+	// enumeration an abandoned namespace becomes unreachable rather than
+	// merely unused. Filtering happens in the backend where the API supports
+	// it and here where it does not, so the result is the same either way.
+	ListNamespaces(ctx context.Context, prefix string) ([]string, error)
 	// GetChunk retrieves a single vector from the vector store.
 	GetChunk(ctx context.Context, namespace string, id string) (SearchResult, error)
 	// GetChunks retrieves multiple vectors from the vector store.

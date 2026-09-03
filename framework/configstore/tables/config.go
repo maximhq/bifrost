@@ -32,8 +32,35 @@ const (
 	// phrases one classifier embeds, and the two classifiers no longer share a
 	// list.
 	ConfigComplexitySemanticConfigKey = "complexity_semantic_config"
-	ConfigRestartRequiredKey          = "restart_required"
-	ConfigHeaderFilterKey             = "header_filter_config"
+	// ConfigComplexitySemanticDimensionsKey stores the embedding width each
+	// provider/model pair has been observed to return.
+	//
+	// It is observed runtime state, not configuration, so it deliberately does
+	// not live in ConfigComplexitySemanticConfigKey: that row is what an
+	// operator edits and what the management API returns, and a saved edit would
+	// drop anything the client did not send back. Its own row also keeps it
+	// inert to older binaries, for the same reason the semantic config has one.
+	//
+	// The width is only knowable by embedding something, so without it every
+	// boot pays a batch of embeddings purely to re-learn a number that has not
+	// changed — even when the generation it identifies is already complete in
+	// the vector store. Remembering it lets a restart adopt that generation
+	// having called no provider at all.
+	ConfigComplexitySemanticDimensionsKey = "complexity_semantic_dimensions"
+	// ConfigComplexitySemanticGenerationsKey stores which exemplar generation
+	// each node is currently using, so retired ones can be reclaimed.
+	//
+	// A generation is only safe to delete once no node is serving it, and no
+	// node can observe another's state directly — OSS has no cluster transport
+	// at all, so a node that never learned about a configuration change keeps
+	// serving an older generation indefinitely. Deleting on a timer would pull
+	// those vectors out from under it. Registration inverts that: a node in use
+	// says so, and anything unclaimed is genuinely unreachable.
+	//
+	// Written under a distributed lock because every node updates the same row.
+	ConfigComplexitySemanticGenerationsKey = "complexity_semantic_generations"
+	ConfigRestartRequiredKey              = "restart_required"
+	ConfigHeaderFilterKey                 = "header_filter_config"
 )
 
 // Keys for the ClientConfig.MetadataJSON blob.

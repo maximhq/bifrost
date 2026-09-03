@@ -1553,6 +1553,37 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 }
 
 // DeleteNamespace deletes a namespace from the Redis vector store.
+// ListNamespaces returns the search indices beginning with prefix. A namespace
+// here is an FT index, so FT._LIST is the enumeration; the keys it owns live
+// under the index's own "<namespace>:" prefix and are not separately listed.
+func (s *RedisStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
+	defer cancel()
+
+	result, err := s.client.Do(ctx, "FT._LIST").Result()
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+			return nil, fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
+		}
+		return nil, fmt.Errorf("failed to list search indices: %w", err)
+	}
+
+	entries, ok := result.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected FT._LIST reply type %T", result)
+	}
+	namespaces := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name, ok := entry.(string)
+		if !ok || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		namespaces = append(namespaces, name)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()

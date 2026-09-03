@@ -78,6 +78,14 @@ export interface SemanticStatusInfo {
 	// unchanged. Reuse cannot be inferred from the persisted config alone; zero
 	// means the next save re-embeds every phrase regardless of what changed.
 	cached_phrases?: number;
+	// Where phrase vectors actually live, which is not always what was chosen:
+	// "vector_store" falls back to "embedded" whenever no vector store is
+	// configured on the gateway. Absent until the gateway has resolved one.
+	storage_mode?: "embedded" | "vector_store";
+	// The namespace the serving generation queries. The vector store holds no
+	// phrase text, so this is the only handle on the records this classifier
+	// owns there. Absent while nothing is serving.
+	namespace?: string;
 	llm?: LLMStatusInfo;
 	// The shipped classification guidance, served so the prompt editor can
 	// seed itself and offer a reset without holding a copy that drifts from

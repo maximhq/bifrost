@@ -133,6 +133,8 @@ type ServerCallbacks interface {
 	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
 	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
+	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
+	DeleteComplexityGeneration(ctx context.Context, namespace string) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -1078,6 +1080,25 @@ func (s *BifrostHTTPServer) GetComplexitySemanticStatus(_ context.Context) (comp
 		return complexity.SemanticStatusInfo{}, fmt.Errorf("routing plugin not found: %w", err)
 	}
 	return routingPlugin.ComplexitySemanticStatus(), nil
+}
+
+// ListComplexityGenerations reports the exemplar generations held in the
+// configured vector store.
+func (s *BifrostHTTPServer) ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return nil, fmt.Errorf("routing plugin not found: %w", err)
+	}
+	return routingPlugin.ListComplexityGenerations(ctx)
+}
+
+// DeleteComplexityGeneration removes one retired exemplar generation.
+func (s *BifrostHTTPServer) DeleteComplexityGeneration(ctx context.Context, namespace string) error {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return fmt.Errorf("routing plugin not found: %w", err)
+	}
+	return routingPlugin.DeleteComplexityGeneration(ctx, namespace)
 }
 
 // GetComplexityLLMStatus returns the llm fallback classifier's readiness from
@@ -2045,11 +2066,11 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
-	if routingEmbeddingPlugin, ok := plugin.(routing.EmbeddingExecutorSetter); ok {
-		routingEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
-	}
-	if routingVectorStorePlugin, ok := plugin.(routing.ComplexityVectorStoreSetter); ok {
-		routingVectorStorePlugin.SetComplexityVectorStore(s.Config.VectorStore)
+	// Both at once: applied separately, the classifier spends the gap between
+	// them configured for a store it has not been given, and warms a throwaway
+	// generation into the embedded one.
+	if routingComplexityPlugin, ok := plugin.(routing.ComplexityWarmupDependencySetter); ok {
+		routingComplexityPlugin.SetComplexityWarmupDependencies(s.Config.VectorStore, s.Client.EmbeddingRequest)
 	}
 	if routingWarmupObserverPlugin, ok := plugin.(routing.WarmupEmbedUsageObserverSetter); ok {
 		routingWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
@@ -2722,8 +2743,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// executor cannot be passed at Init: the plugin is built while the bifrost
 	// client is still being assembled.
 	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
-		routingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
-		routingPlugin.SetComplexityVectorStore(s.Config.VectorStore)
+		// Store and executor together: warmup depends on both, and applying them
+		// one at a time warms a throwaway generation into the embedded store
+		// before the second call redirects it.
+		routingPlugin.SetComplexityWarmupDependencies(s.Config.VectorStore, s.Client.EmbeddingRequest)
 		routingPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)

@@ -88,6 +88,19 @@ type SemanticStatusInfo struct {
 	// this to tell a warm cache from a cold one; zero means the next save embeds
 	// every phrase regardless of what changed.
 	CachedPhrases int `json:"cached_phrases"`
+	// StorageMode is where exemplar vectors are actually being kept, which is not
+	// always what the configuration asked for: "vector_store" degrades to
+	// "embedded" whenever no top-level vector store is configured, so a
+	// deployment that believes it has shared storage and one running a private
+	// in-memory store per node are otherwise indistinguishable from outside.
+	// Empty until the classifier has resolved a store.
+	StorageMode string `json:"storage_mode,omitempty"`
+	// Namespace is the fingerprinted namespace the serving generation queries.
+	// It is the only handle an operator has on the records this classifier owns
+	// in a shared vector store — the backend holds no phrase text — so cleaning
+	// up or inspecting them is guesswork without it. Empty while nothing is
+	// serving.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // SemanticResult is the tier selected by the nearest labelled exemplar.
@@ -161,6 +174,36 @@ type SemanticClassifier struct {
 	localInFlight   map[*semanticGeneration]int
 	embeddingCache  *semanticEmbeddingCache
 	wg              sync.WaitGroup
+	// resolvedStorage is the storage mode actually in force, which differs from
+	// the configured one whenever "vector_store" degrades to the embedded store.
+	// Held separately from status because it survives every state transition:
+	// warming, ready and failed all need to report the same answer.
+	resolvedStorage string
+	// warnedDowngrade suppresses a repeat of the degrade warning while the
+	// condition persists, so a classifier that re-resolves on each dependency
+	// change reports the problem once rather than on every reload.
+	warnedDowngrade bool
+	// coordinator lets peers sharing a vector store elect one warmer between
+	// them. Optional: nil means every node warms independently, which is
+	// correct but pays the embedding cost once per node.
+	coordinator WarmCoordinator
+	// dimensions remembers measured embedding widths across restarts. Optional:
+	// nil means every boot re-measures before it can tell whether the generation
+	// it wants is already stored.
+	dimensions EmbeddingDimensionStore
+	// deleting counts the removals in flight for each namespace. A delete has to
+	// release c.mu before it can reach the store, so without this a warm that
+	// finished during that window could activate a generation whose records are
+	// being erased underneath it.
+	deleting map[string]int
+	// claimer announces the namespace a warm is building, so a peer reclaiming
+	// unused generations does not collect one still under construction.
+	claimer GenerationClaimer
+	// deletionDone wakes a warm that finished into a namespace still being
+	// deleted. Retrying before the store has finished would rebuild records the
+	// delete is about to remove, and could repeat for as long as the delete
+	// takes; waiting makes the retry rebuild exactly once, afterwards.
+	deletionDone *sync.Cond
 }
 
 // NewSemanticClassifier creates a disabled classifier. Callers configure it
@@ -170,12 +213,14 @@ func NewSemanticClassifier(ctx context.Context, logger schemas.Logger) *Semantic
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &SemanticClassifier{
+	classifier := &SemanticClassifier{
 		ctx:            ctx,
 		logger:         logger,
 		status:         SemanticStatusInfo{State: SemanticStatusDisabled},
 		embeddingCache: newSemanticEmbeddingCache(),
 	}
+	classifier.deletionDone = sync.NewCond(&classifier.mu)
+	return classifier
 }
 
 // Configure snapshots the current analyzer configuration and starts a fresh
@@ -183,21 +228,77 @@ func NewSemanticClassifier(ctx context.Context, logger schemas.Logger) *Semantic
 func (c *SemanticClassifier) Configure(config *AnalyzerConfig) {
 	c.mu.Lock()
 	c.config = cloneAnalyzerConfig(config)
+	c.restartPreparationLocked()
+	c.mu.Unlock()
+}
+
+// restartPreparationLocked abandons any warmup in flight and starts preparing
+// the current state from scratch. Every mutator ends this way; sharing it keeps
+// the revision bump — which is what tells an in-flight worker its generation
+// has been superseded — from being forgotten by a future one. The caller must
+// hold c.mu and must have applied its state change already.
+func (c *SemanticClassifier) restartPreparationLocked() {
 	c.revision++
 	c.resetForCurrentConfigLocked()
 	c.requestWarmupLocked()
-	c.mu.Unlock()
 }
 
 // SetConfiguredStore supplies Bifrost's top-level configured VectorStore.
 // "embedded" mode ignores it; "vector_store" mode uses it when present and
 // falls back to the embedded store when it is nil.
+//
+// Callers that also have the embedding adapters to hand should prefer
+// SetWarmupDependencies, which applies both without an intermediate state.
 func (c *SemanticClassifier) SetConfiguredStore(store vectorstore.VectorStore) {
 	c.mu.Lock()
 	c.configuredStore = store
-	c.revision++
-	c.resetForCurrentConfigLocked()
-	c.requestWarmupLocked()
+	c.restartPreparationLocked()
+	c.mu.Unlock()
+}
+
+// SetWarmCoordinator supplies the optional cross-node warm coordinator. It does
+// not restart preparation: coordination only changes who pays for a warm, never
+// what the warm produces, so an in-flight one is left alone.
+func (c *SemanticClassifier) SetWarmCoordinator(coordinator WarmCoordinator) {
+	c.mu.Lock()
+	c.coordinator = coordinator
+	c.mu.Unlock()
+}
+
+// SetGenerationClaimer supplies the optional registry that records which
+// namespace this node is using. Like the coordinator it changes only what peers
+// can see, never what a warm produces, so it does not restart one in flight.
+func (c *SemanticClassifier) SetGenerationClaimer(claimer GenerationClaimer) {
+	c.mu.Lock()
+	c.claimer = claimer
+	c.mu.Unlock()
+}
+
+// SetEmbeddingDimensionStore supplies the optional durable memory of measured
+// embedding widths. Like the coordinator it changes only what a warm costs, so
+// it does not restart one already in flight.
+func (c *SemanticClassifier) SetEmbeddingDimensionStore(dimensions EmbeddingDimensionStore) {
+	c.mu.Lock()
+	c.dimensions = dimensions
+	c.mu.Unlock()
+}
+
+// SetWarmupDependencies supplies the configured store and the embedding
+// adapters in one state transition.
+//
+// Warmup needs both, and supplying them separately makes the classifier
+// observable in a state its caller never intended: with the adapters in place
+// but no store yet, a configuration asking for "vector_store" resolves to the
+// embedded store, warms an entire generation into it, and reports a storage
+// downgrade — all of which the next call undoes. Ordering the two setters
+// avoids that, but only by a convention every call site has to remember; taking
+// both together removes the intermediate state instead of documenting it.
+func (c *SemanticClassifier) SetWarmupDependencies(store vectorstore.VectorStore, embed EmbeddingFunc, embedBatch BatchEmbeddingFunc) {
+	c.mu.Lock()
+	c.configuredStore = store
+	c.embed = embed
+	c.embedBatch = embedBatch
+	c.restartPreparationLocked()
 	c.mu.Unlock()
 }
 
@@ -213,9 +314,7 @@ func (c *SemanticClassifier) SetEmbeddingFunctions(embed EmbeddingFunc, embedBat
 	c.mu.Lock()
 	c.embed = embed
 	c.embedBatch = embedBatch
-	c.revision++
-	c.resetForCurrentConfigLocked()
-	c.requestWarmupLocked()
+	c.restartPreparationLocked()
 	c.mu.Unlock()
 }
 
@@ -265,6 +364,14 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	c.mu.Lock()
 	status := c.status
 	cache := c.embeddingCache
+	status.StorageMode = c.resolvedStorage
+	// Taken from the serving generation rather than the current configuration:
+	// while a new generation warms, the namespace being queried is still the
+	// previous one, and naming the one that is not yet in use would point an
+	// operator at the wrong records.
+	if c.active != nil {
+		status.Namespace = c.active.namespace
+	}
 	c.mu.Unlock()
 	// Read the cache outside c.mu: it carries its own lock, and warmup holds that
 	// one while embedding.
@@ -405,6 +512,8 @@ func (c *SemanticClassifier) Close() error {
 	if c.warmCancel != nil {
 		c.warmCancel()
 	}
+	// A warm parked waiting on a deletion must not hold Close open.
+	c.deletionDone.Broadcast()
 	ownedStore := c.ownedStore
 	c.mu.Unlock()
 	c.wg.Wait()
@@ -430,6 +539,10 @@ func (c *SemanticClassifier) resetForCurrentConfigLocked() {
 	if c.config == nil || c.config.Semantic == nil {
 		previous := c.active
 		c.active = nil
+		// A disabled classifier stores nothing, so it reports no storage mode
+		// rather than whichever one it last resolved.
+		c.resolvedStorage = ""
+		c.warnedDowngrade = false
 		c.status = SemanticStatusInfo{State: SemanticStatusDisabled}
 		if previous != nil {
 			c.cleanupLocalGenerationLocked(previous)
@@ -487,7 +600,7 @@ func (c *SemanticClassifier) runWarmupWorker() {
 	defer c.wg.Done()
 	for {
 		c.mu.Lock()
-		if c.config == nil || c.config.Semantic == nil || c.store == nil || c.embed == nil {
+		if c.closed || c.config == nil || c.config.Semantic == nil || c.store == nil || c.embed == nil {
 			c.warming = false
 			c.mu.Unlock()
 			return
@@ -497,6 +610,9 @@ func (c *SemanticClassifier) runWarmupWorker() {
 		store := c.store
 		embed := c.embed
 		embedBatch := c.embedBatch
+		coordinator := warmCoordinatorForStore(c.coordinator, store)
+		dimensions := c.dimensions
+		claimer := c.claimer
 		warmCtx, cancel := context.WithCancel(c.ctx)
 		c.warmCancel = cancel
 		c.status = SemanticStatusInfo{
@@ -506,17 +622,21 @@ func (c *SemanticClassifier) runWarmupWorker() {
 		}
 		c.mu.Unlock()
 
-		loaded, namespace, dimension, err := warmSemanticExemplars(warmCtx, store, config, embed, embedBatch, c.embeddingCache)
+		loaded, namespace, dimension, err := coordinatedWarmSemanticExemplars(warmCtx, coordinator, dimensions, claimer, store, config, embed, embedBatch, c.embeddingCache)
 		cancel()
 
 		c.mu.Lock()
 		if c.revision != revision {
 			c.cleanupLocalNamespaceLocked(store, namespace)
 			c.mu.Unlock()
+			if claimer != nil && namespace != "" {
+				claimer.ReleaseGeneration(namespace)
+			}
 			continue
 		}
 		c.warmCancel = nil
 		c.warming = false
+		continueWarming := false
 		if err != nil {
 			failureReason := semanticWarmupFailureReason(err)
 			c.status = SemanticStatusInfo{
@@ -529,6 +649,32 @@ func (c *SemanticClassifier) runWarmupWorker() {
 			}
 			c.logWarmupError(err)
 			c.cleanupLocalNamespaceLocked(store, namespace)
+		} else if c.deleting[namespace] > 0 {
+			// A delete reached the store while this warm was running. Activating
+			// now would serve records that are being erased, so wait for the
+			// delete to finish and warm again. Waiting rather than retrying
+			// straight away matters: an immediate retry would rebuild the
+			// records the delete is still removing, and could do so repeatedly
+			// for as long as the store takes to answer.
+			//
+			// This worker will warm again once the delete finishes, so it has to
+			// keep counting as warming across the wait: c.warming was cleared
+			// above on the assumption the loop was ending, and Wait releases c.mu,
+			// so leaving it clear would let requestWarmupLocked start a second
+			// worker alongside this one in the meantime.
+			c.warming = true
+			for c.deleting[namespace] > 0 && !c.closed {
+				c.deletionDone.Wait()
+			}
+			if c.closed {
+				c.warming = false
+				c.mu.Unlock()
+				if claimer != nil && namespace != "" {
+					claimer.ReleaseGeneration(namespace)
+				}
+				return
+			}
+			continueWarming = true
 		} else {
 			previous := c.active
 			c.active = &semanticGeneration{
@@ -545,8 +691,25 @@ func (c *SemanticClassifier) runWarmupWorker() {
 			}
 		}
 		c.mu.Unlock()
+		// Release only after activation is visible. Until then, the target claim
+		// is the peer-visible protection for this newly warmed namespace.
+		if claimer != nil && namespace != "" {
+			claimer.ReleaseGeneration(namespace)
+		}
+		if continueWarming {
+			continue
+		}
 		return
 	}
+}
+
+// warmCoordinatorForStore keeps node-local Chromem warmups independent because
+// a peer's published namespace cannot be adopted from another process.
+func warmCoordinatorForStore(coordinator WarmCoordinator, store vectorstore.VectorStore) WarmCoordinator {
+	if isLocalChromemStore(store) {
+		return nil
+	}
+	return coordinator
 }
 
 func semanticWarmupFailureReason(err error) SemanticFailureReason {
@@ -654,15 +817,34 @@ func (c *SemanticClassifier) logWarmupError(err error) {
 func (c *SemanticClassifier) resolveStoreLocked(semantic *SemanticConfig) (vectorstore.VectorStore, error) {
 	switch semantic.VectorStore {
 	case configstore.ComplexitySemanticVectorStoreEmbedded:
-		return c.embeddedStoreLocked()
+		store, err := c.embeddedStoreLocked()
+		if err == nil {
+			c.resolvedStorage = configstore.ComplexitySemanticVectorStoreEmbedded
+			c.warnedDowngrade = false
+		}
+		return store, err
 	case configstore.ComplexitySemanticVectorStoreConfigured:
-		// A missing vector store degrades to the embedded store rather than
-		// failing: storage choice should never be able to take semantic
-		// classification offline.
 		if c.configuredStore != nil {
+			c.resolvedStorage = configstore.ComplexitySemanticVectorStoreConfigured
+			c.warnedDowngrade = false
 			return c.configuredStore, nil
 		}
-		return c.embeddedStoreLocked()
+		// A missing vector store degrades to the embedded store rather than
+		// failing: storage choice should never be able to take semantic
+		// classification offline. It must not degrade silently, though — the
+		// symptoms of "shared storage I never configured" are indistinguishable
+		// from working, right up until an operator wonders why each node
+		// re-embeds every phrase on restart.
+		store, err := c.embeddedStoreLocked()
+		if err != nil {
+			return store, err
+		}
+		c.resolvedStorage = configstore.ComplexitySemanticVectorStoreEmbedded
+		if !c.warnedDowngrade && c.logger != nil {
+			c.logger.Warn("[Governance] Semantic complexity routing is set to store exemplar vectors in the configured vector store, but none is configured; falling back to the embedded in-memory store. Vectors are not shared between nodes and are re-embedded on every restart. Configure a top-level vector_store, or set the analyzer's storage to \"embedded\" to make this explicit.")
+			c.warnedDowngrade = true
+		}
+		return store, nil
 	default:
 		return nil, fmt.Errorf("unsupported semantic vector_store %q", semantic.VectorStore)
 	}
@@ -690,6 +872,7 @@ func (c *SemanticClassifier) embeddedStoreLocked() (vectorstore.VectorStore, err
 // present before it writes the marker that permits a persistent store reuse.
 func warmSemanticExemplars(
 	ctx context.Context,
+	claimer GenerationClaimer,
 	store vectorstore.VectorStore,
 	config *AnalyzerConfig,
 	embed EmbeddingFunc,
@@ -775,27 +958,29 @@ func warmSemanticExemplars(
 	}
 
 	fingerprint := semanticFingerprint(config, exemplars, dimension)
-	namespace := semanticGenerationNamespace(fingerprint)
 	markerID := semanticMarkerID(fingerprint)
-	// Every VectorStore implementation treats CreateNamespace as idempotent.
-	// Creating first makes a brand-new generation work on Qdrant and Weaviate,
-	// whose reads return backend-specific errors for missing namespaces.
-	if err := store.CreateNamespace(ctx, namespace, dimension, semanticVectorStoreProperties); err != nil {
-		return 0, namespace, dimension, fmt.Errorf("%w: create complexity generation namespace: %v", errSemanticVectorStoreUnavailable, err)
+	// adoptSemanticGeneration creates the namespace before reading it, which is
+	// what makes a brand-new generation work on Qdrant and Weaviate: their reads
+	// answer a missing namespace with backend-specific errors rather than an
+	// empty result, and creation is idempotent on every backend.
+	namespace, adopted, err := adoptSemanticGeneration(ctx, store, config, exemplars, dimension)
+	if err != nil {
+		return 0, namespace, dimension, err
 	}
-	markers, err := store.GetChunks(ctx, namespace, []string{markerID})
-	if err == nil && len(markers) > 0 {
-		if markers[0].Properties[semanticMetadataFingerprint] == fingerprint {
-			// This generation is already stored, so nothing below runs — but the
-			// cache can still be holding another generation's phrases (reverting to
-			// a previously warmed config lands here with the newer config's vectors
-			// resident). Prune here too, or those entries survive until the next
-			// warmup that actually embeds something.
-			cache.retain(exemplars)
-			return len(exemplars), namespace, dimension, nil
-		}
-	} else if err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
-		return 0, namespace, dimension, fmt.Errorf("%w: check complexity warmup marker: %v", errSemanticVectorStoreUnavailable, err)
+	// The namespace is known now, and everything below it is provider work that
+	// can take minutes. Announce it before that starts so a peer sweeping for
+	// unused generations does not collect one being built.
+	if claimer != nil {
+		claimer.ClaimGeneration(ctx, namespace)
+	}
+	if adopted {
+		// This generation is already stored, so nothing below runs — but the
+		// cache can still be holding another generation's phrases (reverting to
+		// a previously warmed config lands here with the newer config's vectors
+		// resident). Prune here too, or those entries survive until the next
+		// warmup that actually embeds something.
+		cache.retain(exemplars)
+		return len(exemplars), namespace, dimension, nil
 	}
 
 	for batchStart := 0; batchStart < len(pending); batchStart += semanticWarmupBatchSize {

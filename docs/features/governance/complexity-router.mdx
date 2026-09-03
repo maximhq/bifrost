@@ -223,7 +223,7 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
 | `semantic.min_similarity` | number | `0` | Similarity floor. Below it no tier is published. `0` accepts the nearest eligible match |
 | `semantic.message_history_count` | integer | `1` | Number of recent user messages joined into the embedded text (1–10) |
 | `semantic.count_toward_budgets` | boolean | `false` | Count embedding usage toward virtual-key budgets (record-only, never enforced) |
-| `semantic.vector_store` | string | `embedded` | `embedded` uses Bifrost's built-in in-memory store and re-embeds phrases on restart. `vector_store` uses the configured top-level `vector_store`; if none is configured, it safely uses Embedded instead. |
+| `semantic.vector_store` | string | `embedded` | Where phrase vectors are kept. `embedded` uses Bifrost's built-in in-memory store, which is private to one node and re-embeds every phrase on restart. `vector_store` uses the configured top-level `vector_store`; with a shared backend (Qdrant, Weaviate, Redis, Pinecone) vectors are shared between nodes and survive restarts, while a Chromem backend stays node-local and only persists when its `path` is set. If no vector store is configured it falls back to `embedded` and says so in the status response and the log. See [Where phrase vectors live](#where-phrase-vectors-live). |
 | `semantic.fallback` | string | `none` | What answers when semantic classification produces no tier: `none` records the request as skipped; `llm` asks the model configured in `llm` below. Requires `llm` to be set |
 | `llm.provider` | string | Required when `fallback` is `llm` | Provider used to run the classification chat completion; must have an enabled key |
 | `llm.model` | string | Required when `fallback` is `llm` | Chat model asked to name the tier. Pick a small, fast one; every fallback classification waits on one completion |
@@ -242,6 +242,29 @@ Chromem is a node-local embedded backend, including when its `path` option persi
 
 <Note>
 `min_similarity` is compared against the vector store backend's own similarity scale, which is not identical across backends: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, while Weaviate reports certainty ((cosine+1)/2). Retune the floor when switching backends.
+</Note>
+
+### Where phrase vectors live
+
+`semantic.vector_store` decides whether the classifier keeps its reference-phrase vectors to itself or shares them.
+
+The column below describes `vector_store` backed by a **shared** backend — Qdrant, Weaviate, Redis, or Pinecone. Chromem is a special case covered underneath.
+
+| | `embedded` | `vector_store` (shared backend) |
+|---|---|---|
+| Scope | One node | Shared by every node pointed at the same backend |
+| Restart | Re-embeds every phrase | Re-embeds nothing — the existing generation is adopted |
+| Saving a config change | Each node embeds independently | One node embeds; the rest adopt what it wrote (requires a KV store — see below) |
+| Retired generations | Dropped as soon as no request needs them | Reclaimed by the background sweep once no node claims them |
+
+`embedded` is the right default for a single node: it needs no external service, and the cost of re-embedding on restart is bounded by your phrase count. Prefer `vector_store` with a shared backend when you run more than one Bifrost, or when your phrase lists are large enough that re-embedding on every restart is worth avoiding.
+
+Sharing the embedding work across a save depends on nodes being able to see one another's progress, which they do through Bifrost's shared KV store. Without one configured, every node still adopts an already-warmed generation on restart, but a save makes each of them embed the phrase set independently — correct, and as costly as `embedded`.
+
+**Chromem is the exception.** Selecting `vector_store` while the top-level `vector_store` is Chromem gives none of the sharing above: Chromem runs in-process, so each node still keeps its own copy, and nodes never adopt one another's generations. It does survive restarts, but only when `path` is set — without one it is memory-only and starts empty, re-embedding every phrase exactly as `embedded` does. Use it when you want on-disk persistence on a single node, not to share vectors between nodes.
+
+<Note>
+Vectors are shared, but configuration is not. In deployments without cluster gossip, saving a configuration change reloads the node that served the request; other nodes keep serving their existing generation until they restart. Those nodes continue to work — their generation stays in the vector store and is protected from reclamation while they are using it — but they will not pick up the new phrases until they reload.
 </Note>
 
 <Note>
@@ -267,6 +290,35 @@ The badge in the UI header and `GET /api/routing/complexity-analyzer-status` rep
 | `failed` | The desired configuration failed to warm. When `serving_previous` is true, the previous generation keeps serving while you fix the problem |
 
 The status response never contains phrases, embeddings, or provider secrets.
+
+It also reports where the classifier is keeping its vectors, which is worth checking whenever storage behaves unexpectedly:
+
+| Field | Meaning |
+|---|---|
+| `storage_mode` | `embedded` or `vector_store` — where phrase vectors actually are, not what was requested. Setting `semantic.vector_store` to `vector_store` without a top-level `vector_store` configured falls back to `embedded`, and this is how you tell. The gateway also logs a warning when that happens. |
+| `namespace` | The namespace the serving generation queries, for example `BifrostComplexityRouter_<hash>`. Each configuration gets its own; the vector store holds no phrase text, so this is the only handle on the records the classifier owns there. |
+| `cached_phrases` | Phrase vectors held in memory for the configured provider and model. The cache is in-process only, so a restart empties it while the saved phrases look unchanged; `0` means the next save re-embeds every phrase however little changed. |
+
+### Stored generations
+
+Every configuration change mints a new fingerprinted generation and warms it before switching over. What happens to the previous one depends on where the vectors live:
+
+- **Embedded storage** (and any node-local chromem store) reclaims the previous generation as soon as no request is still using it. Deleting a phrase removes its vector.
+- **A shared vector store** cannot drop it immediately: another Bifrost node may still be serving that generation, and no node can observe another's state. Bifrost reclaims it in the background instead — each node records which generation it is using, and a periodic sweep removes only the generations no node has claimed. A generation a stale node is still serving stays until that node moves on or stops.
+
+Reclamation needs no configuration. A node records the generation it is using as soon as it starts building it, not only once it is serving it, so a slow warmup cannot have its half-built namespace collected. Sweeps run every 15 minutes and a generation must additionally look unused on two consecutive passes before it is removed. A node's claim expires 10 minutes after its last heartbeat. In practice a generation is collected within about three quarters of an hour of falling out of use. Each reclaimed generation is logged.
+
+You can also inspect what a store is holding, and remove something ahead of the sweep:
+
+```bash
+# What generations exist, and which one is serving
+curl http://localhost:8080/api/routing/complexity-analyzer-generations
+
+# Remove a retired one now rather than waiting for the sweep
+curl -X DELETE http://localhost:8080/api/routing/complexity-analyzer-generations/BifrostComplexityRouter_<hash>
+```
+
+The listing flags the serving generation as `active`. Deletion is refused for the serving generation, for a generation any other node has claimed, and for any namespace outside the classifier's own `BifrostComplexityRouter_` scheme — so this can neither disturb a peer nor drop an unrelated collection sharing the same backend. An unclaimed orphan deletes immediately.
 
 The same response always also carries the LLM fallback classifier's own status, whether or not it is configured:
 

@@ -2383,9 +2383,23 @@ ComplexitySemanticStatus:
     serving_previous:
       type: boolean
       description: When true with state=failed, the previous generation is still serving while the new one failed to warm
+    failure_reason:
+      type: string
+      enum: [authentication, model_unavailable, rate_limited, timeout, provider_unavailable, vector_store_unavailable, invalid_response, unknown]
+      description: Category of a warmup failure when state=failed. Provider and backend error bodies stay in server logs; this bounded vocabulary is what status clients receive.
     error:
       type: string
       description: Warmup failure detail when state=failed
+    cached_phrases:
+      type: integer
+      description: How many phrase vectors the gateway currently holds in process for the configured provider and model. The cache is in-process only, since vectors cannot be read back out of a vector store, so a restart empties it while the saved phrases look unchanged. Zero means the next save re-embeds every phrase regardless of what changed.
+    storage_mode:
+      type: string
+      enum: [embedded, vector_store]
+      description: Where exemplar vectors are actually kept, which is not always what was configured. semantic.vector_store=vector_store degrades to embedded whenever no top-level vector store is configured, so this reports what is in force rather than what was asked for. Absent until a store has been resolved.
+    namespace:
+      type: string
+      description: The fingerprinted namespace the serving generation queries, for example BifrostComplexityRouter_<hash>. The backend holds no phrase text, so this is the only handle on the records the classifier owns in a shared vector store. Absent while nothing is serving.
     llm:
       type: object
       description: Always present in the response. state is disabled when no llm block is configured.
@@ -2397,6 +2411,24 @@ ComplexitySemanticStatus:
     llm_default_prompt:
       type: string
       description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
+
+ComplexityGenerations:
+  type: object
+  description: The exemplar generations the vector store currently holds for semantic complexity routing.
+  properties:
+    generations:
+      type: array
+      description: One entry per fingerprinted namespace, ordered by name. Empty when no vector store has been resolved.
+      items:
+        type: object
+        properties:
+          namespace:
+            type: string
+            description: The fingerprinted namespace holding the generation.
+            example: BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5
+          active:
+            type: boolean
+            description: Whether classification currently queries this generation. Exactly one is active while the classifier is ready; every other entry is retired and unreachable by any request.
 
 ComplexityAnalyzerConfig:
   type: object

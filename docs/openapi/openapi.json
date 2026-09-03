@@ -69838,9 +69838,39 @@
                       "type": "boolean",
                       "description": "When true with state=failed, the previous generation is still serving while the new one failed to warm"
                     },
+                    "failure_reason": {
+                      "type": "string",
+                      "enum": [
+                        "authentication",
+                        "model_unavailable",
+                        "rate_limited",
+                        "timeout",
+                        "provider_unavailable",
+                        "vector_store_unavailable",
+                        "invalid_response",
+                        "unknown"
+                      ],
+                      "description": "Category of a warmup failure when state=failed. Provider and backend error bodies stay in server logs; this bounded vocabulary is what status clients receive."
+                    },
                     "error": {
                       "type": "string",
                       "description": "Warmup failure detail when state=failed"
+                    },
+                    "cached_phrases": {
+                      "type": "integer",
+                      "description": "How many phrase vectors the gateway currently holds in process for the configured provider and model. The cache is in-process only, since vectors cannot be read back out of a vector store, so a restart empties it while the saved phrases look unchanged. Zero means the next save re-embeds every phrase regardless of what changed."
+                    },
+                    "storage_mode": {
+                      "type": "string",
+                      "enum": [
+                        "embedded",
+                        "vector_store"
+                      ],
+                      "description": "Where exemplar vectors are actually kept, which is not always what was configured. semantic.vector_store=vector_store degrades to embedded whenever no top-level vector store is configured, so this reports what is in force rather than what was asked for. Absent until a store has been resolved."
+                    },
+                    "namespace": {
+                      "type": "string",
+                      "description": "The fingerprinted namespace the serving generation queries, for example BifrostComplexityRouter_<hash>. The backend holds no phrase text, so this is the only handle on the records the classifier owns in a shared vector store. Absent while nothing is serving."
                     },
                     "llm": {
                       "type": "object",
@@ -69877,6 +69907,142 @@
           },
           "503": {
             "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-generations": {
+      "get": {
+        "operationId": "listComplexityGenerations",
+        "summary": "List complexity classifier generations",
+        "description": "Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generations retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The exemplar generations the vector store currently holds for semantic complexity routing.",
+                  "properties": {
+                    "generations": {
+                      "type": "array",
+                      "description": "One entry per fingerprinted namespace, ordered by name. Empty when no vector store has been resolved.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "namespace": {
+                            "type": "string",
+                            "description": "The fingerprinted namespace holding the generation.",
+                            "example": "BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5"
+                          },
+                          "active": {
+                            "type": "boolean",
+                            "description": "Whether classification currently queries this generation. Exactly one is active while the classifier is ready; every other entry is retired and unreachable by any request."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The vector store could not be enumerated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-generations/{namespace}": {
+      "delete": {
+        "operationId": "deleteComplexityGeneration",
+        "summary": "Delete a retired complexity generation",
+        "description": "Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "path",
+            "required": true,
+            "description": "The fingerprinted namespace to remove, as returned by the generations listing.",
+            "schema": {
+              "type": "string",
+              "example": "BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generation deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "deleted"
+                    },
+                    "namespace": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The namespace is not a complexity routing generation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The generation is currently serving classification requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The vector store could not be reached",
             "content": {
               "application/json": {
                 "schema": {

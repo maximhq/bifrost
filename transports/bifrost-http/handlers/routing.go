@@ -51,6 +51,12 @@ type RoutingManager interface {
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
 	// GetComplexityLLMStatus returns the llm fallback classifier's readiness.
 	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
+	// ListComplexityGenerations reports the exemplar generations the vector
+	// store holds. Retired ones are not reclaimed on a shared external store, so
+	// this is the only way to see what has accumulated.
+	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
+	// DeleteComplexityGeneration removes one retired generation.
+	DeleteComplexityGeneration(ctx context.Context, namespace string) error
 }
 
 // complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
@@ -114,6 +120,8 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
 	// Status never shipped under /api/governance, so it has no legacy alias.
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
+	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -793,4 +801,57 @@ func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// complexityGenerationsResponse lists what the vector store is holding for
+// semantic complexity routing.
+type complexityGenerationsResponse struct {
+	Generations []complexity.GenerationInfo `json:"generations"`
+}
+
+// listComplexityGenerations reports every exemplar generation in the configured
+// vector store, flagging the serving one.
+//
+// Each configuration change mints a new fingerprinted generation, and retired
+// ones are only reclaimed automatically on a node-local store: on a shared
+// backend another replica may still be serving one, so they accumulate. The
+// backend holds no phrase text, so without this listing a retired generation is
+// an opaque hash an operator has no safe way to identify.
+func (h *RoutingHandler) listComplexityGenerations(ctx *fasthttp.RequestCtx) {
+	generations, err := h.routingManager.ListComplexityGenerations(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to list complexity generations: %v", err))
+		return
+	}
+	if generations == nil {
+		generations = []complexity.GenerationInfo{}
+	}
+	SendJSON(ctx, complexityGenerationsResponse{Generations: generations})
+}
+
+// deleteComplexityGeneration removes one retired generation and its vectors.
+//
+// The serving generation is refused rather than deleted: routing would keep
+// querying a namespace that no longer exists until the next warmup replaced it.
+func (h *RoutingHandler) deleteComplexityGeneration(ctx *fasthttp.RequestCtx) {
+	namespace, ok := ctx.UserValue("namespace").(string)
+	if !ok || strings.TrimSpace(namespace) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "namespace is required")
+		return
+	}
+
+	if err := h.routingManager.DeleteComplexityGeneration(ctx, namespace); err != nil {
+		switch {
+		case errors.Is(err, complexity.ErrGenerationActive):
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+		case errors.Is(err, complexity.ErrNotAGeneration):
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		case errors.Is(err, complexity.ErrClassifierUnavailable):
+			SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		default:
+			SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to delete complexity generation: %v", err))
+		}
+		return
+	}
+	SendJSON(ctx, map[string]string{"status": "deleted", "namespace": namespace})
 }
