@@ -7303,9 +7303,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				case <-req.Context.Done():
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending stream response")
+					drainAbandonedStream(stream)
 				case <-deliveryTimer.C:
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
+					drainAbandonedStream(stream)
 				}
 				deliveryTimer.Stop()
 			} else {
@@ -7357,6 +7359,32 @@ func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schem
 		_, _ = pipeline.RunPostLLMHooks(req.Context, result, nil, pluginCount)
 	}
 	drainAndAttachPluginLogs(req.Context)
+}
+
+// drainAbandonedStream consumes a stream that will never reach the caller, so
+// the provider goroutine feeding it can finish.
+//
+// Both abandonment branches above drop the stream: the client context is done,
+// or the 5s delivery handoff timed out. The provider goroutine on the other end
+// is still producing, and GateSendChunk only escapes on ctx.Done(). On the
+// timeout path the context is still alive, so that goroutine blocks forever on a
+// channel nobody reads. It never reaches its deferred ReleaseStreamingResponse,
+// so its upstream connection is never released and one slot of MaxConnsPerHost
+// is burned for the life of the process.
+//
+// Draining asynchronously is deliberate: the worker must not wait out the rest
+// of an upstream response before picking up its next request. Post-hooks,
+// billing and the deferred span still run, because the provider goroutine
+// completes normally once unblocked and the chunks are discarded downstream of
+// that work rather than upstream of it.
+func drainAbandonedStream(stream chan *schemas.BifrostStreamChunk) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for range stream { //nolint:revive // draining; the chunks are deliberately discarded
+		}
+	}()
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
