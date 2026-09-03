@@ -1170,7 +1170,6 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 		"FT.SEARCH", namespace,
 		fmt.Sprintf("%s=>[KNN %d @embedding $vec AS score]", hybridQuery, knnLimit),
 		"PARAMS", "2", "vec", queryBytes,
-		"SORTBY", "score",
 	}
 
 	// Add RETURN clause - always include score for vector search
@@ -1194,22 +1193,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 	result := s.client.Do(ctx, args...)
 	if result.Err() != nil {
-		errMsg := strings.ToLower(result.Err().Error())
-		// Some Valkey implementations reject SORTBY in KNN search (already distance-ordered).
-		if strings.Contains(errMsg, "unexpected argument `sortby`") || strings.Contains(errMsg, "unexpected argument sortby") {
-			compatArgs := make([]interface{}, 0, len(args)-2)
-			for i := 0; i < len(args); i++ {
-				if i+1 < len(args) && args[i] == "SORTBY" {
-					i++ // skip sort field value too
-					continue
-				}
-				compatArgs = append(compatArgs, args[i])
-			}
-			result = s.client.Do(ctx, compatArgs...)
-		}
-		if result.Err() != nil {
-			return nil, fmt.Errorf("native vector search failed: %w", result.Err())
-		}
+		return nil, fmt.Errorf("native vector search failed: %w", result.Err())
 	}
 
 	// Parse search results
@@ -1241,6 +1225,15 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 			filteredResults = append(filteredResults, result)
 		}
 	}
+
+	// Order client-side: SORTBY is not portable across search backends.
+	sort.SliceStable(filteredResults, func(i, j int) bool {
+		si, sj := filteredResults[i].Score, filteredResults[j].Score
+		if si == nil || sj == nil {
+			return si != nil && sj == nil
+		}
+		return *si > *sj
+	})
 
 	results = filteredResults
 
