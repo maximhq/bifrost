@@ -552,11 +552,9 @@ bifrost:
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
 
   # Plugins configuration
-  # Plugin version must be >= 1 (schema minimum). Use values > 1 to force DB-backed plugin config replacement on upgrade.
   plugins:
     telemetry:
       enabled: false
-      version: 1
       config:
         custom_labels: []
         # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
@@ -572,7 +570,6 @@ bifrost:
 
     logging:
       enabled: false
-      version: 1
       config:
         disable_content_logging: false
         logging_headers: []
@@ -584,7 +581,6 @@ bifrost:
 
     governance:
       enabled: false
-      version: 1
       config:
         is_vk_mandatory: false
         required_headers: []
@@ -592,7 +588,6 @@ bifrost:
 
     maxim:
       enabled: false
-      version: 1
       config:
         api_key: ""
         log_repo_id: ""
@@ -603,7 +598,6 @@ bifrost:
 
     semanticCache:
       enabled: false
-      version: 1
       config:
         # Semantic mode (dimension > 1): set provider + embedding_model. The provider's API keys
         #   are inherited from bifrost.providers, so configure that provider there (not here).
@@ -621,7 +615,6 @@ bifrost:
 
     otel:
       enabled: false
-      version: 1
       config:
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "include"           # "include" or "exclude"
@@ -688,7 +681,6 @@ bifrost:
       # inject_timeout: "5s"
     datadog:
       enabled: false
-      version: 1
       config:
         service_name: "bifrost" # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
@@ -724,7 +716,6 @@ bifrost:
 
     bigquery:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
@@ -743,7 +734,6 @@ bifrost:
 
     kafka:
       enabled: false
-      version: 1
       config:
         brokers: [] # Kafka broker addresses (required when enabled)
         topic: "" # Topic to publish traces to (required when enabled)
@@ -766,7 +756,6 @@ bifrost:
 
     pubsub:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         topic_id: "" # Pub/Sub topic ID (required when enabled)
@@ -780,7 +769,6 @@ bifrost:
 
     splunk:
       enabled: false
-      version: 1
       config:
         endpoint: "" # HEC base URL, e.g. https://localhost:8088 (required when enabled). Supports env.VAR_NAME.
         token: "" # HEC token (required when enabled). Supports env.VAR_NAME — e.g. "env.SPLUNK_HEC_TOKEN".
@@ -810,7 +798,6 @@ bifrost:
       # - name: "my-custom-plugin"
       #   enabled: true
       #   path: "/plugins/my-plugin.so"
-      #   version: 1 # must be >= 1; increase to force DB-backed plugin config replacement
       #   config:
       #     key: value
 
