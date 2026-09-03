@@ -165,14 +165,35 @@ func lookupManagedByResolver(scope string) (ManagedByResolver, bool) {
 // tracked OUTSIDE the VK's own budget rows
 type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
 
+// SourcedBudget pairs a budget with the name of what governs it (e.g. an access
+// profile), for quota responses that can be composed from more than one source.
+// Source is empty when there's nothing to disambiguate.
+type SourcedBudget struct {
+	configstoreTables.TableBudget
+	Source string `json:"source,omitempty"`
+}
+
+// SourcedRateLimit is SourcedBudget's counterpart for rate limits.
+type SourcedRateLimit struct {
+	configstoreTables.TableRateLimit
+	Source string `json:"source,omitempty"`
+}
+
 // ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
 // authoritative usage lives outside its own budget rows.
 type ExternalQuotaBudgetResult struct {
-	// Budgets replaces the VK's own budget rows in the quota response.
-	Budgets []configstoreTables.TableBudget
-	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
-	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	// Budgets replaces the VK's own budget rows in the quota response, each tagged
+	// with what governs it.
+	Budgets []SourcedBudget
+	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise: the
+	// single effective, tightest-per-dimension rate limit that carries the real
+	// usage for an AP-managed VK). Kept for backward compatibility with existing
+	// readers of this field.
 	RateLimit *configstoreTables.TableRateLimit
+	// RateLimits lists every rate limit RateLimit was merged from, each tagged with
+	// its source, so a caller can see which one is actually binding instead of only
+	// the merged result. Empty when there's at most one source.
+	RateLimits []SourcedRateLimit
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -1263,7 +1284,11 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
 	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
 	vk.IsAccessProfileManaged = ext.Managed
-	vk.Budgets = ext.Budgets
+	budgets := make([]configstoreTables.TableBudget, len(ext.Budgets))
+	for i := range ext.Budgets {
+		budgets[i] = ext.Budgets[i].TableBudget
+	}
+	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
 }
 
@@ -4908,16 +4933,19 @@ type quotaModelSpend struct {
 // (both measured since last_reset). models is empty when logging is disabled.
 type quotaBudget struct {
 	configstoreTables.TableBudget
+	// Source names what governs this budget (e.g. an access profile), when the
+	// caller supplied one. Empty for a VK's own budget rows.
+	Source string            `json:"source,omitempty"`
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
 // buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
 // request logs over that budget's current cycle
-func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []SourcedBudget, now time.Time) ([]quotaBudget, error) {
 	out := make([]quotaBudget, 0, len(budgets))
 	for i := range budgets {
-		b := &budgets[i]
-		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
+		b := &budgets[i].TableBudget
+		entry := quotaBudget{TableBudget: *b, Source: budgets[i].Source, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
@@ -5003,8 +5031,15 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	budgetRows := vk.Budgets
+	budgetRows := make([]SourcedBudget, len(vk.Budgets))
+	for i := range vk.Budgets {
+		budgetRows[i] = SourcedBudget{TableBudget: vk.Budgets[i]}
+	}
 	rateLimit := vk.RateLimit
+	rateLimits := []SourcedRateLimit{}
+	if vk.RateLimit != nil {
+		rateLimits = []SourcedRateLimit{{TableRateLimit: *vk.RateLimit}}
+	}
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -5017,6 +5052,10 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
+			rateLimits = ext.RateLimits
+			if rateLimits == nil {
+				rateLimits = []SourcedRateLimit{}
+			}
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -5034,6 +5073,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
+		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})
