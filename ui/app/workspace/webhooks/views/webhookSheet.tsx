@@ -5,72 +5,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/lib/i18n";
 import { getErrorMessage, useCreateWebhookEndpointMutation, useUpdateWebhookEndpointMutation } from "@/lib/store";
 import { SecretVar } from "@/lib/types/schemas";
 import { WEBHOOK_EVENTS, WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 
-const webhookFormSchema = z
-	.object({
-		name: z.string().trim().min(1, "Name is required"),
-		url: z
-			.string()
-			.trim()
-			.min(1, "URL is required")
-			.refine((value) => {
-				try {
-					const parsed = new URL(value);
-					return ["http:", "https:"].includes(parsed.protocol) && Boolean(parsed.hostname);
-				} catch {
-					return false;
-				}
-			}, "Enter a valid HTTP(S) URL"),
-		events: z.array(z.enum(["async_job.completed", "async_job.failed"])).min(1, "Subscribe to at least one event"),
-		include_response: z.boolean(),
-		allow_private_network: z.boolean(),
-		max_retries: z.number().int().min(0).optional(),
-		retry_backoff_initial_seconds: z.number().int().min(0).optional(),
-		retry_backoff_max_seconds: z.number().int().min(0).optional(),
-		attempt_timeout_seconds: z.number().int().min(0).optional(),
-		max_response_payload_kbs: z.number().int().min(0).optional(),
-		max_concurrent_deliveries: z.number().int().min(0).optional(),
-	})
-	.refine((data) => data.allow_private_network || !data.url.startsWith("http://"), {
-		message: 'http:// URLs require "Allow private network" to be enabled',
-		path: ["url"],
-	});
-
-type WebhookFormData = z.infer<typeof webhookFormSchema>;
-
-const TUNING_FIELDS: {
-	key: keyof typeof WEBHOOK_TUNING_DEFAULTS;
-	label: string;
-	description: string;
-}[] = [
-	{ key: "max_retries", label: "Max retries", description: "Retries after the first delivery attempt." },
-	{
-		key: "retry_backoff_initial_seconds",
-		label: "Initial retry backoff (seconds)",
-		description: "Delay before the first retry; doubles per retry.",
-	},
-	{ key: "retry_backoff_max_seconds", label: "Max retry backoff (seconds)", description: "Cap on the per-retry delay." },
-	{ key: "attempt_timeout_seconds", label: "Attempt timeout (seconds)", description: "End-to-end bound for one delivery attempt." },
-	{
-		key: "max_response_payload_kbs",
-		label: "Max response payload (KB)",
-		description: "Responses above this size are omitted from the payload.",
-	},
-	{
-		key: "max_concurrent_deliveries",
-		label: "Max concurrent deliveries",
-		description: "Concurrent in-flight deliveries to this endpoint per node.",
-	},
-];
+type WebhookFormData = {
+	name: string;
+	url: string;
+	events: ("async_job.completed" | "async_job.failed")[];
+	include_response: boolean;
+	allow_private_network: boolean;
+	max_retries?: number;
+	retry_backoff_initial_seconds?: number;
+	retry_backoff_max_seconds?: number;
+	attempt_timeout_seconds?: number;
+	max_response_payload_kbs?: number;
+	max_concurrent_deliveries?: number;
+};
 
 const formDefaults = (endpoint: WebhookEndpoint | null): WebhookFormData => ({
 	name: endpoint?.name ?? "",
@@ -96,6 +54,64 @@ interface WebhookSheetProps {
 }
 
 export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheetProps) {
+	const t = useT();
+	const webhookFormSchema = useMemo(
+		() =>
+			z
+				.object({
+					name: z.string().trim().min(1, t("routing.webhooks.nameRequired")),
+					url: z
+						.string()
+						.trim()
+						.min(1, t("routing.webhooks.urlRequired"))
+						.refine((value) => {
+							try {
+								const parsed = new URL(value);
+								return ["http:", "https:"].includes(parsed.protocol) && Boolean(parsed.hostname);
+							} catch {
+								return false;
+							}
+						}, t("routing.webhooks.urlInvalid")),
+					events: z.array(z.enum(["async_job.completed", "async_job.failed"])).min(1, t("routing.webhooks.eventsRequired")),
+					include_response: z.boolean(),
+					allow_private_network: z.boolean(),
+					max_retries: z.number().int().min(0).optional(),
+					retry_backoff_initial_seconds: z.number().int().min(0).optional(),
+					retry_backoff_max_seconds: z.number().int().min(0).optional(),
+					attempt_timeout_seconds: z.number().int().min(0).optional(),
+					max_response_payload_kbs: z.number().int().min(0).optional(),
+					max_concurrent_deliveries: z.number().int().min(0).optional(),
+				})
+				.refine((data) => data.allow_private_network || !data.url.startsWith("http://"), {
+					message: t("routing.webhooks.httpNeedsPrivate"),
+					path: ["url"],
+				}),
+		[t],
+	);
+	const TUNING_FIELDS: {
+		key: keyof typeof WEBHOOK_TUNING_DEFAULTS;
+		label: string;
+		description: string;
+	}[] = [
+		{ key: "max_retries", label: t("routing.webhooks.maxRetries"), description: t("routing.webhooks.maxRetriesDesc") },
+		{
+			key: "retry_backoff_initial_seconds",
+			label: t("routing.webhooks.initialBackoff"),
+			description: t("routing.webhooks.initialBackoffDesc"),
+		},
+		{ key: "retry_backoff_max_seconds", label: t("routing.webhooks.maxBackoff"), description: t("routing.webhooks.maxBackoffDesc") },
+		{ key: "attempt_timeout_seconds", label: t("routing.webhooks.attemptTimeout"), description: t("routing.webhooks.attemptTimeoutDesc") },
+		{
+			key: "max_response_payload_kbs",
+			label: t("routing.webhooks.maxPayload"),
+			description: t("routing.webhooks.maxPayloadDesc"),
+		},
+		{
+			key: "max_concurrent_deliveries",
+			label: t("routing.webhooks.maxConcurrent"),
+			description: t("routing.webhooks.maxConcurrentDesc"),
+		},
+	];
 	const isEditing = !!endpoint;
 	const [createWebhookEndpoint, { isLoading: isCreating }] = useCreateWebhookEndpointMutation();
 	const [updateWebhookEndpoint, { isLoading: isUpdating }] = useUpdateWebhookEndpointMutation();
@@ -153,7 +169,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 		for (const [name, value] of Object.entries(headers)) {
 			if (!name.trim()) continue;
 			if (!value?.value?.trim() && !value?.ref?.trim()) {
-				setHeadersError(`Header "${name}" must have a value`);
+				setHeadersError(t("routing.webhooks.headerMustHaveValue", { name }));
 				return;
 			}
 			cleanedHeaders[name.trim()] = value;
@@ -178,11 +194,11 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 		try {
 			if (isEditing) {
 				await updateWebhookEndpoint({ id: endpoint.id, data: request }).unwrap();
-				toast.success("Webhook endpoint updated successfully");
+				toast.success(t("routing.webhooks.updated"));
 				onClose();
 			} else {
 				const response = await createWebhookEndpoint(request).unwrap();
-				toast.success("Webhook endpoint created successfully");
+				toast.success(t("routing.webhooks.created"));
 				onClose();
 				onSecret({ endpointName: response.endpoint.name, secret: response.secret });
 			}
@@ -195,21 +211,17 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="webhook-sheet-content">
 				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
-					<SheetTitle>{isEditing ? endpoint.name : "Add Webhook Endpoint"}</SheetTitle>
-					<SheetDescription>
-						{isEditing
-							? "Update the endpoint's URL, subscriptions, and delivery behavior."
-							: "Register an HTTPS endpoint to receive signed notifications when async jobs finish."}
-					</SheetDescription>
+					<SheetTitle>{isEditing ? endpoint.name : t("routing.webhooks.add")}</SheetTitle>
+					<SheetDescription>{isEditing ? t("routing.webhooks.editDesc") : t("routing.webhooks.createDesc")}</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
 					<div className="flex-1 space-y-4 overflow-y-auto px-4 md:px-8">
 						<div className="space-y-2">
-							<Label htmlFor="webhook-name">Name</Label>
+							<Label htmlFor="webhook-name">{t("common.name")}</Label>
 							<Input
 								id="webhook-name"
-								placeholder="e.g., billing-service"
+								placeholder={t("routing.webhooks.namePlaceholder")}
 								data-testid="webhook-name-input"
 								{...register("name")}
 								className={errors.name ? "border-destructive" : ""}
@@ -218,10 +230,10 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 						</div>
 
 						<div className="space-y-2">
-							<Label htmlFor="webhook-url">URL</Label>
+							<Label htmlFor="webhook-url">{t("routing.webhooks.colUrl")}</Label>
 							<Input
 								id="webhook-url"
-								placeholder="https://example.com/hooks/bifrost"
+								placeholder={t("routing.webhooks.urlPlaceholder")}
 								data-testid="webhook-url-input"
 								{...register("url")}
 								className={errors.url ? "border-destructive" : ""}
@@ -230,7 +242,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 						</div>
 
 						<div className="space-y-2">
-							<Label>Events</Label>
+							<Label>{t("routing.webhooks.events")}</Label>
 							<div className="space-y-2 rounded-sm border p-4">
 								{WEBHOOK_EVENTS.map((event) => (
 									<div key={event.value}>
@@ -241,9 +253,13 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 												onCheckedChange={(checked) => toggleEvent(event.value, checked === true)}
 												data-testid={`webhook-event-${event.value}-checkbox`}
 											/>
-											{event.label}
+											{event.value === "async_job.completed" ? t("routing.webhooks.eventCompleted") : t("routing.webhooks.eventFailed")}
 										</label>
-										<p className="text-muted-foreground pl-6 text-xs">{event.description}</p>
+										<p className="text-muted-foreground pl-6 text-xs">
+											{event.value === "async_job.completed"
+												? t("routing.webhooks.eventCompletedDesc")
+												: t("routing.webhooks.eventFailedDesc")}
+										</p>
 									</div>
 								))}
 							</div>
@@ -253,11 +269,9 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 						<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 							<div className="space-y-0.5">
 								<Label htmlFor="webhook-include-response" className="text-sm font-normal">
-									Include response payload
+									{t("routing.webhooks.includeResponse")}
 								</Label>
-								<p className="text-muted-foreground text-xs">
-									Inline the job's result in the notification. Oversized or already-expired results are delivered as a thin payload instead.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("routing.webhooks.includeResponseDesc")}</p>
 							</div>
 							<Switch
 								id="webhook-include-response"
@@ -270,11 +284,9 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 						<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 							<div className="space-y-0.5">
 								<Label htmlFor="webhook-private-network" className="text-sm font-normal">
-									Allow private network
+									{t("routing.webhooks.allowPrivate")}
 								</Label>
-								<p className="text-muted-foreground text-xs">
-									Permit deliveries to private IP ranges. Only enable this for receivers inside your own network.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("routing.webhooks.allowPrivateDesc")}</p>
 							</div>
 							<Switch
 								id="webhook-private-network"
@@ -289,23 +301,21 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 								value={headers}
 								onChange={handleHeadersChange}
 								useSecretVarInput
-								label="Custom Headers"
-								keyPlaceholder="e.g., Authorization"
-								valuePlaceholder="Value or env.VARIABLE"
+								label={t("routing.webhooks.customHeaders")}
+								keyPlaceholder={t("routing.webhooks.headerKeyPlaceholder")}
+								valuePlaceholder={t("routing.webhooks.headerValuePlaceholder")}
 							/>
 							{headersError && (
 								<p className="text-destructive text-xs" data-testid="webhook-headers-error">
 									{headersError}
 								</p>
 							)}
-							<p className="text-muted-foreground text-xs">
-								Sent with every delivery. Signing and content headers are reserved and cannot be overridden.
-							</p>
+							<p className="text-muted-foreground text-xs">{t("routing.webhooks.headersHint")}</p>
 						</div>
 
 						<div className="space-y-4">
 							<h3 className="text-sm leading-none font-medium" data-testid="webhook-tuning-heading">
-								Delivery Tuning
+								{t("routing.webhooks.deliveryTuning")}
 							</h3>
 							{TUNING_FIELDS.map((field) => {
 								const fieldValue = watch(field.key);
@@ -317,7 +327,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 												{field.label}
 											</Label>
 											<p className="text-muted-foreground text-xs">{field.description}</p>
-											{isUsingDefault && <p className="text-muted-foreground text-xs">Using delivery worker default</p>}
+											{isUsingDefault && <p className="text-muted-foreground text-xs">{t("routing.webhooks.usingDefault")}</p>}
 										</div>
 										<Input
 											id={`webhook-${field.key}`}
@@ -337,19 +347,17 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 									</div>
 								);
 							})}
-							<p className="text-muted-foreground pb-2 text-xs">
-								If retries extend past the job's result TTL, later deliveries carry a thin payload marked <code>result_expired</code>.
-							</p>
+							<p className="text-muted-foreground pb-2 text-xs">{t("routing.webhooks.tuningNote")}</p>
 						</div>
 					</div>
 
 					<div className="dark:bg-card border-border border-t bg-white px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button type="button" variant="outline" onClick={onClose} disabled={isSaving} data-testid="webhook-cancel-btn">
-								Cancel
+								{t("common.cancel")}
 							</Button>
 							<Button type="submit" disabled={isSaving || !hasChanges} data-testid="webhook-save-btn">
-								{isSaving ? "Saving..." : isEditing ? "Update Endpoint" : "Create Endpoint"}
+								{isSaving ? t("common.saving") : isEditing ? t("routing.webhooks.updateEndpoint") : t("routing.webhooks.createEndpoint")}
 							</Button>
 						</div>
 					</div>

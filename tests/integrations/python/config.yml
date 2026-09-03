@@ -234,6 +234,16 @@ providers:
     alternatives:
       - "deepseek-v4-pro"
 
+  zhipu:
+    chat: "glm-4.6"
+    tools: "glm-4.6"
+    streaming: "glm-4.6"
+    thinking: "glm-4.6"
+    embedding: "embedding-3"
+    image_generation: "cogview-4"
+    alternatives:
+      - "glm-4.5-flash"
+
   replicate:
     video: "openai/sora-2-pro"
 
@@ -258,6 +268,7 @@ provider_api_keys:
   replicate: "REPLICATE_API_KEY"
   runway: "RUNWAY_API_KEY"
   deepseek: "DEEPSEEK_API_KEY"
+  zhipu: "ZHIPU_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -646,6 +657,46 @@ provider_scenarios:
     file_delete: false
     file_content: false
     count_tokens: true
+
+  zhipu:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false
+    image_base64: false
+    file_input: false
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: true
+    prompt_caching: false
+    list_models: true
+    responses: true
+    responses_image: false
+    text_completion: false
+    image_generation: true
+    langchain_structured_output: true
+    pydantic_structured_output: true
+    pydanticai_streaming: true
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false
+    file_upload: false
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
+    count_tokens: false
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types

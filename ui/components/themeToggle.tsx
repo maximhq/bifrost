@@ -1,13 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { Check, Laptop, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
-const THEMES = [
-	{ value: "light", label: "Light", icon: Sun },
-	{ value: "dark", label: "Dark", icon: Moon },
-	{ value: "system", label: "System", icon: Laptop },
-] as const;
+const THEMES: { value: "light" | "dark" | "system"; labelKey: MessageKey; icon: typeof Sun }[] = [
+	{ value: "light", labelKey: "theme.light", icon: Sun },
+	{ value: "dark", labelKey: "theme.dark", icon: Moon },
+	{ value: "system", labelKey: "theme.system", icon: Laptop },
+];
 
 /**
  * The theme choices as bare dropdown items, so they can be embedded in a larger
@@ -15,13 +16,14 @@ const THEMES = [
  */
 export function ThemeToggleItems() {
 	const { theme, setTheme } = useTheme();
+	const t = useT();
 
 	return (
 		<>
-			{THEMES.map(({ value, label, icon: Icon }) => (
+			{THEMES.map(({ value, labelKey, icon: Icon }) => (
 				<DropdownMenuItem key={value} onClick={() => setTheme(value)} className="cursor-pointer">
 					<Icon className="size-4" strokeWidth={2} />
-					<span className="flex-1">{label}</span>
+					<span className="flex-1">{t(labelKey)}</span>
 					{theme === value && <Check className="text-muted-foreground size-3.5" strokeWidth={2.5} />}
 				</DropdownMenuItem>
 			))}
@@ -30,6 +32,8 @@ export function ThemeToggleItems() {
 }
 
 export function ThemeToggle() {
+	const t = useT();
+
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -42,7 +46,7 @@ export function ThemeToggle() {
 				>
 					<Sun className="size-4 scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" strokeWidth={2} />
 					<Moon className="absolute size-4 scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" strokeWidth={2} />
-					<span className="sr-only">Toggle theme</span>
+					<span className="sr-only">{t("theme.toggle")}</span>
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end" sideOffset={2}>

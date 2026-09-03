@@ -397,8 +397,24 @@ func normalizeProvider(p string) string {
 		return string(schemas.Runway)
 	case strings.Contains(p, "fireworks_ai"):
 		return string(schemas.Fireworks)
+	case p == string(schemas.Zhipu):
+		// Datasheet rows for GLM models are filed under Z.AI's catalog id.
+		return "zai"
 	default:
 		return p
+	}
+}
+
+// catalogProviderToRuntime maps a catalog provider id back onto Bifrost's
+// ModelProvider so listing APIs answer under the name callers actually use.
+func catalogProviderToRuntime(p string) schemas.ModelProvider {
+	switch p {
+	case "together_ai":
+		return "together"
+	case "zai":
+		return schemas.Zhipu
+	default:
+		return schemas.ModelProvider(p)
 	}
 }
 

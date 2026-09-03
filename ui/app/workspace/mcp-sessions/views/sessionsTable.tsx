@@ -37,6 +37,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useT, type TranslateFn } from "@/lib/i18n";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
@@ -65,6 +66,7 @@ export default function SessionsTable({
 	limit,
 	onOffsetChange,
 }: SessionsTableProps) {
+	const t = useT();
 	const { toast } = useToast();
 	const [reauth, { isLoading: reauthing }] = useReauthMCPSessionMutation();
 	const [revoke, { isLoading: revoking }] = useRevokeMCPSessionMutation();
@@ -80,7 +82,7 @@ export default function SessionsTable({
 			window.location.href = res.authorize_url;
 		} catch (err) {
 			setPendingActionRowId(null);
-			toast({ title: "Re-authentication failed", description: getErrorMessage(err), variant: "destructive" });
+			toast({ title: t("mcp.sessions.reauthFailed"), description: getErrorMessage(err), variant: "destructive" });
 		}
 	};
 
@@ -91,10 +93,10 @@ export default function SessionsTable({
 		setPendingActionRowId(row.id);
 		try {
 			await revoke(row.id).unwrap();
-			toast({ title: row.kind === "header" ? "Header values revoked" : "Session revoked" });
+			toast({ title: row.kind === "header" ? t("mcp.sessions.headerRevoked") : t("mcp.sessions.sessionRevoked") });
 		} catch (err) {
 			toast({
-				title: row.kind === "header" ? "Failed to revoke header values" : "Failed to revoke session",
+				title: row.kind === "header" ? t("mcp.sessions.headerRevokeFailed") : t("mcp.sessions.sessionRevokeFailed"),
 				description: getErrorMessage(err),
 				variant: "destructive",
 			});
@@ -110,41 +112,33 @@ export default function SessionsTable({
 					<AlertDialogHeader>
 						{pendingDelete?.kind === "header" ? (
 							<>
-								<AlertDialogTitle>Revoke these stored header values?</AlertDialogTitle>
-								<AlertDialogDescription>
-									Bifrost will remove the stored credential values for this binding. There is no upstream token to revoke; the user will
-									need to resubmit their header values to use this MCP again.
-								</AlertDialogDescription>
+								<AlertDialogTitle>{t("mcp.sessions.revokeHeadersTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("mcp.sessions.revokeHeadersDesc")}</AlertDialogDescription>
 							</>
 						) : (
 							<>
-								<AlertDialogTitle>Revoke this MCP session?</AlertDialogTitle>
-								<AlertDialogDescription>
-									Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it
-									stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.
-								</AlertDialogDescription>
+								<AlertDialogTitle>{t("mcp.sessions.revokeSessionTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("mcp.sessions.revokeSessionDesc")}</AlertDialogDescription>
 							</>
 						)}
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">{t("common.cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={confirmRevoke} data-testid="mcp-session-revoke-confirm">
-							Revoke
+							{t("mcp.sessions.revoke")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<PageTitle title="MCP Auth Sessions">
-				Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
-			</PageTitle>
+			<PageTitle title="MCP Auth Sessions">{t("mcp.sessions.pageDescription")}</PageTitle>
 
 			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search sessions"
-						placeholder="Search MCP, user, VK, session..."
+						aria-label={t("mcp.sessions.searchAria")}
+						placeholder={t("mcp.sessions.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -158,32 +152,20 @@ export default function SessionsTable({
 					<Table>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead>MCP server</TableHead>
+								<TableHead>{t("mcp.sessions.colServer")}</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Type"
-										tooltip="OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission."
-									/>
+									<HeaderWithTooltip label={t("mcp.sessions.colType")} tooltip={t("mcp.sessions.typeTooltip")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Bound to"
-										tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
-									/>
+									<HeaderWithTooltip label={t("mcp.sessions.colBoundTo")} tooltip={t("mcp.sessions.boundTooltip")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Status"
-										tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
-									/>
+									<HeaderWithTooltip label={t("common.status")} tooltip={t("mcp.sessions.statusTooltip")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Access token expiry"
-										tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
-									/>
+									<HeaderWithTooltip label={t("mcp.sessions.colExpiry")} tooltip={t("mcp.sessions.expiryTooltip")} />
 								</TableHead>
-								<TableHead>Created</TableHead>
+								<TableHead>{t("mcp.sessions.colCreated")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -192,12 +174,9 @@ export default function SessionsTable({
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
 										{hasActiveFilters ? (
-											<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
+											<div className="text-muted-foreground text-sm">{t("mcp.sessions.noMatch")}</div>
 										) : (
-											<span className="text-muted-foreground text-sm">
-												No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
-												(OAuth or header submission).
-											</span>
+											<span className="text-muted-foreground text-sm">{t("mcp.sessions.empty")}</span>
 										)}
 									</TableCell>
 								</TableRow>
@@ -216,11 +195,15 @@ export default function SessionsTable({
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
 											<div className="flex flex-col">
-												<span>{formatAccessExpiry(row)}</span>
-												{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
+												<span>{formatAccessExpiry(row, t)}</span>
+												{row.last_refreshed_at && (
+													<span className="text-xs">
+														{t("mcp.sessions.refreshedAgo", { time: formatRelativePast(row.last_refreshed_at, t) })}
+													</span>
+												)}
 											</div>
 										</TableCell>
-										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at, t)}</TableCell>
 										<TableCell
 											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
 										>
@@ -243,8 +226,11 @@ export default function SessionsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("mcp.pagination.entries", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -254,15 +240,13 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-sessions-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("mcp.pagination.prev")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("mcp.pagination.pageOf", { page: Math.floor(offset / limit) + 1, pages: Math.ceil(totalCount / limit) })}</span>
 							</div>
 
 							<Button
@@ -271,7 +255,7 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-sessions-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("mcp.pagination.next")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -300,6 +284,7 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
 }
 
 function BindingCell({ row }: { row: MCPSessionRow }) {
+	const t = useT();
 	if (row.auth_mode === "user" && row.user_id) {
 		const displayName = row.user?.name || row.user?.email;
 		return (
@@ -325,19 +310,21 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 			</div>
 		);
 	}
-	return <span className="text-muted-foreground text-sm">Session-bound</span>;
+	return <span className="text-muted-foreground text-sm">{t("mcp.sessions.sessionBound")}</span>;
 }
 
 function TypeBadge({ authKind }: { authKind: string }) {
+	const t = useT();
 	if (authKind === "headers") {
-		return <Badge variant="outline">Headers</Badge>;
+		return <Badge variant="outline">{t("mcp.sessions.typeHeaders")}</Badge>;
 	}
-	return <Badge variant="outline">OAuth</Badge>;
+	return <Badge variant="outline">{t("mcp.sessions.typeOauth")}</Badge>;
 }
 
 function StatusBadge({ status }: { status: string }) {
+	const t = useT();
 	if (status === "pending") {
-		return <Badge variant="secondary">Pending</Badge>;
+		return <Badge variant="secondary">{t("mcp.sessions.pending")}</Badge>;
 	}
 	if (status === "orphaned") {
 		// Muted amber: distinct from destructive (red, action-required) and
@@ -345,12 +332,12 @@ function StatusBadge({ status }: { status: string }) {
 		// needed from you" — the auto-restore cascade handles it.
 		return (
 			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				Orphaned
+				{t("mcp.sessions.orphaned")}
 			</Badge>
 		);
 	}
 	if (status === "needs_reauth") {
-		return <Badge variant="destructive">Needs re-auth</Badge>;
+		return <Badge variant="destructive">{t("mcp.sessions.needsReauth")}</Badge>;
 	}
 	if (status === "needs_update") {
 		// Outlined red: signals user action required, but visually distinct from
@@ -358,11 +345,11 @@ function StatusBadge({ status }: { status: string }) {
 		// Distinct copy so the row affordance ("Update values") matches.
 		return (
 			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				Needs update
+				{t("mcp.sessions.needsUpdate")}
 			</Badge>
 		);
 	}
-	return <Badge>Active</Badge>;
+	return <Badge>{t("mcp.sessions.active")}</Badge>;
 }
 
 interface RowActionsProps {
@@ -375,6 +362,7 @@ interface RowActionsProps {
 }
 
 function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke }: RowActionsProps) {
+	const t = useT();
 	const busy = reauthing || revoking;
 	return (
 		<DropdownMenu>
@@ -383,7 +371,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP session actions"
+					aria-label={t("mcp.sessions.actionsAria")}
 					data-testid={`mcp-session-row-actions-${row.id}`}
 					disabled={busy}
 				>
@@ -397,7 +385,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 						// MCP client will start a new flow. No action we can offer wires
 						// up to the existing flow row, so surface guidance instead.
 						<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
-							Trigger a request to re-authenticate
+							{t("mcp.sessions.triggerReauth")}
 						</DropdownMenuItem>
 					) : (
 						<DropdownMenuItem
@@ -416,7 +404,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							}}
 						>
 							<ExternalLink className="h-4 w-4" />
-							Complete authentication
+							{t("mcp.sessions.completeAuth")}
 						</DropdownMenuItem>
 					)
 				) : row.kind === "header" ? (
@@ -438,7 +426,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								}}
 							>
 								<Pencil className="h-4 w-4" />
-								{row.status === "needs_update" ? "Update values" : "Edit values"}
+								{row.status === "needs_update" ? t("mcp.sessions.updateValues") : t("mcp.sessions.editValues")}
 							</DropdownMenuItem>
 						)}
 						<DropdownMenuItem
@@ -452,7 +440,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							}}
 						>
 							<Trash2 className="h-4 w-4" />
-							Revoke
+							{t("mcp.sessions.revoke")}
 						</DropdownMenuItem>
 					</>
 				) : (
@@ -473,7 +461,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								}}
 							>
 								<RefreshCcw className="h-4 w-4" />
-								Re-authenticate
+								{t("mcp.sessions.reauthenticate")}
 							</DropdownMenuItem>
 						)}
 						<DropdownMenuItem
@@ -487,7 +475,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							}}
 						>
 							<Trash2 className="h-4 w-4" />
-							Revoke
+							{t("mcp.sessions.revoke")}
 						</DropdownMenuItem>
 					</>
 				)}
@@ -496,24 +484,24 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 	);
 }
 
-function formatRelativePast(iso: string): string {
+function formatRelativePast(iso: string, t: TranslateFn): string {
 	try {
-		const t = new Date(iso).getTime();
-		if (Number.isNaN(t)) return iso;
-		const diffMs = Date.now() - t;
-		if (diffMs < 60_000) return "just now";
+		const ts = new Date(iso).getTime();
+		if (Number.isNaN(ts)) return iso;
+		const diffMs = Date.now() - ts;
+		if (diffMs < 60_000) return t("mcp.sessions.justNow");
 		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 60) return `${mins} min ago`;
+		if (mins < 60) return t("mcp.sessions.minAgo", { count: mins });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours < 48) return `${hours}h ago`;
+		if (hours < 48) return t("mcp.sessions.hoursAgo", { count: hours });
 		const days = Math.floor(diffMs / 86_400_000);
-		return `${days}d ago`;
+		return t("mcp.sessions.daysAgo", { count: days });
 	} catch {
 		return iso;
 	}
 }
 
-function formatAccessExpiry(row: MCPSessionRow): string {
+function formatAccessExpiry(row: MCPSessionRow, t: TranslateFn): string {
 	// Header rows don't have an upstream-side expiry — the submitted values
 	// are durable until the user revokes or the schema changes. The status
 	// column already conveys lifecycle state (Active / Needs update /
@@ -523,9 +511,9 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 	}
 	if (!row.expires_at) return "-";
 	try {
-		const t = new Date(row.expires_at).getTime();
-		if (Number.isNaN(t)) return row.expires_at;
-		const diffMs = t - Date.now();
+		const ts = new Date(row.expires_at).getTime();
+		if (Number.isNaN(ts)) return row.expires_at;
+		const diffMs = ts - Date.now();
 		if (diffMs < 0) {
 			// Active rows auto-refresh on next use via the refresh token.
 			// Orphaned rows still hold a valid upstream credential — the past
@@ -534,19 +522,19 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 			// expired (the refresh token itself is dead).
 			switch (row.status) {
 				case "active":
-					return "Refreshes on next use";
+					return t("mcp.sessions.refreshesOnNextUse");
 				case "orphaned":
-					return "Refreshes when access is restored";
+					return t("mcp.sessions.refreshesWhenRestored");
 				default:
-					return "expired";
+					return t("mcp.sessions.expired");
 			}
 		}
 		const days = Math.floor(diffMs / 86_400_000);
-		if (days > 1) return `in ${days} days`;
+		if (days > 1) return t("mcp.sessions.inDays", { count: days });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours > 1) return `in ${hours} hours`;
+		if (hours > 1) return t("mcp.sessions.inHours", { count: hours });
 		const mins = Math.floor(diffMs / 60_000);
-		return `in ${Math.max(mins, 1)} min`;
+		return t("mcp.sessions.inMin", { count: Math.max(mins, 1) });
 	} catch {
 		return row.expires_at;
 	}

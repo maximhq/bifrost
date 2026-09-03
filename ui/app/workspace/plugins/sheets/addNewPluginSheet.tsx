@@ -1,54 +1,23 @@
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useT } from "@/lib/i18n";
 import { getErrorMessage, useCreatePluginMutation, useUpdatePluginMutation } from "@/lib/store";
 import { Plugin } from "@/lib/types/plugins";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { PluginFormFragment } from "../fragments/pluginFormFragments";
 
-const pluginFormSchema = z.object({
-	name: z
-		.string()
-		.min(1, "Plugin name is required")
-		.regex(/^[A-Za-z0-9-_]+$/, "Plugin name must contain only letters, numbers, hyphens, and underscores"),
-	path: z
-		.string()
-		.min(1, "Plugin path/URL is required")
-		.refine(
-			(val) => {
-				// Accept either absolute file paths or HTTP/HTTPS URLs
-				return val.startsWith("/") || val.startsWith("http://") || val.startsWith("https://");
-			},
-			{
-				message: "Please enter a valid absolute file path (starting with /) or HTTP/HTTPS URL",
-			},
-		),
-	hasConfig: z.boolean(),
-	config: z
-		.string()
-		.optional()
-		.refine(
-			(val) => {
-				if (!val) return true;
-				try {
-					JSON.parse(val);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-			{
-				message: "Configuration must be valid JSON",
-			},
-		),
-});
-
-type PluginFormData = z.infer<typeof pluginFormSchema>;
+type PluginFormData = {
+	name: string;
+	path: string;
+	hasConfig: boolean;
+	config?: string;
+};
 
 interface AddNewPluginSheetProps {
 	open: boolean;
@@ -58,6 +27,46 @@ interface AddNewPluginSheetProps {
 }
 
 export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: AddNewPluginSheetProps) {
+	const t = useT();
+	const pluginFormSchema = useMemo(
+		() =>
+			z.object({
+				name: z
+					.string()
+					.min(1, t("routing.plugins.nameRequired"))
+					.regex(/^[A-Za-z0-9-_]+$/, t("routing.plugins.nameFormat")),
+				path: z
+					.string()
+					.min(1, t("routing.plugins.pathRequired"))
+					.refine(
+						(val) => {
+							return val.startsWith("/") || val.startsWith("http://") || val.startsWith("https://");
+						},
+						{
+							message: t("routing.plugins.pathInvalid"),
+						},
+					),
+				hasConfig: z.boolean(),
+				config: z
+					.string()
+					.optional()
+					.refine(
+						(val) => {
+							if (!val) return true;
+							try {
+								JSON.parse(val);
+								return true;
+							} catch {
+								return false;
+							}
+						},
+						{
+							message: t("routing.plugins.configInvalidJson"),
+						},
+					),
+			}),
+		[t],
+	);
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
 	const [createPlugin, { isLoading: isCreating }] = useCreatePluginMutation();
@@ -105,7 +114,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 				try {
 					parsedConfig = JSON.parse(data.config);
 				} catch {
-					toast.error("Invalid JSON configuration");
+					toast.error(t("routing.plugins.invalidJson"));
 					return;
 				}
 			}
@@ -119,7 +128,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 						config: parsedConfig,
 					},
 				}).unwrap();
-				toast.success("Plugin updated successfully");
+				toast.success(t("routing.plugins.updated"));
 			} else {
 				// Create new plugin
 				await createPlugin({
@@ -128,7 +137,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					enabled: true,
 					config: parsedConfig,
 				}).unwrap();
-				toast.success("Plugin created successfully");
+				toast.success(t("routing.plugins.created"));
 				// Notify parent with the config name to select it
 				onCreate?.(data.name);
 			}
@@ -151,12 +160,8 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
 				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky top-0 bg-card z-10">
-					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
-					<SheetDescription>
-						{isEditMode
-							? "Update the plugin configuration. Note: Plugin name and path cannot be changed."
-							: "Add a custom plugin by providing its name, path/URL, and optional configuration."}
-					</SheetDescription>
+					<SheetTitle>{isEditMode ? t("routing.plugins.update") : t("routing.plugins.install")}</SheetTitle>
+					<SheetDescription>{isEditMode ? t("routing.plugins.updateDesc") : t("routing.plugins.installDesc")}</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
@@ -167,10 +172,10 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
-								Cancel
+								{t("common.cancel")}
 							</Button>
 							<Button type="submit" disabled={isLoading || !form.formState.isValid || disableAction} isLoading={isLoading}>
-								{isEditMode ? "Update Plugin" : "Install Plugin"}
+								{isEditMode ? t("routing.plugins.update") : t("routing.plugins.installPlugin")}
 							</Button>
 						</div>
 					</form>

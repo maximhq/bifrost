@@ -818,6 +818,27 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	zhipu: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Zhipu AI</title>
+				<rect width="24" height="24" rx="6" fill="#3859FF" />
+				<path
+					d="M6.4 7.2h5.2c2.55 0 4.25 1.45 4.25 3.55 0 1.42-.78 2.52-2.08 3.08L16.7 16.8h-2.55l-2.82-3.18H8.55V16.8H6.4V7.2zm2.15 1.85v2.95h3.02c1.28 0 2.08-.62 2.08-1.52 0-.88-.8-1.43-2.08-1.43H8.55z"
+					fill="#FFFFFF"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

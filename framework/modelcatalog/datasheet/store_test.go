@@ -46,6 +46,44 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestPricingLookupsNormalizeZhipuOntoZai(t *testing.T) {
+	const model = "glm-4.6"
+	inputCost := 0.0000006
+	provider := schemas.Zhipu
+	s := NewTestStore(nil)
+	s.pricingData[makeKey(model, "zai", "chat")] = configstoreTables.TableModelPricing{
+		Model:             model,
+		Provider:          "zai",
+		Mode:              "chat",
+		InputCostPerToken: &inputCost,
+	}
+
+	row := s.Get(model, provider, schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() did not resolve the zai catalog provider: %#v", row)
+	}
+
+	pricing := s.GetPricingEntryForModel(model, provider)
+	if pricing == nil || pricing.InputCostPerToken == nil || *pricing.InputCostPerToken != inputCost {
+		t.Fatalf("GetPricingEntryForModel() did not resolve the zai catalog provider: %#v", pricing)
+	}
+
+	capability := s.GetCapabilityEntry(model, provider)
+	if capability == nil || capability.InputCostPerToken == nil || *capability.InputCostPerToken != inputCost {
+		t.Fatalf("GetCapabilityEntry() did not resolve the zai catalog provider: %#v", capability)
+	}
+
+	s.mu.Lock()
+	s.rebuildDatasheetViewUnsafe()
+	s.mu.Unlock()
+	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
+	}
+	if got := s.DatasheetProviders(); !slices.Equal(got, []schemas.ModelProvider{provider}) {
+		t.Fatalf("DatasheetProviders() = %v, want [%s]", got, provider)
+	}
+}
+
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()

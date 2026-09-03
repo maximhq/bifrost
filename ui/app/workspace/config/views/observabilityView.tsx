@@ -1,6 +1,7 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useT } from "@/lib/i18n";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -10,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 export default function ObservabilityView() {
+	const t = useT();
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -47,16 +49,16 @@ export default function ObservabilityView() {
 
 	const handleSave = useCallback(async () => {
 		if (!bifrostConfig) {
-			toast.error("Could not save settings: configuration not loaded.");
+			toast.error(t("configForms.observability.configNotLoaded"));
 			return;
 		}
 		try {
 			await updateCoreConfig({ ...bifrostConfig, client_config: localConfig }).unwrap();
-			toast.success("Observability settings updated successfully.");
+			toast.success(t("configForms.observability.updated"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, t, updateCoreConfig]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -64,10 +66,7 @@ export default function ObservabilityView() {
 
 			<Alert variant="destructive">
 				<AlertTriangle className="h-4 w-4" />
-				<AlertDescription>
-					These settings require a Bifrost service restart to take effect. Current connections will continue with existing settings until
-					restart.
-				</AlertDescription>
+				<AlertDescription>{t("configForms.restartAlert")}</AlertDescription>
 			</Alert>
 
 			<div className="space-y-4">
@@ -76,14 +75,14 @@ export default function ObservabilityView() {
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="prometheus-labels" className="text-sm font-medium">
-								Prometheus Labels
+								{t("configForms.observability.prometheusLabels")}
 							</label>
-							<p className="text-muted-foreground text-sm">Comma-separated list of custom labels to add to the Prometheus metrics.</p>
+							<p className="text-muted-foreground text-sm">{t("configForms.observability.prometheusLabelsDescription")}</p>
 						</div>
 						<Textarea
 							id="prometheus-labels"
 							className="h-24"
-							placeholder="teamId, projectId, environment"
+							placeholder={t("configForms.observability.prometheusLabelsPlaceholder")}
 							value={localValues.prometheus_labels}
 							onChange={(e) => handlePrometheusLabelsChange(e.target.value)}
 						/>
@@ -93,7 +92,7 @@ export default function ObservabilityView() {
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("common.saving") : t("common.saveChanges")}
 				</Button>
 			</div>
 		</div>
@@ -101,5 +100,6 @@ export default function ObservabilityView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	const t = useT();
+	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">{t("configForms.restartToApply")}</div>;
 };

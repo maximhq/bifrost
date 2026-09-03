@@ -2,7 +2,9 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { LOCALES, LOCALE_META, useI18n, type Locale } from "@/lib/i18n";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
@@ -66,6 +68,7 @@ function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): 
 }
 
 export default function ClientSettingsView() {
+	const { t, locale, setLocale } = useI18n();
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
@@ -156,15 +159,15 @@ export default function ClientSettingsView() {
 				localLargePayloadConfig.max_payload_bytes < minBytes ||
 				localLargePayloadConfig.truncated_log_bytes < minBytes
 			) {
-				toast.error("All byte values must be at least 1024 (1 KB).");
+				toast.error(t("configForms.client.minBytes"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.request_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the request threshold.");
+				toast.error(t("configForms.client.maxPayloadGteRequest"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.response_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the response threshold.");
+				toast.error(t("configForms.client.maxPayloadGteResponse"));
 				return;
 			}
 		}
@@ -175,7 +178,7 @@ export default function ClientSettingsView() {
 		// Save core config if changed
 		if (hasCoreConfigChanges) {
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configForms.configNotLoadedRefresh"));
 				return;
 			}
 			// Clean up empty strings from header filter config
@@ -191,7 +194,7 @@ export default function ClientSettingsView() {
 				await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
 				coreConfigSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save client config: ${getErrorMessage(error)}`);
+				toast.error(t("configForms.client.saveClientFailed", { error: getErrorMessage(error) }));
 			}
 		}
 
@@ -201,15 +204,15 @@ export default function ClientSettingsView() {
 				await updateLargePayloadConfig(localLargePayloadConfig).unwrap();
 				largePayloadSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save large payload config: ${getErrorMessage(error)}`);
+				toast.error(t("configForms.client.saveLargePayloadFailed", { error: getErrorMessage(error) }));
 			}
 		}
 
 		if (coreConfigSaved || largePayloadSaved) {
 			if (largePayloadSaved) {
-				toast.success("Settings updated. Large payload changes require a restart to apply.");
+				toast.success(t("configForms.client.savedRestart"));
 			} else {
-				toast.success("Client settings updated successfully.");
+				toast.success(t("configForms.client.saved"));
 			}
 		}
 	}, [
@@ -219,6 +222,7 @@ export default function ClientSettingsView() {
 		hasLargePayloadChanges,
 		localConfig,
 		localLargePayloadConfig,
+		t,
 		updateCoreConfig,
 		updateLargePayloadConfig,
 	]);
@@ -288,21 +292,40 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
+			<PageTitle title="Client Settings">{t("clientSettings.pageDescription")}</PageTitle>
 
 			<div className="space-y-4">
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="ui-language" className="text-sm font-medium">
+							{t("language.label")}
+						</label>
+						<p className="text-muted-foreground text-sm">{t("language.description")}</p>
+					</div>
+					<Select value={locale} onValueChange={(value) => setLocale(value as Locale)}>
+						<SelectTrigger id="ui-language" className="w-40" data-testid="client-settings-language-select">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{LOCALES.map((value) => (
+								<SelectItem key={value} value={value} data-testid={`client-settings-language-${value}`}>
+									{LOCALE_META[value].nativeLabel}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-							Drop Excess Requests
+							{t("clientSettings.dropExcess")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							If enabled, Bifrost will drop requests that exceed pool capacity.{" "}
+							{t("clientSettings.dropExcessDescription")}{" "}
 							{localConfig.drop_excess_requests && droppedRequests > 0 ? (
-								<span>
-									Have dropped <b>{droppedRequests} requests</b> since last restart.
-								</span>
+								<span>{t("clientSettings.droppedSinceRestart", { count: droppedRequests })}</span>
 							) : (
 								<></>
 							)}
@@ -321,11 +344,9 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="disable-db-pings-in-health" className="text-sm font-medium">
-							Disable DB Pings in Health Check
+							{t("clientSettings.disableDbPings")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							If enabled, the /health endpoint will skip database connectivity checks and return OK immediately.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.disableDbPingsDescription")}</p>
 					</div>
 					<Switch
 						id="disable-db-pings-in-health"
@@ -340,11 +361,9 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">
-							Dump Errors in Console Logs
+							{t("clientSettings.dumpErrors")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.dumpErrorsDescription")}</p>
 					</div>
 					<Switch
 						id="dump-errors-in-console-logs"
@@ -359,11 +378,9 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
-							Async Job Result TTL (seconds)
+							{t("clientSettings.asyncJobTtl")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.asyncJobTtlDescription")}</p>
 					</div>
 					<Input
 						id="async-job-result-ttl"
@@ -383,8 +400,8 @@ export default function ClientSettingsView() {
 			{/* Header Filter Section */}
 			<div className="space-y-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">Header Forwarding</h3>
-					<p className="text-muted-foreground text-sm">Control which extra headers are forwarded to LLM providers.</p>
+					<h3 className="text-lg font-semibold tracking-tight">{t("clientSettings.headerForwarding")}</h3>
+					<p className="text-muted-foreground text-sm">{t("clientSettings.headerForwardingDescription")}</p>
 				</div>
 
 				<Accordion type="multiple" className="w-full rounded-sm border px-4">
@@ -392,7 +409,7 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								About Header Forwarding
+								{t("clientSettings.aboutHeaderForwarding")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-3">
@@ -457,7 +474,7 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								Security Note
+								{t("configForms.client.securityNote")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent>
@@ -476,18 +493,15 @@ export default function ClientSettingsView() {
 				{/* Allowlist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Allowlist</h4>
-						<p className="text-muted-foreground text-xs">
-							Headers to allow. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Any header
-							in this list can also be sent directly without the prefix.
-						</p>
+						<h4 className="text-sm font-medium">{t("clientSettings.allowlist")}</h4>
+						<p className="text-muted-foreground text-xs">{t("clientSettings.allowlistDescription")}</p>
 					</div>
 
 					<div className="space-y-2">
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. anthropic-*, custom-id"
+									placeholder={t("configForms.client.allowlistPlaceholder")}
 									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -512,7 +526,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddAllowlistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("common.addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -520,18 +534,15 @@ export default function ClientSettingsView() {
 				{/* Denylist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Denylist</h4>
-						<p className="text-muted-foreground text-xs">
-							Headers to block. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Applies to
-							both prefixed and direct header forwarding.
-						</p>
+						<h4 className="text-sm font-medium">{t("clientSettings.denylist")}</h4>
+						<p className="text-muted-foreground text-xs">{t("clientSettings.denylistDescription")}</p>
 					</div>
 
 					<div className="space-y-2">
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-*"
+									placeholder={t("configForms.client.denylistPlaceholder")}
 									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -556,7 +567,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddDenylistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("common.addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -574,16 +585,23 @@ export default function ClientSettingsView() {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<span>
-								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
+								<Button disabled>{isLoading ? t("common.saving") : t("common.saveChanges")}</Button>
 							</span>
 						</TooltipTrigger>
 						<TooltipContent>
-							Remove security header{invalidSecurityHeaders.length > 1 ? "s" : ""}: {invalidSecurityHeaders.join(", ")}
+							{t(
+								invalidSecurityHeaders.length === 1
+									? "clientSettings.removeSecurityHeaders_one"
+									: "clientSettings.removeSecurityHeaders_other",
+								{
+									headers: invalidSecurityHeaders.join(", "),
+								},
+							)}
 						</TooltipContent>
 					</Tooltip>
 				) : (
 					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? t("common.saving") : t("common.saveChanges")}
 					</Button>
 				)}
 			</div>

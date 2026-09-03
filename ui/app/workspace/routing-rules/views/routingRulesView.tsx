@@ -6,6 +6,7 @@
 import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { useT } from "@/lib/i18n";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -21,6 +22,7 @@ const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export function RoutingRulesView() {
+	const t = useT();
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
 	const [infoSheetOpen, setInfoSheetOpen] = useState(false);
@@ -115,7 +117,7 @@ export function RoutingRulesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			<PageTitle>Manage CEL-based routing rules for intelligent request routing across providers</PageTitle>
+			<PageTitle>{t("routing.routingRules.pageDescription")}</PageTitle>
 
 			<RoutingRulesTable
 				rules={rules}
@@ -135,9 +137,9 @@ export function RoutingRulesView() {
 						{/* The labels are hidden below sm, leaving an icon with no
 						    accessible name, so the name is carried on the control itself. */}
 						<Button variant="outline" size="sm" asChild className="gap-2">
-							<Link to="/workspace/routing-rules/tree" aria-label="View routing rules tree">
+							<Link to="/workspace/routing-rules/tree" aria-label={t("routing.routingRules.viewTreeAria")}>
 								<GitBranch className="h-4 w-4" />
-								<span className="hidden sm:inline">View Tree</span>
+								<span className="hidden sm:inline">{t("routing.routingRules.viewTree")}</span>
 							</Link>
 						</Button>
 						{canCreate && (
@@ -146,10 +148,10 @@ export function RoutingRulesView() {
 								onClick={handleCreateNew}
 								disabled={isLoading}
 								className="gap-2"
-								aria-label="New routing rule"
+								aria-label={t("routing.routingRules.newRuleAria")}
 							>
 								<Plus className="h-4 w-4" />
-								<span className="hidden sm:inline">New Rule</span>
+								<span className="hidden sm:inline">{t("routing.routingRules.newRule")}</span>
 							</Button>
 						)}
 					</>

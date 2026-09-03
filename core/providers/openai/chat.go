@@ -89,6 +89,13 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// tool-calling conversation — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
+	case schemas.Zhipu:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// GLM thinking models return reasoning_content and require it to be replayed
+		// on assistant tool_call turns. reasoning_details is OpenAI-specific inbound
+		// and is stripped so it never reaches Zhipu's OpenAI-compatible endpoint.
+		openaiReq.stripReasoningDetailsExceptToolCalls()
+		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyXAICompatibility(caps)

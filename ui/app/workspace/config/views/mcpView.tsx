@@ -6,6 +6,7 @@ import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/lib/i18n";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
@@ -20,6 +21,7 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
 export default function MCPView() {
+	const t = useT();
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -195,12 +197,12 @@ export default function MCPView() {
 			const toolTimeout = Number.parseInt(localValues.mcp_tool_execution_timeout);
 
 			if (isNaN(agentDepth) || agentDepth <= 0) {
-				toast.error("Max agent depth must be a positive number.");
+				toast.error(t("configForms.mcp.maxAgentDepthInvalid"));
 				return;
 			}
 
 			if (isNaN(toolTimeout) || toolTimeout <= 0) {
-				toast.error("Tool execution timeout must be a positive number.");
+				toast.error(t("configForms.mcp.toolTimeoutInvalid"));
 				return;
 			}
 
@@ -214,17 +216,17 @@ export default function MCPView() {
 			const accessTokenTTL = Number.parseInt(localValues.oauth2_access_token_ttl);
 
 			if (oauthModeActive && (isNaN(authCodeTTL) || authCodeTTL < 1 || authCodeTTL > 900)) {
-				toast.error("Authorization code TTL must be between 1 and 900 seconds (15 minutes).");
+				toast.error(t("configForms.mcp.authCodeTtlInvalid"));
 				return;
 			}
 
 			if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
-				toast.error("Access token TTL must be at least 60 seconds.");
+				toast.error(t("configForms.mcp.accessTokenTtlInvalid"));
 				return;
 			}
 
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configForms.configNotLoadedRefresh"));
 				return;
 			}
 
@@ -249,23 +251,23 @@ export default function MCPView() {
 				...bifrostConfig,
 				client_config: clientConfigToSave,
 			}).unwrap();
-			toast.success("MCP settings updated successfully.");
+			toast.success(t("configForms.mcp.updated"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, localValues, t, updateCoreConfig]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
-			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
+			<PageTitle title="MCP Settings">{t("configForms.mcp.pageDescription")}</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-agent-depth" className="text-sm font-medium">
-							Max Agent Depth
+							{t("configForms.mcp.maxAgentDepth")}
 						</label>
-						<p className="text-muted-foreground text-sm">Maximum depth for MCP agent execution.</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.maxAgentDepthDescription")}</p>
 					</div>
 					<Input
 						id="mcp-agent-depth"
@@ -282,9 +284,9 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-tool-execution-timeout" className="text-sm font-medium">
-							Tool Execution Timeout (seconds)
+							{t("configForms.mcp.toolTimeout")}
 						</label>
-						<p className="text-muted-foreground text-sm">Maximum time in seconds for tool execution.</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.toolTimeoutDescription")}</p>
 					</div>
 					<Input
 						id="mcp-tool-execution-timeout"
@@ -301,11 +303,9 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-tool-sync-interval" className="text-sm font-medium">
-							Tool Sync Interval (minutes)
+							{t("configForms.mcp.toolSyncInterval")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							How often to refresh tool lists from MCP servers. Set to 0 to use the default of 10 minutes.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.toolSyncIntervalDescription")}</p>
 					</div>
 					<Input
 						id="mcp-tool-sync-interval"
@@ -322,13 +322,9 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-disable-auto-tool-inject" className="text-sm font-medium">
-							Disable Auto Tool Injection
+							{t("configForms.mcp.disableAutoInject")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via
-							request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP
-							configuration.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.disableAutoInjectDescription")}</p>
 					</div>
 					<Switch
 						id="mcp-disable-auto-tool-inject"
@@ -343,12 +339,9 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-enable-temp-token-auth" className="text-sm font-medium">
-							Allow Temp Token Auth Links
+							{t("configForms.mcp.tempTokenAuth")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							When enabled, per-user MCP OAuth links can include a short-lived scoped token so someone without an active Bifrost dashboard
-							session can complete the flow. Keep disabled to require normal dashboard authentication.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.tempTokenAuthDescription")}</p>
 					</div>
 					<Switch
 						id="mcp-enable-temp-token-auth"
@@ -363,25 +356,23 @@ export default function MCPView() {
 				<div className="space-y-4 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
-							Code Mode Binding Level
+							{t("configForms.mcp.bindingLevel")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							How tools are exposed in the VFS: server-level (all tools per server) or tool-level (individual tools).
-						</p>
+						<p className="text-muted-foreground text-sm">{t("configForms.mcp.bindingLevelDescription")}</p>
 					</div>
 					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
 						<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
-							<SelectValue placeholder="Select binding level" />
+							<SelectValue placeholder={t("configForms.mcp.selectBindingLevel")} />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="server">Server-Level</SelectItem>
-							<SelectItem value="tool">Tool-Level</SelectItem>
+							<SelectItem value="server">{t("configForms.mcp.serverLevel")}</SelectItem>
+							<SelectItem value="tool">{t("configForms.mcp.toolLevel")}</SelectItem>
 						</SelectContent>
 					</Select>
 
 					{/* Visual Example */}
 					<div className="mt-6 space-y-2">
-						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">VFS Structure:</p>
+						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("configForms.mcp.vfsStructure")}</p>
 
 						{localValues.mcp_code_mode_binding_level === "server" ? (
 							<div className="bg-muted border-border rounded-sm border p-4">
@@ -391,7 +382,7 @@ export default function MCPView() {
 									<div className="pl-3">├─ youtube.py</div>
 									<div className="pl-3">└─ weather.py</div>
 								</div>
-								<p className="text-muted-foreground mt-3 text-xs">All tools per server in a single .py file</p>
+								<p className="text-muted-foreground mt-3 text-xs">{t("configForms.mcp.vfsServerHint")}</p>
 							</div>
 						) : (
 							<div className="bg-muted border-border rounded-sm border p-4">
@@ -406,7 +397,7 @@ export default function MCPView() {
 									<div className="pl-3">└─ weather/</div>
 									<div className="pl-6">└─ get_forecast.py</div>
 								</div>
-								<p className="text-muted-foreground mt-3 text-xs">Individual .py file for each tool</p>
+								<p className="text-muted-foreground mt-3 text-xs">{t("configForms.mcp.vfsToolHint")}</p>
 							</div>
 						)}
 					</div>
@@ -416,11 +407,11 @@ export default function MCPView() {
 				<Accordion type="single" collapsible className="rounded-sm border px-4">
 					<AccordionItem value="advanced-settings" className="border-b-0">
 						<AccordionTrigger data-testid="mcp-settings-advanced-trigger">
-							<span className="text-sm font-medium">Advanced Settings</span>
+							<span className="text-sm font-medium">{t("configForms.mcp.advanced")}</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pt-2">
 							<label htmlFor="external-client-url" className="text-sm font-medium">
-								External Client URL
+								{t("configForms.mcp.externalClientUrl")}
 							</label>
 							<p className="text-muted-foreground text-sm">
 								Override Bifrost's public base URL when it runs behind a reverse proxy. <b>Leave blank to derive the URL</b> from the
@@ -439,7 +430,7 @@ export default function MCPView() {
 							/>
 							<Alert variant="warning">
 								<AlertTriangle className="size-4" />
-								<AlertTitle>Changing this URL can break existing MCP clients</AlertTitle>
+								<AlertTitle>{t("configForms.mcp.alertUrlChange")}</AlertTitle>
 								<AlertDescription>
 									<p>
 										Upstream OAuth providers lock the <code className="text-xs">redirect_uri</code> to whatever was registered initially, so
@@ -452,7 +443,7 @@ export default function MCPView() {
 							{/* MCP Server Auth Mode */}
 							<div className="mt-4 space-y-2 border-t pt-4">
 								<label htmlFor="mcp-server-auth-mode" className="text-sm font-medium">
-									MCP Server Authentication Mode
+									{t("configForms.mcp.authMode")}
 								</label>
 								<p className="text-muted-foreground text-sm">
 									Controls how inbound MCP clients (e.g. Claude Code, Cursor) authenticate to the <code className="text-xs">/mcp</code>{" "}
@@ -469,16 +460,16 @@ export default function MCPView() {
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="headers">Headers</SelectItem>
-										<SelectItem value="both">Both</SelectItem>
-										<SelectItem value="oauth">OAuth</SelectItem>
+										<SelectItem value="headers">{t("configForms.mcp.authModeHeaders")}</SelectItem>
+										<SelectItem value="both">{t("configForms.mcp.authModeBoth")}</SelectItem>
+										<SelectItem value="oauth">{t("configForms.mcp.authModeOauth")}</SelectItem>
 									</SelectContent>
 								</Select>
 								{/* oauth: VK/header access disabled */}
 								{localConfig.mcp_server_auth_mode === "oauth" && (
 									<Alert variant="warning">
 										<AlertTriangle className="size-4" />
-										<AlertTitle>VK / header MCP access will be disabled</AlertTitle>
+										<AlertTitle>{t("configForms.mcp.alertOauthOnly")}</AlertTitle>
 										<AlertDescription>
 											All existing MCP integrations that use a virtual key, api-key, or session header will stop working immediately.
 											Clients must re-authenticate via the OAuth consent flow to obtain a JWT before they can connect.
@@ -491,7 +482,7 @@ export default function MCPView() {
 									(config?.mcp_server_auth_mode === "both" || config?.mcp_server_auth_mode === "oauth") && (
 										<Alert variant="warning">
 											<AlertTriangle className="size-4" />
-											<AlertTitle>OAuth discovery will be disabled</AlertTitle>
+											<AlertTitle>{t("configForms.mcp.alertOauthOff")}</AlertTitle>
 											<AlertDescription>
 												All MCP clients that authenticated via the OAuth consent flow will lose access; their JWTs will be rejected and
 												their refresh tokens will become unusable. They will need to reconfigure using a virtual key or api-key header.
@@ -513,12 +504,12 @@ export default function MCPView() {
 							{/* OAuth2 AS Settings — only shown when auth mode is not headers */}
 							{(localConfig.mcp_server_auth_mode === "both" || localConfig.mcp_server_auth_mode === "oauth") && (
 								<div className="mt-4 space-y-4 border-t pt-4">
-									<p className="text-sm font-medium">OAuth2 Server Settings</p>
+									<p className="text-sm font-medium">{t("configForms.mcp.oauthSettings")}</p>
 
 									{/* Issuer URL */}
 									<div className="space-y-1.5">
 										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
-											Issuer URL
+											{t("configForms.mcp.issuerUrl")}
 										</label>
 										<p className="text-muted-foreground text-sm">
 											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
@@ -540,7 +531,7 @@ export default function MCPView() {
 									<div className="flex gap-6">
 										<div className="space-y-1.5">
 											<label htmlFor="oauth2-auth-code-ttl" className="text-sm font-medium">
-												Authorization code TTL (seconds)
+												{t("configForms.mcp.authCodeTtl")}
 											</label>
 											<p className="text-muted-foreground text-xs">
 												How long the one-time code is valid after the consent page redirects back to the MCP client (default: 300, max 900 =
@@ -560,7 +551,7 @@ export default function MCPView() {
 										</div>
 										<div className="space-y-1.5">
 											<label htmlFor="oauth2-access-token-ttl" className="text-sm font-medium">
-												Access token TTL (seconds)
+												{t("configForms.mcp.accessTokenTtl")}
 											</label>
 											<p className="text-muted-foreground text-xs">
 												Lifetime of issued JWT Bearer tokens. Clients silently refresh when expired (default: 600 = 10 min). Also bounds how
@@ -588,7 +579,7 @@ export default function MCPView() {
 												<div className="flex items-center justify-between space-x-2">
 													<div className="space-y-0.5">
 														<label htmlFor="oauth2-disable-vk-identity" className="text-sm font-medium">
-															Require identity-provider login
+															{t("configForms.mcp.requireIdp")}
 														</label>
 														<p className="text-muted-foreground text-sm">
 															When enabled, the OAuth consent flow only offers identity-provider login. Virtual keys can no longer be used
@@ -608,7 +599,7 @@ export default function MCPView() {
 												{localConfig.oauth2_server_config?.disable_vk_identity && (
 													<Alert variant="warning">
 														<AlertTriangle className="size-4" />
-														<AlertTitle>Virtual-key MCP access via OAuth will stop</AlertTitle>
+														<AlertTitle>{t("configForms.mcp.alertVkOauthStop")}</AlertTitle>
 														<AlertDescription>
 															MCP clients that authenticated with a virtual key will lose access immediately and must sign in through your
 															identity provider to reconnect.
@@ -625,7 +616,7 @@ export default function MCPView() {
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("common.saving") : t("common.saveChanges")}
 				</Button>
 			</div>
 		</div>

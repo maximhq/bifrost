@@ -1,6 +1,8 @@
+import { LanguageToggle } from "@/components/languageToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useT } from "@/lib/i18n";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { getErrorMessage, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
@@ -29,6 +31,7 @@ const externalLinks = [
 ];
 
 export default function LoginView() {
+	const t = useT();
 	const { resolvedTheme } = useTheme();
 	const [mounted, setMounted] = useState(false);
 	const [username, setUsername] = useState("");
@@ -70,8 +73,8 @@ export default function LoginView() {
 					</div>
 
 					<div className="space-y-2 text-center">
-						<h1 className="text-foreground text-lg font-semibold">Welcome back</h1>
-						<p className="text-muted-foreground text-sm">Sign in to your account to continue</p>
+						<h1 className="text-foreground text-lg font-semibold">{t("login.welcomeBack")}</h1>
+						<p className="text-muted-foreground text-sm">{t("login.signInToContinue")}</p>
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
@@ -79,12 +82,12 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="username" className="text-sm font-medium">
-								Username
+								{t("login.username")}
 							</Label>
 							<Input
 								id="username"
 								type="text"
-								placeholder="Enter your username"
+								placeholder={t("login.usernamePlaceholder")}
 								value={username}
 								onChange={(e) => setUsername(e.target.value)}
 								required
@@ -95,13 +98,13 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="password" className="text-sm font-medium">
-								Password
+								{t("login.password")}
 							</Label>
 							<div className="relative">
 								<Input
 									id="password"
 									type={showPassword ? "text" : "password"}
-									placeholder="Enter your password"
+									placeholder={t("login.passwordPlaceholder")}
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									required
@@ -112,7 +115,7 @@ export default function LoginView() {
 									type="button"
 									onClick={() => setShowPassword(!showPassword)}
 									className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
-									aria-label={showPassword ? "Hide password" : "Show password"}
+									aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
 								>
 									{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
 								</button>
@@ -120,9 +123,13 @@ export default function LoginView() {
 						</div>
 
 						<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
-							{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
+							{isLoading || isLoggingIn ? t("login.signingIn") : t("login.signIn")}
 						</Button>
 					</form>
+
+					<div className="flex justify-center">
+						<LanguageToggle />
+					</div>
 
 					{/* Social Links */}
 					<div className="flex items-center justify-center gap-4 pt-4">

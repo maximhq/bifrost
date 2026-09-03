@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hoverCard";
 import { useDescriptionSlot, useSetTopbarTitle } from "@/lib/contexts/topbarContext";
+import { useT } from "@/lib/i18n";
 import type { Breadcrumb } from "@/lib/contexts/topbarContext.utils";
 import { Info } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -51,6 +52,7 @@ export default function PageTitle({
 }) {
 	useSetTopbarTitle(breadcrumbs?.length ? breadcrumbs : title);
 	const slot = useDescriptionSlot();
+	const t = useT();
 	// The badge's label needs a name; with a trail that is the current page.
 	const label = title ?? breadcrumbs?.at(-1)?.label;
 
@@ -59,8 +61,8 @@ export default function PageTitle({
 	return createPortal(
 		<>
 			{beta && (
-				<Badge className="shrink-0" aria-label={label ? `${label} is in beta` : "This page is in beta"}>
-					Beta
+				<Badge className="shrink-0" aria-label={label ? t("pageTitle.beta", { label }) : t("pageTitle.betaFallback")}>
+					{t("common.beta")}
 				</Badge>
 			)}
 			{children && (
@@ -69,7 +71,7 @@ export default function PageTitle({
 						<button
 							type="button"
 							data-testid="page-description-trigger"
-							aria-label="About this page"
+							aria-label={t("pageTitle.about")}
 							className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm transition-colors"
 						>
 							<Info className="size-4" strokeWidth={2} />

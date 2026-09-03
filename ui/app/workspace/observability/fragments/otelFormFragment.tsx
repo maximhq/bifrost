@@ -606,60 +606,60 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										)}
 									/>
 									<div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-									<FormField
-										control={control}
-										name={`${base}.trace_type`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Format</FormLabel>
-												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+										<FormField
+											control={control}
+											name={`${base}.trace_type`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Format</FormLabel>
+													<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
+														<FormControl>
+															<SelectTrigger className="w-full">
+																<SelectValue placeholder="Select trace type" />
+															</SelectTrigger>
+														</FormControl>
+														<SelectContent>
+															{traceTypeOptions.map((option) => (
+																<SelectItem
+																	key={option.value}
+																	value={option.value}
+																	disabled={option.disabled}
+																	disabledReason={option.disabledReason}
+																>
+																	{option.label}
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={control}
+											name={`${base}.export_timeout`}
+											render={({ field }) => (
+												<FormItem className="w-full sm:flex-1">
+													<FormLabel>Export Timeout (seconds)</FormLabel>
 													<FormControl>
-														<SelectTrigger className="w-full">
-															<SelectValue placeholder="Select trace type" />
-														</SelectTrigger>
+														<Input
+															type="number"
+															min={1}
+															max={60}
+															disabled={!hasOtelAccess}
+															{...field}
+															value={field.value ?? ""}
+															onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+														/>
 													</FormControl>
-													<SelectContent>
-														{traceTypeOptions.map((option) => (
-															<SelectItem
-																key={option.value}
-																value={option.value}
-																disabled={option.disabled}
-																disabledReason={option.disabledReason}
-															>
-																{option.label}
-															</SelectItem>
-														))}
-													</SelectContent>
-												</Select>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={control}
-										name={`${base}.export_timeout`}
-										render={({ field }) => (
-											<FormItem className="w-full sm:flex-1">
-												<FormLabel>Export Timeout (seconds)</FormLabel>
-												<FormControl>
-													<Input
-														type="number"
-														min={1}
-														max={60}
-														disabled={!hasOtelAccess}
-														{...field}
-														value={field.value ?? ""}
-														onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
-													/>
-												</FormControl>
-												<FormDescription>
-													Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit, so
-													an unreachable collector cannot slow down request handling.
-												</FormDescription>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
+													<FormDescription>
+														Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this limit,
+														so an unreachable collector cannot slow down request handling.
+													</FormDescription>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
 									</div>
 									<FormField
 										control={control}

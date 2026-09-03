@@ -1,4 +1,5 @@
 import { ThemeProvider } from "@/components/themeProvider";
+import { useT } from "@/lib/i18n";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { ReduxProvider } from "@/lib/store/provider";
 import { DEFAULT_POST_LOGIN_PATH, getLoginGotoFromSearch } from "@/lib/utils/loginGoto";
@@ -27,6 +28,7 @@ function RouteComponent() {
 // below so this brief screen shows the customer's logo too rather than
 // flashing the Bifrost one on the way to the login form.
 function PendingCard() {
+	const t = useT();
 	const { resolvedTheme } = useTheme();
 	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
 	return (
@@ -37,7 +39,7 @@ function PendingCard() {
 						<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
 					</div>
 					<div className="flex items-center justify-center py-6">
-						<div className="text-muted-foreground text-sm">Checking authentication...</div>
+						<div className="text-muted-foreground text-sm">{t("login.checkingAuth")}</div>
 					</div>
 				</div>
 			</div>

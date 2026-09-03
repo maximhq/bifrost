@@ -12,6 +12,7 @@ import { useNotificationSync } from "@/hooks/useNotificationSync";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { TopbarProvider } from "@/lib/contexts/topbarContext";
+import { useT } from "@/lib/i18n";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
@@ -194,6 +195,7 @@ function FullPage({
 }
 
 function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) {
+	const t = useT();
 	return (
 		<div className="h-base flex items-center justify-center p-4 sm:p-6" data-testid="config-unreachable">
 			<section className="bg-card w-full max-w-lg rounded-sm border p-6 sm:p-8" aria-labelledby="config-unreachable-title">
@@ -201,17 +203,15 @@ function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRet
 					<WifiOff className="size-5" aria-hidden="true" />
 				</div>
 				<h1 id="config-unreachable-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
-					We can&apos;t reach the dashboard
+					{t("configUnreachable.title")}
 				</h1>
-				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-					Bifrost didn&apos;t return its configuration. This is usually a brief interruption, especially while Bifrost is being upgraded.
-				</p>
+				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">{t("configUnreachable.description")}</p>
 				<div className="mt-6 flex items-center gap-3 border-t pt-5">
 					<Button size="sm" isLoading={isRetrying} disabled={isRetrying} data-testid="config-retry-btn" onClick={onRetry}>
 						{!isRetrying && <RefreshCw aria-hidden="true" />}
-						{isRetrying ? "Trying again…" : "Try again"}
+						{isRetrying ? t("common.tryingAgain") : t("common.tryAgain")}
 					</Button>
-					<p className="text-muted-foreground text-xs">Your settings and data are unaffected.</p>
+					<p className="text-muted-foreground text-xs">{t("configUnreachable.unaffected")}</p>
 				</div>
 			</section>
 		</div>

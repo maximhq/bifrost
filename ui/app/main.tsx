@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 // Tailwind + global styles (also declares @font-face for local Geist fonts).
 import "@/app/globals.css";
 
+import { I18nProvider } from "@/lib/i18n";
 import { ErrorComponent } from "./__error";
 import { NotFoundComponent } from "./__notFound";
 import { UpdatingBanner, UpdatingScreen } from "./__updating";
@@ -88,6 +89,8 @@ if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
 	<StrictMode>
-		<Root />
+		<I18nProvider>
+			<Root />
+		</I18nProvider>
 	</StrictMode>,
 );

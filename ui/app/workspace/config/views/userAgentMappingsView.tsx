@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useT, type MessageKey, type TranslateFn } from "@/lib/i18n";
 import {
 	getErrorMessage,
 	type UserAgentMapping,
@@ -30,12 +31,14 @@ import { MoreVertical, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-const matchTypeOptions: Array<{ value: UserAgentMappingMatchType; label: string }> = [
-	{ value: "contains", label: "Contains" },
-	{ value: "starts_with", label: "Starts with" },
-	{ value: "exact", label: "Exact match" },
-	{ value: "regex", label: "Regex" },
-];
+const MATCH_TYPE_KEYS: Record<UserAgentMappingMatchType, MessageKey> = {
+	contains: "configForms.userAgent.matchContains",
+	starts_with: "configForms.userAgent.matchStartsWith",
+	exact: "configForms.userAgent.matchExact",
+	regex: "configForms.userAgent.matchRegex",
+};
+
+const matchTypeOptions: UserAgentMappingMatchType[] = ["contains", "starts_with", "exact", "regex"];
 
 const emptyDraft: UserAgentMappingPayload = {
 	pattern: "",
@@ -54,6 +57,7 @@ interface UserAgentMappingsViewProps {
 }
 
 export default function UserAgentMappingsView({ disabled }: UserAgentMappingsViewProps) {
+	const t = useT();
 	const { data, isLoading } = useGetUserAgentMappingsQuery();
 	const [createMapping, { isLoading: isCreating }] = useCreateUserAgentMappingMutation();
 	const [updateMapping, { isLoading: isUpdating }] = useUpdateUserAgentMappingMutation();
@@ -87,28 +91,32 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 	};
 
 	const handleSubmit = async () => {
-		const validated = validateDraft(draft);
+		const validated = validateDraft(draft, t);
 		if (!validated) return;
 		try {
 			if (editingMappingId) {
 				await updateMapping({ id: editingMappingId, data: validated }).unwrap();
-				toast.success("User agent mapping updated.");
+				toast.success(t("configForms.userAgent.updated"));
 			} else {
 				await createMapping(validated).unwrap();
-				toast.success("User agent mapping added.");
+				toast.success(t("configForms.userAgent.added"));
 			}
 			handleSheetOpenChange(false);
 		} catch (error) {
-			toast.error(`Failed to ${editingMappingId ? "update" : "add"} mapping: ${getErrorMessage(error)}`);
+			toast.error(
+				t(editingMappingId ? "configForms.userAgent.updateFailed" : "configForms.userAgent.addFailed", {
+					error: getErrorMessage(error),
+				}),
+			);
 		}
 	};
 
 	const handleDelete = async (id: string) => {
 		try {
 			await deleteMapping(id).unwrap();
-			toast.success("User agent mapping deleted.");
+			toast.success(t("configForms.userAgent.deleted"));
 		} catch (error) {
-			toast.error(`Failed to delete mapping: ${getErrorMessage(error)}`);
+			toast.error(t("configForms.userAgent.deleteFailed", { error: getErrorMessage(error) }));
 		}
 	};
 
@@ -116,8 +124,8 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 		<div className="space-y-4">
 			<div className="flex items-start justify-between gap-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">User Agent Mappings</h3>
-					<p className="text-muted-foreground text-sm">Map incoming User-Agent strings to app names and optional logos used in logs.</p>
+					<h3 className="text-lg font-semibold tracking-tight">{t("configForms.userAgent.title")}</h3>
+					<p className="text-muted-foreground text-sm">{t("configForms.userAgent.description")}</p>
 				</div>
 				<div className="pt-2">
 					<Button
@@ -129,7 +137,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 						data-testid="user-agent-mapping-add-btn"
 					>
 						<Plus className="h-4 w-4" />
-						Add
+						{t("common.add")}
 					</Button>
 				</div>
 			</div>
@@ -137,8 +145,8 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			<Sheet open={isSheetOpen} onOpenChange={handleSheetOpenChange}>
 				<SheetContent className="p-0">
 					<SheetHeader className="flex flex-col items-start px-4 pt-6 md:px-6">
-						<SheetTitle>{isEditing ? "Edit User Agent Mapping" : "Add User Agent Mapping"}</SheetTitle>
-						<SheetDescription>Define how a User-Agent value maps to an app label in logs.</SheetDescription>
+						<SheetTitle>{isEditing ? t("configForms.userAgent.editMapping") : t("configForms.userAgent.addMappingTitle")}</SheetTitle>
+						<SheetDescription>{t("configForms.userAgent.sheetDescription")}</SheetDescription>
 					</SheetHeader>
 					<div className="flex-1 space-y-4 px-4 md:px-6">
 						<MappingForm draft={draft} onChange={setDraft} disabled={controlsDisabled} />
@@ -150,10 +158,10 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 							onClick={() => handleSheetOpenChange(false)}
 							data-testid="user-agent-mapping-cancel-btn"
 						>
-							Cancel
+							{t("common.cancel")}
 						</Button>
 						<Button type="button" onClick={handleSubmit} disabled={controlsDisabled} data-testid="user-agent-mapping-submit-btn">
-							{isEditing ? "Save Changes" : "Add Mapping"}
+							{isEditing ? t("common.saveChanges") : t("configForms.userAgent.addMapping")}
 						</Button>
 					</SheetFooter>
 				</SheetContent>
@@ -162,25 +170,25 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			<Table containerClassName="rounded-sm border">
 				<TableHeader>
 					<TableRow>
-						<TableHead>Pattern</TableHead>
-						<TableHead>Match</TableHead>
-						<TableHead>App</TableHead>
-						<TableHead>Logo</TableHead>
-						<TableHead>Active</TableHead>
-						<TableHead className="w-[92px] text-right">Actions</TableHead>
+						<TableHead>{t("configForms.userAgent.pattern")}</TableHead>
+						<TableHead>{t("configForms.userAgent.matchType")}</TableHead>
+						<TableHead>{t("configForms.userAgent.app")}</TableHead>
+						<TableHead>{t("configForms.userAgent.logo")}</TableHead>
+						<TableHead>{t("configForms.userAgent.active")}</TableHead>
+						<TableHead className="w-[92px] text-right">{t("common.actions")}</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
 					{isLoading ? (
 						<TableRow>
 							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								Loading mappings...
+								{t("configForms.userAgent.loading")}
 							</TableCell>
 						</TableRow>
 					) : mappings.length === 0 ? (
 						<TableRow>
 							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								No user agent mappings configured.
+								{t("configForms.userAgent.empty")}
 							</TableCell>
 						</TableRow>
 					) : (
@@ -194,7 +202,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 										</span>
 									</TableCell>
 									<TableCell>
-										<span className="text-sm">{getMatchTypeLabel(mapping.match_type)}</span>
+										<span className="text-sm">{t(MATCH_TYPE_KEYS[mapping.match_type] ?? "configForms.userAgent.matchContains")}</span>
 									</TableCell>
 									<TableCell className="max-w-[220px]">
 										<span className="block truncate text-sm" title={mapping.app}>
@@ -210,7 +218,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 									</TableCell>
 									<TableCell>
 										<span className={mapping.is_active ? "text-sm text-emerald-700" : "text-muted-foreground text-sm"}>
-											{mapping.is_active ? "Active" : "Inactive"}
+											{mapping.is_active ? t("configForms.userAgent.active") : t("configForms.userAgent.inactive")}
 										</span>
 									</TableCell>
 									<TableCell className="text-right">
@@ -222,7 +230,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 														variant="ghost"
 														size="icon"
 														disabled={controlsDisabled}
-														aria-label="Mapping actions"
+														aria-label={t("configForms.userAgent.actions")}
 														data-testid={`user-agent-mapping-actions-${mapping.id}`}
 													>
 														<MoreVertical className="h-4 w-4" />
@@ -231,30 +239,30 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 												<DropdownMenuContent align="end">
 													<DropdownMenuItem onSelect={() => openEditSheet(mapping)} data-testid={`user-agent-mapping-edit-${mapping.id}`}>
 														<Pencil className="h-4 w-4" />
-														Edit
+														{t("common.edit")}
 													</DropdownMenuItem>
 													<AlertDialogTrigger asChild>
 														<DropdownMenuItem variant="destructive" data-testid={`user-agent-mapping-delete-${mapping.id}`}>
 															<Trash2 className="h-4 w-4" />
-															Delete
+															{t("common.delete")}
 														</DropdownMenuItem>
 													</AlertDialogTrigger>
 												</DropdownMenuContent>
 											</DropdownMenu>
 											<AlertDialogContent>
 												<AlertDialogHeader>
-													<AlertDialogTitle>Are you sure you want to delete this mapping?</AlertDialogTitle>
-													<AlertDialogDescription>
-														This action cannot be undone. This will permanently delete the user agent mapping.
-													</AlertDialogDescription>
+													<AlertDialogTitle>{t("configForms.userAgent.deleteTitle")}</AlertDialogTitle>
+													<AlertDialogDescription>{t("configForms.userAgent.deleteDescription")}</AlertDialogDescription>
 												</AlertDialogHeader>
 												<AlertDialogFooter>
-													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>Cancel</AlertDialogCancel>
+													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>
+														{t("common.cancel")}
+													</AlertDialogCancel>
 													<AlertDialogAction
 														data-testid={`user-agent-mapping-delete-confirm-${mapping.id}`}
 														onClick={() => handleDelete(mapping.id)}
 													>
-														Delete
+														{t("common.delete")}
 													</AlertDialogAction>
 												</AlertDialogFooter>
 											</AlertDialogContent>
@@ -279,15 +287,16 @@ function MappingForm({
 	onChange: (next: UserAgentMappingPayload) => void;
 	disabled?: boolean;
 }) {
+	const t = useT();
 	return (
 		<div className="space-y-4">
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-pattern-input" className="text-sm font-medium">
-					Pattern
+					{t("configForms.userAgent.pattern")}
 				</label>
 				<Input
 					id="user-agent-mapping-pattern-input"
-					placeholder="User-Agent string or regex"
+					placeholder={t("configForms.userAgent.placeholder")}
 					value={draft.pattern}
 					onChange={(event) => onChange({ ...draft, pattern: event.target.value })}
 					disabled={disabled}
@@ -296,7 +305,7 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-match-type-select" className="text-sm font-medium">
-					Match type
+					{t("configForms.userAgent.matchType")}
 				</label>
 				<MatchTypeSelect
 					id="user-agent-mapping-match-type-select"
@@ -307,11 +316,11 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-app-input" className="text-sm font-medium">
-					App
+					{t("configForms.userAgent.app")}
 				</label>
 				<Input
 					id="user-agent-mapping-app-input"
-					placeholder="App"
+					placeholder={t("configForms.userAgent.app")}
 					value={draft.app}
 					onChange={(event) => onChange({ ...draft, app: event.target.value })}
 					disabled={disabled}
@@ -320,14 +329,14 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-logo-upload" className="text-sm font-medium">
-					Logo
+					{t("configForms.userAgent.logo")}
 				</label>
 				<LogoInput draft={draft} onChange={onChange} disabled={disabled} />
 			</div>
 			<div className="flex items-center justify-between rounded-sm border p-3">
 				<div>
-					<p className="text-sm font-medium">Active</p>
-					<p className="text-muted-foreground text-xs">Inactive mappings are saved but ignored by detection.</p>
+					<p className="text-sm font-medium">{t("configForms.userAgent.active")}</p>
+					<p className="text-muted-foreground text-xs">{t("configForms.userAgent.activeHint")}</p>
 				</div>
 				<Switch
 					checked={draft.is_active}
@@ -351,6 +360,7 @@ function MatchTypeSelect({
 	disabled?: boolean;
 	id?: string;
 }) {
+	const t = useT();
 	return (
 		<Select value={value} onValueChange={(next) => onChange(next as UserAgentMappingMatchType)} disabled={disabled}>
 			<SelectTrigger id={id} className="w-full" data-testid="user-agent-mapping-match-type-select">
@@ -358,8 +368,8 @@ function MatchTypeSelect({
 			</SelectTrigger>
 			<SelectContent>
 				{matchTypeOptions.map((option) => (
-					<SelectItem key={option.value} value={option.value}>
-						{option.label}
+					<SelectItem key={option} value={option}>
+						{t(MATCH_TYPE_KEYS[option])}
 					</SelectItem>
 				))}
 			</SelectContent>
@@ -376,12 +386,13 @@ function LogoInput({
 	onChange: (next: UserAgentMappingPayload) => void;
 	disabled?: boolean;
 }) {
+	const t = useT();
 	const dataUrl = draft.logo && draft.logo_mime ? `data:${draft.logo_mime};base64,${draft.logo}` : "";
 	return (
 		<div className="flex items-center gap-2">
 			{dataUrl && <img src={dataUrl} alt="" className="size-7 rounded-sm border object-contain" />}
 			<Button type="button" variant="outline" size="icon" disabled={disabled} asChild>
-				<label aria-label="Upload logo">
+				<label aria-label={t("configForms.userAgent.uploadLogo")}>
 					<Upload className="h-4 w-4" />
 					<input
 						id="user-agent-mapping-logo-upload"
@@ -393,7 +404,7 @@ function LogoInput({
 							const file = event.target.files?.[0];
 							if (!file) return;
 							if (file.size > MAX_LOGO_BYTES) {
-								toast.error("Logo must be 256KB or smaller.");
+								toast.error(t("configForms.userAgent.logoTooLarge"));
 								event.target.value = "";
 								return;
 							}
@@ -401,7 +412,7 @@ function LogoInput({
 								const logo = await fileToBase64(file);
 								onChange({ ...draft, logo, logo_mime: file.type || "application/octet-stream" });
 							} catch {
-								toast.error("Failed to read logo file.");
+								toast.error(t("configForms.userAgent.logoReadFailed"));
 							}
 							event.target.value = "";
 						}}
@@ -414,7 +425,7 @@ function LogoInput({
 				size="icon"
 				disabled={disabled || !draft.logo}
 				onClick={() => onChange({ ...draft, logo: undefined, logo_mime: null })}
-				aria-label="Remove logo"
+				aria-label={t("configForms.userAgent.removeLogo")}
 				data-testid="user-agent-mapping-logo-remove"
 			>
 				<X className="h-4 w-4" />
@@ -434,20 +445,16 @@ function mappingToPayload(mapping: UserAgentMapping): UserAgentMappingPayload {
 	};
 }
 
-function getMatchTypeLabel(matchType: UserAgentMappingMatchType): string {
-	return matchTypeOptions.find((option) => option.value === matchType)?.label ?? matchType;
-}
-
-function validateDraft(draft?: UserAgentMappingPayload): UserAgentMappingPayload | null {
+function validateDraft(draft: UserAgentMappingPayload | undefined, t: TranslateFn): UserAgentMappingPayload | null {
 	if (!draft || !draft.pattern.trim() || !draft.app.trim()) {
-		toast.error("Pattern and app are required.");
+		toast.error(t("configForms.userAgent.patternAppRequired"));
 		return null;
 	}
 	if (draft.match_type === "regex") {
 		try {
 			new RegExp(draft.pattern);
 		} catch {
-			toast.error("Regex pattern is invalid.");
+			toast.error(t("configForms.userAgent.regexInvalid"));
 			return null;
 		}
 	}

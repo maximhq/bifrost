@@ -27,6 +27,7 @@ import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
 import type { Option } from "@/components/ui/multiselectUtils";
 import { SearchSelect } from "@/components/ui/searchSelect";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export const ENTITY_SEARCH_DEBOUNCE_MS = 300;
@@ -191,6 +192,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		trigger,
 	} = props;
 
+	const t = useT();
 	const isAdd = props.mode === "add";
 	const isMulti = props.multiple === true;
 	const selectedIds = useMemo(() => {
@@ -261,10 +263,14 @@ export function EntitySelector(props: EntitySelectorProps) {
 		onOpenChange(false);
 	};
 
-	const resolvedPlaceholder = placeholder ?? (isMulti ? `Select ${entityLabelPlural}...` : `Select a ${entityLabel}...`);
-	const resolvedSearchPlaceholder = searchPlaceholder ?? `Search ${entityLabelPlural}...`;
-	const emptyMessage = debouncedSearch ? `No matching ${entityLabelPlural}` : `No ${entityLabelPlural} found`;
-	const errorMessage = `Failed to load ${entityLabelPlural}`;
+	const resolvedPlaceholder =
+		placeholder ??
+		(isMulti ? t("common.selectEntities", { entities: entityLabelPlural }) : t("common.selectEntity", { entity: entityLabel }));
+	const resolvedSearchPlaceholder = searchPlaceholder ?? t("common.searchEntities", { entities: entityLabelPlural });
+	const emptyMessage = debouncedSearch
+		? t("common.noMatchingEntities", { entities: entityLabelPlural })
+		: t("common.noEntitiesFound", { entities: entityLabelPlural });
+	const errorMessage = t("common.failedToLoadEntities", { entities: entityLabelPlural });
 
 	// ---------------------------------------------------------------------
 	// Multi mode — react-select, so chips live inside the control.
@@ -369,7 +375,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 	const defaultTrigger = isAdd ? (
 		<Button type="button" variant="outline" size="sm" disabled={disabled} className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium">
 			<PlusIcon className="size-4" />
-			{placeholder ?? `Add ${entityLabel}`}
+			{placeholder ?? t("common.addEntity", { entity: entityLabel })}
 		</Button>
 	) : (
 		<Button

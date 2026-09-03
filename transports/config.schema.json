@@ -449,6 +449,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "zhipu": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -2561,7 +2564,8 @@
                         "perplexity",
                         "replicate",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {
@@ -7629,7 +7633,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },

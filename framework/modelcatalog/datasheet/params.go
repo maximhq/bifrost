@@ -296,7 +296,7 @@ func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.Mode
 			continue
 		}
 		rowProvider := gjson.Get(row.Data, "provider").String()
-		if rowProvider == "" || normalizeProvider(rowProvider) != string(provider) {
+		if rowProvider == "" || normalizeProvider(rowProvider) != normalizeProvider(string(provider)) {
 			continue
 		}
 		var caps schemas.ModelCapabilities

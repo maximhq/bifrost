@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels } from "@/lib/constants/logs";
+import { useT } from "@/lib/i18n";
 import { Info } from "lucide-react";
 
 function formatCost(dollars: number) {
@@ -45,11 +46,12 @@ export default function ModelCatalogTable({
 	totalCost24h,
 	isLoadingModels,
 }: ModelCatalogTableProps) {
+	const t = useT();
 	const summaryCards = [
-		{ label: "Total Providers", value: totalProviders.toLocaleString() },
-		{ label: "Total Models", value: totalModels.toLocaleString() },
-		{ label: "Total Requests (24h)", value: totalRequests24h.toLocaleString() },
-		{ label: "Total Cost (24h)", value: formatCost(totalCost24h) },
+		{ label: t("routing.modelCatalog.totalProviders"), value: totalProviders.toLocaleString() },
+		{ label: t("routing.modelCatalog.totalModels"), value: totalModels.toLocaleString() },
+		{ label: t("routing.modelCatalog.totalRequests24h"), value: totalRequests24h.toLocaleString() },
+		{ label: t("routing.modelCatalog.totalCost24h"), value: formatCost(totalCost24h) },
 	];
 
 	return (
@@ -68,17 +70,17 @@ export default function ModelCatalogTable({
 
 			{/* Header + Filter */}
 			<div className="flex items-center justify-end">
-				<PageTitle title="Model Catalog">Overview of all configured providers, models, and usage.</PageTitle>
+				<PageTitle title="Model Catalog">{t("routing.modelCatalog.pageDescription")}</PageTitle>
 				<Select
 					value={providerFilter || "all"}
 					onValueChange={(val) => onProviderFilterChange(val === "all" ? "" : val)}
 					data-testid="model-catalog-provider-filter"
 				>
 					<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-trigger">
-						<SelectValue placeholder="All Providers" />
+						<SelectValue placeholder={t("routing.modelCatalog.allProviders")} />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="all">All Providers</SelectItem>
+						<SelectItem value="all">{t("routing.modelCatalog.allProviders")}</SelectItem>
 						{providers.map((p) => (
 							<SelectItem key={p} value={p}>
 								{ProviderLabels[p as keyof typeof ProviderLabels] || p}
@@ -99,29 +101,29 @@ export default function ModelCatalogTable({
 					</colgroup>
 					<TableHeader>
 						<TableRow>
-							<TableHead>Provider</TableHead>
+							<TableHead>{t("routing.modelCatalog.colProvider")}</TableHead>
 							<TableHead>
 								<TooltipProvider>
 									<div className="flex items-center gap-1">
-										Models
+										{t("routing.modelCatalog.colModels")}
 										<Tooltip>
 											<TooltipTrigger data-testid="model-catalog-models-info-trigger">
 												<Info className="text-muted-foreground h-3.5 w-3.5" />
 											</TooltipTrigger>
-											<TooltipContent side="bottom">Models used in the last 30 days</TooltipContent>
+											<TooltipContent side="bottom">{t("routing.modelCatalog.modelsTooltip")}</TooltipContent>
 										</Tooltip>
 									</div>
 								</TooltipProvider>
 							</TableHead>
-							<TableHead className="text-right">Total Traffic (24h)</TableHead>
-							<TableHead className="text-right">Total Cost (24h)</TableHead>
+							<TableHead className="text-right">{t("routing.modelCatalog.colTraffic24h")}</TableHead>
+							<TableHead className="text-right">{t("routing.modelCatalog.colCost24h")}</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
 						{rows.length === 0 ? (
 							<TableRow>
 								<TableCell colSpan={4} className="h-24 text-center">
-									<span className="text-muted-foreground text-sm">No matching providers found.</span>
+									<span className="text-muted-foreground text-sm">{t("routing.modelCatalog.noMatching")}</span>
 								</TableCell>
 							</TableRow>
 						) : (
@@ -141,7 +143,7 @@ export default function ModelCatalogTable({
 											</span>
 											{row.isCustom && (
 												<Badge variant="secondary" className="text-muted-foreground shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-													CUSTOM
+													{t("routing.modelCatalog.custom")}
 												</Badge>
 											)}
 										</div>
@@ -170,6 +172,7 @@ export default function ModelCatalogTable({
 }
 
 function ModelsUsedCell({ models: rawModels }: { models: string[] }) {
+	const t = useT();
 	const models = Array.from(new Set(rawModels.filter(Boolean)));
 	if (models.length === 0) {
 		return <span className="text-muted-foreground text-sm">-</span>;
@@ -198,7 +201,7 @@ function ModelsUsedCell({ models: rawModels }: { models: string[] }) {
 					<Tooltip>
 						<TooltipTrigger data-testid="model-catalog-models-overflow-trigger">
 							<Badge variant="outline" className="text-xs font-normal">
-								+{remaining} more
+								{t("routing.modelCatalog.moreModels", { count: remaining })}
 							</Badge>
 						</TooltipTrigger>
 						<TooltipContent side="bottom" className="max-w-xs">

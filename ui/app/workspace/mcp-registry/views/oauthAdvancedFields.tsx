@@ -2,6 +2,7 @@ import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/comp
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useT } from "@/lib/i18n";
 import { Info } from "lucide-react";
 import type { Control } from "react-hook-form";
 
@@ -77,6 +78,7 @@ export function OAuthAdvancedFields({
 	registrationUrlTestId,
 	onFieldTouched,
 }: OAuthAdvancedFieldsProps) {
+	const t = useT();
 	return (
 		<>
 			{beforeFields}
@@ -151,7 +153,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("authorize_url");
 									}}
-									placeholder="https://provider.com/oauth/authorize"
+									placeholder={t("mcp.oauthFields.authorizeUrlPlaceholder")}
 									data-testid={authorizeUrlTestId}
 								/>
 							</FormControl>
@@ -174,7 +176,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("token_url");
 									}}
-									placeholder="https://provider.com/oauth/token"
+									placeholder={t("mcp.oauthFields.tokenUrlPlaceholder")}
 									data-testid={tokenUrlTestId}
 								/>
 							</FormControl>
@@ -197,7 +199,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("registration_url");
 									}}
-									placeholder="https://provider.com/oauth/register"
+									placeholder={t("mcp.oauthFields.registrationUrlPlaceholder")}
 									data-testid={registrationUrlTestId}
 								/>
 							</FormControl>
@@ -213,11 +215,11 @@ export function OAuthAdvancedFields({
 							value={scopesRaw}
 							disabled={disabled}
 							onChange={(e) => onScopesRawChange(e.target.value)}
-							placeholder="read, write, admin"
+							placeholder={t("mcp.oauthFields.scopesPlaceholder")}
 							data-testid={scopesTestId}
 						/>
 					</FormControl>
-					<p className="text-muted-foreground text-xs">Comma-separated.</p>
+					<p className="text-muted-foreground text-xs">{t("mcp.commaSeparated")}</p>
 				</FormItem>
 				{resource.mode === "field" ? (
 					<FormField
@@ -231,7 +233,7 @@ export function OAuthAdvancedFields({
 										{...field}
 										value={field.value ?? ""}
 										disabled={disabled}
-										placeholder="https://provider.example.com/mcp or urn:example:mcp"
+										placeholder={t("mcp.oauthFields.resourcePlaceholder")}
 										data-testid={resourceTestId}
 									/>
 								</FormControl>
@@ -248,7 +250,7 @@ export function OAuthAdvancedFields({
 								value={resource.value}
 								disabled={disabled}
 								onChange={(e) => resource.onChange(e.target.value)}
-								placeholder="https://provider.example.com/mcp or urn:example:mcp"
+								placeholder={t("mcp.oauthFields.resourcePlaceholder")}
 								data-testid={resourceTestId}
 							/>
 						</FormControl>

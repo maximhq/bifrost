@@ -471,10 +471,7 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
 
 	for _, pricing := range s.pricingData {
-		normalized := schemas.ModelProvider(normalizeProvider(pricing.Provider))
-		if normalized == "together_ai" {
-			normalized = "together"
-		}
+		normalized := catalogProviderToRuntime(normalizeProvider(pricing.Provider))
 		if providerModels[normalized] == nil {
 			providerModels[normalized] = make(map[string]struct{})
 		}

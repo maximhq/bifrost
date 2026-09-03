@@ -3,6 +3,7 @@ import { ArrowLeftFromLineIcon, ArrowRightFromLineIcon, XIcon } from "lucide-rea
 import * as React from "react";
 import { createContext, useContext, useState } from "react";
 
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Context to share expanded state between SheetContent and SheetHeader
@@ -137,6 +138,7 @@ function SheetHeader({
 	showCloseButton = true,
 	...props
 }: React.ComponentProps<"div"> & { showCloseButton?: boolean; headerClassName?: string }) {
+	const t = useT();
 	const sheetContext = useSheetContext();
 
 	return (
@@ -152,7 +154,7 @@ function SheetHeader({
 					className="-ml-5 shrink-0 cursor-pointer opacity-70 transition-opacity hover:scale-105 hover:opacity-100"
 				>
 					{sheetContext?.expanded ? <ArrowRightFromLineIcon className="size-4" /> : <ArrowLeftFromLineIcon className="size-4" />}
-					<span className="sr-only">{sheetContext?.expanded ? "Collapse" : "Expand"}</span>
+					<span className="sr-only">{sheetContext?.expanded ? t("common.collapse") : t("common.expand")}</span>
 				</button>
 			)}
 
@@ -162,7 +164,7 @@ function SheetHeader({
 			{showCloseButton && (
 				<SheetPrimitive.Close className="hover:bg-accent shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:opacity-100">
 					<XIcon className="size-4" />
-					<span className="sr-only">Close</span>
+					<span className="sr-only">{t("common.close")}</span>
 				</SheetPrimitive.Close>
 			)}
 		</div>

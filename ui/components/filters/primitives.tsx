@@ -3,6 +3,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, Plus, Search } from "lucide-react";
 import { Ref, useEffect, useRef, useState } from "react";
@@ -113,7 +114,7 @@ export function SearchableCheckboxList({
 	items,
 	isSelected,
 	onToggle,
-	placeholder = "Search...",
+	placeholder,
 	inputRef,
 	testIdPrefix,
 	normalizeTestIdKey = false,
@@ -135,6 +136,8 @@ export function SearchableCheckboxList({
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
 }) {
+	const t = useT();
+	const resolvedPlaceholder = placeholder ?? t("common.search");
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
 	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
@@ -174,7 +177,7 @@ export function SearchableCheckboxList({
 							commitCustom();
 						}
 					}}
-					placeholder={placeholder}
+					placeholder={resolvedPlaceholder}
 					className="h-8 border-0 pl-8 text-xs"
 					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
 				/>
@@ -200,7 +203,7 @@ export function SearchableCheckboxList({
 				/>
 			))}
 			{filtered.length === 0 && !showAddCustom && (
-				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
+				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">{t("common.noResultsShort")}</div>
 			)}
 			{showAddCustom && (
 				<button
@@ -210,9 +213,7 @@ export function SearchableCheckboxList({
 					data-testid={testIdPrefix ? `${testIdPrefix}-add-custom` : undefined}
 				>
 					<Plus className="text-muted-foreground size-3.5 shrink-0" />
-					<span className="truncate">
-						Use <span className="font-medium">&quot;{trimmed}&quot;</span>
-					</span>
+					<span className="truncate">{t("common.useValue", { value: trimmed })}</span>
 				</button>
 			)}
 		</>

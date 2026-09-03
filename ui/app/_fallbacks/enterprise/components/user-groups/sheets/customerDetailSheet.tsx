@@ -138,12 +138,12 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 										.sort((a, b) => (b.max_limit || 0) - (a.max_limit || 0))
 										.map((b) => (
 											<BudgetLineBar
-											key={b.id}
-											current={b.current_usage}
-											max={b.max_limit}
-											resetDuration={b.reset_duration}
-											resetConfig={b.reset_config}
-										/>
+												key={b.id}
+												current={b.current_usage}
+												max={b.max_limit}
+												resetDuration={b.reset_duration}
+												resetConfig={b.reset_config}
+											/>
 										))}
 								</div>
 							) : (

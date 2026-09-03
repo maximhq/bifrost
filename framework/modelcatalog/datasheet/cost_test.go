@@ -2853,6 +2853,27 @@ func TestCalculateCost_TogetherAliasUsesTogetherAIPricingWithCache(t *testing.T)
 	assert.InDelta(t, 13.2067812, cost, 1e-9)
 }
 
+func TestCalculateCost_ZhipuUsesZaiCatalogPricing(t *testing.T) {
+	const model = "glm-4.6"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model, "zai", "chat"): {
+			Model:              model,
+			Provider:           "zai",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(0.6 / 1_000_000),
+			OutputCostPerToken: bifrost.Ptr(2.2 / 1_000_000),
+		},
+	})
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+
+	cost := s.CalculateCost(makeChatResponse(schemas.Zhipu, model, usage), nil)
+	assert.InDelta(t, 0.0017, cost, 1e-12)
+}
+
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): {

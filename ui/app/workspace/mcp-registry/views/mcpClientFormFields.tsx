@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { useT, type TranslateFn } from "@/lib/i18n";
 import { CreateMCPClientRequest, MCPAuthType, MCPConnectionType, MCPTLSConfig, SecretVar } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -153,11 +154,12 @@ export function isValidOAuthResourceURI(value: string): boolean {
 export function getHeadersValidationError(
 	authType: MCPAuthType | undefined,
 	headers: Record<string, SecretVar> | undefined,
+	t: TranslateFn,
 ): string | null {
 	if ((authType !== "headers" && authType !== "per_user_headers") || !headers) return null;
 	for (const [key, secretVar] of Object.entries(headers)) {
 		if (!secretVar.value && !secretVar.ref) {
-			return `Header "${key}" must have a value`;
+			return t("mcp.validation.headerMustHaveValue", { key });
 		}
 	}
 	return null;
@@ -175,12 +177,14 @@ export function validateMCPClientForm({
 	form,
 	skipConnection,
 	onToast,
+	t,
 }: {
 	data: CreateMCPClientRequest;
 	satellites: MCPClientFormSatellites;
 	form: UseFormReturn<CreateMCPClientRequest>;
 	skipConnection?: boolean;
 	onToast: (title: string, description: string) => void;
+	t: TranslateFn;
 }): boolean {
 	const { setError } = form;
 	const connectionType = data.connection_type;
@@ -192,10 +196,10 @@ export function validateMCPClientForm({
 		const connRef = data.connection_string?.ref?.trim() || "";
 		const isSecret = data.connection_string?.type === "env" || data.connection_string?.type === "vault";
 		if (!connVal && !connRef) {
-			setError("connection_string", { message: "Connection URL is required" });
+			setError("connection_string", { message: t("mcp.validation.connectionUrlRequired") });
 			hasErrors = true;
 		} else if (!isSecret && connVal && !/^https?:\/\/.+/.test(connVal)) {
-			setError("connection_string", { message: "Connection URL must start with http:// or https://" });
+			setError("connection_string", { message: t("mcp.validation.connectionUrlProtocol") });
 			hasErrors = true;
 		}
 	}
@@ -203,49 +207,49 @@ export function validateMCPClientForm({
 	if (!skipConnection && connectionType === "stdio") {
 		const cmd = data.stdio_config?.command || "";
 		if (!cmd.trim()) {
-			setError("stdio_config.command", { message: "Command is required for STDIO connections" });
+			setError("stdio_config.command", { message: t("mcp.validation.commandRequired") });
 			hasErrors = true;
 		} else if (/[<>|&;]/.test(cmd)) {
-			setError("stdio_config.command", { message: "Command cannot contain special shell characters" });
+			setError("stdio_config.command", { message: t("mcp.validation.commandNoShellChars") });
 			hasErrors = true;
 		}
 	}
 
 	if (authType === "oauth" || authType === "per_user_oauth") {
 		if (data.oauth_config?.authorize_url && !/^https?:\/\/.+$/.test(data.oauth_config.authorize_url)) {
-			setError("oauth_config.authorize_url", { message: "Authorize URL must start with http:// or https://" });
+			setError("oauth_config.authorize_url", { message: t("mcp.validation.authorizeUrlProtocol") });
 			hasErrors = true;
 		}
 		if (data.oauth_config?.token_url && !/^https?:\/\/.+$/.test(data.oauth_config.token_url)) {
-			setError("oauth_config.token_url", { message: "Token URL must start with http:// or https://" });
+			setError("oauth_config.token_url", { message: t("mcp.validation.tokenUrlProtocol") });
 			hasErrors = true;
 		}
 		if (data.oauth_config?.registration_url && !/^https?:\/\/.+$/.test(data.oauth_config.registration_url)) {
-			setError("oauth_config.registration_url", { message: "Registration URL must start with http:// or https://" });
+			setError("oauth_config.registration_url", { message: t("mcp.validation.registrationUrlProtocol") });
 			hasErrors = true;
 		}
 		if (satellites.resourceText.trim() && !isValidOAuthResourceURI(satellites.resourceText.trim())) {
-			onToast("Invalid resource URI", "OAuth resource must be an absolute URI without a fragment.");
+			onToast(t("mcp.validation.invalidResourceTitle"), t("mcp.validation.invalidResourceDesc"));
 			hasErrors = true;
 		}
 	}
 
 	if (authType === "token_exchange") {
 		if (!data.token_exchange?.audience?.trim()) {
-			setError("token_exchange.audience", { message: "Audience is required for token exchange" });
+			setError("token_exchange.audience", { message: t("mcp.validation.audienceRequired") });
 			hasErrors = true;
 		}
 		if (!data.token_exchange?.use_idp_credentials) {
 			const exchangeClientId = data.token_exchange?.client_id;
 			if (!exchangeClientId?.value && !exchangeClientId?.ref) {
-				setError("token_exchange.client_id", { message: "Exchange client ID is required for token exchange" });
+				setError("token_exchange.client_id", { message: t("mcp.validation.exchangeClientIdRequired") });
 				hasErrors = true;
 			}
 		}
 	}
 
 	if (authType === "per_user_headers" && satellites.perUserHeaderKeys.length === 0) {
-		onToast("Header keys required", "Declare at least one header name users must supply.");
+		onToast(t("mcp.validation.headerKeysRequiredTitle"), t("mcp.validation.headerKeysRequiredDesc"));
 		hasErrors = true;
 	}
 
@@ -331,16 +335,14 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
  * runtimes on the official image. Shown wherever a STDIO server is configured.
  */
 export function StdioRuntimeNotice() {
+	const t = useT();
 	return (
 		<div className="rounded-lg border border-amber-200 bg-amber-50 p-3" data-testid="stdio-docker-notice">
 			<div className="flex items-start gap-2">
 				<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700" />
 				<div className="flex-1">
-					<p className="text-xs font-medium text-amber-900">Docker Notice</p>
-					<p className="mt-0.5 text-xs text-amber-800">
-						If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python, etc.)
-						aren&apos;t installed. You can safely ignore this if running locally or using a custom image with the necessary dependencies.
-					</p>
+					<p className="text-xs font-medium text-amber-900">{t("mcp.form.dockerNotice")}</p>
+					<p className="mt-0.5 text-xs text-amber-800">{t("mcp.form.dockerNoticeBody")}</p>
 				</div>
 			</div>
 		</div>
@@ -365,6 +367,7 @@ interface MCPClientFormFieldsProps {
 }
 
 export function MCPClientFormFields({ form, satellites, headersValidationError, lockConnection, stdioEnvKeys }: MCPClientFormFieldsProps) {
+	const t = useT();
 	const { control, setValue, watch, clearErrors } = form;
 	const connectionType = watch("connection_type");
 	const authType = watch("auth_type");
@@ -432,7 +435,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 		<>
 			{/* Server Behavior */}
 			<div className="space-y-4">
-				<SectionHeader title="Server Behavior" description="Control how this server participates in code mode and health checks." />
+				<SectionHeader title={t("mcp.serverBehavior")} description={t("mcp.form.serverBehaviorDesc")} />
 				<div className="divide-y rounded-md border">
 					<FormField
 						control={control}
@@ -440,7 +443,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 								<div className="flex items-center gap-2">
-									<FormLabel htmlFor="code-mode">Code Mode Server</FormLabel>
+									<FormLabel htmlFor="code-mode">{t("mcp.form.codeMode")}</FormLabel>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
@@ -450,13 +453,13 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 													rel="noopener noreferrer"
 													data-testid="code-mode-link-help"
 													className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-													aria-label="Learn more about Code Mode"
+													aria-label={t("mcp.learnMoreCodeMode")}
 												>
 													<Info className="h-4 w-4 cursor-help" />
 												</a>
 											</TooltipTrigger>
 											<TooltipContent>
-												<p>Click to learn more about Code Mode</p>
+												<p>{t("mcp.clickLearnCodeMode")}</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
@@ -473,17 +476,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 								<div className="flex items-center gap-2">
-									<FormLabel htmlFor="ping-available">Ping Available for Health Check</FormLabel>
+									<FormLabel htmlFor="ping-available">{t("mcp.form.pingAvailable")}</FormLabel>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 											</TooltipTrigger>
 											<TooltipContent className="max-w-xs">
-												<p>
-													Enable to use lightweight ping method for health checks. Disable if your MCP server doesn&apos;t support ping -
-													will use listTools instead.
-												</p>
+												<p>{t("mcp.form.pingTooltip")}</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
@@ -509,18 +509,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 										<div className="flex items-center gap-2">
-											<FormLabel htmlFor="needs-session-stickiness">Maintain Persistent Connection</FormLabel>
+											<FormLabel htmlFor="needs-session-stickiness">{t("mcp.form.persistentConnection")}</FormLabel>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
 														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 													</TooltipTrigger>
 													<TooltipContent className="max-w-xs">
-														<p>
-															Enable to keep one shared connection open and reused across every caller. Disable to connect fresh on every
-															call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO always keep a
-															persistent connection.
-														</p>
+														<p>{t("mcp.form.persistentTooltip")}</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -545,12 +541,8 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 			{/* Connection & Authentication */}
 			<div className="space-y-4">
 				<SectionHeader
-					title="Connection & Authentication"
-					description={
-						lockConnection
-							? "The transport and target come from the library entry. Choose how requests to it are authenticated."
-							: "Choose how Bifrost connects to this server and, for network transports, how requests are authenticated."
-					}
+					title={t("mcp.form.connectionAuth")}
+					description={lockConnection ? t("mcp.form.connectionAuthDescLocked") : t("mcp.form.connectionAuthDesc")}
 				/>
 				<div className="space-y-4 rounded-md border p-4">
 					<FormField
@@ -558,7 +550,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						name="connection_type"
 						render={({ field }) => (
 							<FormItem className="w-full">
-								<FormLabel>Connection Type</FormLabel>
+								<FormLabel>{t("mcp.connectionType")}</FormLabel>
 								<Select
 									value={field.value}
 									disabled={lockConnection}
@@ -581,24 +573,22 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								>
 									<FormControl>
 										<SelectTrigger className="w-full" data-testid="connection-type-select">
-											<SelectValue placeholder="Select connection type" />
+											<SelectValue placeholder={t("mcp.form.selectConnectionType")} />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
 										<SelectItem value="http" data-testid="connection-type-http">
-											HTTP (Streamable)
+											{t("mcp.form.httpStreamable")}
 										</SelectItem>
 										<SelectItem value="sse" data-testid="connection-type-sse">
-											Server-Sent Events (SSE)
+											{t("mcp.form.sse")}
 										</SelectItem>
 										<SelectItem value="stdio" data-testid="connection-type-stdio">
-											STDIO
+											{t("mcp.form.stdio")}
 										</SelectItem>
 									</SelectContent>
 								</Select>
-								{!lockConnection && (
-									<p className="text-muted-foreground text-xs">Connection type and authentication settings cannot be changed later.</p>
-								)}
+								{!lockConnection && <p className="text-muted-foreground text-xs">{t("mcp.form.connectionImmutable")}</p>}
 								<FormMessage />
 							</FormItem>
 						)}
@@ -612,7 +602,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								name="connection_string"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Connection URL</FormLabel>
+										<FormLabel>{t("mcp.form.connectionUrl")}</FormLabel>
 										<SecretVarInput
 											value={field.value}
 											disabled={lockConnection}
@@ -620,7 +610,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 												field.onChange(value);
 												clearErrors("connection_string");
 											}}
-											placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
+											placeholder={t("mcp.form.connectionUrlPlaceholder")}
 											data-testid="connection-url-input"
 										/>
 										<FormMessage />
@@ -630,28 +620,28 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 							{/* Auth Type */}
 							<FormItem className="w-full">
-								<FormLabel>Authentication Type</FormLabel>
+								<FormLabel>{t("mcp.form.authType")}</FormLabel>
 								<Select value={authKind} onValueChange={(value: MCPAuthKind) => applyAuthKind(value)}>
 									<FormControl>
 										<SelectTrigger className="w-full" data-testid="auth-type-select">
-											<SelectValue placeholder="Select authentication type" />
+											<SelectValue placeholder={t("mcp.form.selectAuthType")} />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
 										<SelectItem value="none" data-testid="auth-type-none">
-											None
+											{t("mcp.form.authNone")}
 										</SelectItem>
 										<SelectItem value="headers" data-testid="auth-type-headers">
-											Headers
+											{t("mcp.form.authHeaders")}
 										</SelectItem>
 										<SelectItem value="oauth" data-testid="auth-type-oauth">
-											OAuth 2.0
+											{t("mcp.form.authOauth")}
 										</SelectItem>
 										{/* Also rendered when it is already the selected value, so the
 										    trigger shows the real auth type rather than a placeholder. */}
 										{((IS_ENTERPRISE && idpConfigured) || tokenExchangeUnavailable) && (
 											<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
-												Token Exchange (On-Behalf-Of)
+												{t("mcp.form.authTokenExchange")}
 											</SelectItem>
 										)}
 									</SelectContent>
@@ -662,10 +652,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										data-testid="token-exchange-unavailable-notice"
 									>
 										<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-										<p>
-											This server expects token exchange, which needs an enabled identity provider. Configure one, or pick a different
-											authentication type to continue.
-										</p>
+										<p>{t("mcp.form.tokenExchangeUnavailable")}</p>
 									</div>
 								)}
 							</FormItem>
@@ -674,19 +661,19 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 							    shared variant; token exchange is inherently per-caller */}
 							{authKind !== "none" && authKind !== "token_exchange" && (
 								<FormItem className="w-full">
-									<FormLabel>Auth Scope</FormLabel>
+									<FormLabel>{t("mcp.form.authScope")}</FormLabel>
 									<Select value={authScope} onValueChange={(value: MCPAuthScope) => applyAuthScope(value)}>
 										<FormControl>
 											<SelectTrigger className="w-full" data-testid="auth-scope-select">
-												<SelectValue placeholder="Select auth scope" />
+												<SelectValue placeholder={t("mcp.form.selectAuthScope")} />
 											</SelectTrigger>
 										</FormControl>
 										<SelectContent>
 											<SelectItem value="shared" data-testid="auth-scope-shared">
-												Shared
+												{t("mcp.form.scopeShared")}
 											</SelectItem>
 											<SelectItem value="per_user" data-testid="auth-scope-per-user">
-												Per-User
+												{t("mcp.form.scopePerUser")}
 											</SelectItem>
 										</SelectContent>
 									</Select>
@@ -703,7 +690,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
-								<SectionHeader title="Headers" description="Static headers sent with every request to this server." />
+								<SectionHeader title={t("mcp.form.headers")} description={t("mcp.form.headersDesc")} />
 								<FormField
 									control={control}
 									name="headers"
@@ -712,8 +699,8 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											<HeadersTable
 												value={field.value || {}}
 												onChange={field.onChange}
-												keyPlaceholder="Header name"
-												valuePlaceholder="Header value"
+												keyPlaceholder={t("mcp.headerName")}
+												valuePlaceholder={t("mcp.headerValue")}
 												label=""
 												useSecretVarInput
 											/>
@@ -735,16 +722,13 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								    Required Headers, so the two surfaces stay visually
 								    consistent. End users supply values per-user at first
 								    tool use via the inline auth landing page. */}
-								<SectionHeader
-									title="Required Headers"
-									description="Comma-separated header names each caller must supply on first use, e.g. X-API-Key, X-Tenant-ID. Values are submitted per user, not stored on this server config."
-								/>
+								<SectionHeader title={t("mcp.requiredHeaders")} description={t("mcp.form.requiredHeadersDesc")} />
 								<div className="rounded-md border p-4">
 									<Textarea
 										id="per-user-header-keys"
 										data-testid="per-user-header-keys-textarea"
 										className="h-24"
-										placeholder="X-API-Key, X-Tenant-ID"
+										placeholder={t("mcp.form.requiredHeadersPlaceholder")}
 										value={satellites.headerKeysInput}
 										onChange={(e) => satellites.setHeaderKeysInput(e.target.value)}
 									/>
@@ -753,7 +737,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 							{/* Optional static admin headers (e.g. a fixed tenant header) */}
 							<div className="space-y-4">
-								<SectionHeader title="Static Headers" description="Optional, applied alongside the values each caller supplies." />
+								<SectionHeader title={t("mcp.form.staticHeaders")} description={t("mcp.form.staticHeadersDesc")} />
 								<FormField
 									control={control}
 									name="headers"
@@ -762,8 +746,8 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											<HeadersTable
 												value={field.value || {}}
 												onChange={field.onChange}
-												keyPlaceholder="Header name"
-												valuePlaceholder="Header value"
+												keyPlaceholder={t("mcp.headerName")}
+												valuePlaceholder={t("mcp.headerValue")}
 												label=""
 												useSecretVarInput
 											/>
@@ -786,80 +770,47 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 							<DottedSeparator />
 							<div className="space-y-4" data-testid="token-exchange-fields">
 								<SectionHeader
-									title="Token Exchange Configuration"
-									description="Credentials and scopes used to exchange caller identity tokens for access to this server."
+									title={t("mcp.form.tokenExchangeTitle")}
+									description={t("mcp.form.tokenExchangeDesc")}
 									testId="token-exchange-heading"
 								/>
 								<div className="space-y-4 rounded-md border p-4">
 									<TokenExchangeFields
 										control={control}
 										gridClassName="space-y-4"
-										audienceLabel={
-											<>
-												Audience <span className="text-destructive">*</span>
-											</>
-										}
-										audienceTooltip={
-											isEntraIdp
-												? "The resource app's Application (client) ID at your identity provider - a bare GUID, not the api://... Application ID URI shown under Expose an API. Exchanged tokens are scoped to it."
-												: "The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
-										}
+										audienceLabel={t("mcp.tokenExchange.audienceRequired")}
+										audienceTooltip={isEntraIdp ? t("mcp.tokenExchange.audienceTooltipEntra") : t("mcp.tokenExchange.audienceTooltip")}
 										audienceTestId="token-exchange-audience-input"
 										onAudienceTouched={() => clearErrors("token_exchange.audience")}
-										useIdPCredentialsLabel="Exchange application"
-										useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
-										useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
-										useIdPCredentialsRequiredWarning={
-											isEntraIdp &&
-											"Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
-										}
+										useIdPCredentialsLabel={t("mcp.tokenExchange.exchangeApp")}
+										useIdPCredentialsDedicatedDescription={t("mcp.tokenExchange.dedicatedDesc")}
+										useIdPCredentialsIdPDescription={t("mcp.tokenExchange.idpDesc")}
+										useIdPCredentialsRequiredWarning={isEntraIdp && t("mcp.tokenExchange.entraWarningCreate")}
 										onUseIdPCredentialsToggled={(checked) => {
 											if (checked) clearErrors(["token_exchange.client_id", "token_exchange.client_secret"]);
 										}}
-										clientIdLabel={
-											<>
-												Exchange Client ID <span className="text-destructive">*</span>
-											</>
-										}
-										clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application. Ignored when using identity provider credentials above."
-										clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+										clientIdLabel={t("mcp.tokenExchange.clientIdRequired")}
+										clientIdTooltip={t("mcp.tokenExchange.clientIdTooltip")}
+										clientIdPlaceholder={t("mcp.tokenExchange.clientIdPlaceholder")}
 										clientIdTestId="token-exchange-client-id-input"
 										onClientIdTouched={() => clearErrors("token_exchange.client_id")}
 										clientIdRedactNonEnvValue={false}
-										clientSecretLabel="Exchange Client Secret (optional)"
-										clientSecretPlaceholder="env.EXCHANGE_CLIENT_SECRET"
-										clientSecretHelperText="Omit for public clients."
+										clientSecretLabel={t("mcp.tokenExchange.clientSecretOptional")}
+										clientSecretPlaceholder={t("mcp.tokenExchange.clientSecretPlaceholder")}
+										clientSecretHelperText={t("mcp.tokenExchange.clientSecretHelper")}
 										clientSecretTestId="token-exchange-client-secret-input"
 										clientSecretHideValueWhenEnv={false}
 										clientSecretMaskNonEnvValue={true}
 										clientSecretRedactNonEnvValue={false}
-										authServerUrlLabel="Authorization Server URL (optional)"
-										authServerUrlTooltip={
-											<>
-												Only needed when the audience above is registered on a different authorization server than the one your SSO login
-												uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank to use your SSO login&apos;s
-												issuer, which is correct for most providers.
-											</>
-										}
+										authServerUrlLabel={t("mcp.tokenExchange.authServerUrlOptional")}
+										authServerUrlTooltip={t("mcp.tokenExchange.authServerUrlTooltip")}
 										authServerUrlTestId="token-exchange-authorization-server-url-input"
 										scopes={{
 											variant: "textarea",
 											value: satellites.tokenExchangeScopesText,
 											onChange: satellites.setTokenExchangeScopesText,
-											label: "Scopes (optional)",
-											helperText: (
-												<>
-													Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your identity
-													provider supports it) so the retained discovery credential can renew itself in the background.
-													{isEntraIdp && (
-														<>
-															{" "}
-															<code>offline_access</code> alone is the only scope combined with the audience&apos;s default resource access
-															- any other scope replaces the default entirely instead of adding to it.
-														</>
-													)}
-												</>
-											),
+											label: t("mcp.tokenExchange.scopesOptional"),
+											helperText: `${t("mcp.tokenExchange.scopesHelperCreate")}${isEntraIdp ? t("mcp.tokenExchange.scopesHelperCreateEntra") : ""}`,
 											testId: "token-exchange-scopes-textarea",
 										}}
 									/>
@@ -872,35 +823,31 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
-								<SectionHeader
-									title="OAuth Configuration"
-									description="Credentials and endpoints this server uses to authenticate via OAuth."
-									testId="oauth-advanced-heading"
-								/>
+								<SectionHeader title={t("mcp.form.oauthTitle")} description={t("mcp.form.oauthDesc")} testId="oauth-advanced-heading" />
 								<div className="space-y-4 rounded-md border p-4">
 									<OAuthAdvancedFields
 										control={control}
 										scopesRaw={satellites.scopesText}
 										onScopesRawChange={satellites.setScopesText}
-										scopesLabel="Scopes (optional, comma-separated)"
+										scopesLabel={t("mcp.oauthFields.scopesOptional")}
 										scopesTestId="mcp-oauth-scopes-input"
 										resource={{ mode: "raw", value: satellites.resourceText, onChange: satellites.setResourceText }}
-										resourceLabel="Resource"
+										resourceLabel={t("mcp.resource")}
 										resourceTestId="mcp-oauth-resource-input"
-										clientIdLabel="OAuth Client ID (optional)"
-										clientIdPlaceholder="your-client-id (auto-generated if empty)"
-										clientIdHelperText="Will be auto-generated via dynamic registration if left empty and provider supports it"
-										clientIdTooltip="Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth provider if supported."
+										clientIdLabel={t("mcp.oauthFields.clientIdOptional")}
+										clientIdPlaceholder={t("mcp.oauthFields.clientIdPlaceholder")}
+										clientIdHelperText={t("mcp.oauthFields.clientIdHelper")}
+										clientIdTooltip={t("mcp.oauthFields.clientIdTooltip")}
 										clientIdTestId="mcp-oauth-client-id"
-										clientSecretLabel="OAuth Client Secret (optional for PKCE)"
-										clientSecretPlaceholder="your-client-secret"
-										clientSecretHelperText="Leave empty for public clients using PKCE"
+										clientSecretLabel={t("mcp.oauthFields.clientSecretOptional")}
+										clientSecretPlaceholder={t("mcp.oauthFields.clientSecretPlaceholder")}
+										clientSecretHelperText={t("mcp.oauthFields.clientSecretHelper")}
 										clientSecretTestId="mcp-oauth-client-secret"
-										authorizeUrlLabel="Authorization URL (optional, auto-discovered)"
+										authorizeUrlLabel={t("mcp.oauthFields.authorizeUrlOptional")}
 										authorizeUrlTestId="mcp-oauth-authorize-url"
-										tokenUrlLabel="Token URL (optional, auto-discovered)"
+										tokenUrlLabel={t("mcp.oauthFields.tokenUrlOptional")}
 										tokenUrlTestId="mcp-oauth-token-url"
-										registrationUrlLabel="Registration URL (optional, auto-discovered)"
+										registrationUrlLabel={t("mcp.oauthFields.registrationUrlOptional")}
 										registrationUrlTestId="mcp-oauth-registration-url"
 										onFieldTouched={(field) => clearErrors(`oauth_config.${field}`)}
 									/>
@@ -913,11 +860,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 					{/* TLS / Certificate */}
 					<div className="space-y-4">
-						<SectionHeader
-							title="TLS / Certificate"
-							description="Configure certificate verification for HTTPS connections to this server."
-							testId="tls-config-heading"
-						/>
+						<SectionHeader title={t("mcp.form.tlsTitle")} description={t("mcp.form.tlsDesc")} testId="tls-config-heading" />
 						<div className="space-y-4 rounded-md border p-4">
 							<TLSConfigFields control={control} />
 						</div>
@@ -930,12 +873,8 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 					<DottedSeparator />
 					<div className="space-y-4">
 						<SectionHeader
-							title="Launch Command"
-							description={
-								lockConnection
-									? "Bifrost runs this command to start the server. It comes from the library entry and can't be changed here."
-									: "Bifrost runs this command to start the server on the machine it's deployed on."
-							}
+							title={t("mcp.form.launchCommand")}
+							description={lockConnection ? t("mcp.form.launchCommandDescLocked") : t("mcp.form.launchCommandDesc")}
 						/>
 						<div className="space-y-4 rounded-md border p-4">
 							<StdioRuntimeNotice />
@@ -946,7 +885,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								name="stdio_config.command"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Command</FormLabel>
+										<FormLabel>{t("mcp.form.command")}</FormLabel>
 										<FormControl>
 											<Input
 												{...field}
@@ -956,7 +895,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 													field.onChange(e);
 													clearErrors("stdio_config.command");
 												}}
-												placeholder="node, python, /path/to/executable"
+												placeholder={t("mcp.form.commandPlaceholder")}
 												data-testid="stdio-command-input"
 											/>
 										</FormControl>
@@ -967,13 +906,13 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 							{/* Args (local state) */}
 							<div className="space-y-2">
-								<Label htmlFor="stdio-args-input">Arguments (comma-separated)</Label>
+								<Label htmlFor="stdio-args-input">{t("mcp.form.arguments")}</Label>
 								<Input
 									id="stdio-args-input"
 									value={satellites.argsText}
 									disabled={lockConnection}
 									onChange={(e) => satellites.setArgsText(e.target.value)}
-									placeholder="--port, 3000, --config, config.json"
+									placeholder={t("mcp.form.argumentsPlaceholder")}
 									data-testid="stdio-args-input"
 								/>
 							</div>
@@ -981,14 +920,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 							{/* Envs (local state) */}
 							<div className="space-y-2" role="group" aria-labelledby="stdio-envs-label">
 								<div className="flex items-center gap-2">
-									<Label id="stdio-envs-label">Environment Variables</Label>
+									<Label id="stdio-envs-label">{t("mcp.form.envVars")}</Label>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 											</TooltipTrigger>
 											<TooltipContent className="max-w-xs">
-												<p>Add a value for each variable, or leave it blank to read the value from the environment where Bifrost runs.</p>
+												<p>{t("mcp.form.envVarsTooltip")}</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
@@ -998,7 +937,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 									onChange={satellites.setEnvVars}
 									fixedKeys={stdioEnvKeys}
 									keyPlaceholder="API_KEY"
-									valuePlaceholder="Value (or leave blank to use host env)"
+									valuePlaceholder={t("mcp.form.envValuePlaceholder")}
 									label=""
 								/>
 							</div>

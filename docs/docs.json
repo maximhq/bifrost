@@ -161,7 +161,8 @@
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
-                  "providers/supported-providers/xai"
+                  "providers/supported-providers/xai",
+                  "providers/supported-providers/zhipu"
                 ]
               },
               "providers/routing-rules",
