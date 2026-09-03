@@ -674,20 +674,27 @@ func SafeExtractStringMap(value interface{}) (map[string]string, bool) {
 	}
 }
 
+// SafeExtractOrderedMap safely extracts an *OrderedMap from an interface{} with type checking.
+// Inputs that already carry a meaningful key order (OrderedMap values and raw JSON documents)
+// are returned with that order preserved. Plain Go maps have no defined iteration order, so
+// they are converted with SortedCopyPreservingProperties to guarantee deterministic,
+// byte-stable serialization at every nesting level (issue #6591: unsorted nested maps broke
+// provider prompt caching); user-defined names under "properties" keep their key order when
+// one exists.
 func SafeExtractOrderedMap(value interface{}) (*OrderedMap, bool) {
 	if value == nil {
 		return nil, false
 	}
 	switch v := value.(type) {
 	case map[string]interface{}:
-		mapped := OrderedMapFromMap(v)
+		mapped := OrderedMapFromMap(v).SortedCopyPreservingProperties()
 		if mapped != nil {
 			return mapped, true
 		}
 		return nil, false
 	case *map[string]interface{}:
 		if v != nil {
-			mapped := OrderedMapFromMap(*v)
+			mapped := OrderedMapFromMap(*v).SortedCopyPreservingProperties()
 			if mapped != nil {
 				return mapped, true
 			}

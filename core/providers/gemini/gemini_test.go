@@ -1433,15 +1433,15 @@ func TestStructuredOutputConversion(t *testing.T) {
 				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema, "responseJsonSchema should be set")
 
 				// Validate the schema structure
-				schemaMap, ok := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
 				require.True(t, ok, "ResponseJSONSchema should be a map")
 
 				// Check properties
-				properties, ok := schemaMap["properties"].(map[string]interface{})
+				properties, ok := asPlainMap(t, schemaMap["properties"])
 				require.True(t, ok, "properties should be a map")
 
 				// Validate user_id property - should be converted to anyOf
-				userID, ok := properties["user_id"].(map[string]interface{})
+				userID, ok := asPlainMap(t, properties["user_id"])
 				require.True(t, ok, "user_id should exist in properties")
 
 				// user_id should have anyOf instead of type array
@@ -1462,7 +1462,7 @@ func TestStructuredOutputConversion(t *testing.T) {
 				assert.Equal(t, "integer", integerBranch["type"])
 
 				// Validate status property - should remain unchanged
-				status, ok := properties["status"].(map[string]interface{})
+				status, ok := asPlainMap(t, properties["status"])
 				require.True(t, ok, "status should exist in properties")
 				assert.Equal(t, "string", status["type"])
 				enum := status["enum"].([]interface{})

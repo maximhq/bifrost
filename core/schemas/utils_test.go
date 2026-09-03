@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -133,4 +135,151 @@ func TestSanitizeImageURLAcceptsDataURLWithParameters(t *testing.T) {
 	_, err = SanitizeImageURL("data:;base64,iVBORw0KGgo=")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid data URL format")
+}
+
+// buildToolPropertiesFixture returns a tools-payload "properties" fragment as a
+// plain Go map — the shape SafeExtractOrderedMap receives when tool schemas
+// arrive through map-typed fields (e.g. the Responses conversion path for
+// Anthropic-protocol providers, issue #6591). Each property schema carries
+// several keys so that undefined map iteration order is observable in
+// serialized output.
+func buildToolPropertiesFixture() map[string]interface{} {
+	props := map[string]interface{}{}
+	for _, name := range []string{"location", "unit", "days", "verbose", "limit"} {
+		props[name] = map[string]interface{}{
+			"type":        "string",
+			"description": "property " + name,
+			"title":       name,
+			"minLength":   float64(1),
+		}
+	}
+	// One object-typed property with nested properties to exercise recursion.
+	props["filters"] = map[string]interface{}{
+		"type":        "object",
+		"description": "structured filters",
+		"properties": map[string]interface{}{
+			"start": map[string]interface{}{"type": "string", "format": "date", "description": "start date"},
+			"end":   map[string]interface{}{"type": "string", "format": "date", "description": "end date"},
+		},
+	}
+	return props
+}
+
+// assertNoPlainMaps walks the extracted value and fails if any nested object is
+// still a plain map (whose iteration order is undefined) rather than an
+// *OrderedMap carrying a stable key order. Plain maps leak Go's randomized
+// iteration order into any consumer that re-marshals a plucked sub-schema with
+// the hot-path encoder, which breaks provider prompt caching (issue #6591).
+func assertNoPlainMaps(t *testing.T, path string, v interface{}) {
+	t.Helper()
+	switch val := v.(type) {
+	case map[string]interface{}:
+		t.Fatalf("%s: nested value is %T; plain maps serialize in random key order — want *OrderedMap", path, v)
+	case *OrderedMap:
+		for _, k := range val.Keys() {
+			child, _ := val.Get(k)
+			assertNoPlainMaps(t, path+"."+k, child)
+		}
+	case OrderedMap:
+		for _, k := range val.Keys() {
+			child, _ := val.Get(k)
+			assertNoPlainMaps(t, path+"."+k, child)
+		}
+	case []interface{}:
+		for i, item := range val {
+			assertNoPlainMaps(t, fmt.Sprintf("%s[%d]", path, i), item)
+		}
+	}
+}
+
+// Regression test for #6591: tool schemas extracted from plain Go maps must
+// come out as fully ordered trees so their serialization is byte-stable.
+func TestSafeExtractOrderedMapToolSchemaDeterminism(t *testing.T) {
+	const iterations = 50
+
+	cases := []struct {
+		name    string
+		extract func() (*OrderedMap, bool)
+	}{
+		{"map", func() (*OrderedMap, bool) { return SafeExtractOrderedMap(buildToolPropertiesFixture()) }},
+		{"pointer-to-map", func() (*OrderedMap, bool) {
+			m := buildToolPropertiesFixture()
+			return SafeExtractOrderedMap(&m)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var firstFull, firstPlucked []byte
+			for i := 0; i < iterations; i++ {
+				om, ok := tc.extract()
+				require.True(t, ok, "SafeExtractOrderedMap returned ok=false")
+
+				// Every nested object must be order-carrying.
+				assertNoPlainMaps(t, "properties", om)
+
+				// The whole extracted fragment must serialize byte-identically.
+				full, err := Marshal(om)
+				require.NoError(t, err)
+
+				// Downstream converters pluck sub-schemas out and re-marshal
+				// them individually with the hot-path encoder (sonic does not
+				// sort plain map keys).
+				plucked, err := Marshal(mustGet(t, om, "location"))
+				require.NoError(t, err)
+
+				if i == 0 {
+					firstFull, firstPlucked = full, plucked
+					continue
+				}
+				if !bytes.Equal(firstFull, full) {
+					t.Fatalf("iteration %d: full serialization diverged:\n first: %s\n later: %s", i, firstFull, full)
+				}
+				if !bytes.Equal(firstPlucked, plucked) {
+					t.Fatalf("iteration %d: plucked sub-schema serialization diverged:\n first: %s\n later: %s", i, firstPlucked, plucked)
+				}
+			}
+		})
+	}
+}
+
+func mustGet(t *testing.T, om *OrderedMap, key string) interface{} {
+	t.Helper()
+	v, ok := om.Get(key)
+	require.True(t, ok, "key %q missing from extracted map", key)
+	return v
+}
+
+// TestToolFunctionParametersFromMapSourceByteStable pins the tools payload
+// round-trip from #6591: schemas extracted from plain maps, embedded in
+// ToolFunctionParameters (the wire type for both Chat function tools and the
+// Anthropic input_schema), must marshal byte-identically across repeated
+// conversions of the same source.
+func TestToolFunctionParametersFromMapSourceByteStable(t *testing.T) {
+	const iterations = 50
+	var first []byte
+	for i := 0; i < iterations; i++ {
+		props, ok := SafeExtractOrderedMap(buildToolPropertiesFixture())
+		require.True(t, ok)
+		items, ok := SafeExtractOrderedMap(map[string]interface{}{
+			"type": "integer", "minimum": float64(0), "description": "forecast day"})
+		require.True(t, ok)
+
+		params := &ToolFunctionParameters{
+			Type:       "object",
+			Properties: props,
+			Items:      items,
+			Required:   []string{"location"},
+		}
+		b, err := Marshal(params)
+		require.NoError(t, err)
+
+		if i == 0 {
+			first = b
+			continue
+		}
+		if !bytes.Equal(first, b) {
+			t.Fatalf("iteration %d: tools payload serialization diverged:\n first: %s\n later: %s", i, first, b)
+		}
+	}
 }
