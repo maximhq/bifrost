@@ -4063,6 +4063,30 @@ func (gs *LocalGovernanceStore) ScopedModelConfigIDs(scope, scopeID string) []st
 	return ids
 }
 
+// ScopedModelConfigs returns the in-memory model configs for the given (scope, scopeID), as
+// currently cached. Callers that diff against the DB result use it to find the budgets and rate
+// limits a still-present config no longer names, which DeleteModelConfigInMemory cannot see once
+// the config itself is kept. The entries are the live cache records and must be treated as
+// read-only.
+func (gs *LocalGovernanceStore) ScopedModelConfigs(scope, scopeID string) []*configstoreTables.TableModelConfig {
+	var configs []*configstoreTables.TableModelConfig
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		mcScopeID := ""
+		if mc.ScopeID != nil {
+			mcScopeID = *mc.ScopeID
+		}
+		if mc.Scope == scope && mcScopeID == scopeID {
+			configs = append(configs, mc)
+		}
+		return true
+	})
+	return configs
+}
+
 // UpdateProviderInMemory adds or updates a provider in the in-memory store (lock-free)
 // Preserves existing usage values when updating budgets and rate limits
 // Returns the updated provider with potentially modified usage values
