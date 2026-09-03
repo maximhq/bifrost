@@ -111,6 +111,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.MaxCompletionTokens = nil
 		}
 		return openaiReq
+	case schemas.Ollama:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Ollama's chat-completions endpoints still use the legacy max_tokens
+		// field and ignore max_completion_tokens.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
 	case schemas.Vertex:
 		openaiReq.filterOpenAISpecificParameters(caps)
 

@@ -2573,13 +2573,15 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	var lastFileID string
 	for _, file := range anthropicResp.Data {
 		files = append(files, schemas.FileObject{
-			ID:        file.ID,
-			Object:    file.Type,
-			Bytes:     file.SizeBytes,
-			CreatedAt: parseAnthropicFileTimestamp(file.CreatedAt),
-			Filename:  file.Filename,
-			Purpose:   schemas.FilePurposeBatch,
-			Status:    schemas.FileStatusProcessed,
+			ID:           file.ID,
+			Object:       file.Type,
+			Bytes:        file.SizeBytes,
+			CreatedAt:    parseAnthropicFileTimestamp(file.CreatedAt),
+			Filename:     file.Filename,
+			ContentType:  file.MimeType,
+			Downloadable: file.Downloadable,
+			Purpose:      schemas.FilePurposeBatch,
+			Status:       schemas.FileStatusProcessed,
 		})
 		lastFileID = file.ID
 	}

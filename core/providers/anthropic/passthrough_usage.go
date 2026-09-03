@@ -31,6 +31,13 @@ func HasAnthropicPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "message.usage").Exists()
 }
 
+// ExtractAnthropicMessagesUsage parses usage from a non-streaming Messages response body.
+// Exported for callers whose path does not carry the /messages suffix ExtractAnthropicPassthroughUsage
+// dispatches on — e.g. Vertex's :rawPredict.
+func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return extractAnthropicMessagesUsage(body)
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {

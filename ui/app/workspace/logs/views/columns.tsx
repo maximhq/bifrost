@@ -368,6 +368,7 @@ export const createColumns = (
 			header: "Type",
 			size: 150,
 			cell: ({ row }) => {
+				const isVideoSettlement = Boolean(row.original.video_debug?.accounting);
 				return (
 					<Badge
 						variant="outline"
@@ -376,7 +377,9 @@ export const createColumns = (
 							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
 						)}
 					>
-						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+						{isVideoSettlement
+							? "Video Settlement"
+							: RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
 					</Badge>
 				);
 			},

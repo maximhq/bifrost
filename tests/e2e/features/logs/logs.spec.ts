@@ -409,6 +409,29 @@ test.describe('LLM Logs', () => {
       expect(decodeURIComponent(url)).toContain('persistent-search')
     })
 
+    test('should look up a pasted request ID by id instead of content', async ({ logsPage }) => {
+      const searchVisible = await logsPage.searchInput.isVisible().catch(() => false)
+      if (!searchVisible) return
+
+      // A log's primary key is its request ID, so a UUID-shaped query switches
+      // the search box from free-text content search to an exact ID lookup.
+      const requestId = '018f2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d'
+      await logsPage.searchLogs(requestId)
+
+      await expect
+        .poll(
+          () => logsPage.page.url(),
+          { timeout: 8000, intervals: [300, 500, 500] }
+        )
+        .toContain('request_id=')
+      const url = logsPage.page.url()
+      expect(decodeURIComponent(url)).toContain(requestId)
+      expect(url).not.toContain('content_search=')
+
+      // The mode switch is surfaced to the user.
+      await expect(logsPage.page.locator('[data-testid="logs-search-id-badge"]')).toBeVisible()
+    })
+
     test('should restore state from URL', async ({ logsPage, page }) => {
       // Logs page uses start_time and end_time (unix timestamps), not period
       const endTime = Math.floor(Date.now() / 1000)

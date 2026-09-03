@@ -79,25 +79,12 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
-	if err != nil {
-		upgrader := h.websocketUpgrader("")
-		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
-			defer conn.Close()
-			clientConn := newRealtimeClientConn(conn)
-			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
-		})
-		if upgradeErr != nil {
-			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
-		}
-		return
-	}
-
-	// Run PreRequestHook to give governance + LB a chance to route the realtime connection.
-	// Realtime bypasses handleRequest (per-turn pipelines instead), so we invoke the routing
-	// phase explicitly here. Mutations to provider/model are read back into the local vars
-	// and copied to fasthttp user values so snapshotRealtimeMiddlewareValues picks up any
-	// ctx changes (governance team/customer IDs, routing engine logs).
+	// The pre-request context is built first because the admission gate below reads the
+	// credentials it records. Realtime bypasses handleRequest (per-turn pipelines instead), so
+	// the routing phase is invoked explicitly further down. Mutations to provider/model are
+	// read back into the local vars and copied to fasthttp user values so
+	// snapshotRealtimeMiddlewareValues picks up any ctx changes (governance team/customer IDs,
+	// routing engine logs).
 	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.handlerStore, auth)
 	if preReqCtx == nil {
 		preReqCancel()
@@ -115,6 +102,41 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if realtimeDefaultProviderForPath(path) == schemas.OpenAI {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+
+	// Admission check, before the upgrade, before any routing work, and before the target is
+	// even resolved: completing this upgrade selects the operator's provider key and opens an
+	// upstream session, which the per-turn governance pipeline only gets to inspect one turn
+	// too late. Refused with a plain 401 on the HTTP request rather than an in-band error
+	// frame, matching how the auth middleware already refuses unauthenticated WebSocket
+	// upgrades. Ordering it ahead of resolveRealtimeTarget matters: that resolver's error path
+	// upgrades the connection to report in-band, so an anonymous caller with a missing or
+	// malformed model would otherwise get a completed upgrade and a way to probe which models
+	// and paths the deployment accepts, without ever presenting a credential.
+	if authErr := refuseUnauthenticatedRealtime(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		h.handlerStore.GetKVStore(),
+		preReqCtx,
+		auth.authorization,
+	); authErr != nil {
+		preReqCancel()
+		SendBifrostError(ctx, authErr)
+		return
+	}
+
+	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
+	if err != nil {
+		preReqCancel()
+		upgrader := h.websocketUpgrader("")
+		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+			defer conn.Close()
+			clientConn := newRealtimeClientConn(conn)
+			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
+		})
+		if upgradeErr != nil {
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
+		}
+		return
 	}
 	// Surface full request headers + query params on the pre-request context so governance
 	// CEL routing rules (which read headers[...] / params[...]) see the same shape they would

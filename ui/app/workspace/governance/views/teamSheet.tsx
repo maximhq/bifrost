@@ -29,7 +29,7 @@ import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 
@@ -97,7 +97,14 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	});
 	const [nameError, setNameError] = useState<string | null>(null);
 
+	// Keyed on the team *id*, not the object: this sheet is fed from a polled
+	// list, so an unchanged team still arrives as a fresh object every few
+	// seconds and an identity-keyed reset would discard in-progress edits.
+	const seededTeamIdRef = useRef<string | null | undefined>(undefined);
 	useEffect(() => {
+		const teamId = team?.id ?? null;
+		if (seededTeamIdRef.current === teamId) return;
+		seededTeamIdRef.current = teamId;
 		const nextInitial = createInitialState(team);
 		setInitialState(nextInitial);
 		setFormData({ ...nextInitial, isDirty: false });

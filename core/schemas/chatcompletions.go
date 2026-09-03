@@ -1068,7 +1068,7 @@ const (
 type ChatMessage struct {
 	Name    *string             `json:"name,omitempty"` // for chat completions
 	Role    ChatMessageRole     `json:"role,omitempty"`
-	Content *ChatMessageContent `json:"content,omitempty"`
+	Content *ChatMessageContent `json:"content"`
 
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
@@ -1098,7 +1098,7 @@ func (cm ChatMessage) MarshalJSON() ([]byte, error) {
 	base, err := Marshal(struct {
 		Name    *string             `json:"name,omitempty"`
 		Role    ChatMessageRole     `json:"role,omitempty"`
-		Content *ChatMessageContent `json:"content,omitempty"`
+		Content *ChatMessageContent `json:"content"`
 	}{Name: cm.Name, Role: cm.Role, Content: cm.Content})
 	if err != nil {
 		return nil, err
@@ -1532,7 +1532,7 @@ type ChatToolMessage struct {
 
 // ChatAssistantMessage represents a message in a chat conversation.
 type ChatAssistantMessage struct {
-	Refusal          *string                          `json:"refusal,omitempty"`
+	Refusal          *string                          `json:"refusal"`
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
@@ -1673,8 +1673,8 @@ type ChatAudioMessageAudio struct {
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
 	Index        int              `json:"index"`
-	FinishReason *string          `json:"finish_reason,omitempty"`
-	LogProbs     *BifrostLogProbs `json:"logprobs,omitempty"`
+	FinishReason *string          `json:"finish_reason"`
+	LogProbs     *BifrostLogProbs `json:"logprobs"`
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice

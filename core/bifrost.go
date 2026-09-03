@@ -5252,11 +5252,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
-		if primaryErr.Error != nil {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
-		} else {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
-		}
+		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
+		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
+		// payload, which holds the Authorization header, or the ?key=<api-key> query
+		// param on Vertex/Gemini. Debug logs are not a place to put credentials.
+		bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.GetErrorString())
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
@@ -5389,11 +5389,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 	if primaryErr != nil {
-		if primaryErr.Error != nil {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
-		} else {
-			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
-		}
+		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
+		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
+		// payload, which holds the Authorization header, or the ?key=<api-key> query
+		// param on Vertex/Gemini. Debug logs are not a place to put credentials.
+		bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.GetErrorString())
 		if len(fallbacks) > 0 {
 			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
@@ -6713,7 +6713,11 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
+	// Native redaction codecs are valid only while the matching Anthropic body
+	// and response stream are forwarded; converted fallbacks must not inherit them.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
@@ -7354,6 +7358,19 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
+				responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
+				response.ResponsesResponse = responsesResponse
+				break
+			}
+		}
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -7717,6 +7734,15 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				// The providers' chat streaming handler re-assembles Responses events from the
+				// chat chunks when this flag is set, so the caller still gets a Responses stream.
+				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+			}
+		}
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)

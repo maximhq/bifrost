@@ -478,6 +478,86 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
+	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
+	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
+	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
+}
+
+// videoResolutionPricingColumns are the resolution-banded video output rate columns.
+// Providers publish a different per-second rate per output resolution (sora-2-pro is
+// $0.30/s at 720p but $0.70/s at 1080p; Veo 3.1 is $0.40/s at 720p/1080p and $0.60/s
+// at 4K), which the single output_cost_per_video_per_second column cannot express.
+var videoResolutionPricingColumns = []string{
+	"output_cost_per_video_per_second_480p",
+	"output_cost_per_video_per_second_720p",
+	"output_cost_per_video_per_second_1024p",
+	"output_cost_per_video_per_second_1080p",
+	"output_cost_per_video_per_second_4k",
+}
+
+func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_resolution_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoResolutionPricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_video_resolution_pricing_columns is non-rollbackable: dropping the resolution-banded video rate columns would permanently delete every custom per-resolution price an operator has set, and the affected models would silently bill at their unbanded rate instead; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddCompatAzureDeepseekColumn adds the compat_azure_deepseek column to
+// config_client.
+func migrationAddCompatAzureDeepseekColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_azure_deepseek_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatAzureDeepseek"); err != nil {
+				return fmt.Errorf("failed to add compat_azure_deepseek column: %w", err)
+			}
+
+			// The conversion was unconditional before this toggle existed, so existing
+			// deployments are backfilled to TRUE to keep the behaviour they have today.
+			// The column default stays FALSE, matching the other compat flags.
+			if err := tx.Exec("UPDATE config_client SET compat_azure_deepseek = TRUE").Error; err != nil {
+				return fmt.Errorf("failed to backfill compat_azure_deepseek: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_azure_deepseek"); err != nil {
+				return fmt.Errorf("failed to drop compat_azure_deepseek column: %w", err)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running compat_azure_deepseek migration: %s", err.Error())
+	}
+	return nil
 }
 
 // migrationAddBatchJobsAttributionColumns adds the requester-identity columns to
@@ -495,10 +575,10 @@ func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, l
 			tx = tx.WithContext(ctx)
 			mig := tx.Migrator()
 			for _, column := range columns {
-				if mig.HasColumn(&tables.TableBatchJob{}, column) {
+				if mig.HasColumn(&tables.TableProviderJob{}, column) {
 					continue
 				}
-				if err := mig.AddColumn(&tables.TableBatchJob{}, column); err != nil {
+				if err := mig.AddColumn(&tables.TableProviderJob{}, column); err != nil {
 					return fmt.Errorf("failed to add %s column to batch_jobs: %w", column, err)
 				}
 			}
@@ -512,10 +592,10 @@ func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, l
 				return fmt.Errorf("failed to drop index idx_batch_jobs_user_id: %w", err)
 			}
 			for _, column := range columns {
-				if !mig.HasColumn(&tables.TableBatchJob{}, column) {
+				if !mig.HasColumn(&tables.TableProviderJob{}, column) {
 					continue
 				}
-				if err := mig.DropColumn(&tables.TableBatchJob{}, column); err != nil {
+				if err := mig.DropColumn(&tables.TableProviderJob{}, column); err != nil {
 					return fmt.Errorf("failed to drop %s column from batch_jobs: %w", column, err)
 				}
 			}
@@ -12143,7 +12223,7 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
 				// hard-fail on an unsupported backend.
-				return tx.Migrator().AutoMigrate(&tables.TableBatchJob{})
+				return tx.Migrator().AutoMigrate(&tables.TableProviderJob{})
 			}
 
 			if err := tx.Exec(createTable).Error; err != nil {
@@ -12163,7 +12243,7 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			return tx.Migrator().DropTable(&tables.TableBatchJob{})
+			return tx.Migrator().DropTable(&tables.TableProviderJob{})
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -12412,4 +12492,220 @@ func migrationDropLegacyOauthUserFKConstraints(ctx context.Context, db *gorm.DB,
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddProviderJobKindColumns generalises batch_jobs from a batch-only
+// table to one holding every provider-side job kind.
+//
+// Additive by construction: kind carries a constant default, so it is
+// metadata-only on postgres 11+ and O(1) on sqlite — existing rows *become*
+// kind='batch' without an UPDATE touching a single one of them, which is exactly
+// what they always were. params is nullable with no default.
+//
+// The identity index widens from (provider, batch_id) to (provider, kind,
+// batch_id). The replacement is strictly weaker than the index it replaces, so it
+// can never fail to build on existing data, and it is created before the old one
+// is dropped so uniqueness is never briefly unenforced.
+func migrationAddProviderJobKindColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_job_kind_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	// Step 1 (transactional): the columns. Both are metadata-only — kind's constant
+	// default is applied on read rather than by rewriting rows, so this is O(1) on
+	// postgres 11+ and sqlite regardless of how large batch_jobs has grown.
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			// Raw DDL rather than AddColumn so the NOT NULL DEFAULT is explicit: the
+			// default is what backfills every pre-existing row, and it must not depend
+			// on how GORM chooses to render a struct tag.
+			if !mig.HasColumn(&tables.TableProviderJob{}, "kind") {
+				if err := tx.Exec(`ALTER TABLE batch_jobs ADD COLUMN kind VARCHAR(50) NOT NULL DEFAULT 'batch'`).Error; err != nil {
+					return fmt.Errorf("failed to add kind column to batch_jobs: %w", err)
+				}
+			}
+			if !mig.HasColumn(&tables.TableProviderJob{}, "params") {
+				if err := tx.Exec(`ALTER TABLE batch_jobs ADD COLUMN params TEXT`).Error; err != nil {
+					return fmt.Errorf("failed to add params column to batch_jobs: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackProviderJobKindColumns(ctx, tx)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+
+	// Step 2 (non-transactional): swap the indexes onto the new column.
+	return migrationSwapProviderJobIndexes(ctx, db, logger)
+}
+
+// providerJobIndexSwap is the index rework batch_jobs needs once rows carry a kind:
+// identity widens to include it, and the sweeper scans by it first.
+var providerJobIndexSwap = []struct {
+	name     string
+	columns  string
+	unique   bool
+	replaces string
+}{
+	{
+		name:     "idx_batch_jobs_identity_v2",
+		columns:  "(provider, kind, batch_id)",
+		unique:   true,
+		replaces: "idx_batch_jobs_identity",
+	},
+	{
+		name:     "idx_batch_jobs_sweeper_v2",
+		columns:  "(kind, provider, accounting_status, next_check_at)",
+		replaces: "idx_batch_jobs_sweeper",
+	},
+}
+
+func migrationSwapProviderJobIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "swap_provider_job_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite has a single writer and no CONCURRENTLY; the plain form is both
+			// required and harmless there.
+			concurrent := tx.Dialector.Name() != "sqlite"
+
+			for _, idx := range providerJobIndexSwap {
+				unique := ""
+				if idx.unique {
+					unique = "UNIQUE "
+				}
+				if concurrent {
+					valid, err := postgresIndexIsValid(tx, "batch_jobs", idx.name)
+					if err != nil {
+						return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
+					}
+					if !valid {
+						if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + idx.name).Error; err != nil {
+							return fmt.Errorf("failed to clear a partial %s: %w", idx.name, err)
+						}
+					}
+					if err := tx.Exec(fmt.Sprintf("CREATE %sINDEX CONCURRENTLY IF NOT EXISTS %s ON batch_jobs %s", unique, idx.name, idx.columns)).Error; err != nil {
+						return fmt.Errorf("failed to create %s: %w", idx.name, err)
+					}
+				} else if err := tx.Exec(fmt.Sprintf("CREATE %sINDEX IF NOT EXISTS %s ON batch_jobs %s", unique, idx.name, idx.columns)).Error; err != nil {
+					return fmt.Errorf("failed to create %s: %w", idx.name, err)
+				}
+
+				// Only now drop what it replaces. The new index is strictly weaker than
+				// the old one, so it can never fail to build on data the old one already
+				// accepted — but dropping second still means uniqueness is never briefly
+				// unenforced.
+				drop := "DROP INDEX IF EXISTS " + idx.replaces
+				if concurrent {
+					drop = "DROP INDEX CONCURRENTLY IF EXISTS " + idx.replaces
+				}
+				if err := tx.Exec(drop).Error; err != nil {
+					return fmt.Errorf("failed to drop %s: %w", idx.replaces, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Index-only; the column rollback restores these names itself.
+			return nil
+		},
+	})
+}
+
+// rollbackProviderJobKindColumns reverses migrationAddProviderJobKindColumns.
+//
+// Order matters, and it is the reverse of the intuitive one: the columns go first,
+// the narrow indexes are recreated last. Dropping a column takes its dependent
+// indexes with it — postgres cascades, and sqlite rebuilds the whole table from the
+// model — so anything restored beforehand is destroyed on the way past.
+func rollbackProviderJobKindColumns(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	mig := tx.Migrator()
+
+	// Refuse before touching anything if a non-batch job exists. The narrow index
+	// this rollback restores is UNIQUE on (provider, batch_id), and a video job is
+	// free to carry the same provider-side id as a batch — so rebuilding it would
+	// fail on real data. Failing here rather than there matters: the column drop
+	// comes first, so a rollback that got as far as the index would already have
+	// erased the only thing distinguishing those rows, leaving the sweeper to
+	// settle a video as a batch.
+	if mig.HasColumn(&tables.TableProviderJob{}, "kind") {
+		var foreign int64
+		if err := tx.Table("batch_jobs").Where("kind <> ?", tables.ProviderJobKindBatch).Count(&foreign).Error; err != nil {
+			return fmt.Errorf("failed to check for non-batch provider jobs: %w", err)
+		}
+		if foreign > 0 {
+			return fmt.Errorf("add_provider_job_kind_columns is non-rollbackable while %d non-batch job(s) exist in batch_jobs: dropping kind would merge them into the batch namespace, where they collide on (provider, batch_id) and would be settled as batches; delete those rows first if the rollback is genuinely intended", foreign)
+		}
+	}
+
+	if mig.HasColumn(&tables.TableProviderJob{}, "params") {
+		var captured int64
+		if err := tx.Table("batch_jobs").Where("params IS NOT NULL AND params <> ''").Count(&captured).Error; err != nil {
+			return fmt.Errorf("failed to check for captured provider job params: %w", err)
+		}
+		if captured > 0 {
+			return fmt.Errorf("add_provider_job_kind_columns is non-rollbackable while %d job(s) in batch_jobs carry captured params: dropping params discards the pricing basis recorded at submission, which no provider response can reconstruct, and those jobs would settle unpriced; clear the column first if the rollback is genuinely intended", captured)
+		}
+	}
+
+	if err := tx.Exec(`DROP INDEX IF EXISTS idx_batch_jobs_identity_v2`).Error; err != nil {
+		return fmt.Errorf("failed to drop idx_batch_jobs_identity_v2: %w", err)
+	}
+	if err := tx.Exec(`DROP INDEX IF EXISTS idx_batch_jobs_sweeper_v2`).Error; err != nil {
+		return fmt.Errorf("failed to drop idx_batch_jobs_sweeper_v2: %w", err)
+	}
+
+	// Raw DDL rather than Migrator.DropColumn. On sqlite the GORM helper rebuilds
+	// the table from the *model*, and after an ALTER TABLE ADD COLUMN the physical
+	// column order no longer matches the model's field order — the rebuild then
+	// copies values into the wrong columns and dies on a NOT NULL violation. Both
+	// dialects support DROP COLUMN natively (sqlite since 3.35), so drop in place.
+	// DROP COLUMN IF EXISTS is postgres-only syntax, hence the HasColumn guard.
+	for _, column := range []string{"kind", "params"} {
+		if !mig.HasColumn(&tables.TableProviderJob{}, column) {
+			continue
+		}
+		if err := tx.Exec(`ALTER TABLE batch_jobs DROP COLUMN ` + column).Error; err != nil {
+			return fmt.Errorf("failed to drop %s column from batch_jobs: %w", column, err)
+		}
+	}
+
+	if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_jobs_identity ON batch_jobs (provider, batch_id)`).Error; err != nil {
+		return fmt.Errorf("failed to restore idx_batch_jobs_identity: %w", err)
+	}
+	if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_batch_jobs_sweeper ON batch_jobs (provider, accounting_status, next_check_at)`).Error; err != nil {
+		return fmt.Errorf("failed to restore idx_batch_jobs_sweeper: %w", err)
+	}
+	return nil
+}
+
+// postgresIndexIsValid reports whether an index exists on table and is usable.
+// A missing index and an INVALID one both report false: the caller wants to know
+// "can I rely on this", and an INVALID index — the residue of an interrupted
+// CREATE INDEX CONCURRENTLY — answers no while still occupying the name.
+func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
+	var valid bool
+	err := tx.Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = ? AND ic.relname = ?
+	`, table, index).Scan(&valid).Error
+	return valid, err
 }

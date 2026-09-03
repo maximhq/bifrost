@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1515,6 +1518,72 @@ func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
 	return schemas.ResolveAllowByDefault(req.AllowByDefault, req.AllowOnAllVirtualKeys)
 }
 
+// rejectPrivateMCPTargetIfAuthBypassed refuses to register an HTTP/SSE MCP
+// client whose connection_string resolves to a loopback, private-network,
+// link-local, or CGNAT address when the caller reached this endpoint with no
+// credential check at all (default-open posture, BifrostContextKeyAuthBypassed).
+// A genuinely authenticated admin keeps the documented ability to point an MCP
+// client at a local or private server (see docs/mcp/connecting-to-servers.mdx,
+// whose own HTTP-client example uses http://localhost:3001/mcp) - only the
+// unauthenticated path is restricted, the same scoping used for the STDIO
+// client gate below. Returns true if the request was rejected (the error
+// response has already been written); the caller should return immediately.
+func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType string, connectionString *schemas.SecretVar) bool {
+	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	if !authBypassed {
+		return false
+	}
+	if connType != string(schemas.MCPConnectionTypeHTTP) && connType != string(schemas.MCPConnectionTypeSSE) {
+		return false
+	}
+	if connectionString == nil {
+		return false
+	}
+	parsed, err := url.Parse(connectionString.GetValue())
+	if err != nil || parsed.Hostname() == "" {
+		// Malformed/unresolvable target: let the normal connect path surface
+		// its own error rather than duplicating URL validation here.
+		return false
+	}
+	// A bounded, request-independent context: this lookup is a pre-check, not
+	// a dial, and must not be tied to the request's own (often much longer)
+	// deadline.
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", parsed.Hostname())
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if !network.IsPublicIP(ip) {
+			SendError(ctx, fasthttp.StatusForbidden, "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this")
+			return true
+		}
+	}
+	return false
+}
+
+// rejectStdioMCPClientIfAuthBypassed refuses to register a stdio MCP client for
+// a caller that was let through because dashboard auth is unconfigured or
+// disabled. A stdio client makes Bifrost exec() an admin-supplied command and
+// args as the gateway process: intentional admin functionality, but only for a
+// caller who actually authenticated. Registering one over this network API with
+// no credential check is equivalent to unauthenticated remote code execution,
+// so it is refused even though the rest of the management API stays open for
+// the zero-config experience. Stdio clients can still be provisioned by an
+// operator with host/filesystem access via config.json. Returns true if the
+// request was rejected (the error response has already been written).
+func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType string) bool {
+	if connType != string(schemas.MCPConnectionTypeSTDIO) {
+		return false
+	}
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !bypassed {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Registering a stdio MCP client requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication, or provision this client via config.json instead.")
+	return true
+}
+
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
 func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
@@ -1527,6 +1596,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	var req MCPClientRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Both gates run before anything else: registering a client is what makes
+	// Bifrost spawn the subprocess / dial the target, so a refusal has to land
+	// before any of that work is scheduled.
+	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
+		return
+	}
+	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
 		return
 	}
 

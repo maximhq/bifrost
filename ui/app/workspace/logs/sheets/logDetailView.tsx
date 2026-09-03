@@ -2643,7 +2643,8 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
+                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -3116,7 +3117,11 @@ export function LogDetailView({
 												)
 											) : msg.output !== undefined ? (
 												<CollapsibleCode
-													text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
+													text={
+														typeof msg.output === "string"
+															? applyRedactionMapping(msg.output, mapping)
+															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
+													}
 													preview={3}
 												/>
 											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
