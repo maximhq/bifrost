@@ -217,13 +217,13 @@ func TestPermitForVirtualKey_ProviderPermits(t *testing.T) {
 
 	openai := permit.ProviderPermits()[0]
 	assert.Equal(t, "openai", openai.Provider)
-	assert.Equal(t, []string{"gpt-4o"}, openai.AllowedModels)
-	assert.Equal(t, []string{"gpt-4o-mini"}, openai.BlacklistedModels)
-	assert.Equal(t, []string{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
+	assert.Equal(t, schemas.WhiteList{"gpt-4o"}, openai.AllowedModels)
+	assert.Equal(t, schemas.BlackList{"gpt-4o-mini"}, openai.BlacklistedModels)
+	assert.Equal(t, schemas.WhiteList{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
 	assert.Equal(t, schemas.Ptr(0.7), openai.Weight)
 
 	anthropic := permit.ProviderPermits()[1]
-	assert.Equal(t, []string{"key-a", "key-b"}, anthropic.KeyIDs)
+	assert.Equal(t, schemas.WhiteList{"key-a", "key-b"}, anthropic.KeyIDs)
 	assert.Nil(t, anthropic.Weight, "no weight configured stays no weight")
 
 	bedrock := permit.ProviderPermits()[2]
@@ -364,7 +364,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		permit := vkPermit(vk, open)
 
 		require.Len(t, permit.MCPPermits(), 3)
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
 		assert.Empty(t, permit.MCPPermits()[1].Tools, "an empty config stays empty")
 		assert.Equal(t, "slack-id", permit.MCPPermits()[2].Client, "only the unconfigured client is added")
 	})
