@@ -483,6 +483,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
 	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
+	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -6848,20 +6849,21 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 			logger.Info("[configstore] %s: processing %d keys", migrationName, len(keys))
 			for _, key := range keys {
 				schemaKey := schemas.Key{
-					Name:               key.Name,
-					Value:              key.Value,
-					Models:             key.Models,
-					Weight:             getWeight(key.Weight),
-					AzureKeyConfig:     key.AzureKeyConfig,
-					VertexKeyConfig:    key.VertexKeyConfig,
-					BedrockKeyConfig:   key.BedrockKeyConfig,
-					Aliases:            key.Aliases,
-					VLLMKeyConfig:      key.VLLMKeyConfig,
-					ReplicateKeyConfig: key.ReplicateKeyConfig,
-					OllamaKeyConfig:    key.OllamaKeyConfig,
-					SGLKeyConfig:       key.SGLKeyConfig,
-					Enabled:            key.Enabled,
-					UseForBatchAPI:     key.UseForBatchAPI,
+					Name:                key.Name,
+					Value:               key.Value,
+					Models:              key.Models,
+					Weight:              getWeight(key.Weight),
+					AzureKeyConfig:      key.AzureKeyConfig,
+					VertexKeyConfig:     key.VertexKeyConfig,
+					BedrockKeyConfig:    key.BedrockKeyConfig,
+					Aliases:             key.Aliases,
+					VLLMKeyConfig:       key.VLLMKeyConfig,
+					ReplicateKeyConfig:  key.ReplicateKeyConfig,
+					OllamaKeyConfig:     key.OllamaKeyConfig,
+					SGLKeyConfig:        key.SGLKeyConfig,
+					DatabricksKeyConfig: key.DatabricksKeyConfig,
+					Enabled:             key.Enabled,
+					UseForBatchAPI:      key.UseForBatchAPI,
 				}
 				hash, err := GenerateKeyHash(schemaKey)
 				if err != nil {
@@ -12765,6 +12767,47 @@ func migrationAddMCPOauthTokenStatusReasonColumn(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddDatabricksKeyConfigColumns adds the Databricks per-key columns: the workspace
+// URL, the OAuth M2M service principal credentials, the inference surface selector, and the
+// AI Gateway request-tag opt-in.
+func migrationAddDatabricksKeyConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_databricks_key_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"databricks_workspace_url",
+		"databricks_client_id",
+		"databricks_client_secret",
+		"databricks_api_format",
+		"databricks_forward_gateway_tags",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running databricks key config columns migration: %s", err.Error())
 	}
 	return nil
 }

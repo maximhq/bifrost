@@ -690,6 +690,28 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
+
+		// Redact Databricks key config if present
+		if key.DatabricksKeyConfig != nil {
+			databricksConfig := &schemas.DatabricksKeyConfig{
+				APIFormat:          key.DatabricksKeyConfig.APIFormat,
+				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			}
+			// The workspace URL is a hostname, not a credential — surface it in
+			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+			if key.DatabricksKeyConfig.WorkspaceURL.IsFromSecret() {
+				databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.Redacted()
+			} else {
+				databricksConfig.WorkspaceURL = key.DatabricksKeyConfig.WorkspaceURL
+			}
+			if key.DatabricksKeyConfig.ClientID != nil {
+				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+			}
+			if key.DatabricksKeyConfig.ClientSecret != nil {
+				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+			}
+			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -875,6 +897,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
 		data, err := sonic.Marshal(key.SGLKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash DatabricksKeyConfig
+	if key.DatabricksKeyConfig != nil {
+		data, err := sonic.Marshal(key.DatabricksKeyConfig)
 		if err != nil {
 			return "", err
 		}

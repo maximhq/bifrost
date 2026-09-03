@@ -84,6 +84,13 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// Databricks config fields (embedded)
+	DatabricksWorkspaceURL       *schemas.SecretVar `gorm:"type:text" json:"databricks_workspace_url,omitempty"`
+	DatabricksClientID           *schemas.SecretVar `gorm:"type:text" json:"databricks_client_id,omitempty"`
+	DatabricksClientSecret       *schemas.SecretVar `gorm:"type:text" json:"databricks_client_secret,omitempty"`
+	DatabricksAPIFormat          *string            `gorm:"type:varchar(50)" json:"databricks_api_format,omitempty"`
+	DatabricksForwardGatewayTags *bool              `gorm:"column:databricks_forward_gateway_tags" json:"databricks_forward_gateway_tags,omitempty"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -108,6 +115,7 @@ type TableKey struct {
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
+	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -449,6 +457,41 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.DatabricksKeyConfig != nil {
+		if k.DatabricksKeyConfig.WorkspaceURL.IsSet() {
+			u := k.DatabricksKeyConfig.WorkspaceURL // Value-copy to prevent shared pointer mutation
+			k.DatabricksWorkspaceURL = &u
+		} else {
+			k.DatabricksWorkspaceURL = nil
+		}
+		if k.DatabricksKeyConfig.ClientID != nil {
+			cid := *k.DatabricksKeyConfig.ClientID // Value-copy to prevent shared pointer mutation
+			k.DatabricksClientID = &cid
+		} else {
+			k.DatabricksClientID = nil
+		}
+		if k.DatabricksKeyConfig.ClientSecret != nil {
+			cs := *k.DatabricksKeyConfig.ClientSecret
+			k.DatabricksClientSecret = &cs
+		} else {
+			k.DatabricksClientSecret = nil
+		}
+		if k.DatabricksKeyConfig.APIFormat != "" {
+			f := string(k.DatabricksKeyConfig.APIFormat)
+			k.DatabricksAPIFormat = &f
+		} else {
+			k.DatabricksAPIFormat = nil
+		}
+		t := k.DatabricksKeyConfig.ForwardGatewayTags
+		k.DatabricksForwardGatewayTags = &t
+	} else {
+		k.DatabricksWorkspaceURL = nil
+		k.DatabricksClientID = nil
+		k.DatabricksClientSecret = nil
+		k.DatabricksAPIFormat = nil
+		k.DatabricksForwardGatewayTags = nil
+	}
+
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
 	// This must run after the columns are populated (above) and before encryption (below):
 	// encryptSecretVar skips fields that are already vault refs, so vault-owned secrets are
@@ -573,6 +616,16 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
+		// Databricks
+		if err := encryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
+			return fmt.Errorf("failed to encrypt databricks workspace url: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.DatabricksClientID); err != nil {
+			return fmt.Errorf("failed to encrypt databricks client id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt databricks client secret: %w", err)
+		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
@@ -693,6 +746,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// SGL
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
+		}
+		// Databricks
+		if err := decryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
+			return fmt.Errorf("failed to decrypt databricks workspace url: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.DatabricksClientID); err != nil {
+			return fmt.Errorf("failed to decrypt databricks client id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
+			return fmt.Errorf("failed to decrypt databricks client secret: %w", err)
 		}
 	}
 
@@ -872,6 +935,26 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.SGLKeyConfig = nil
+	}
+	// Reconstruct Databricks config if fields are present
+	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
+		(k.DatabricksAPIFormat != nil && *k.DatabricksAPIFormat != "") || k.DatabricksForwardGatewayTags != nil {
+		databricksConfig := &schemas.DatabricksKeyConfig{
+			ClientID:     k.DatabricksClientID,
+			ClientSecret: k.DatabricksClientSecret,
+		}
+		if k.DatabricksWorkspaceURL != nil {
+			databricksConfig.WorkspaceURL = *k.DatabricksWorkspaceURL
+		}
+		if k.DatabricksAPIFormat != nil {
+			databricksConfig.APIFormat = schemas.DatabricksAPIFormat(*k.DatabricksAPIFormat)
+		}
+		if k.DatabricksForwardGatewayTags != nil {
+			databricksConfig.ForwardGatewayTags = *k.DatabricksForwardGatewayTags
+		}
+		k.DatabricksKeyConfig = databricksConfig
+	} else {
+		k.DatabricksKeyConfig = nil
 	}
 	return nil
 }
