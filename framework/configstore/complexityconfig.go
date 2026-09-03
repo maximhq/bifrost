@@ -163,9 +163,13 @@ const (
 	ComplexitySemanticVectorStoreConfigured = "vector_store"
 )
 
-// MaxComplexitySemanticPhraseCharacters bounds one exemplar's input size.
-// The number of exemplars is intentionally unrestricted.
-const MaxComplexitySemanticPhraseCharacters = 2000
+const (
+	// MaxComplexitySemanticPhraseCharacters bounds one exemplar's input size.
+	MaxComplexitySemanticPhraseCharacters = 2000
+	// MaxComplexitySemanticPhrases bounds the total exemplar set embedded for
+	// one semantic classifier generation across all three tiers.
+	MaxComplexitySemanticPhrases = 750
+)
 
 // Semantic message-history bounds. The ceiling keeps one classification
 // embedding cheap and bounded. The dormant lexical analyzer happens to scan a
@@ -847,6 +851,21 @@ func validateComplexitySemanticPhrases(keywords ComplexityEditableKeywordConfig)
 		{name: "simple_keywords", values: keywords.SimpleKeywords},
 		{name: "medium_keywords", values: keywords.MediumKeywords},
 		{name: "complex_keywords", values: keywords.ComplexKeywords},
+	}
+	// Persistence and runtime entry points normalize before validation, so the
+	// slice lengths here already exclude blank and same-tier duplicate phrases.
+	// Do not introduce a second normalization rule in this validator: the
+	// stronger whitespace folding below exists only to catch cross-tier labels.
+	total := len(keywords.SimpleKeywords) + len(keywords.MediumKeywords) + len(keywords.ComplexKeywords)
+	if total > MaxComplexitySemanticPhrases {
+		return fmt.Errorf(
+			"semantic complexity configuration contains %d phrases (simple=%d, medium=%d, complex=%d); maximum is %d across all tiers",
+			total,
+			len(keywords.SimpleKeywords),
+			len(keywords.MediumKeywords),
+			len(keywords.ComplexKeywords),
+			MaxComplexitySemanticPhrases,
+		)
 	}
 	seen := make(map[string]string)
 	for _, tier := range tiers {

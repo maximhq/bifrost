@@ -249,9 +249,9 @@ func TestComplexityAnalyzerConfigRejectsSemanticCrossTierDuplicates(t *testing.T
 }
 
 func TestComplexityAnalyzerConfigSemanticPhraseValidation(t *testing.T) {
-	t.Run("allows more than 500 phrases", func(t *testing.T) {
+	t.Run("allows exactly the combined phrase limit", func(t *testing.T) {
 		cfg := testSemanticAnalyzerConfig()
-		cfg.Keywords.SimpleKeywords = make([]string, 501)
+		cfg.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases-2)
 		for index := range cfg.Keywords.SimpleKeywords {
 			cfg.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
 		}
@@ -259,6 +259,49 @@ func TestComplexityAnalyzerConfigSemanticPhraseValidation(t *testing.T) {
 		cfg.Keywords.ComplexKeywords = []string{"complex"}
 
 		normalized := cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("rejects more than the combined phrase limit", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases-1)
+		for index := range cfg.Keywords.SimpleKeywords {
+			cfg.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		cfg.Keywords.MediumKeywords = []string{"medium"}
+		cfg.Keywords.ComplexKeywords = []string{"complex"}
+
+		normalized := cfg.Normalized()
+		require.ErrorContains(t, normalized.Validate(), "contains 751 phrases (simple=749, medium=1, complex=1); maximum is 750")
+	})
+
+	t.Run("counts canonical phrases", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases-2)
+		for index := range cfg.Keywords.SimpleKeywords {
+			cfg.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		cfg.Keywords.SimpleKeywords = append(cfg.Keywords.SimpleKeywords, " SIMPLE-0 ", "")
+		cfg.Keywords.MediumKeywords = []string{"medium"}
+		cfg.Keywords.ComplexKeywords = []string{"complex"}
+
+		normalized := cfg.Normalized()
+		require.Len(t, normalized.Keywords.SimpleKeywords, MaxComplexitySemanticPhrases-2)
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("does not cap lexical-only lists", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Semantic = nil
+		cfg.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases)
+		for index := range cfg.Keywords.SimpleKeywords {
+			cfg.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		cfg.Keywords.MediumKeywords = []string{"medium"}
+		cfg.Keywords.ComplexKeywords = []string{"complex"}
+
+		normalized := cfg.Normalized()
+		require.Greater(t, len(normalized.Keywords.SimpleKeywords)+len(normalized.Keywords.MediumKeywords)+len(normalized.Keywords.ComplexKeywords), MaxComplexitySemanticPhrases)
 		require.NoError(t, normalized.Validate())
 	})
 

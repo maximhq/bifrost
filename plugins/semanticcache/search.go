@@ -152,13 +152,10 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	// and may dereference fields on a parent context that has already been
 	// released back to its sync.Pool — see core/schemas.ReleasePluginScope.
 	defer embeddingCtx.Cancel()
-	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	// The embedding request targets the plugin's own configured embedding
-	// provider/model, not the caller's — and because it skips the plugin
-	// pipeline, routing state is never re-resolved for it. Shed the caller's
-	// key-routing and body-transport state so the request behaves like a
-	// fresh external /v1/embeddings call.
-	bifrost.ClearContextForInternalRequest(embeddingCtx)
+	// provider/model. It must skip the plugin pipeline and raw payload capture
+	// because the embedding response is an internal implementation detail.
+	bifrost.PrepareContextForInternalEmbeddingRequest(embeddingCtx)
 	if plugin.embeddingRequestExecutor == nil {
 		return nil, 0, fmt.Errorf("embedding request executor is not configured")
 	}

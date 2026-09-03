@@ -5,12 +5,13 @@ import { SEMANTIC_STATUS_LABELS, SemanticStatusInfo } from "@/lib/types/complexi
 import { cn } from "@/lib/utils";
 import type { VariantProps } from "class-variance-authority";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, CircleAlert, CircleCheck, CircleDashed, LoaderCircle } from "lucide-react";
+import { ArrowRight, CircleAlert, CircleCheck, CircleDashed, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
+import { semanticWarmupFailureMessage, semanticWarmupImpactMessage } from "./classifierStatusBadge.utils";
 
 // The two states below are local to the form rather than reported by the
 // gateway: nothing is embedded yet, so /semantic-status has nothing to say.
-type ClassifierState = SemanticStatusInfo["state"] | "not-configured" | "not-saved" | "loading";
+type ClassifierState = SemanticStatusInfo["state"] | "not-configured" | "not-saved" | "loading" | "unavailable";
 
 // The badge names the subject as well as the state: on its own in the header,
 // a bare "Ready" would not say what is ready.
@@ -22,6 +23,7 @@ const LABELS: Record<ClassifierState, string> = {
 	"not-configured": "Classifier not configured",
 	"not-saved": "Classifier not saved",
 	loading: "Checking classifier…",
+	unavailable: "Classifier status unavailable",
 };
 
 // Every tone comes from the shared Badge variants rather than a hand-picked
@@ -36,6 +38,7 @@ const TONES: Record<ClassifierState, VariantProps<typeof badgeVariants>["variant
 	"not-configured": "default",
 	"not-saved": "default",
 	loading: "secondary",
+	unavailable: "warning",
 };
 
 function StateIcon({ state }: { state: ClassifierState }) {
@@ -43,6 +46,7 @@ function StateIcon({ state }: { state: ClassifierState }) {
 		case "ready":
 			return <CircleCheck />;
 		case "failed":
+		case "unavailable":
 			return <CircleAlert />;
 		case "warming":
 		case "loading":
@@ -64,7 +68,11 @@ export function ClassifierStatusBadge({
 	isNotSaved,
 	hasUnsavedChanges,
 	hasEmbeddingProviders,
+	statusUnavailable,
+	statusRefreshFailed,
+	isRetryingStatus,
 	onConfigure,
+	onRetryStatus,
 }: {
 	status: SemanticStatusInfo | undefined;
 	isLoading: boolean;
@@ -72,17 +80,23 @@ export function ClassifierStatusBadge({
 	isNotSaved: boolean;
 	hasUnsavedChanges: boolean;
 	hasEmbeddingProviders: boolean;
+	statusUnavailable: boolean;
+	statusRefreshFailed: boolean;
+	isRetryingStatus: boolean;
 	onConfigure: () => void;
+	onRetryStatus: () => void;
 }) {
 	const state: ClassifierState = isNotConfigured
 		? "not-configured"
 		: isNotSaved
 			? "not-saved"
-			: status
-				? status.state
-				: isLoading
-					? "loading"
-					: "disabled";
+			: statusUnavailable
+				? "unavailable"
+				: status
+					? status.state
+					: isLoading
+						? "loading"
+						: "disabled";
 
 	const summary: ReactNode = {
 		"not-configured": hasEmbeddingProviders
@@ -94,6 +108,7 @@ export function ClassifierStatusBadge({
 		ready: status ? `${status.total} reference phrase${status.total === 1 ? "" : "s"} embedded and serving.` : "Serving.",
 		failed: "Warmup failed.",
 		disabled: "Classification is off.",
+		unavailable: "Bifrost could not report whether the saved classifier is ready. Routing may still be working.",
 	}[state];
 
 	return (
@@ -115,7 +130,7 @@ export function ClassifierStatusBadge({
 			<PopoverContent align="end" className="w-80 space-y-2.5 p-3 text-xs leading-relaxed" data-testid="complexity-router-semantic-status">
 				<p className="text-muted-foreground">{summary}</p>
 
-				{status?.serving_previous && (
+				{status?.serving_previous && state === "warming" && (
 					<p className="text-amber-700 dark:text-amber-400">
 						The previous reference phrases are still serving requests while this generation prepares. Routing is unaffected.
 					</p>
@@ -127,18 +142,27 @@ export function ClassifierStatusBadge({
 					</p>
 				)}
 
-				{status?.error && (
+				{statusRefreshFailed && status && (
+					<p className="text-amber-700 dark:text-amber-400">The latest status check failed. Showing the last known classifier state.</p>
+				)}
+
+				{state === "failed" && status && (
 					<p className="text-destructive" data-testid="complexity-router-semantic-status-error">
-						{status.error}
+						{semanticWarmupFailureMessage(status)}
 					</p>
 				)}
 
-				{state === "failed" && (
-					<p className="text-destructive">
-						Until warmup succeeds, complexity tier based routing is skipped, so rules referencing{" "}
-						<code className="font-mono">complexity_tier</code> do not match. Warmup restarts on its own once the provider it uses is working
-						again.
+				{state === "failed" && status && (
+					<p className={status.serving_previous ? "text-amber-700 dark:text-amber-400" : "text-destructive"}>
+						{semanticWarmupImpactMessage(status)}
 					</p>
+				)}
+
+				{state === "unavailable" && (
+					<Button type="button" variant="outline" size="sm" className="w-full" onClick={onRetryStatus} disabled={isRetryingStatus}>
+						<RefreshCw className={cn("size-3.5", isRetryingStatus && "animate-spin")} />
+						Retry status
+					</Button>
 				)}
 
 				{/* Offering "Configure embedding" with no embedding-capable provider

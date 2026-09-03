@@ -238,11 +238,16 @@ func (p *RoutingPlugin) RearmComplexitySemanticClassifier(provider schemas.Model
 // ValidateComplexityAnalyzerConfig runs the semantic classifier's own
 // validation before a handler persists a complexity configuration.
 //
-// This is schema validation only. It is routed through the classifier rather
-// than calling complexity.ValidateAndNormalize directly so that a future
-// setting whose validity depends on live process state has a seam to hook
-// into; no semantic setting needs one today.
+// Semantic configuration also requires the runtime classifier and embedding
+// executor that will apply it. Keyword-only configuration remains valid without
+// either dependency.
 func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	if config != nil && config.Semantic != nil && p.semanticClassifier == nil {
+		return fmt.Errorf("semantic complexity classifier is unavailable")
+	}
+	if config != nil && config.Semantic != nil && p.embeddingExecutor() == nil {
+		return fmt.Errorf("semantic complexity embedding executor is unavailable")
+	}
 	if p.semanticClassifier != nil {
 		if err := p.semanticClassifier.ValidateConfig(config); err != nil {
 			return err
@@ -378,7 +383,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			return p.computeComplexity(ctx, req, virtualKey)
+			return p.computeComplexity(ctx, req, scope.VirtualKeyID)
 		}
 	}
 

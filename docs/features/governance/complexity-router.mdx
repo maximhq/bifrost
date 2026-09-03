@@ -49,7 +49,9 @@ When writing your own phrases:
 - **Keep phrases short and prototypical.** A long, hyper-specific phrase mostly matches near-identical requests.
 - **Balance surface form across tiers.** If most Complex phrases are questions, every question routes to Complex. Mix questions, imperatives, terse and detailed phrasing in every tier.
 
-With semantic classification configured, every tier must contain at least one phrase and each phrase must be 2,000 characters or fewer. Bifrost also rejects the same normalized phrase in more than one tier when it saves or loads the configuration.
+With semantic classification configured, every tier must contain at least one phrase, each phrase must be 2,000 characters or fewer, and the three normalized lists may contain at most **750 phrases combined**. Trimming, lowercasing, and same-tier deduplication happen before that count. Bifrost also rejects the same normalized phrase in more than one tier when it saves or loads the configuration.
+
+In split configuration mode, phrases from `config.json` are merged additively with phrases already stored in the database before the 750-phrase limit is checked. If the merged result exceeds the limit, Bifrost logs a warning, keeps the existing database configuration active, and does not apply that `config.json` phrase edit. Reduce one of the lists before restarting. **Restore defaults** remains the recovery path for a stored semantic configuration this version cannot load: it replaces the unreadable configuration with the 150 built-in phrases. Re-enter the embedding provider, model, and storage settings afterward. For a valid readable configuration, restore defaults preserves those semantic settings and only resets the boundaries and phrase lists.
 
 ### Choosing how much conversation to embed
 
@@ -233,6 +235,10 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
 | `keywords.simple_keywords` | string[] | 50 built-in phrases | Reference phrases for the Simple tier |
 | `keywords.medium_keywords` | string[] | 50 built-in phrases | Reference phrases for the Medium tier |
 | `keywords.complex_keywords` | string[] | 50 built-in phrases | Reference phrases for the Complex tier |
+
+<Warning>
+Chromem is a node-local embedded backend, including when its `path` option persists data to disk. In a multi-pod deployment, give every pod its own path or volume. Do not mount one writable Chromem directory into multiple pods; use Qdrant, Redis, Pinecone, or Weaviate when replicas need a shared vector store.
+</Warning>
 
 <Note>
 `min_similarity` is compared against the vector store backend's own similarity scale, which is not identical across backends: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, while Weaviate reports certainty ((cosine+1)/2). Retune the floor when switching backends.

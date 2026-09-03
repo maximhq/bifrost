@@ -465,6 +465,16 @@ func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ClearContextForInternalRequest(ctx)
 }
 
+// PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.
+func PrepareContextForInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
+	PrepareContextForInternalRequest(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, false)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {

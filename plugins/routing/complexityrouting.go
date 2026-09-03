@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
 
@@ -26,7 +25,7 @@ type complexityProposal struct {
 func (p *RoutingPlugin) computeComplexity(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
-	virtualKey *configstoreTables.TableVirtualKey,
+	virtualKeyID string,
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
 	sessionID, hasSessionID := complexity.ResolveComplexitySessionID(ctx)
@@ -34,7 +33,7 @@ func (p *RoutingPlugin) computeComplexity(
 
 	if disposition != complexity.InputClassifiable {
 		if sessionActive && disposition == complexity.InputContinuation {
-			key := buildComplexitySessionKey(ctx, virtualKey, sessionID)
+			key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
 			tier, found, err := p.sessionStore.load(key, true)
 			if err != nil {
 				p.logComplexitySessionStoreError("refresh continuation", err)
@@ -65,7 +64,7 @@ func (p *RoutingPlugin) computeComplexity(
 		return proposal.Result
 	}
 
-	key := buildComplexitySessionKey(ctx, virtualKey, sessionID)
+	key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
 	priorTier, priorFound, loadErr := p.sessionStore.load(key, false)
 	if loadErr != nil {
 		p.logComplexitySessionStoreError("inspect", loadErr)

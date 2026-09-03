@@ -2237,9 +2237,9 @@ ComplexityKeywordConfig:
     Reference phrases for semantic complexity classification, one list per tier.
     Each request is embedded and takes the tier of its nearest phrase. Entries
     should be whole example prompts rather than individual keywords. Each phrase
-    is limited to 2000 characters, and the same phrase cannot appear in two
-    tiers. The field names predate semantic classification and are kept for
-    backward compatibility.
+    is limited to 2000 characters, the normalized lists may contain at most 750
+    phrases combined, and the same phrase cannot appear in two tiers. The field
+    names predate semantic classification and are kept for backward compatibility.
   additionalProperties: false
   required:
     - simple_keywords

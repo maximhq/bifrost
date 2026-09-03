@@ -2190,6 +2190,49 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
+func TestMergeGovernanceConfig_RejectsComplexityKeywordMergeOverSemanticLimit(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	dbConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range dbConfig.Keywords.SimpleKeywords {
+		dbConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("db-simple-%d", index)
+	}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	fileConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range fileConfig.Keywords.SimpleKeywords {
+		fileConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("file-simple-%d", index)
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.Same(t, dbConfig, stored, "an over-limit additive merge must leave the stored runtime config unchanged")
+	require.Len(t, stored.Keywords.SimpleKeywords, 400)
+}
+
 func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) {
 	initTestLogger()
 

@@ -7,6 +7,7 @@ import {
 	MAX_LLM_MESSAGE_HISTORY,
 	MAX_SEMANTIC_MESSAGE_HISTORY,
 	MAX_SEMANTIC_PHRASE_CHARACTERS,
+	MAX_SEMANTIC_PHRASES,
 	MAX_SEMANTIC_TIMEOUT_MS,
 	MIN_LLM_MESSAGE_HISTORY,
 	MIN_SEMANTIC_MESSAGE_HISTORY,
@@ -18,6 +19,14 @@ import { z } from "zod";
 // Form-owned duration values are always a single unit (the controls append
 // "ms"), so a plain positive-duration check is enough.
 const positiveDurationPattern = /^[0-9]*\.?[0-9]+(ns|us|µs|ms|s|m|h)$/;
+
+export function countCanonicalSemanticPhrases(keywords: Record<KeywordListKey, string[]>) {
+	const count = (phrases: string[]) => new Set(phrases.map((phrase) => phrase.trim().toLowerCase()).filter(Boolean)).size;
+	const simple = count(keywords.simple_keywords);
+	const medium = count(keywords.medium_keywords);
+	const complex = count(keywords.complex_keywords);
+	return { simple, medium, complex, total: simple + medium + complex };
+}
 
 export function isPositiveDurationString(value: string | undefined): boolean {
 	if (!value) return false;
@@ -165,6 +174,17 @@ export const analyzerConfigSchema = z
 				} else if (!firstTier) {
 					seen.set(normalized, label);
 				}
+			}
+		}
+
+		if (hasProvider && hasModel) {
+			const counts = countCanonicalSemanticPhrases(data.keywords);
+			if (counts.total > MAX_SEMANTIC_PHRASES) {
+				ctx.addIssue({
+					code: "custom",
+					message: `Semantic routing has ${counts.total} phrases (Simple=${counts.simple}, Medium=${counts.medium}, Complex=${counts.complex}); the maximum is ${MAX_SEMANTIC_PHRASES} across all tiers.`,
+					path: ["keywords"],
+				});
 			}
 		}
 	});
