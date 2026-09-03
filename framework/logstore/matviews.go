@@ -974,6 +974,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
+		len(f.ProjectIDs) == 0 &&
 		len(f.CustomerIDs) == 0
 }
 
