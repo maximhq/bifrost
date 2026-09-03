@@ -1,3 +1,4 @@
+- fix: skip draining a streaming response body already read to EOF, which deadlocked raw-audio stream consumers [@etnperlong](https://github.com/etnperlong)
 - [fix]: marshal required nullable response fields as null [@PSR94](https://github.com/PSR94)
 - fix: accept top-level arrays from OpenAI-compatible model APIs [@dani29](https://github.com/dani29)
 - feat: add Baseten to Hugging Face inference provider discovery [@nicolastoulemont](https://github.com/nicolastoulemont)

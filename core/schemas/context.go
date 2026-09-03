@@ -41,6 +41,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyStreamBodyExhausted:     {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -514,6 +515,18 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 // post-hook. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
 func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
+}
+
+// MarkStreamBodyExhausted records that the upstream response body has been read to
+// io.EOF, bypassing the restricted-writes guard. The stream reader needs this for the
+// same reason SetRoutingInfoSnapshot exists: a streaming response's async per-chunk
+// post-hooks hold blockRestrictedWrites while they run, and
+// BifrostContextKeyStreamBodyExhausted is reserved, so a plain SetValue from the reader
+// would be silently dropped whenever the terminal read races a post-hook. The flag would
+// then be missing and ReleaseStreamingResponse would drain a body already at EOF, which
+// blocks. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) MarkStreamBodyExhausted() {
+	bc.setReservedValue(BifrostContextKeyStreamBodyExhausted, true)
 }
 
 // ClearValue clears a value from the internal userValues map.
