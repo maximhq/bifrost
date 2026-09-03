@@ -10,6 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### Upcoming
 
+- Fixed `app.kubernetes.io/version` labels to reflect the configured `image.tag` instead of the chart's static `appVersion`.
 - Added `bifrost.client.compat.azureDeepseek` (default `false`) — converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses. Renders into `client.compat.azure_deepseek`.
 - Removed the `version` field from every plugin (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`, `bigquery`, `kafka`, `pubsub`, `splunk` and `birost.plugins.custom[]`).
 

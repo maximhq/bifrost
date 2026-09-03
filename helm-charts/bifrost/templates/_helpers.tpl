@@ -19,11 +19,16 @@
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "bifrost.appVersion" -}}
+{{- default .Chart.AppVersion .Values.image.tag | trimPrefix "v" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{- define "bifrost.labels" -}}
 helm.sh/chart: {{ include "bifrost.chart" . }}
 {{ include "bifrost.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- $appVersion := include "bifrost.appVersion" . }}
+{{- if $appVersion }}
+app.kubernetes.io/version: {{ $appVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
