@@ -597,6 +597,29 @@ export interface PricingOverridePatch {
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;
+	// Time of day
+	off_peak_cost_multiplier?: number;
+	peak_hours?: PeakHoursSchedule;
+}
+
+/**
+ * Recurring weekly windows during which a model is billed at its peak (base)
+ * rates. Any instant outside every window is off-peak and is discounted by
+ * `off_peak_cost_multiplier`.
+ */
+export interface PeakHoursSchedule {
+	/** IANA location name (e.g. "UTC", "Asia/Shanghai"). Empty means UTC. */
+	timezone?: string;
+	windows?: PeakHoursWindow[];
+}
+
+export interface PeakHoursWindow {
+	/** Weekdays, 0 = Sunday through 6 = Saturday. */
+	days: number[];
+	/** "HH:MM" in the schedule's timezone, inclusive. */
+	start: string;
+	/** "HH:MM" in the schedule's timezone, exclusive; <= start wraps midnight. */
+	end: string;
 }
 
 export interface PricingOverride {
