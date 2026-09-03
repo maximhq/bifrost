@@ -5,6 +5,8 @@
 import { writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
+import { resolveVariables } from "./lib/resolve-variables.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -260,20 +262,6 @@ const cases = [...streamCases, ...nonStreamCases].filter(
   (c) => !providerFilter || c.provider === providerFilter,
 );
 
-const resolveVariables = (value) => {
-  if (typeof value === "string") {
-    return value.replaceAll(
-      "{{azureDeployment}}",
-      process.env.AZURE_DEPLOYMENT || process.env.BIFROST_AZURE_DEPLOYMENT || "gpt-4o-mini",
-    );
-  }
-  if (Array.isArray(value)) return value.map(resolveVariables);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolveVariables(v)]));
-  }
-  return value;
-};
-
 // Non-streaming cancel: dispatch the request, then abort the socket before the full
 // response returns. If the response comes back before the abort fires, the request
 // completed and we couldn't induce a cancellation → flagged racedToCompletion (SKIP).
@@ -404,6 +392,91 @@ async function runCase(testCase) {
   }
 }
 
+// ─── Pool-health probe: a cancelled stream must not poison the next request ───
+// Cancelling a stream used to run fasthttp's stream-close callback while the SSE
+// reader was still inside (*requestStream).Read, returning the *requestStream and
+// the connection's *bufio.Reader to sync.Pools underneath it. A later request then
+// acquired an aliased object and read another request's bytes, surfacing as
+// "provider returned non-SSE response for streaming request" and persisting until
+// the process restarted (maximhq/bifrost#6143).
+//
+// The abort cases above exercise the cancellation itself but never check what it
+// left behind. This probe does: after the cancellations, a plain uncancelled stream
+// against the same gateway must still complete with well-formed SSE.
+async function runPoolHealthProbe(testCase) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("probe read timeout")), readTimeoutMs);
+  const requestId = `stream-pool-probe-${testCase.provider}-${crypto.randomUUID()}`;
+  // Keep the probe cheap: it only has to prove the connection is usable.
+  const body = { ...resolveVariables(testCase.body), max_tokens: 16 };
+
+  try {
+    const response = await fetch(`${baseUrl}${testCase.path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-request-id": requestId },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return {
+        provider: testCase.provider,
+        name: `${testCase.name} - pool health after cancellation`,
+        requestId,
+        ok: false,
+        status: response.status,
+        contentType,
+        error: `probe returned HTTP ${response.status}: ${text.slice(0, 500)}`,
+      };
+    }
+
+    // Decoded unconditionally, including for the binary streaming types: the
+    // verdict below ignores the text for those, but a failing probe still has to
+    // report what came back instead, and that body sample is the whole
+    // diagnostic. Counting bytes separately keeps bytesRead honest - decoding
+    // collapses multi-byte sequences, so text.length understates a binary frame.
+    let text = "";
+    let bytesRead = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytesRead += value?.byteLength || 0;
+        text += decoder.decode(value, { stream: true });
+      }
+    }
+
+    // The regression signature: a 200 whose body is not SSE, because the reader was
+    // handed a connection another request had already consumed from.
+    const { ok, error } = evaluateProbeStream({ contentType, bytesRead, text });
+
+    return {
+      provider: testCase.provider,
+      name: `${testCase.name} - pool health after cancellation`,
+      requestId,
+      ok,
+      status: response.status,
+      contentType,
+      bytesRead,
+      error,
+    };
+  } catch (err) {
+    return {
+      provider: testCase.provider,
+      name: `${testCase.name} - pool health after cancellation`,
+      requestId,
+      ok: false,
+      error: err?.message || String(err),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 if (cases.length === 0) {
   console.error(`[stream-cancel] no cases selected for provider=${providerFilter || "-"}`);
   process.exit(2);
@@ -417,12 +490,27 @@ for (const testCase of cases) {
   process.stderr.write(result.ok ? "ok\n" : `failed (${result.error})\n`);
 }
 
+// One probe per selected streaming provider, after all of its aborts have landed.
+const probeCases = streamCases.filter(
+  (c) => !providerFilter || c.provider === providerFilter,
+);
+const poolProbes = [];
+for (const testCase of probeCases) {
+  process.stderr.write(`[stream-cancel] pool health ${testCase.provider} ... `);
+  const probe = await runPoolHealthProbe(testCase);
+  poolProbes.push(probe);
+  process.stderr.write(probe.ok ? "ok\n" : `failed (${probe.error})\n`);
+}
+const poolProbeFailures = poolProbes.filter((p) => !p.ok).length;
+
 const report = {
   baseUrl,
   provider: providerFilter || null,
   total: results.length,
   failed: results.filter((r) => !r.ok).length,
   results,
+  poolProbes,
+  poolProbeFailures,
 };
 
 // ─── Cost verification: a cancelled stream's log row must still carry cost (#3357) ───
@@ -524,9 +612,9 @@ report.costFailures = costFailures;
 
 writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
 
-if (report.failed > 0 || costFailures > 0) {
+if (report.failed > 0 || costFailures > 0 || poolProbeFailures > 0) {
   console.error(
-    `[stream-cancel] ${report.failed}/${report.total} stream case(s) failed, ${costFailures} cost check(s) failed; report: ${out}`,
+    `[stream-cancel] ${report.failed}/${report.total} stream case(s) failed, ${costFailures} cost check(s) failed, ${poolProbeFailures}/${poolProbes.length} pool-health probe(s) failed; report: ${out}`,
   );
   process.exit(1);
 }
