@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countAtOrAboveEachLevel, isLogLevel, meetsMinLogLevel } from "./logLevel";
+import { isLogLevel, meetsMinLogLevel } from "./logLevel";
 
 describe("meetsMinLogLevel", () => {
 	it("treats the chosen level as a floor", () => {
@@ -19,20 +19,6 @@ describe("meetsMinLogLevel", () => {
 		expect(meetsMinLogLevel(undefined, "error")).toBe(true);
 		expect(meetsMinLogLevel(null, "error")).toBe(true);
 		expect(meetsMinLogLevel("fatal", "error")).toBe(true);
-	});
-});
-
-describe("countAtOrAboveEachLevel", () => {
-	it("counts what each floor would show", () => {
-		expect(countAtOrAboveEachLevel(["debug", "info", "info", "warn", "error"])).toEqual({ debug: 5, info: 4, warn: 2, error: 1 });
-	});
-
-	it("counts an unlevelled entry toward every floor, matching what is rendered", () => {
-		expect(countAtOrAboveEachLevel([null, "error"])).toEqual({ debug: 2, info: 2, warn: 2, error: 2 });
-	});
-
-	it("is all zeros for no entries", () => {
-		expect(countAtOrAboveEachLevel([])).toEqual({ debug: 0, info: 0, warn: 0, error: 0 });
 	});
 });
 

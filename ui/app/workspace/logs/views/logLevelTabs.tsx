@@ -4,8 +4,6 @@ import { LOG_LEVEL_BADGE_CLASSES, LOG_LEVELS, type LogLevel } from "@/lib/utils/
 interface LogLevelTabsProps {
 	value: LogLevel;
 	onChange: (level: LogLevel) => void;
-	/** How many entries each level would show when selected, keyed by level. */
-	counts: Record<LogLevel, number>;
 	testId?: string;
 }
 
@@ -14,7 +12,7 @@ interface LogLevelTabsProps {
  * and everything more severe, so debug shows all entries. The active tab borrows the
  * level's badge colors so it reads the same as the badges on the rows it filters.
  */
-export default function LogLevelTabs({ value, onChange, counts, testId }: LogLevelTabsProps) {
+export default function LogLevelTabs({ value, onChange, testId }: LogLevelTabsProps) {
 	return (
 		<div role="group" aria-label="Minimum log level" className="bg-muted/60 inline-flex gap-0.5 rounded-sm p-0.5" data-testid={testId}>
 			{LOG_LEVELS.map((level) => {
@@ -27,12 +25,11 @@ export default function LogLevelTabs({ value, onChange, counts, testId }: LogLev
 						onClick={() => onChange(level)}
 						data-testid={testId ? `${testId}-${level}` : undefined}
 						className={cn(
-							"inline-flex items-center gap-1.5 rounded-[3px] px-2 py-1 font-mono text-[10px] font-semibold tracking-wide uppercase transition-colors",
+							"inline-flex items-center rounded-[3px] px-2 py-1 font-mono text-[10px] font-semibold tracking-wide uppercase transition-colors",
 							active ? LOG_LEVEL_BADGE_CLASSES[level] : "text-muted-foreground hover:text-foreground",
 						)}
 					>
 						{level}
-						<span className={cn("font-medium tabular-nums", active ? "opacity-75" : "opacity-60")}>{counts[level]}</span>
 					</button>
 				);
 			})}
