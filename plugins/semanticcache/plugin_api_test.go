@@ -35,6 +35,10 @@ func (s *observableStore) Ping(ctx context.Context) error { return nil }
 func (s *observableStore) CreateNamespace(ctx context.Context, ns string, dim int, props map[string]vectorstore.VectorStoreProperties) error {
 	return nil
 }
+func (s *observableStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
+}
+
 func (s *observableStore) DeleteNamespace(ctx context.Context, ns string) error {
 	s.mu.Lock()
 	s.namespaceDeletes++

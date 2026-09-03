@@ -925,7 +925,14 @@ bifrost:
       #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
       #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
       #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets (record-only, never enforced)
-      #   vector_store: "embedded"         # embedded (in-memory, re-embeds on restart) | vector_store (configured vectorStore, falls back to embedded when none is configured)
+      #   vector_store: "embedded"         # Where phrase vectors live.
+      #                                      #   embedded      = in-memory, private to one pod, re-embeds every phrase on restart
+      #                                      #   vector_store  = the configured vectorStore below; shared between pods, re-embeds nothing on restart,
+      #                                      #                   and one pod embeds on a config change while the rest adopt what it wrote.
+      #                                      #                   Falls back to embedded when no vectorStore is configured (reported as
+      #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
+      #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
+      #                                      #                   node-local even with a path, so it is private per pod.
       #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)

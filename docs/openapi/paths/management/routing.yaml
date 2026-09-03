@@ -426,6 +426,78 @@ complexity-status:
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
+complexity-generations:
+  get:
+    operationId: listComplexityGenerations
+    summary: List complexity classifier generations
+    description: Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Generations retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityGenerations'
+      '503':
+        description: The vector store could not be enumerated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-generation-delete:
+  delete:
+    operationId: deleteComplexityGeneration
+    summary: Delete a retired complexity generation
+    description: Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - name: namespace
+        in: path
+        required: true
+        description: The fingerprinted namespace to remove, as returned by the generations listing.
+        schema:
+          type: string
+          example: BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5
+    responses:
+      '200':
+        description: Generation deleted
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: deleted
+                namespace:
+                  type: string
+      '400':
+        description: The namespace is not a complexity routing generation
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The generation is currently serving classification requests
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The vector store could not be reached
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
 complexity-legacy:
   get:
     operationId: getComplexityAnalyzerConfigLegacy

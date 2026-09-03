@@ -103,6 +103,24 @@ func (s *ChromemStore) CreateNamespace(ctx context.Context, namespace string, di
 	return nil
 }
 
+// ListNamespaces returns the collections chromem currently holds. A persistent
+// chromem database reloads its collections at open, so this reflects what is on
+// disk as well as what this process created.
+func (s *ChromemStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("chromem db is not initialized")
+	}
+	collections := s.db.ListCollections()
+	namespaces := make([]string, 0, len(collections))
+	for name := range collections {
+		if strings.HasPrefix(name, prefix) {
+			namespaces = append(namespaces, name)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
 // DeleteNamespace removes a collection. Idempotent: deleting a missing
 // namespace is not an error.
 func (s *ChromemStore) DeleteNamespace(ctx context.Context, namespace string) error {

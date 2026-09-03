@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,12 +29,12 @@ const (
 type WeaviateConfig struct {
 	// Connection settings
 	Scheme     string              `json:"scheme"`                // "http" or "https" - REQUIRED
-	Host       *schemas.SecretVar     `json:"host"`                  // "localhost:8080" - REQUIRED
+	Host       *schemas.SecretVar  `json:"host"`                  // "localhost:8080" - REQUIRED
 	GrpcConfig *WeaviateGrpcConfig `json:"grpc_config,omitempty"` // grpc config for weaviate (optional)
 
 	// Authentication settings (optional)
-	APIKey  *schemas.SecretVar   `json:"api_key,omitempty"` // API key for authentication
-	Headers map[string]string `json:"headers,omitempty"` // Additional headers
+	APIKey  *schemas.SecretVar `json:"api_key,omitempty"` // API key for authentication
+	Headers map[string]string  `json:"headers,omitempty"` // Additional headers
 
 	// Connection settings
 	// Timeout accepts either a Go duration string (e.g. "5s", "30s") or an
@@ -62,7 +63,16 @@ func (s *WeaviateStore) Ping(ctx context.Context) error {
 	return err
 }
 
-// Add stores a new object (with or without embedding)
+// Add stores a new object (with or without embedding), replacing any object
+// already stored under the same id.
+//
+// Weaviate is the only backend whose create path is not itself an upsert:
+// Creator() is a POST, which Weaviate rejects with 422 when the id exists,
+// while Qdrant, Pinecone and Redis all overwrite. Callers write deterministic,
+// content-derived ids (the complexity router derives one per exemplar from its
+// configuration fingerprint), so a repeated Add is an ordinary retry or a
+// second writer racing on identical content, not a caller error. Falling back
+// to a replacing update keeps that uniform across backends.
 func (s *WeaviateStore) Add(ctx context.Context, className string, id string, embedding []float32, metadata map[string]interface{}) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id is required")
@@ -73,23 +83,37 @@ func (s *WeaviateStore) Add(ctx context.Context, className string, id string, em
 		Properties: metadata,
 	}
 
-	var err error
+	creator := s.client.Data().Creator().
+		WithClassName(className).
+		WithID(id).
+		WithProperties(obj.Properties)
 	if len(embedding) > 0 {
-		_, err = s.client.Data().Creator().
-			WithClassName(className).
-			WithID(id).
-			WithProperties(obj.Properties).
-			WithVector(embedding).
-			Do(ctx)
-	} else {
-		_, err = s.client.Data().Creator().
-			WithClassName(className).
-			WithID(id).
-			WithProperties(obj.Properties).
-			Do(ctx)
+		creator = creator.WithVector(embedding)
 	}
 
-	return err
+	_, err := creator.Do(ctx)
+	if err == nil {
+		return err
+	}
+	if !isWeaviateAlreadyExists(err) {
+		return err
+	}
+
+	// PUT rather than PATCH: the object is replaced, so a rewritten record
+	// cannot inherit properties from whatever it supersedes.
+	updater := s.client.Data().Updater().
+		WithClassName(className).
+		WithID(id).
+		WithProperties(obj.Properties)
+	if len(embedding) > 0 {
+		updater = updater.WithVector(embedding)
+	}
+	if updateErr := updater.Do(ctx); updateErr != nil {
+		// Report both: the create is what the caller asked for, and losing its
+		// error would hide the reason the update path was taken at all.
+		return fmt.Errorf("failed to replace existing object %s: %w (create reported: %v)", id, updateErr, err)
+	}
+	return nil
 }
 
 // GetChunk returns the "metadata" for a single key
@@ -126,6 +150,19 @@ func (s *WeaviateStore) GetChunk(ctx context.Context, className string, id strin
 func isWeaviateNotFound(err error) bool {
 	var clientErr *fault.WeaviateClientError
 	return errors.As(err, &clientErr) && clientErr.StatusCode == http.StatusNotFound
+}
+
+// isWeaviateAlreadyExists reports whether err is Weaviate's refusal to create an
+// object whose id is taken. The message is matched as well as the status code
+// because 422 is also how Weaviate reports a property that does not fit the
+// class schema — retrying that as an update would replace a real validation
+// failure with a second, less informative one.
+func isWeaviateAlreadyExists(err error) bool {
+	var clientErr *fault.WeaviateClientError
+	if !errors.As(err, &clientErr) || clientErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(strings.ToLower(clientErr.Error()), "already exists")
 }
 
 // GetChunks returns multiple objects by ID
@@ -559,6 +596,30 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 	}
 
 	return nil
+}
+
+// ListNamespaces returns the Weaviate classes beginning with prefix. Weaviate
+// serves the whole schema in one read and has no server-side name filter, so
+// the prefix is applied here.
+func (s *WeaviateStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	schema, err := s.client.Schema().Getter().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schema: %w", err)
+	}
+	if schema == nil {
+		return []string{}, nil
+	}
+	namespaces := make([]string, 0, len(schema.Classes))
+	for _, class := range schema.Classes {
+		if class == nil {
+			continue
+		}
+		if strings.HasPrefix(class.Class, prefix) {
+			namespaces = append(namespaces, class.Class)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 func (s *WeaviateStore) DeleteNamespace(ctx context.Context, className string) error {

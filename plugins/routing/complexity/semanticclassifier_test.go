@@ -59,7 +59,7 @@ func TestSemanticClassifierNamesMatchedExemplarFromReusedGeneration(t *testing.T
 	})
 
 	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
-	_, _, _, err = warmSemanticExemplars(context.Background(), store, &config, testSemanticEmbedding, nil, nil)
+	_, _, _, err = warmSemanticExemplars(context.Background(), nil, store, &config, testSemanticEmbedding, nil, nil)
 	require.NoError(t, err)
 
 	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -259,12 +259,12 @@ func TestWarmSemanticExemplarsReusesMatchingMarker(t *testing.T) {
 		return testSemanticEmbedding(ctx, semantic, text)
 	}
 
-	loaded, _, _, err := warmSemanticExemplars(context.Background(), store, &config, embed, nil, nil)
+	loaded, _, _, err := warmSemanticExemplars(context.Background(), nil, store, &config, embed, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, len(semanticExemplars(&config)), loaded)
 	assert.EqualValues(t, loaded, embeddingCalls.Load())
 
-	loaded, _, _, err = warmSemanticExemplars(context.Background(), store, &config, embed, nil, nil)
+	loaded, _, _, err = warmSemanticExemplars(context.Background(), nil, store, &config, embed, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, len(semanticExemplars(&config)), loaded)
 	assert.EqualValues(t, loaded+1, embeddingCalls.Load(), "reusing a persisted generation needs one embedding to rediscover its width")
@@ -286,7 +286,7 @@ func TestWarmSemanticExemplarsUsesBackendCompatibleLifecycle(t *testing.T) {
 	store := &semanticLifecycleProbeStore{VectorStore: backingStore}
 	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 
-	loaded, namespace, dimension, err := warmSemanticExemplars(context.Background(), store, &config, testSemanticEmbedding, nil, nil)
+	loaded, namespace, dimension, err := warmSemanticExemplars(context.Background(), nil, store, &config, testSemanticEmbedding, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, len(semanticExemplars(&config)), loaded)
 	assert.True(t, store.createdBeforeRead, "a generation namespace must exist before its marker is read")
@@ -761,7 +761,7 @@ func TestWarmSemanticExemplarsUsesBoundedBatches(t *testing.T) {
 		return nil, fmt.Errorf("unexpected single-input call for %q", text)
 	}
 
-	loaded, _, _, err := warmSemanticExemplars(context.Background(), store, &config, single, batch, nil)
+	loaded, _, _, err := warmSemanticExemplars(context.Background(), nil, store, &config, single, batch, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 70, loaded)
 	assert.Equal(t, []int{32, 32, 6}, batchSizes)
@@ -794,7 +794,7 @@ func TestWarmSemanticExemplarsFallsBackWhenBatchingIsUnsupported(t *testing.T) {
 		return []float32{1, 0}, nil
 	}
 
-	loaded, _, _, err := warmSemanticExemplars(context.Background(), store, &config, single, batch, nil)
+	loaded, _, _, err := warmSemanticExemplars(context.Background(), nil, store, &config, single, batch, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 40, loaded)
 	assert.EqualValues(t, 1, batchCalls.Load())
@@ -822,7 +822,7 @@ func TestWarmSemanticExemplarsRejectsInconsistentDetectedDimensions(t *testing.T
 		return embeddings, nil
 	}
 
-	_, _, _, err = warmSemanticExemplars(context.Background(), store, &config, testSemanticEmbedding, batch, nil)
+	_, _, _, err = warmSemanticExemplars(context.Background(), nil, store, &config, testSemanticEmbedding, batch, nil)
 	require.ErrorContains(t, err, "returned dimension 3, expected 2")
 }
 
@@ -1078,7 +1078,7 @@ func TestSemanticClassifierEmbedsOnlyNewPhrasesOnTierEdit(t *testing.T) {
 	cache := newSemanticEmbeddingCache()
 	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
 
-	loaded, firstNamespace, _, err := warmSemanticExemplars(context.Background(), store, &config, embed, nil, cache)
+	loaded, firstNamespace, _, err := warmSemanticExemplars(context.Background(), nil, store, &config, embed, nil, cache)
 	require.NoError(t, err)
 	assert.Equal(t, 3, loaded)
 	assert.ElementsMatch(t, []string{"simple exemplar", "medium exemplar", "complex exemplar"}, takeEmbedded())
@@ -1087,7 +1087,7 @@ func TestSemanticClassifierEmbedsOnlyNewPhrasesOnTierEdit(t *testing.T) {
 	edited := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
 	edited.Keywords.SimpleKeywords = append(edited.Keywords.SimpleKeywords, "brand new exemplar")
 
-	loaded, secondNamespace, _, err := warmSemanticExemplars(context.Background(), store, &edited, embed, nil, cache)
+	loaded, secondNamespace, _, err := warmSemanticExemplars(context.Background(), nil, store, &edited, embed, nil, cache)
 	require.NoError(t, err)
 	assert.Equal(t, 4, loaded)
 	assert.Equal(t, []string{"brand new exemplar"}, takeEmbedded(), "only the added phrase may be embedded again")
@@ -1106,7 +1106,7 @@ func TestSemanticClassifierEmbedsOnlyNewPhrasesOnTierEdit(t *testing.T) {
 	// another model is not stale, it is wrong for this one.
 	remodelled := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
 	remodelled.Semantic.EmbeddingModel = "another-embedding-model"
-	_, _, _, err = warmSemanticExemplars(context.Background(), store, &remodelled, embed, nil, cache)
+	_, _, _, err = warmSemanticExemplars(context.Background(), nil, store, &remodelled, embed, nil, cache)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"simple exemplar", "medium exemplar", "complex exemplar"}, takeEmbedded(),
 		"a model change must re-embed everything")

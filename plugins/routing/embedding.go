@@ -106,6 +106,15 @@ type ComplexityVectorStoreSetter interface {
 	SetComplexityVectorStore(vectorstore.VectorStore)
 }
 
+// ComplexityWarmupDependencySetter is implemented by routing plugins that accept
+// both collaborators exemplar warmup depends on at once. Prefer it over the two
+// single-dependency setters wherever both values are already in hand: they take
+// effect independently, so applying them one at a time leaves the classifier
+// briefly configured for a store it has not been given.
+type ComplexityWarmupDependencySetter interface {
+	SetComplexityWarmupDependencies(vectorstore.VectorStore, EmbeddingRequestExecutor)
+}
+
 // warmupEmbeddingTimeout bounds one warmup embedding call, whether that is a
 // batch of exemplars or a single-input fallback. Warmup runs in the background
 // with no request waiting on it, so it must NOT inherit semantic.Timeout — that
@@ -117,32 +126,67 @@ const warmupEmbeddingTimeout = 60 * time.Second
 // SetEmbeddingRequestExecutor wires up the function used to call out to the
 // embedding provider. Without it, semantic complexity classification publishes
 // no tier. Safe for concurrent use with classification and plugin reloads.
+//
+// Callers that also have the configured VectorStore to hand should prefer
+// SetComplexityWarmupDependencies.
 func (p *RoutingPlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
-	if executor == nil {
-		p.embeddingRequestExecutor.Store(nil)
-		if p.semanticClassifier != nil {
-			p.semanticClassifier.SetEmbeddingFunctions(nil, nil)
-		}
-		return
-	}
-	p.embeddingRequestExecutor.Store(&executor)
+	embed, embedBatch := p.storeEmbeddingExecutor(executor)
 	if p.semanticClassifier != nil {
-		p.semanticClassifier.SetEmbeddingFunctions(p.embedComplexityText, p.embedComplexityTexts)
+		p.semanticClassifier.SetEmbeddingFunctions(embed, embedBatch)
 	}
 }
 
 // SetComplexityVectorStore supplies the configured shared VectorStore. The
 // classifier uses it only in "vector_store" mode; "embedded" mode retains its
 // private Chromem store.
+//
+// Callers that also have the embedding executor to hand should prefer
+// SetComplexityWarmupDependencies.
 func (p *RoutingPlugin) SetComplexityVectorStore(store vectorstore.VectorStore) {
-	if store == nil {
-		p.complexityVectorStore.Store(nil)
-	} else {
-		p.complexityVectorStore.Store(&store)
-	}
+	p.storeComplexityVectorStore(store)
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetConfiguredStore(store)
 	}
+}
+
+// SetComplexityWarmupDependencies supplies the configured VectorStore and the
+// embedding executor together, so exemplar warmup never starts against a
+// half-wired classifier.
+//
+// Bootstrap has both values at the same moment, and setting them one at a time
+// gives the classifier a state neither caller intended: with an executor but no
+// store, a configuration asking for "vector_store" resolves to the embedded
+// store, warms a complete generation into it, and logs a storage downgrade that
+// the very next call reverses. Passing both leaves no such window to order
+// correctly. Safe for concurrent use with classification and plugin reloads.
+func (p *RoutingPlugin) SetComplexityWarmupDependencies(store vectorstore.VectorStore, executor EmbeddingRequestExecutor) {
+	p.storeComplexityVectorStore(store)
+	embed, embedBatch := p.storeEmbeddingExecutor(executor)
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.SetWarmupDependencies(store, embed, embedBatch)
+	}
+}
+
+// storeComplexityVectorStore publishes the store for the classification path
+// without touching the classifier, so a combined update can apply both halves
+// before the classifier reacts to either.
+func (p *RoutingPlugin) storeComplexityVectorStore(store vectorstore.VectorStore) {
+	if store == nil {
+		p.complexityVectorStore.Store(nil)
+		return
+	}
+	p.complexityVectorStore.Store(&store)
+}
+
+// storeEmbeddingExecutor publishes the executor and returns the classifier
+// adapters it implies, both nil when the executor is being cleared.
+func (p *RoutingPlugin) storeEmbeddingExecutor(executor EmbeddingRequestExecutor) (complexity.EmbeddingFunc, complexity.BatchEmbeddingFunc) {
+	if executor == nil {
+		p.embeddingRequestExecutor.Store(nil)
+		return nil, nil
+	}
+	p.embeddingRequestExecutor.Store(&executor)
+	return p.embedComplexityText, p.embedComplexityTexts
 }
 
 // embedComplexityText adapts Governance's Bifrost-aware embedding path to the

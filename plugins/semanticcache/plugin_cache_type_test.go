@@ -319,6 +319,10 @@ func (s *directFastPathStore) CreateNamespace(ctx context.Context, namespace str
 	return nil
 }
 
+func (s *directFastPathStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
+}
+
 func (s *directFastPathStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	return nil
 }
