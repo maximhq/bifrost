@@ -924,8 +924,16 @@ bifrost:
       #   timeout: "1.5s"                  # Ceiling on the inline embedding call; exceeding it skips tier routing for that request
       #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
       #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
-      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets
+      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets (record-only, never enforced)
       #   vector_store: "embedded"         # embedded (in-memory, re-embeds on restart) | vector_store (configured vectorStore, falls back to embedded when none is configured)
+      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
+      #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
+      #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
+      #   timeout: "4s"                    # Per-request classification timeout; on timeout no tier is published and the request is recorded as skipped
+      #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
+      #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
+      #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
       # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]

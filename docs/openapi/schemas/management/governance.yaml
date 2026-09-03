@@ -2315,9 +2315,60 @@ ComplexitySemanticConfig:
         built-in in-memory store, so phrases are re-embedded on every restart.
         `vector_store` uses the top-level `vector_store` when one is configured
         and falls back to the embedded store otherwise.
+    fallback:
+      type: string
+      enum: [none, llm]
+      description: |
+        What answers when semantic classification produces no tier (a match
+        below `min_similarity`, a timeout, or an unfinished warmup). `none`
+        (the default) records the request as skipped. `llm` asks the chat
+        model configured in the analyzer's `llm` block, which is required
+        when this is set.
+
+ComplexityLLMConfig:
+  type: object
+  description: |
+    Chat-completion (LLM) fallback classifier settings. The block is inert
+    unless `semantic.fallback` selects `llm`; the classifier runs only after
+    semantic classification produces no tier. Tier names (SIMPLE, MEDIUM,
+    COMPLEX) and the response format are fixed: the gateway always appends a
+    non-editable reinforcement stating them.
+  additionalProperties: false
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      type: string
+      minLength: 1
+      description: Provider used to run the classification chat completion (must have an enabled key)
+    model:
+      type: string
+      minLength: 1
+      description: Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one.
+    timeout:
+      description: Per-request classification timeout. Accepts a duration string ("2s") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
+      oneOf:
+        - type: string
+          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+        - type: number
+          exclusiveMinimum: 0
+    prompt:
+      type: string
+      maxLength: 4000
+      description: Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited.
+    message_history_count:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: How many of the most recent user messages are given to the classifier, oldest first (default 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent.
+    count_toward_budgets:
+      type: boolean
+      description: Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)
+
 ComplexitySemanticStatus:
   type: object
-  description: Runtime status of the semantic complexity classifier. Never contains phrases, embeddings, or provider secrets.
+  description: Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.
   properties:
     state:
       type: string
@@ -2335,6 +2386,17 @@ ComplexitySemanticStatus:
     error:
       type: string
       description: Warmup failure detail when state=failed
+    llm:
+      type: object
+      description: Always present in the response. state is disabled when no llm block is configured.
+      properties:
+        state:
+          type: string
+          enum: [disabled, ready]
+          description: disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved.
+    llm_default_prompt:
+      type: string
+      description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
 
 ComplexityAnalyzerConfig:
   type: object
@@ -2349,3 +2411,5 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityKeywordConfig'
     semantic:
       $ref: '#/ComplexitySemanticConfig'
+    llm:
+      $ref: '#/ComplexityLLMConfig'
