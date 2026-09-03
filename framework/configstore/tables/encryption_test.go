@@ -618,6 +618,33 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	assert.Equal(t, "", found.ClientSecret.GetValue())
 }
 
+// TestTableOauthConfig_SecretRef_StampsStatus covers a client_secret held as an
+// env/vault reference. There is nothing to cipher, but the row must still leave
+// plain_text: the startup backfill selects on that column, so a row left behind
+// is re-selected and re-written on every boot.
+func TestTableOauthConfig_SecretRef_StampsStatus(t *testing.T) {
+	for _, ref := range []string{"vault.oauth_configs/cfg/client_secret", "env.OAUTH_CLIENT_SECRET"} {
+		t.Run(ref, func(t *testing.T) {
+			db := setupTestDB(t)
+
+			config := &TableOauthConfig{
+				ID:           "oauth-cfg-ref",
+				ClientSecret: schemas.NewSecretVar(ref),
+				RedirectURI:  "https://example.com/callback",
+			}
+			require.NoError(t, db.Create(config).Error)
+
+			raw := rawRow(t, db, "oauth_configs", "oauth-cfg-ref")
+			assert.Equal(t, "encrypted", raw["encryption_status"])
+			assert.Equal(t, ref, raw["client_secret"], "the reference must be stored verbatim, not ciphered")
+
+			var found TableOauthConfig
+			require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-ref").Error)
+			assert.Equal(t, ref, found.ClientSecret.GetRawRef())
+		})
+	}
+}
+
 // TestTableMCPOauthFlow_EncryptDecrypt covers the CodeVerifier encrypt/decrypt
 // round trip that TestTableOauthConfig_EncryptDecrypt used to exercise before
 // PKCE fields moved off TableOauthConfig onto TableMCPOauthFlow (see that
