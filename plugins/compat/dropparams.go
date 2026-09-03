@@ -2,6 +2,7 @@ package compat
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -139,6 +140,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	if req.ChatRequest != nil && req.ChatRequest.Input != nil {
 		if req.ChatRequest.Provider != schemas.Bedrock || !isSupported["cachePoint"] {
 			droppedKeys := dropCachePoint(req.ChatRequest)
+			if len(droppedKeys) > 0 {
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d cache_point block(s) - cachePoint is only supported on Bedrock models that list it: %s", len(droppedKeys), strings.Join(droppedKeys, ", ")))
+			}
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -216,6 +220,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 		if !isSupported["web_search"] {
 			droppedKeys := dropWebsearchToolCalls(req)
+			if len(droppedKeys) > 0 {
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d web search tool(s) - the model does not support web_search: %s", len(droppedKeys), strings.Join(droppedKeys, ", ")))
+			}
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -223,6 +230,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Input != nil {
 		if req.ResponsesRequest.Provider == schemas.Bedrock && !schemas.IsAnthropicModel(req.ResponsesRequest.Model) {
 			droppedKeys := applyBedrockResponsesCompatibility(req.ResponsesRequest)
+			if len(droppedKeys) > 0 {
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("applied Bedrock compatibility for a non-Anthropic model - removed %d empty text block(s)/reasoning signature(s): %s", len(droppedKeys), strings.Join(droppedKeys, ", ")))
+			}
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -232,6 +242,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		// for bedrock models cache_control is converted to cachePoint
 		if req.ResponsesRequest.Provider == schemas.Bedrock && !isSupported["cache_control"] {
 			droppedKeys := dropCacheControlFromResponsesMessages(req.ResponsesRequest)
+			if len(droppedKeys) > 0 {
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d cache_control field(s) - the model does not support cache_control: %s", len(droppedKeys), strings.Join(droppedKeys, ", ")))
+			}
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -281,6 +294,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 	}
 
+	if !isSupported["assistant_prefill"] {
+		ctx.Log(schemas.LogLevelDebug, "model does not support assistant prefill, assistant messages will be trimmed")
+	}
 	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, isSupported["assistant_prefill"])
 
 	return dropped
