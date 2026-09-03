@@ -428,7 +428,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				}}
 				data-testid="model-limit-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{isEditing ? "Edit Limit" : "Create Limit"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a scope."}
