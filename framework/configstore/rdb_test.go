@@ -4276,3 +4276,164 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.70, *found.OutputCostPerVideoPerSecond1080p)
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
 }
+
+// TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
+// TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
+// column, so any entity rebuilt from config.json — which carries no created_at —
+// has its original insert timestamp overwritten with the zero time unless the
+// store carries the persisted value forward.
+func TestRDBConfigStore_CreatedAtSurvivesConfigSync(t *testing.T) {
+	ctx := context.Background()
+
+	// seed inserts the entity and returns its persisted created_at. sync re-saves it
+	// shaped exactly the way the config.json reconciler builds one: same ID, changed
+	// payload, zero CreatedAt. verify asserts the changed payload actually landed
+	// before returning the created_at that survived, so an Update that quietly did
+	// nothing cannot pass a case just by leaving the row alone.
+	tests := []struct {
+		name   string
+		seed   func(t *testing.T, store *RDBConfigStore) time.Time
+		sync   func(t *testing.T, store *RDBConfigStore)
+		verify func(t *testing.T, store *RDBConfigStore) time.Time
+	}{
+		{
+			name: "RateLimit",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				max := int64(1000)
+				require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &max, TokenResetDuration: strPtr("1h"),
+				}))
+				created, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				newMax := int64(2000)
+				require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &newMax, TokenResetDuration: strPtr("1h"),
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				require.Equal(t, int64(2000), *got.TokenMaxLimit)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Team",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A"}))
+				created, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				require.Equal(t, "Team A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Customer",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A"}))
+				created, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				require.Equal(t, "Customer A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "ModelConfig",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global",
+				}))
+				created, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global", CalendarAligned: true,
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				require.True(t, got.CalendarAligned)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "PricingOverride",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+				created, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A renamed", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				require.Equal(t, "Override A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			// UpdatePlugin is a delete-and-reinsert, so without a carry-forward
+			// created_at is re-stamped to now() rather than zeroed.
+			name: "Plugin",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: true}))
+				created, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: false}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				require.False(t, got.Enabled)
+				return got.CreatedAt
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+
+			createdAt := tt.seed(t, store)
+			require.False(t, createdAt.IsZero())
+
+			tt.sync(t, store)
+
+			syncedAt := tt.verify(t, store)
+			require.False(t, syncedAt.IsZero())
+			require.Equal(t, createdAt, syncedAt, "created_at must survive a config sync")
+		})
+	}
+}
