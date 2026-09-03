@@ -332,6 +332,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	extraHeaders := make(map[string][]string)
 	// Initialize extra headers map for headers in the mcp header combined allowlist
 	mcpExtraHeaders := make(map[string][]string)
+	// Raw x-opencode-session candidates, resolved into BifrostContextKeyOpencodeSession
+	// once after the header loop. Kept out of extraHeaders so the value can only be
+	// emitted by the opencode provider family, never via shared header forwarding.
+	var explicitOpencodeSession, ehOpencodeSession string
 	// Security denylist of header names that should never be accepted (case-insensitive)
 	// This denylist is always enforced regardless of user configuration
 	securityDenylist := map[string]bool{
@@ -546,6 +550,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-session-id" {
 			return true
 		}
+		// Opencode affinity: captured here so the direct-forwarding allowlist
+		// below can never pick it up into shared extra headers (which every
+		// provider forwards). Resolution happens once after the loop.
+		if keyStr == "x-opencode-session" {
+			explicitOpencodeSession = string(value)
+			return true
+		}
 		// Session stickiness: per-request TTL override (duration string or seconds integer)
 		if keyStr == "x-bf-session-ttl" {
 			valueStr := strings.TrimSpace(string(value))
@@ -565,6 +576,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
 			// Skip empty header names after prefix removal
 			if labelName == "" {
+				return true
+			}
+			// Opencode affinity via the escape hatch: consume into the dedicated
+			// key instead of shared extra headers. A verbatim x-opencode-session
+			// header wins over this form during resolution below.
+			if labelName == "x-opencode-session" {
+				ehOpencodeSession = string(value)
 				return true
 			}
 			// Normalize header name to lowercase
@@ -752,9 +770,33 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// this costs no extra header iteration, and routing both the explicit and
 	// the harness case through one resolver keeps stickiness and the OTEL
 	// session.id trace attribute in agreement.
-	if sessionID := ResolveSessionIDFromHeaders(allHeaders); sessionID != "" {
+	sessionID := ResolveSessionIDFromHeaders(allHeaders)
+	if sessionID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, sessionID)
 	}
+
+	// Opencode backend affinity: resolve x-opencode-session once per request so
+	// retries and fallbacks (which re-execute the pipeline) cannot diverge.
+	// Precedence: verbatim x-opencode-session, then x-bf-eh-x-opencode-session,
+	// then the same session identity used for stickiness above (which already
+	// encodes the x-bf-session-id-wins and oversized-poisons-to-none rules, so
+	// no parallel chain can disagree with it). With no signal at all, synthesize
+	// one UUID for this request: header-less clients get compliance without
+	// warmth, and multi-turn warmth remains the client's job. The value is
+	// validated header-safe here, so providers can emit it verbatim. It is stored
+	// under a dedicated key — never in shared extra headers — so only the
+	// opencode provider family can forward it (see opencodeSessionSigner).
+	opencodeSession := ""
+	if v, ok := schemas.ValidateOpencodeSessionID(explicitOpencodeSession); ok {
+		opencodeSession = v
+	} else if v, ok := schemas.ValidateOpencodeSessionID(ehOpencodeSession); ok {
+		opencodeSession = v
+	} else if v, ok := schemas.ValidateOpencodeSessionID(sessionID); ok {
+		opencodeSession = v
+	} else {
+		opencodeSession = uuid.NewString()
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyOpencodeSession, opencodeSession)
 
 	// Collect all request query params for downstream use (e.g., governance routing CEL rules
 	// that read params["..."]). Keys are lowercased for case-insensitive lookup.

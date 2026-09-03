@@ -1,6 +1,40 @@
 package schemas
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestValidateOpencodeSessionID(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{name: "simple id", value: "conv-123", want: "conv-123", ok: true},
+		{name: "uuid", value: "550e8400-e29b-41d4-a716-446655440000", want: "550e8400-e29b-41d4-a716-446655440000", ok: true},
+		{name: "value is trimmed", value: "  abc-1  ", want: "abc-1", ok: true},
+		{name: "empty rejected", value: "", want: "", ok: false},
+		{name: "whitespace only rejected", value: "   ", want: "", ok: false},
+		{name: "crlf injection rejected", value: "abc\r\nX-Injected: 1", want: "", ok: false},
+		{name: "newline rejected", value: "abc\ndef", want: "", ok: false},
+		{name: "space rejected", value: "abc def", want: "", ok: false},
+		{name: "control char rejected", value: "abc\x01def", want: "", ok: false},
+		{name: "non-ascii rejected", value: "conversación-1", want: "", ok: false},
+		{name: "overlong rejected", value: strings.Repeat("a", MaxSessionIDLength+1), want: "", ok: false},
+		{name: "max length accepted", value: strings.Repeat("a", MaxSessionIDLength), want: strings.Repeat("a", MaxSessionIDLength), ok: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ValidateOpencodeSessionID(tt.value)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("ValidateOpencodeSessionID(%q) = (%q, %v), want (%q, %v)", tt.value, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
 
 func TestDetectAppFromUserAgent(t *testing.T) {
 	tests := []struct {
