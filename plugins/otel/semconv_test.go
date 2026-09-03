@@ -41,6 +41,17 @@ func find(kvs []*KeyValue, key string) string {
 	return ""
 }
 
+// has reports whether the key is present at all, so a test can distinguish "absent"
+// from "emitted with an empty value".
+func has(kvs []*KeyValue, key string) bool {
+	for _, kv := range kvs {
+		if kv.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPartsFormat_ChatMessages asserts the flat chat shape becomes role+parts with text,
 // reasoning, tool_call and tool_call_response parts in the model's order.
 func TestPartsFormat_ChatMessages(t *testing.T) {
@@ -139,9 +150,9 @@ func TestPartsFormat_InstructionsMirroredAsSystemInstructions(t *testing.T) {
 		t.Errorf("system instructions part = %v", parts[0])
 	}
 
-	// No instructions: no spec attribute either.
-	if got := find(applyPartsMessageFormat(kvsFrom(map[string]any{schemas.AttrRequestModel: "m"})), AttrSystemInstructions); got != "" {
-		t.Errorf("%s emitted without instructions: %q", AttrSystemInstructions, got)
+	// No instructions: the spec attribute must be absent, not present with an empty value.
+	if kvs := applyPartsMessageFormat(kvsFrom(map[string]any{schemas.AttrRequestModel: "m"})); has(kvs, AttrSystemInstructions) {
+		t.Errorf("%s emitted without instructions: %q", AttrSystemInstructions, find(kvs, AttrSystemInstructions))
 	}
 }
 
