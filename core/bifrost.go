@@ -6369,6 +6369,12 @@ func executeRequestWithRetries[T any](
 		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
 			span.SetAttribute(schemas.AttrBifrostBusinessUnitName, businessUnitName)
 		}
+		if projectID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceProjectID).(string); ok && projectID != "" {
+			span.SetAttribute(schemas.AttrBifrostProjectID, projectID)
+		}
+		if projectName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceProjectName).(string); ok && projectName != "" {
+			span.SetAttribute(schemas.AttrBifrostProjectName, projectName)
+		}
 		if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
 			span.SetAttribute(schemas.AttrBifrostTeamIDs, teamIDs)
 		}
