@@ -2652,6 +2652,21 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 	return AnthropicStopReason(bifrostReason)
 }
 
+// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Anthropic stop_reason, for terminal events that carry no explicit stop reason.
+func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+	if details == nil {
+		return ""
+	}
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return AnthropicStopReasonMaxTokens
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return AnthropicStopReasonRefusal
+	}
+	return ""
+}
+
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
