@@ -8,7 +8,30 @@ const (
 	ConfigIsAuthEnabledKey = "is_auth_enabled"
 	ConfigProxyKey         = "proxy_config"
 	// ConfigComplexityAnalyzerConfigKey stores the persisted analyzer config JSON.
+	//
+	// This row is also the rollback-compatibility surface: it is written in a
+	// shape that a pre-semantic Bifrost can still read, validate, and run from,
+	// because that shape shipped and older binaries write this same key. Nothing
+	// that only the semantic router understands may live here — see
+	// ConfigComplexitySemanticConfigKey.
 	ConfigComplexityAnalyzerConfigKey = "complexity_analyzer_config"
+	// ConfigComplexitySemanticConfigKey stores the semantic classifier config:
+	// its settings and the per-tier exemplars it embeds.
+	//
+	// It is deliberately a separate row rather than a section inside
+	// ConfigComplexityAnalyzerConfigKey. A Bifrost old enough to predate the
+	// semantic router has no field for this config, so it would drop the section
+	// the first time it rewrote the analyzer row — permanently, and without a
+	// way to recover it by rolling forward again. Older binaries only ever read
+	// and write the keys they know, and governance_config is only ever written
+	// per-key (see RDBConfigStore.UpdateConfig), so a key they do not know is
+	// inert to them.
+	//
+	// The exemplars live here rather than in the analyzer row because they are
+	// not lexical keywords wearing a different name -- they are the reference
+	// phrases one classifier embeds, and the two classifiers no longer share a
+	// list.
+	ConfigComplexitySemanticConfigKey = "complexity_semantic_config"
 	ConfigRestartRequiredKey          = "restart_required"
 	ConfigHeaderFilterKey             = "header_filter_config"
 )

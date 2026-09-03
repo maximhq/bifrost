@@ -468,6 +468,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
+	{IDs: []string{backfillDefaultComplexityExemplarsMigrationID}, run: migrationBackfillDefaultComplexityExemplars},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
@@ -12285,6 +12286,259 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 		return fmt.Errorf("error while creating batch_jobs table: %s", err.Error())
 	}
 	return nil
+}
+
+// readComplexityConfigRow returns a governance_config value, or "" when the row
+// is absent or blank.
+func readComplexityConfigRow(tx *gorm.DB, key string) (string, error) {
+	var entry tables.TableGovernanceConfig
+	err := tx.First(&entry, "key = ?", key).Error
+	if err == gorm.ErrRecordNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query persisted %s: %w", key, err)
+	}
+	return strings.TrimSpace(entry.Value), nil
+}
+
+// backfillDefaultComplexityExemplarsMigrationID is shared by the migration and
+// its registry entry on purpose. configstoreMigrationSteps is what the pending
+// check reads, and triggerMigrations skips the entire run when nothing is
+// pending — so a registry entry naming a different ID than the migration writes
+// does not just mislabel the step, it can stop every migration from running.
+//
+// The ID is versioned because this migration was retargeted after the lexical
+// and semantic configs moved into separate rows. Installations that ran the
+// original never wrote a semantic row, and the migrator skips by ID, so reusing
+// the old one would leave them with no exemplars at all.
+const backfillDefaultComplexityExemplarsMigrationID = "backfill_default_complexity_exemplars_v2"
+
+// preSplitComplexityAnalyzerRow is an analyzer row written before the lexical
+// and semantic configs moved into separate rows.
+type preSplitComplexityAnalyzerRow struct {
+	Keywords     ComplexityEditableKeywordConfig
+	Semantic     *ComplexitySemanticConfig
+	ConfigHashes ComplexityAnalyzerConfigHashes
+	// semanticUnreadable holds the reason the semantic block was skipped, if it
+	// was present but could not be decoded.
+	semanticUnreadable string
+}
+
+// complexityConfigFromPreSplitAnalyzerRow reads everything worth carrying out of
+// a pre-split analyzer row.
+//
+// Both keyword spellings are accepted: an installation upgrading from a release
+// carries the four-list lexical shape, and one upgrading from a pre-split build
+// of this version carries the canonical three.
+//
+// The semantic block is decoded on a best-effort basis and reported rather than
+// returned as an error. A build further up the stack may have written fields
+// this version has no name for, and refusing to migrate at all would be a worse
+// outcome than continuing without a section that was never readable here.
+func complexityConfigFromPreSplitAnalyzerRow(data []byte) (preSplitComplexityAnalyzerRow, error) {
+	var row struct {
+		Keywords     ComplexityEditableKeywordConfig `json:"keywords"`
+		Semantic     json.RawMessage                 `json:"semantic"`
+		ConfigHashes ComplexityAnalyzerConfigHashes  `json:"_config_hashes"`
+	}
+	if err := json.Unmarshal(data, &row); err != nil {
+		return preSplitComplexityAnalyzerRow{}, err
+	}
+
+	out := preSplitComplexityAnalyzerRow{
+		Keywords:     row.Keywords,
+		ConfigHashes: row.ConfigHashes,
+	}
+	if len(row.Semantic) > 0 && string(row.Semantic) != "null" {
+		var semantic ComplexitySemanticConfig
+		if err := json.Unmarshal(row.Semantic, &semantic); err != nil {
+			out.semanticUnreadable = err.Error()
+			out.ConfigHashes.SemanticSettings = ""
+		} else {
+			out.Semantic = &semantic
+		}
+	}
+	return out, nil
+}
+
+// migrationBackfillDefaultComplexityExemplars appends the curated semantic
+// exemplars to persisted complexity configurations created before those
+// defaults existed. Existing phrases and tier assignments always win.
+func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := backfillDefaultComplexityExemplarsMigrationID
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			analyzerRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexityAnalyzerConfigKey)
+			if err != nil {
+				return err
+			}
+			semanticRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexitySemanticConfigKey)
+			if err != nil {
+				return err
+			}
+			if analyzerRaw == "" && semanticRaw == "" {
+				// Fresh install: nothing has been persisted for either
+				// classifier, so the defaults apply without being written down.
+				return nil
+			}
+
+			semanticRow, err := decodeComplexitySemanticConfigRow([]byte(semanticRaw))
+			if err != nil {
+				// The row is there but this version cannot read it, most often
+				// because a build further up the stack wrote a field this one has
+				// no name for: ComplexitySemanticConfig rejects unknown fields.
+				// Failing would abort this migration and every migration queued
+				// behind it, and treating the row as absent would rebuild it from
+				// the pre-split analyzer row, overwriting whatever it actually
+				// holds. The backfill is dropped instead and the row is left
+				// exactly as it was, the same trade the validation failure below
+				// makes.
+				logger.Warn("[configstore] %s: skipped exemplar backfill, the persisted semantic config is unreadable: %v",
+					migrationName, err)
+				return nil
+			}
+
+			var config ComplexityAnalyzerConfig
+			if semanticRow != nil {
+				config.Keywords = semanticRow.Keywords
+				config.Semantic = semanticRow.Semantic
+			} else if analyzerRaw != "" {
+				// Nothing has been written to the semantic row yet, so this
+				// installation predates the split. Whatever its analyzer row
+				// holds is what it has been routing with, so it seeds the
+				// semantic row rather than being dropped for the defaults.
+				preSplit, err := complexityConfigFromPreSplitAnalyzerRow([]byte(analyzerRaw))
+				if err != nil {
+					return fmt.Errorf("read exemplars from persisted complexity analyzer config: %w", err)
+				}
+				config.Keywords = preSplit.Keywords
+				config.Semantic = preSplit.Semantic
+				// The semantic row owns the keyword sections after the split, so it
+				// owns their section hashes too. Dropping them here would leave the
+				// row looking like the config file's keyword sections had never been
+				// applied, and the next sync would reapply them over the phrases this
+				// installation has been routing with.
+				config.ConfigHashes.SimpleKeywords = preSplit.ConfigHashes.SimpleKeywords
+				config.ConfigHashes.MediumKeywords = preSplit.ConfigHashes.MediumKeywords
+				config.ConfigHashes.ComplexKeywords = preSplit.ConfigHashes.ComplexKeywords
+				config.ConfigHashes.SemanticSettings = preSplit.ConfigHashes.SemanticSettings
+				if preSplit.semanticUnreadable != "" {
+					// A semantic block this version cannot parse comes from a
+					// build further up the stack. Dropping it is better than
+					// failing the migration, but it is not silent.
+					logger.Warn("[configstore] %s: could not carry the pre-split semantic block forward: %s",
+						migrationName, preSplit.semanticUnreadable)
+				}
+			}
+
+			added := appendMissingDefaultComplexityExemplars(&config, legacyComplexityExemplarsV2())
+			if added == 0 && semanticRow != nil {
+				return nil
+			}
+
+			// Normalize before persisting: appendMissingDefaultComplexityExemplars
+			// adds the curated phrases in their authored form, and persisted
+			// phrases are stored lowercased and deduplicated.
+			normalized := config.Normalized()
+			if err := normalized.Validate(); err != nil {
+				// The stored config is what this installation has been routing
+				// with, and the backfill only meant to add phrases to it.
+				// Failing here would abort this migration and every migration
+				// queued behind it, so the backfill is dropped and the stored
+				// config is left exactly as it was.
+				logger.Warn("[configstore] %s: skipped exemplar backfill, the result does not validate: %v",
+					migrationName, err)
+				return nil
+			}
+
+			record := complexitySemanticConfigRecord{
+				Keywords: normalized.Keywords,
+				Semantic: normalized.Semantic,
+				ConfigHashes: complexitySemanticRowHashes{
+					SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
+					MediumKeywords:   config.ConfigHashes.MediumKeywords,
+					ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
+					SemanticSettings: config.ConfigHashes.SemanticSettings,
+				},
+			}
+			if semanticRow != nil {
+				record.ConfigHashes = semanticRow.ConfigHashes
+				// The fingerprint records which exemplars were embedded, and
+				// those just changed, so whatever it names is stale. It is left
+				// blank rather than carried over.
+			}
+			raw, err := json.Marshal(record)
+			if err != nil {
+				return fmt.Errorf("encode complexity semantic config after exemplar backfill: %w", err)
+			}
+
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"value"}),
+			}).Create(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigComplexitySemanticConfigKey,
+				Value: string(raw),
+			}).Error; err != nil {
+				return fmt.Errorf("persist complexity semantic exemplar backfill: %w", err)
+			}
+
+			logger.Info("[configstore] %s: added %d default complexity exemplars", migrationName, added)
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			// Removing phrases later would also remove administrator-owned data
+			// that happens to match a default exemplar.
+			return fmt.Errorf("%s is non-rollbackable: appended default phrases cannot be distinguished safely from administrator-owned phrases", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
+	type tierPhrases struct {
+		values   *[]string
+		defaults []string
+	}
+	tiers := []tierPhrases{
+		{values: &config.Keywords.SimpleKeywords, defaults: defaults.SimpleKeywords},
+		{values: &config.Keywords.MediumKeywords, defaults: defaults.MediumKeywords},
+		{values: &config.Keywords.ComplexKeywords, defaults: defaults.ComplexKeywords},
+	}
+
+	seen := make(map[string]struct{})
+	for _, tier := range tiers {
+		for _, phrase := range *tier.values {
+			seen[normalizeComplexityExemplarKey(phrase)] = struct{}{}
+		}
+	}
+
+	added := 0
+	for _, tier := range tiers {
+		for _, phrase := range tier.defaults {
+			key := normalizeComplexityExemplarKey(phrase)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			*tier.values = append(*tier.values, phrase)
+			seen[key] = struct{}{}
+			added++
+		}
+	}
+	return added
+}
+
+func normalizeComplexityExemplarKey(phrase string) string {
+	return strings.ToLower(strings.Join(strings.Fields(phrase), " "))
 }
 
 // migrationAddImageMegapixelTierPricingColumns adds the megapixel-banded output
