@@ -100,6 +100,12 @@ export interface EntitySelectorCommonProps {
 	trigger?: ReactNode;
 	/** Add mode only: render the trigger full-width instead of the compact inline default. */
 	fullWidth?: boolean;
+	/**
+	 * Pinned below the option list — for the action a search that found nothing
+	 * leads to, typically "create a new one". Single/add only; multi mode's
+	 * react-select menu has no such slot.
+	 */
+	footer?: ReactNode;
 }
 
 interface EntitySelectorSingleProps {
@@ -192,6 +198,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		excludeIds,
 		trigger,
 		fullWidth = false,
+		footer,
 	} = props;
 
 	const isAdd = props.mode === "add";
@@ -415,6 +422,15 @@ export function EntitySelector(props: EntitySelectorProps) {
 					</>
 				)}
 				label={trigger ?? defaultTrigger}
+				// A footer action always leads somewhere else — a create sheet, another
+				// surface — so dismiss the picker on the way out rather than leaving a
+				// popover open behind whatever it opened.
+				//
+				// Capture, not bubble: footer is a public prop, and a footer whose own
+				// handler calls stopPropagation would otherwise never let this run,
+				// leaving the popover open behind whatever it opened. Capture fires on
+				// the way down, before the descendant can stop anything.
+				footer={footer && <div onClickCapture={() => onOpenChange(false)}>{footer}</div>}
 				open={open}
 				onOpenChange={onOpenChange}
 				onSearchChange={onSearchChange}
