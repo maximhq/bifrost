@@ -1,4 +1,4 @@
-import type { WarpConfig, WarpConfigInput } from "@/lib/types/warp";
+import type { WarpBackfillInput, WarpBackfillStatus, WarpConfig, WarpConfigInput } from "@/lib/types/warp";
 import { baseApi } from "./baseApi";
 
 export const warpApi = baseApi.injectEndpoints({
@@ -11,7 +11,22 @@ export const warpApi = baseApi.injectEndpoints({
 			query: (body) => ({ url: "/warp/config", method: "PUT", body }),
 			invalidatesTags: ["WarpConfig"],
 		}),
+		startWarpBackfill: builder.mutation<WarpBackfillStatus, WarpBackfillInput>({
+			query: (body) => ({ url: "/warp/log-index/backfill", method: "POST", body }),
+		}),
+		getWarpBackfillStatus: builder.query<WarpBackfillStatus, { id?: string } | void>({
+			query: (arg) => ({ url: "/warp/log-index/backfill/status", params: arg?.id ? { id: arg.id } : {} }),
+		}),
+		cancelWarpBackfill: builder.mutation<WarpBackfillStatus, { id?: string } | void>({
+			query: (body) => ({ url: "/warp/log-index/backfill/cancel", method: "POST", body: body ?? {} }),
+		}),
 	}),
 });
 
-export const { useGetWarpConfigQuery, useUpdateWarpConfigMutation } = warpApi;
+export const {
+	useGetWarpConfigQuery,
+	useUpdateWarpConfigMutation,
+	useStartWarpBackfillMutation,
+	useGetWarpBackfillStatusQuery,
+	useCancelWarpBackfillMutation,
+} = warpApi;
