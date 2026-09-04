@@ -271,18 +271,26 @@ func completeRequest(
 		}
 	}
 
-	requestClient := client
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
 	isCountTokens := requestType == schemas.CountTokensRequest
-	// Count-tokens responses are always tiny — skip the large-response streaming client so the
+	// Count-tokens responses are always tiny — skip large-response streaming so the
 	// response is buffered normally.
-	if responseThreshold > 0 && !isCountTokens {
+	streamResponseBody := responseThreshold > 0 && !isCountTokens
+	if streamResponseBody {
 		resp.StreamBody = true
-		requestClient = providerUtils.BuildLargeResponseClient(client, responseThreshold)
 	}
 
-	// Send the request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, requestClient, req, resp)
+	// Send the request. A streamed body goes out over net/http so it is never
+	// fasthttp's pooled *requestStream, which cannot be closed safely while a
+	// reader is parked in it (issue #6143).
+	var latency time.Duration
+	var bifrostErr *schemas.BifrostError
+	var wait func()
+	if streamResponseBody {
+		latency, bifrostErr, wait = providerUtils.MakeStreamingRequestWithContext(ctx, client, req, resp)
+	} else {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	}
 	defer wait()
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -834,19 +842,23 @@ func HandleAnthropicChatCompletionStreaming(
 	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
 	req.Header.Set("Connection", "close")
 
-	// Use a fresh streaming client per request so fasthttp's internal readerPool
-	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
-	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
-	// config but starts with empty reader/writer pools.
-	requestClient := providerUtils.BuildStreamingClient(client)
+	// A fresh streaming client per request used to be required here so fasthttp's
+	// internal readerPool could not be poisoned across concurrent Anthropic
+	// streams by the non-idempotent streaming-body close path. Streaming sends
+	// now go out over net/http (see providerUtils httpstream.go), which pools no
+	// reader and guards Body.Close against a concurrent Read, so the per-request
+	// client is unnecessary. Reusing the caller's long-lived client also avoids
+	// allocating a client and transport on every streaming request.
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1502,19 +1514,23 @@ func HandleAnthropicResponsesStream(
 	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
 	req.Header.Set("Connection", "close")
 
-	// Use a fresh streaming client per request so fasthttp's internal readerPool
-	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
-	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
-	// config but starts with empty reader/writer pools.
-	requestClient := providerUtils.BuildStreamingClient(client)
+	// A fresh streaming client per request used to be required here so fasthttp's
+	// internal readerPool could not be poisoned across concurrent Anthropic
+	// streams by the non-idempotent streaming-body close path. Streaming sends
+	// now go out over net/http (see providerUtils httpstream.go), which pools no
+	// reader and guards Body.Close against a concurrent Read, so the per-request
+	// client is unnecessary. Reusing the caller's long-lived client also avoids
+	// allocating a client and transport on every streaming request.
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -3190,8 +3206,8 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

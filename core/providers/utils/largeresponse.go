@@ -103,6 +103,26 @@ func PrepareResponseStreaming(ctx *schemas.BifrostContext, client *fasthttp.Clie
 	return BuildLargeResponseClient(client, responseThreshold)
 }
 
+// PrepareStreamResponseThreshold marks resp for body streaming when a
+// large-response threshold is configured, and returns no client.
+//
+// This is the streaming counterpart to PrepareResponseStreaming. Streaming
+// sends go out over net/http (see httpstream.go), where the fasthttp clone that
+// PrepareResponseStreaming builds has no effect on the send at all: its
+// StreamResponseBody, MaxResponseBodySize and zeroed timeouts are fasthttp
+// client knobs, and the threshold itself is enforced by Bifrost's own readers
+// (FinalizeResponseWithLargeDetection, LargeResponseReader).
+//
+// Handing DoStreamingRequest the caller's long-lived client rather than a
+// per-request clone also keeps the net/http twin cache in httpstream.go keyed
+// on a stable pointer, so it stays bounded by the number of providers instead
+// of growing once per request.
+func PrepareStreamResponseThreshold(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	if responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64); responseThreshold > 0 {
+		resp.StreamBody = true
+	}
+}
+
 // MaterializeStreamErrorBody reads a streamed error body into resp so that resp.Body()
 // returns the error payload for parsing. No-op when response streaming is not active.
 func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) {

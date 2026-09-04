@@ -3,6 +3,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"time"
 
@@ -174,10 +175,35 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 		return append([]byte(nil), line...), nil
 	}
 	if err := r.scanner.Err(); err != nil {
-		return nil, err
+		if normalized := endOfStreamErr(err); normalized != nil && !errors.Is(normalized, io.EOF) {
+			return nil, normalized
+		}
+		return nil, io.EOF
 	}
 	return nil, io.EOF
 }
+
+// endOfStreamErr normalizes a scanner error that actually means "the body
+// ended" into io.EOF.
+//
+// A dying upstream closes the connection on a chunk boundary. fasthttp's
+// streaming body reported that as a plain io.EOF, so Bifrost detects truncation
+// semantically instead — by the absence of a terminal marker — and turns it into
+// a retryable 502 (see SendStreamTruncatedError). net/http, which now carries
+// streaming responses (issue #6143), is more precise and reports
+// io.ErrUnexpectedEOF for the same event. Left alone that would surface as a
+// generic "Error reading stream" instead of the truncation error, losing both
+// the 502 status and the retryability the retry loop depends on.
+//
+// Only the unexpected-EOF case is folded in. ErrStreamClosed, ErrStreamIdleTimeout
+// and genuine transport failures must keep their own identity.
+func endOfStreamErr(err error) error {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return io.EOF
+	}
+	return err
+}
+
 
 // nextLine returns the line carried over from an aborted multi-line JSON
 // accumulation, or advances the scanner. The returned slice is only valid
@@ -290,7 +316,10 @@ func (r *defaultSSEEventReader) ReadEvent() (string, []byte, error) {
 	}
 
 	if err := r.scanner.Err(); err != nil {
-		return "", nil, err
+		if normalized := endOfStreamErr(err); normalized != nil && !errors.Is(normalized, io.EOF) {
+			return "", nil, normalized
+		}
+		return "", nil, io.EOF
 	}
 	return "", nil, io.EOF
 }
