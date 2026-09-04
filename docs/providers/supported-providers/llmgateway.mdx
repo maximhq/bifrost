@@ -1,0 +1,155 @@
+---
+title: "LLM Gateway"
+description: "LLM Gateway API conversion guide - OpenAI-compatible chat completions, streaming, tool calling, and parameter handling"
+icon: "l"
+---
+
+## Overview
+
+[LLM Gateway](https://llmgateway.io) is a **fully OpenAI-compatible provider** that only exposes a chat completions API. Bifrost delegates chat functionality to the OpenAI provider implementation with standard parameter filtering. Key characteristics:
+- **OpenAI-compatible chat** - Standard chat completion request/response format
+- **Full tool calling** - Function definitions and parallel tool execution
+- **Streaming support** - Server-Sent Events with token usage tracking
+- **Responses API** - Supported via internal conversion to Chat Completions
+- **No legacy text completions** - LLM Gateway does not expose `/v1/completions`
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not offered by the upstream LLM Gateway API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure LLM Gateway as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **LLM Gateway** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **LLM Gateway**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.LLMGATEWAY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "llmgateway": {
+      "keys": [
+        {
+          "name": "llmgateway-key-1",
+          "value": "env.LLMGATEWAY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.LLMGateway:
+    return []schemas.Key{{
+        Name:   "llmgateway-key-1",
+        Value:  *schemas.NewSecretVar("env.LLMGATEWAY_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+LLM Gateway supports standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+LLM Gateway accepts model IDs as a plain model name (e.g. `deepseek-v4-flash`), or provider-prefixed (e.g. `openai/gpt-4o`), passed straight through without transformation.
+
+LLM Gateway supports standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
+
+---
+
+# 3. List Models
+
+Lists available models from LLM Gateway with capabilities and context length information.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | LLM Gateway only exposes `/v1/chat/completions`, not `/v1/completions` |
+| Embedding | Not offered by LLM Gateway API |
+| Image Generation | Not offered by LLM Gateway API |
+| Speech/TTS | Not offered by LLM Gateway API |
+| Transcription/STT | Not offered by LLM Gateway API |
+| Batch Operations | Not offered by LLM Gateway API |
+| File Management | Not offered by LLM Gateway API |
+
+---
+
+## Authentication
+
+**Bearer token:**
+
+```
+Authorization: Bearer <LLMGATEWAY_API_KEY>
+```
+
+## Configuration
+
+**HTTP Settings:**
+- **Base URL**: `https://api.llmgateway.io` (default, overridable via `NetworkConfig.BaseURL`)
+- **Max Connections**: Configurable per provider (default 5000 per host)
+
+<Warning>
+**Unsupported Operations**: Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch operations are not supported.
+</Warning>
