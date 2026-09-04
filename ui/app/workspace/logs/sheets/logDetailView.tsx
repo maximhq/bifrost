@@ -1012,6 +1012,7 @@ interface LogDetailViewProps {
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
+	onFilterBySessionId?: (sessionId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1089,6 +1090,7 @@ export function LogDetailView({
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
+	onFilterBySessionId,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1761,6 +1763,34 @@ export function LogDetailView({
 										) : (
 											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
 												{log.parent_request_id}
+											</TruncatedLabel>
+										)
+									}
+								/>
+							)}
+							{log.session_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Session ID"
+									value={
+										onFilterBySessionId ? (
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														onClick={() => onFilterBySessionId(log.session_id as string)}
+													>
+														{log.session_id}
+													</button>
+												</TooltipTrigger>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.session_id} · Filter this session
+												</TooltipContent>
+											</Tooltip>
+										) : (
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.session_id}
 											</TruncatedLabel>
 										)
 									}

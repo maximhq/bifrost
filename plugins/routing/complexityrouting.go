@@ -28,8 +28,8 @@ func (p *RoutingPlugin) computeComplexity(
 	virtualKeyID string,
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
-	sessionID, hasSessionID := complexity.ResolveComplexitySessionID(ctx)
-	sessionActive := p.sessionEnabled.Load() && hasSessionID && p.sessionStore != nil
+	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	sessionActive := p.sessionEnabled.Load() && sessionID != "" && p.sessionStore != nil
 
 	if disposition != complexity.InputClassifiable {
 		if sessionActive && disposition == complexity.InputContinuation {

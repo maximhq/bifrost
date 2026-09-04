@@ -118,6 +118,7 @@ type parityLogSpec struct {
 	tier                       *string
 	mechanism                  *string
 	tierScore                  *float64
+	sessionID                  *string
 	metadata                   *string
 	cacheMetadata              string
 	content                    string
@@ -161,6 +162,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		ComplexityTier:        s.tier,
 		ComplexityMechanism:   s.mechanism,
 		ComplexityScore:       s.tierScore,
+		SessionID:             s.sessionID,
 		Metadata:              s.metadata,
 		CacheDebug:            s.cacheMetadata,
 		ContentSummary:        s.content,
@@ -179,13 +181,13 @@ func paritySpecs() []parityLogSpec {
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
 			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
-			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55),
+			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55), sessionID: strPtrP("session-1"),
 			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u2"),
 			cost: f64PtrP(1.25), latency: f64PtrP(250), tokens: [3]int{200, 100, 300}, stopReason: strPtrP("length"),
 			routing: strPtrP("governance"), metadata: strPtrP(`{"env":"dev"}`),
-			tier: strPtrP("SIMPLE"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.08),
+			tier: strPtrP("SIMPLE"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.08), sessionID: strPtrP("session-1"),
 			cacheMetadata: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
 		{id: "p3", offsetSec: 80, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "error",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u2"),
@@ -447,8 +449,8 @@ func logProjection(l *Log) map[string]any {
 		"prompt_tokens": l.PromptTokens, "completion_tokens": l.CompletionTokens,
 		"total_tokens": l.TotalTokens, "stop_reason": l.StopReason,
 		"complexity_tier": l.ComplexityTier, "complexity_mechanism": l.ComplexityMechanism,
-		"complexity_score": l.ComplexityScore,
-		"content_summary":  l.ContentSummary,
+		"complexity_score": l.ComplexityScore, "session_id": l.SessionID,
+		"content_summary": l.ContentSummary,
 	}
 }
 
@@ -576,6 +578,7 @@ func TestLogStoreParity(t *testing.T) {
 		"complexity_tiers":      {ComplexityTiers: []string{"COMPLEX", "MEDIUM"}},
 		"complexity_mechanisms": {ComplexityMechanisms: []string{"lexical"}},
 		"mechanism_skipped":     {ComplexityMechanisms: []string{"skipped"}},
+		"session":               {SessionID: "session-1"},
 		"objects":               {Objects: []string{"embedding"}},
 		"aliases":               {Aliases: []string{"a1"}},
 		"selected_keys":         {SelectedKeyIDs: []string{"sk1"}},

@@ -71,8 +71,11 @@ export function ClassifierStatusBadge({
 	statusUnavailable,
 	statusRefreshFailed,
 	isRetryingStatus,
+	canRetryWarmup,
+	isRetryingWarmup,
 	onConfigure,
 	onRetryStatus,
+	onRetryWarmup,
 }: {
 	status: SemanticStatusInfo | undefined;
 	isLoading: boolean;
@@ -83,8 +86,11 @@ export function ClassifierStatusBadge({
 	statusUnavailable: boolean;
 	statusRefreshFailed: boolean;
 	isRetryingStatus: boolean;
+	canRetryWarmup: boolean;
+	isRetryingWarmup: boolean;
 	onConfigure: () => void;
 	onRetryStatus: () => void;
+	onRetryWarmup: () => void;
 }) {
 	const state: ClassifierState = isNotConfigured
 		? "not-configured"
@@ -156,6 +162,13 @@ export function ClassifierStatusBadge({
 					<p className={status.serving_previous ? "text-amber-700 dark:text-amber-400" : "text-destructive"}>
 						{semanticWarmupImpactMessage(status)}
 					</p>
+				)}
+
+				{state === "failed" && canRetryWarmup && !hasUnsavedChanges && (
+					<Button type="button" variant="outline" size="sm" className="w-full" onClick={onRetryWarmup} disabled={isRetryingWarmup}>
+						<RefreshCw className={cn("size-3.5", isRetryingWarmup && "animate-spin")} />
+						Retry warmup
+					</Button>
 				)}
 
 				{state === "unavailable" && (

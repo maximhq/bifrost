@@ -23,6 +23,9 @@ type mockRoutingManager struct {
 	reloadedConfig *complexity.AnalyzerConfig
 	reloadCalls    int
 	reloadErr      error
+	retryStatus    complexity.SemanticStatusInfo
+	retryStarted   bool
+	retryErr       error
 }
 
 func (m *mockRoutingManager) ValidateComplexityAnalyzerConfig(_ context.Context, _ *complexity.AnalyzerConfig) error {
@@ -31,6 +34,11 @@ func (m *mockRoutingManager) ValidateComplexityAnalyzerConfig(_ context.Context,
 
 func (m *mockRoutingManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
 	return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}, nil
+}
+
+// RetryComplexitySemanticWarmup records a retry request for routing handler tests.
+func (m *mockRoutingManager) RetryComplexitySemanticWarmup(_ context.Context) (complexity.SemanticStatusInfo, bool, error) {
+	return m.retryStatus, m.retryStarted, m.retryErr
 }
 
 func (m *mockRoutingManager) GetComplexityLLMStatus(_ context.Context) (complexity.LLMStatusInfo, error) {
@@ -135,6 +143,41 @@ func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
 	if len(resp.Keywords.MediumKeywords) == 0 {
 		t.Fatalf("expected default medium keywords")
 	}
+}
+
+// TestRetryComplexitySemanticWarmup verifies the retry endpoint accepts only a
+// failed classifier retry and returns the new asynchronous warmup state.
+func TestRetryComplexitySemanticWarmup(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Run("accepts a failed warmup", func(t *testing.T) {
+		handler := &RoutingHandler{
+			configStore: setupPricingOverrideHandlerStore(t),
+			routingManager: &mockRoutingManager{
+				retryStarted: true,
+				retryStatus:  complexity.SemanticStatusInfo{State: complexity.SemanticStatusWarming, Total: 3},
+			},
+		}
+		ctx := newTestRequestCtx("")
+
+		handler.retryComplexitySemanticWarmup(ctx)
+
+		require.Equal(t, fasthttp.StatusAccepted, ctx.Response.StatusCode())
+		var status complexity.SemanticStatusInfo
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &status))
+		require.Equal(t, complexity.SemanticStatusWarming, status.State)
+	})
+
+	t.Run("rejects a non-failed warmup", func(t *testing.T) {
+		handler := &RoutingHandler{
+			configStore:    setupPricingOverrideHandlerStore(t),
+			routingManager: &mockRoutingManager{retryStatus: complexity.SemanticStatusInfo{State: complexity.SemanticStatusReady}},
+		}
+		ctx := newTestRequestCtx("")
+
+		handler.retryComplexitySemanticWarmup(ctx)
+
+		require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode())
+	})
 }
 
 func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {

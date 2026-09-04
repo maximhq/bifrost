@@ -111,6 +111,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -932,13 +933,35 @@ function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: Fi
 }
 
 // ---------------------------------------------------------------------------
+// RequestSessionFilter
+// ---------------------------------------------------------------------------
+
+function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.session_id;
+	return (
+		<FilterSection title="Session ID" defaultOpen={defaultOpen || hasActive} testId="request-session-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.session_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, session_id: event.target.value })}
+					placeholder="Exact session ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
 
 function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.parent_request_id;
 	return (
-		<FilterSection title="Session" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
+		<FilterSection title="Parent request ID" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
 			<div className="relative">
 				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
 				<Input

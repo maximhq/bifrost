@@ -1098,6 +1098,8 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity-reset"
   /api/routing/complexity-analyzer-status:
     $ref: "./paths/management/routing.yaml#/complexity-status"
+  /api/routing/complexity-analyzer-status/retry:
+    $ref: "./paths/management/routing.yaml#/complexity-status-retry"
   /api/routing/complexity-analyzer-generations:
     $ref: "./paths/management/routing.yaml#/complexity-generations"
   /api/routing/complexity-analyzer-generations/{namespace}:

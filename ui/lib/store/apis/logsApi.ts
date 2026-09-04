@@ -69,6 +69,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
 		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
 	}
+	if (filters.session_id) {
+		params.session_id = filters.session_id;
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
