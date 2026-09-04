@@ -127,11 +127,25 @@ func (i *LogIndexer) Enqueue(_ context.Context, entry *logstore.Log) {
 
 // Index performs the same idempotent operation synchronously for Sidekiq.
 func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutcome, error) {
+	return i.IndexWithConfig(ctx, nil, entry)
+}
+
+// IndexWithConfig indexes against a caller-pinned configuration.
+//
+// The backfill verifies the embedding configuration has not changed before each
+// batch, but re-reading it per entry reopened the window it just closed: a save
+// landing between the check and the write indexed logs under the new embedding
+// space while the job still believed it was on the frozen one. Passing the
+// verified config down means the check and the write agree by construction,
+// with no lock spanning the two.
+//
+// A nil config restores the live read, which is what the in-process queue wants.
+func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, error) {
 	item, ok := buildLogIndexItem(entry)
 	if !ok {
 		return IndexOutcomeSkipped, nil
 	}
-	indexed, err := i.indexItem(ctx, item)
+	indexed, err := i.indexItemWithConfig(ctx, config, item)
 	if err != nil {
 		return "", err
 	}
@@ -180,14 +194,21 @@ func (i *LogIndexer) runItem(item logIndexItem) {
 	}
 }
 
-// indexItem reports whether anything was actually written, so callers can tell
-// "indexed" apart from "there was nothing to index".
 func (i *LogIndexer) indexItem(ctx context.Context, item logIndexItem) (bool, error) {
-	row, err := i.store.GetWarpConfig(ctx)
-	if err != nil {
-		return false, fmt.Errorf("read Warp configuration: %w", err)
+	return i.indexItemWithConfig(ctx, nil, item)
+}
+
+// indexItemWithConfig indexes against a caller-pinned configuration, and
+// reports whether anything was actually written so callers can tell "indexed"
+// apart from "there was nothing to index".
+func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.WarpConfig, item logIndexItem) (bool, error) {
+	if config == nil {
+		row, err := i.store.GetWarpConfig(ctx)
+		if err != nil {
+			return false, fmt.Errorf("read Warp configuration: %w", err)
+		}
+		config = configFromRow(row)
 	}
-	config := configFromRow(row)
 	if !config.IsConfigured() {
 		return false, nil
 	}
