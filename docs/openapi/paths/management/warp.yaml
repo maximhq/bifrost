@@ -35,9 +35,11 @@ warp-config:
       Writes Warp's settings. **Administrators only.**
 
       RBAC in this transport is enterprise-only and path-based, so the floor is
-      enforced in the handler: a single write plants a credential that the
-      server then uses to make outbound calls, which is not something an
-      ordinary dashboard user should be able to do. Non-admin callers get `403`.
+      enforced in the handler: a single write points the server at a provider
+      key and a model it will then call on its own behalf, which is not
+      something an ordinary dashboard user should be able to do. Non-admin
+      callers get `403`. The response carries the key reference back, not a
+      redacted credential - there is no secret stored here to redact.
 
       `api_key_id` is a reference, not a credential, so it round-trips in the
       clear and needs no omitted-versus-empty rule: omitting it writes an empty
@@ -61,12 +63,119 @@ warp-config:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '403':
         description: Caller is not an administrator
+      '409':
+        description: Embedding configuration cannot change during an active backfill
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
+
+warp-backfill:
+  post:
+    operationId: startWarpLogEmbeddingBackfill
+    summary: Start a Warp log embedding backfill
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpBackfillRequest'
+    responses:
+      '202':
+        description: Backfill accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '409':
+        description: |
+          A Warp embedding backfill is already active. The body is that job, so
+          a client can show its progress instead of reporting a bare conflict.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the backfill job store is unavailable, or
+          Warp itself cannot prepare the job - no usable configuration, or no
+          vector store to index into.
+
+warp-backfill-status:
+  get:
+    operationId: getWarpLogEmbeddingBackfillStatus
+    summary: Read Warp log embedding backfill progress
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: query
+        name: id
+        schema: { type: string }
+    responses:
+      '200':
+        description: Current job, or an idle status when no job is active
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '403':
+        description: Caller is not an administrator
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The backfill job store is unavailable. This route does not need the job
+          runner: it only reads job state.
+
+warp-backfill-cancel:
+  post:
+    operationId: cancelWarpLogEmbeddingBackfill
+    summary: Cancel a Warp log embedding backfill
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id: { type: string }
+    responses:
+      '200':
+        description: Cancelled or already-terminal job
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpBackfillStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the backfill job store is unavailable.
+          Cancelling needs both: the runner to stop the work, the store to record
+          it.
 
 warp-chat:
   post:
