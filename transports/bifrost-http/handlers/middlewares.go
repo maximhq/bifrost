@@ -1094,6 +1094,9 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	systemWhitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		// Idempotent: the handler clears the cookie and returns 200 whether or
+		// not a session token is present, so a repeat logout must not 401 here.
+		"/api/session/logout",
 		"/api/oauth/callback",
 		"/health",
 		"/login",
