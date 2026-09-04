@@ -19,7 +19,7 @@ This lets you route simple greetings to a fast, cheap model and deep reasoning t
 Classification runs only when a routing rule actually references `complexity_tier`, so requests that never touch a complexity rule pay no embedding cost. Once semantic classification is configured, a request it cannot confidently match, such as a near miss or timeout, leaves `complexity_tier` unpublished. You can optionally configure an **LLM fallback classifier** to step in after semantic classification has run and returned no tier. See [LLM fallback classifier](#llm-fallback-classifier). Without semantic classification configured at all, Bifrost keeps the request on its existing routing path instead of guessing. When [session-aware routing](#session-aware-routing) is enabled and the request carries a recognized session identity, a turn that still produces no tier of its own reuses the tier already retained for that session, so `complexity_tier` goes unpublished only when neither classification nor session state supplies one.
 
 <Note>
-Complexity classification is **semantic** (embedding-based). The older lexical keyword scorer is retired. See [Lexical keyword classifier (retired)](#lexical-keyword-classifier-retired) for details and migration guidance.
+Complexity classification is **semantic** (embedding-based). The older lexical keyword scorer is retired. See [Lexical keyword classifier (retired)](#lexical-keyword-classifier-retired).
 </Note>
 
 ![Complexity Router](../../media/ui-complexity-router-semantic.png)
@@ -566,11 +566,6 @@ What this means for existing deployments:
 
 - **Boot is safe.** Legacy configurations still parse and validate, so upgrades never fail on startup because of an old complexity config. Until you configure an embedding provider and model, no tier is published (`complexity_mechanism: skipped`) and complexity rules simply fall through.
 - **Your keyword lists became phrase lists.** User-added entries are retained and mapped from four tiers to three: Simple stays Simple, Code and Technical become Medium, and Reasoning becomes Complex. They are now *reference phrases* to embed, not keywords to match. Short keywords like `"debug"` or `"api"` are weak exemplars and will produce poor classifications.
-- **Recommended migration:**
-  1. **Record any custom tier entries.** If you added entries beyond the built-in defaults, note them down in the UI or from `GET /api/routing/complexity-analyzer-config`. Legacy Simple entries map to Simple, Code and Technical entries map to Medium, and Reasoning entries map to Complex.
-  2. Click **Restore defaults** (or call `POST /api/routing/complexity-analyzer-config/reset`) to replace the phrase lists with the built-in semantic reference phrases. Your embedding provider, model, and storage setting are preserved.
-  3. Configure the embedding provider and model with **Edit embedding configuration**.
-  4. **Add your own examples back** as complete example requests in the appropriate tier. This preserves your routing policy.
 - **Historical logs are unchanged.** Earlier versions also had a fourth tier, **REASONING**, merged into **COMPLEX**; old `REASONING` rows stay reachable through the logs filter, but update any routing rules that still match on `"REASONING"`.
 
 ---
