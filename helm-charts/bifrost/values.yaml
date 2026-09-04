@@ -1004,12 +1004,17 @@ bifrost:
       # mDNS discovery
       mdnsService: ""
 
-  # SCIM/SSO configuration for enterprise SSO
-  scim:
-    enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
-    provider: ""
-    config: {}
+  # SCIM/SSO configuration for enterprise SSO. Not set by default — leave the key out
+  # entirely unless you manage SCIM through Helm. While it is absent the chart emits no
+  # scim_config section at all, so SCIM configured from the dashboard is left untouched.
+  # Once you declare it, Helm owns the section: enabled: true renders
+  # "scim_config": {"enabled": true, ...} and enabled: false renders
+  # "scim_config": {"enabled": false, ...}, which actually turns SCIM off.
+  # scim:
+  #   enabled: true
+  #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
+  #   provider: ""
+  #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
