@@ -16,6 +16,12 @@ import (
 // of token reached the wire.
 const errNotAccessibleByIntegration = "resource not accessible by integration"
 
+// errPermissionsNotGranted is GitHub's 422 for an installation token request that asks for
+// a permission the installation does not hold. For Copilot that is copilot_requests: write,
+// and it means the App's Copilot Requests permission was never set, or was added after the
+// App was installed and an organization owner has not yet approved the new permission.
+const errPermissionsNotGranted = "permissions requested are not granted"
+
 // copilotErrorBody is the OpenAI-shaped envelope Copilot returns for inference errors.
 // Some auth failures come back as a bare GitHub {"message": "..."} instead, so both
 // shapes are read.
