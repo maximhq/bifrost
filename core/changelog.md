@@ -1,0 +1,1 @@
+- fix: preserve raw OpenAI Responses cache-counter presence [@valentinyanakiev](https://github.com/valentinyanakiev)
