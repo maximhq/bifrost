@@ -54,6 +54,7 @@ type Service struct {
 	vectorStore  vectorstore.VectorStore
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
+	semantic     *SemanticSearcher
 	backfillJobs BackfillJobStore
 }
 
@@ -130,6 +131,9 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	}
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		if service.logs != nil {
+			service.semantic = NewSemanticSearcher(service.store, service.vectorStore, service.embed, service.logs)
+		}
 	}
 	return service
 }

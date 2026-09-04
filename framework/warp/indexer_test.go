@@ -18,6 +18,10 @@ type fakeWarpVectorStore struct {
 	dimension  int
 	adds       map[string]map[string]interface{}
 	embeddings map[string][]float32
+	nearest    []vectorstore.SearchResult
+	queries    []vectorstore.Query
+	limit      int64
+	threshold  float64
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
@@ -45,8 +49,13 @@ func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]ve
 func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
 	return nil, nil, nil
 }
-func (f *fakeWarpVectorStore) GetNearest(context.Context, string, []float32, []vectorstore.Query, []string, float64, int64) ([]vectorstore.SearchResult, error) {
-	return nil, nil
+func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = queries
+	f.threshold = threshold
+	f.limit = limit
+	return f.nearest, nil
 }
 func (f *fakeWarpVectorStore) RequiresVectors() bool { return true }
 func (f *fakeWarpVectorStore) Add(_ context.Context, _ string, id string, embedding []float32, metadata map[string]interface{}) error {

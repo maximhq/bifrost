@@ -226,6 +226,9 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 	if !config.IsConfigured() {
 		return nil, ErrUnavailable
 	}
+	if s.vectorStore == nil {
+		return nil, ErrNoVectorStore
+	}
 	return config, nil
 }
 
