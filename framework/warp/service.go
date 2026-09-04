@@ -30,6 +30,9 @@ type Service struct {
 	// method treats that as "not configured" rather than a fault.
 	store  configstore.WarpStore
 	logger schemas.Logger
+	// conversations is nil when the config store does not implement history.
+	// Chat still works; it just does not file anything.
+	conversations configstore.WarpConversationStore
 	// logs is nil on deployments with no logging plugin. Warp's tools have
 	// nothing to read there, so chat is reported unavailable rather than
 	// registered and always failing.
@@ -63,6 +66,12 @@ func WithChatFunc(chat ChatFunc) Option {
 	return func(s *Service) { s.chatOverride = chat }
 }
 
+// WithConversationStore sets the history store directly. Test seam, like
+// WithConfigStore.
+func WithConversationStore(store configstore.WarpConversationStore) Option {
+	return func(s *Service) { s.conversations = store }
+}
+
 // WithConfigStore sets the configuration store directly, bypassing the
 // ConfigStore narrowing NewService does. Tests use it to inject a double.
 func WithConfigStore(store configstore.WarpStore) Option {
@@ -76,6 +85,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	service := &Service{}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
+		service.conversations, _ = store.(configstore.WarpConversationStore)
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -84,6 +94,11 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 		service.client = NewClient(service.logger)
 	}
 	return service
+}
+
+// HasHistory reports whether conversations can be listed and filed.
+func (s *Service) HasHistory() bool {
+	return s.conversations != nil
 }
 
 // CanChat reports whether the chat endpoint can be served: there is data to

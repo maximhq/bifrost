@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,7 +28,10 @@ type Turn struct {
 	// Anything slower is hung, not slow, and holding the connection open past
 	// that helps nobody.
 	Budget time.Duration
+	// ConversationID is the thread this turn continues, or empty for a new one.
+	ConversationID string
 
+	question string
 	messages []schemas.ChatMessage
 	config   *schemas.WarpConfig
 	chat     ChatFunc
@@ -56,14 +60,20 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		return nil, ErrNoModelClient
 	}
 	return &Turn{
-		Budget:   time.Duration(config.EffectiveMaxIterations()*config.EffectiveRequestTimeoutSeconds()) * time.Second,
+		Budget:         time.Duration(config.EffectiveMaxIterations()*config.EffectiveRequestTimeoutSeconds()) * time.Second,
+		ConversationID: strings.TrimSpace(request.ConversationID),
+		// The question is the last turn; history is everything before it.
+		question: request.Messages[len(request.Messages)-1].Content,
 		messages: messages,
 		config:   config,
 		chat:     chat,
 	}, nil
 }
 
-// RunTurn drives the agent and folds its events into one response.
+// RunTurn drives the agent, folds its events into one response and files the
+// exchange in history. The thread id is stamped onto the done frame and onto
+// the response, so a client that started a new thread learns what to send next
+// without a second request.
 //
 // ctx must already carry the caller's query scope and identity: every tool
 // executes against it, and queryscope treats a missing scope as "no restriction",
@@ -84,12 +94,23 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	f := newFold()
 	for event := range events {
 		f.apply(event)
+		if event.Type == EventDone {
+			f.response.ConversationID = s.recordTurn(runCtx, turn, f.result())
+			event.ConversationID = f.response.ConversationID
+		}
 		if sink != nil && !sink(event) {
 			// Cancelling unblocks the agent's next emit so the goroutine exits;
-			// draining is not needed because Run selects on ctx.Done.
+			// draining is not needed because Run selects on ctx.Done. Anything
+			// already filed stays filed - a thread the reader never saw is still
+			// worth keeping.
 			stop()
 			return f.result()
 		}
+	}
+	if !f.sawDone {
+		// An error-terminal run has no done frame to carry the id, but the
+		// exchange is still worth filing: what was asked, and how it failed.
+		f.response.ConversationID = s.recordTurn(runCtx, turn, f.result())
 	}
 	return f.result()
 }
