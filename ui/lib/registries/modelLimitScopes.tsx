@@ -71,7 +71,12 @@ export interface ModelLimitScopeEntry {
 	// this scope — e.g. enterprise's "Managed by Access Profile: X" note. Passed
 	// the row's own ModelConfig; renders nothing (returns null) itself when there
 	// is nothing to show.
-	ManagedByComponent?: ComponentType<{ modelConfig: ModelConfig }>;
+	//
+	// `labelled` says the surrounding surface already names the relationship: the
+	// sheet renders it under a "Managed By" field label, so the component supplies
+	// only the value there, while a table row has no such label and has to say the
+	// whole thing itself.
+	ManagedByComponent?: ComponentType<{ modelConfig: ModelConfig; labelled?: boolean }>;
 	// Optional. Replaces the generic read-only alert body in the Model Limit
 	// sheet for a readOnly scope, letting the owner name itself — e.g.
 	// enterprise's "managed by access profile X". Passed the row's own

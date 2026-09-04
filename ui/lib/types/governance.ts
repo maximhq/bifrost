@@ -429,7 +429,12 @@ export interface ModelConfig {
 	scope?: string; // "global" (default) or "virtual_key"
 	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
 	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
-	managed_by?: string; // Resolved label for what externally manages this config, e.g. an access profile name (read-only)
+	// What externally manages this config, e.g. the access profile that materialized
+	// it (read-only). source_id addresses the SOURCE, not scope_id — for an
+	// access-profile-scoped row scope_id is the user's association row.
+	source_type?: string;
+	source_id?: string;
+	source_name?: string;
 	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
