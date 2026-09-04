@@ -1437,9 +1437,12 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		acc.addMCPConfig(&vk.MCPConfigs[i])
 	}
 	for _, id := range vmcpIDs {
-		if def := gs.virtualMCPByID(id); def != nil && def.Enabled {
-			acc.addVirtualMCP(def)
+		def := gs.virtualMCPByID(id)
+		if def == nil || !def.Enabled {
+			continue
 		}
+		acc.addVirtualMCP(def)
+		RecordGrantedVirtualMCP(ctx, def)
 	}
 	mcpPermits := gs.mcpPermitsFromAccumulator(acc, vk.Name)
 	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.configuredClients(), allowedByDefaultClients)
@@ -1461,6 +1464,101 @@ func (gs *LocalGovernanceStore) assignedVirtualMCPIDs(vkID string) []uint {
 		return v.([]uint)
 	}
 	return nil
+}
+
+// grantedVirtualMCPsKey keys the per-request set of addressable Virtual MCPs.
+type grantedVirtualMCPsKey struct{}
+
+// grantedVirtualMCPs is the per-request set of vMCPs reachable at /mcp/<slug>, keyed by slug. Only the
+// addressable paths record here (direct key assignment; enterprise access profiles); legacy
+// team/customer/provider scopes don't, so those grant on /mcp but not /mcp/<slug>.
+type grantedVirtualMCPs struct {
+	bySlug map[string]configstoreTables.TableVirtualMCP
+}
+
+// grantedVirtualMCPsMu guards the per-request set's get-or-create and its bySlug map. Resolution is
+// single-goroutine per request today, so it is uncontended; it stops a concurrent-map panic if a
+// record path is ever parallelized.
+var grantedVirtualMCPsMu sync.Mutex
+
+// RecordGrantedVirtualMCP records an enabled vMCP as reachable at /mcp/<slug> for this request. No-op
+// off the gateway path or for a disabled/slug-less vMCP. Exported so enterprise records profile vMCPs.
+func RecordGrantedVirtualMCP(ctx context.Context, vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil || !vmcp.Enabled || vmcp.EndpointSlug == "" {
+		return
+	}
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return
+	}
+	if gateway, _ := bctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
+		return
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		set = &grantedVirtualMCPs{bySlug: make(map[string]configstoreTables.TableVirtualMCP)}
+		bctx.SetValue(grantedVirtualMCPsKey{}, set)
+	}
+	set.bySlug[vmcp.EndpointSlug] = *vmcp
+}
+
+// grantedVirtualMCP returns the Virtual MCP recorded under slug for the request, if any.
+func grantedVirtualMCP(ctx context.Context, slug string) (*configstoreTables.TableVirtualMCP, bool) {
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return nil, false
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		return nil, false
+	}
+	v, ok := set.bySlug[slug]
+	if !ok {
+		return nil, false
+	}
+	return &v, true
+}
+
+// VirtualMCPToolAccess resolves the tool include-list a /mcp/<slug> request may see. The slug must
+// have been recorded addressable during resolution (assigned=false → the caller answers 403); its
+// tools are then narrowed to what the request's access grants, so an excluded tool can't leak. A nil
+// access restricts nothing, so the vMCP's own tools are served as-is.
+func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool) {
+	target, ok := grantedVirtualMCP(ctx, slug)
+	if !ok {
+		return nil, false
+	}
+
+	var clientNames map[string]string
+	if gs.inMemoryStore != nil {
+		clientNames = gs.inMemoryStore.GetMCPClientNames()
+	}
+	requested := make([]string, 0, len(target.ParsedTools))
+	for _, spec := range target.ParsedTools {
+		name := clientNames[spec.MCPClientID]
+		if name == "" {
+			// Client no longer configured (or unnamed): nothing to serve for it.
+			continue
+		}
+		if len(spec.ToolNames) == 0 {
+			requested = append(requested, name+"-"+grant.Wildcard)
+			continue
+		}
+		for _, tool := range spec.ToolNames {
+			if tool == "" {
+				continue
+			}
+			requested = append(requested, name+"-"+tool)
+		}
+	}
+	if access == nil {
+		return requested, true
+	}
+	return access.NarrowMCPToolIncludeList(requested), true
 }
 
 // loadVirtualMCPs fills both caches from the store at startup; surgical updates keep them current
