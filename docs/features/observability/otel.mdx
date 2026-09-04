@@ -46,6 +46,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
 | `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `message_format` | `string` | ❌ No | Shape of `gen_ai.input.messages` / `gen_ai.output.messages`: `flat` (default) or `parts` (OTel GenAI semantic conventions). See [Message Format](#message-format) |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution
@@ -780,6 +781,50 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - Tool calls and results
 
 When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to OTel. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+### Message Format
+
+`gen_ai.input.messages` and `gen_ai.output.messages` are JSON strings. The per-profile `message_format` option selects their shape:
+
+| Value | Shape | When to use |
+|-------|-------|-------------|
+| `flat` (default) | One object per message: `role`, a plain `content` string, plus `tool_calls`, `tool_call_id` and `reasoning` when present. | Existing dashboards and backends that already parse Bifrost's shape (Langfuse, Datadog, custom collectors). |
+| `parts` | The [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai) shape: one object per message with `role` and a `parts` array of typed parts — `text`, `reasoning`, `tool_call` (`id`, `name`, structured `arguments`) and `tool_call_response` (`id`, `response`). Instructions (`gen_ai.request.instructions`, set for Responses API and speech requests) are additionally mirrored as `gen_ai.system_instructions`, a one-part text array. | Backends that validate messages against the spec and otherwise leave them unmapped — Braintrust, for example, only fills its native input/output fields from spec-shaped messages. |
+
+```json
+{
+  "name": "otel",
+  "config": {
+    "profiles": [
+      {
+        "service_name": "bifrost",
+        "collector_url": "https://api.braintrust.dev/otel/v1/traces",
+        "trace_type": "genai_extension",
+        "message_format": "parts",
+        "trace_headers": {
+          "Authorization": "env.BRAINTRUST_AUTHORIZATION",
+          "x-bt-parent": "env.BRAINTRUST_PARENT"
+        }
+      }
+    ]
+  }
+}
+```
+
+With `parts`, the same exchange is exported as:
+
+```json
+[
+  { "role": "user", "parts": [{ "type": "text", "content": "Weather in Paris?" }] },
+  { "role": "assistant", "parts": [
+      { "type": "reasoning", "content": "need a lookup" },
+      { "type": "tool_call", "id": "call_1", "name": "get_weather", "arguments": { "city": "Paris" } }
+  ] },
+  { "role": "tool", "parts": [{ "type": "tool_call_response", "id": "call_1", "response": "18C, cloudy" }] }
+]
+```
+
+The option is per profile, so one profile can keep `flat` for a backend that depends on it while another emits `parts`. The root span's trace-level input/output excerpt, which is plain text, is wrapped as a single text part. Content dropped by `disable_content_logging` or `disable_root_span_content` is not exported in either format.
 
 ### Controlling Exported Content
 

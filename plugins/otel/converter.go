@@ -96,7 +96,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool, messageFormat MessageFormat) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
@@ -126,7 +126,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
 		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
-		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent)
+		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, messageFormat)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -169,8 +169,14 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	}
 }
 
-// convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool) *Span {
+// convertSpanToOTELSpan converts a single Bifrost span to OTEL format. Content attributes
+// are dropped first when disableContentLogging is set, so the message-format rewrite only
+// ever sees content that is allowed to leave.
+func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool, messageFormat MessageFormat) *Span {
+	attrs := convertAttributesToKeyValues(span.Attributes, disableContentLogging)
+	if messageFormat == MessageFormatParts {
+		attrs = applyPartsMessageFormat(attrs)
+	}
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -178,7 +184,7 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Kind:              convertSpanKind(span.Kind),
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
-		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
+		Attributes:        attrs,
 		Status:            convertSpanStatus(span.Status, span.StatusMsg),
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}

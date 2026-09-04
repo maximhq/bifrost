@@ -3507,6 +3507,12 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "message_format": {
+          "type": "string",
+          "enum": ["flat", "parts"],
+          "description": "Shape of gen_ai.input.messages / gen_ai.output.messages: flat (default) keeps Bifrost's role+content objects; parts emits the OpenTelemetry GenAI semantic-conventions shape (role + typed parts: text, tool_call, tool_call_response, reasoning) and mirrors gen_ai.request.instructions as gen_ai.system_instructions; use it for backends that only map spec-shaped messages into their native input/output fields (e.g. Braintrust).",
+          "default": "flat"
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {

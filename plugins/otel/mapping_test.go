@@ -247,7 +247,7 @@ func TestConvertTraceRequestHeaderFiltering(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false, MessageFormatFlat)
 	spans := rs.ScopeSpans[0].Spans
 
 	rootOut := findRoot(spans)
@@ -389,7 +389,7 @@ func TestConvertTraceContentFidelity(t *testing.T) {
 	}
 
 	// Content logging enabled (disableContentLogging=false, disableRootSpanContent=false).
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, MessageFormatFlat)
 
 	// Find the fixture's llm.call span by its span ID, not by kind/position — other span
 	// kinds (MCP tool/client, embedding, speech, transcription) also map to CLIENT, so a

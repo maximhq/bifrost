@@ -43,6 +43,7 @@ interface StoredOtelProfile {
 	disable_content_logging?: boolean;
 	group_traces_by_session?: boolean;
 	disable_root_span_content?: boolean;
+	message_format?: "flat" | "parts";
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -59,6 +60,11 @@ interface OtelFormFragmentProps {
 	isDeleting?: boolean;
 	isLoading?: boolean;
 }
+
+const messageFormatOptions: { value: "flat" | "parts"; label: string }[] = [
+	{ value: "flat", label: "Flat (role + content)" },
+	{ value: "parts", label: "Parts (OTel GenAI semantic conventions)" },
+];
 
 const traceTypeOptions: {
 	value: string;
@@ -111,6 +117,7 @@ const emptyProfile = (): ProfileForm => ({
 	disable_content_logging: false,
 	group_traces_by_session: false,
 	disable_root_span_content: false,
+	message_format: "flat",
 });
 
 // toProfileForm normalizes a stored profile into the SecretVar-based form representation.
@@ -134,6 +141,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	disable_content_logging: p?.disable_content_logging ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
 	disable_root_span_content: p?.disable_root_span_content ?? false,
+	message_format: p?.message_format ?? "flat",
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -661,6 +669,36 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										)}
 									/>
 									</div>
+									<FormField
+										control={control}
+										name={`${base}.message_format`}
+										render={({ field }) => (
+											<FormItem className="w-full">
+												<FormLabel>Message Format</FormLabel>
+												<Select onValueChange={field.onChange} value={field.value ?? "flat"} disabled={!hasOtelAccess}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid={`otel-profile-${index}-message-format-select`}>
+															<SelectValue placeholder="Select message format" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														{messageFormatOptions.map((option) => (
+															<SelectItem key={option.value} value={option.value}>
+																{option.label}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<FormDescription>
+													Shape of <code className="text-xs">gen_ai.input.messages</code> / <code className="text-xs">gen_ai.output.messages</code>.
+													Parts follows the OTel GenAI semantic conventions (role + typed parts) and mirrors instructions as{" "}
+													<code className="text-xs">gen_ai.system_instructions</code>; backends that validate against the spec (e.g.
+													Braintrust) need it to populate their native input/output fields.
+												</FormDescription>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
 									<FormField
 										control={control}
 										name={`${base}.request_headers`}
