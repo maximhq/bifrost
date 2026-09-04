@@ -520,6 +520,16 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			continue
 		}
 
+		// Custom providers can disable list_models via allowed_requests; the call would
+		// only bounce with "unsupported operation", so don't spend a request on it here.
+		// Scoped to the fan-out: a direct ListModelsRequest still returns the error.
+		if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
+			config.CustomProviderConfig != nil &&
+			!config.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+			bifrost.logger.Debug("skipping provider %s in list all models: list_models is disabled via allowed_requests", providerKey)
+			continue
+		}
+
 		wg.Add(1)
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
