@@ -1475,29 +1475,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
 										showDefaultsNote
 									/>
-									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save).
-									    For an existing key the editor stays gated until its detail (the assignment baseline)
-									    loads, so an early edit can't be discarded and a failed load can't hide assignments. */}
-									{isEditing && isVkDetailLoading ? (
-										<div className="mt-6 space-y-2">
-											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
-											<div className="text-muted-foreground text-sm">Loading assigned Virtual MCPs...</div>
-										</div>
-									) : isEditing && isVkDetailError ? (
-										<div className="mt-6 space-y-2">
-											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
-											<Alert variant="destructive">
-												<AlertDescription className="flex items-center justify-between gap-2">
-													<span>Could not load assigned Virtual MCPs.</span>
-													<Button type="button" variant="outline" size="sm" onClick={() => refetchVkDetail()}>
-														Retry
-													</Button>
-												</AlertDescription>
-											</Alert>
-										</div>
-									) : (
-										<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
-									)}
+									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save). Renders
+									    inline like the MCP server editor above; assignedVmcpIds fills in from the VK detail
+									    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
+									    diff before that baseline is in. */}
+									<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
 									<DottedSeparator className="mt-6 mb-5" />
 									{/* Budget Configuration */}
 									<div className="space-y-4">
