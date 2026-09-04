@@ -922,9 +922,16 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		bifrostListModelsReq.ExtraParams = extraParams
 	}
 
-	// If provider is empty, list all models from all providers
+	// If provider is empty, list all models from all providers.
+	// Prefer the in-memory ModelCatalog for the aggregate listing: the live
+	// fan-out shares each provider's inference worker queue and can block for
+	// minutes behind in-flight generations (see list_models_catalog.go).
 	if provider == "" {
-		resp, bifrostErr = h.client.ListAllModels(bifrostCtx, bifrostListModelsReq)
+		if catalogResp := h.listModelsFromCatalog(ctx, bifrostCtx); catalogResp != nil {
+			resp, bifrostErr = catalogResp, nil
+		} else {
+			resp, bifrostErr = h.client.ListAllModels(bifrostCtx, bifrostListModelsReq)
+		}
 	} else {
 		resp, bifrostErr = h.client.ListModelsRequest(bifrostCtx, bifrostListModelsReq)
 	}
