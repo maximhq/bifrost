@@ -4342,7 +4342,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				// the model applies its own default. Synthesizing thinking here would
 				// turn it on against the caller's request on every model that defaults
 				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6).
-				if caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+				if caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 				}
 			} else {
@@ -4392,7 +4392,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						// The neutral params collapsed the caller's effort into "none"
 						// to signal reasoning-off, so restore it from what they sent.
 						if native, ok := anthropicNativeEffortFrom(ctx); ok && native.Effort != "" &&
-							caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+							caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 							setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 						}
 					}

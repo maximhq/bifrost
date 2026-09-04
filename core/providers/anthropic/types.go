@@ -189,6 +189,7 @@ type ProviderFeatureSupport struct {
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	NativeEffort           bool // output_config.effort accepted on every model the provider serves — the provider-wide fallback for ModelCaps.SupportsNativeEffort when no datasheet row speaks; the Claude model ladder (DefaultSupportsNativeEffort) is the fallback everywhere this is false. DeepSeek: "output_config: only effort is supported" (https://api-docs.deepseek.com/guides/anthropic_api)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -342,6 +343,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		StructuredOutputs:      true,
 		InterleavedThinking:    true,
 		ServiceTier:            true,
+		NativeEffort:           true,
 	},
 }
 
