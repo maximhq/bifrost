@@ -44,7 +44,7 @@ import {
 } from "@/lib/constants/logs";
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -399,6 +399,28 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 		["Failed", counts.failed],
 		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
 	];
+};
+
+const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+
+// Input tokens are normalized to include cache read/write tokens, so break the total down.
+const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
+	const total = usage?.prompt_tokens ?? 0;
+	if (!total || !usage?.prompt_tokens_details) return undefined;
+	const cachedRead = usage?.prompt_tokens_details.cached_read_tokens ?? 0;
+	const cachedWrite = usage?.prompt_tokens_details.cached_write_tokens ?? 0;
+	const lines = ["Input tokens include cached tokens."];
+	if (cachedRead >= 0 || cachedWrite >= 0) {
+		lines.push(`Uncached input: ${formatExactNumber(total - cachedRead - cachedWrite)}`);
+	}
+	if (cachedRead >= 0) {
+		lines.push(`Cache read: ${formatExactNumber(cachedRead)}`);
+	}
+	if (cachedWrite >= 0) {
+		lines.push(`Cache write: ${formatExactNumber(cachedWrite)}`);
+	}
+	lines.push(`Input tokens: ${formatExactNumber(total)}`);
+	return lines.join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -2133,7 +2155,12 @@ export function LogDetailView({
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
 								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
+									<LogEntryDetailsView
+										className="w-full"
+										label="Input Tokens"
+										value={log.token_usage?.prompt_tokens || "-"}
+										tooltip={getInputTokensTooltip(log.token_usage)}
+									/>
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
