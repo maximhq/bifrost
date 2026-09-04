@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.37
+**Latest Version:** 2.1.38
 
 ## Changelog
+
+### 2.1.38
+
+- Fixed `postgresql.external.passwordCommand` being unusable: the values schema excluded `password` / `existingSecret` by key *presence*, and `values.yaml` ships both with empty-string defaults, so any chart that set `passwordCommand` failed schema validation. The exclusion is now value-based — `password` and `existingSecret` must be empty (or omitted) when `passwordCommand` is set.
 
 ### 2.1.37
 
