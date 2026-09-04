@@ -444,7 +444,9 @@ func TestSanitizeUserText_ClaudeCodeWrappers(t *testing.T) {
 			name: "session_title_request",
 			text: "<session>\nhello can u help me understand what sidekiq is\n</session>\n\n" +
 				"Write the title in the predominant language of the session.",
-			wantKind: complexityTextHousekeeping,
+			wantText: "<session>\nhello can u help me understand what sidekiq is\n</session>\n\n" +
+				"Write the title in the predominant language of the session.",
+			wantKind: complexityTextHuman,
 		},
 		{
 			name: "resume_recap_request",
@@ -487,11 +489,6 @@ func TestBuildComplexityInput_ClaudeCodeInjectedMessagesAreContinuations(t *test
 		name string
 		text string
 	}{
-		{
-			name: "session_title_request",
-			text: "<session>\nDebug the distributed queue worker\n</session>\n\n" +
-				"Write the title in the predominant language of the session.",
-		},
 		{
 			name: "resume_recap_request",
 			text: "The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown.",

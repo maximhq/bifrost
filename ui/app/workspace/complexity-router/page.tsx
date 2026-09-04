@@ -37,7 +37,7 @@ import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import {
@@ -47,6 +47,7 @@ import {
 	DEFAULT_FORM_VALUES,
 	toAnalyzerPayload,
 	toFormValues,
+	shouldSeedLLMPrompt,
 } from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
@@ -110,6 +111,9 @@ export default function ComplexityRouterPage() {
 	const [submitError, setSubmitError] = useState<string | null>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	const [embeddingSheetOpen, setEmbeddingSheetOpen] = useState(false);
+	// An intentionally empty draft can equal the saved default and be non-dirty.
+	// Track interaction separately so status refreshes never refill it.
+	const promptEdited = useRef(false);
 
 	const { data: providersData, isLoading: providersLoading } = useGetProvidersQuery();
 	const { data: allKeys, isLoading: keysLoading } = useGetAllKeysQuery();
@@ -132,6 +136,7 @@ export default function ComplexityRouterPage() {
 		control,
 		watch,
 		setValue,
+		getValues,
 		formState: { errors, dirtyFields, isDirty, isSubmitted },
 	} = useForm<AnalyzerFormValues>({
 		resolver: zodResolver(analyzerConfigSchema),
@@ -218,18 +223,10 @@ export default function ComplexityRouterPage() {
 	// where a "saving will embed N phrases" line appears next to a disabled Save.
 	const hasPendingSave = isDirty;
 
-	// The prompt editor works on a concrete copy of the shipped guidance, the
-	// same lifecycle as the phrase lists: seeded from the gateway, owned by the
-	// operator once saved. Seeding is not a dirty edit — the operator has not
-	// said anything yet — but any save from then on persists the materialized
-	// text, which is what makes "what exactly is my classifier running?"
-	// answerable from the stored config alone.
+	// Shipped guidance initializes untouched drafts; an empty edited prompt is
+	// valid and means "use default guidance" when saved.
 	const defaultLLMPrompt = semanticStatus?.llm_default_prompt ?? "";
 	const livePrompt = liveLLM?.prompt ?? "";
-	useEffect(() => {
-		if (!isLLMFallbackEnabled || !defaultLLMPrompt || livePrompt !== "") return;
-		setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: false });
-	}, [isLLMFallbackEnabled, defaultLLMPrompt, livePrompt, setValue]);
 
 	// Saving re-runs warmup, but what it costs depends on what changed, because
 	// the gateway caches a vector per phrase (semanticEmbeddingCache).
@@ -296,12 +293,20 @@ export default function ComplexityRouterPage() {
 	const willReembed = willReembedAll || newPhraseCount > 0;
 
 	useEffect(() => {
-		if (!data || isDirty) return;
+		if (!data || isDirty || promptEdited.current) return;
 		reset(toFormValues(data));
 		setSubmitError(null);
 	}, [data, isDirty, reset]);
 
+	// Run after saved-data hydration and read the current form value, not the
+	// previous render's value, when config and status arrive together.
+	useEffect(() => {
+		if (!data || !shouldSeedLLMPrompt(isLLMFallbackEnabled, defaultLLMPrompt, getValues("llm.prompt") ?? "", promptEdited.current)) return;
+		setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: false });
+	}, [data, isLLMFallbackEnabled, defaultLLMPrompt, livePrompt, getValues, setValue]);
+
 	const handleDiscard = () => {
+		promptEdited.current = false;
 		if (data) reset(toFormValues(data));
 		setSubmitError(null);
 	};
@@ -312,6 +317,7 @@ export default function ComplexityRouterPage() {
 		resetConfig()
 			.unwrap()
 			.then((defaults) => {
+				promptEdited.current = false;
 				reset(toFormValues(defaults));
 				toast.success("Reset to defaults", { position: "top-right" });
 			})
@@ -341,6 +347,7 @@ export default function ComplexityRouterPage() {
 		updateConfig(payload)
 			.unwrap()
 			.then((res) => {
+				promptEdited.current = false;
 				reset(toFormValues(res));
 				setEmbeddingSheetOpen(false);
 				toast.success("Configuration saved", { position: "top-right" });
@@ -619,7 +626,10 @@ export default function ComplexityRouterPage() {
 											type="button"
 											variant="ghost"
 											size="sm"
-											onClick={() => setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: true })}
+											onClick={() => {
+												promptEdited.current = true;
+												setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: true });
+											}}
 											disabled={!canUpdate || !defaultLLMPrompt || livePrompt === defaultLLMPrompt}
 											data-testid="complexity-router-llm-prompt-reset-button"
 										>
@@ -637,7 +647,12 @@ export default function ComplexityRouterPage() {
 											rows={8}
 											maxLength={MAX_LLM_PROMPT_CHARACTERS}
 											value={field.value}
-											onChange={field.onChange}
+											onChange={(event) => {
+												promptEdited.current = true;
+												field.onChange(event);
+											}}
+											onBlur={field.onBlur}
+											ref={field.ref}
 											disabled={!canUpdate}
 											aria-invalid={errors.llm?.prompt ? true : undefined}
 											className={cn(
@@ -651,8 +666,8 @@ export default function ComplexityRouterPage() {
 									<p className="text-destructive text-xs">{errors.llm.prompt.message}</p>
 								) : (
 									<p className="text-muted-foreground text-xs leading-relaxed">
-										Bifrost always appends a fixed response-format section (the tier names and the JSON answer contract), so edits here
-										refine what the tiers mean but cannot break routing.{" "}
+										Leave blank to use default guidance. Bifrost always appends a fixed response-format section (the tier names and the JSON
+										answer contract), so edits here refine what the tiers mean but cannot break routing.{" "}
 										<span className="font-mono tabular-nums">
 											{livePrompt.length}/{MAX_LLM_PROMPT_CHARACTERS}
 										</span>

@@ -300,7 +300,7 @@ export default function EmbeddingConfigSheet({
 								<div className="space-y-2">
 									<FieldLabel
 										htmlFor="semantic-timeout"
-										tooltip="Ceiling on the embedding call, which runs inline on the request path. Exceeding it skips complexity tier based routing for that request."
+										tooltip="Maximum wait for the embedding call, including provider queue and response time. On timeout, the configured fallback applies."
 									>
 										Embedding timeout (ms)
 									</FieldLabel>

@@ -71,7 +71,6 @@ const (
 	codexTurnMetadataHeader      = "x-codex-turn-metadata"
 	claudeCodeSessionIDHeader    = "x-claude-code-session-id"
 	maxComplexitySessionIDLength = 255
-	claudeSessionEnvelopeOpen    = "<session>"
 	claudeResumeRecapPrefix      = "The user stepped away and is coming back."
 )
 
@@ -563,15 +562,12 @@ func sanitizeUserText(text string, harness complexityHarness) (string, complexit
 	}
 }
 
-// isClaudeCodeHousekeepingText recognizes complete user-role messages Claude
-// Code injects for background session maintenance. These are not new human
-// intent and therefore must not initialize or escalate session complexity.
-// Detection is deliberately prefix-based and Claude-client-gated so a human
-// request that merely mentions a session XML tag remains classifiable.
+// isClaudeCodeHousekeepingText recognizes Claude Code's injected resume recap.
+// It is background session maintenance rather than new human intent, so it
+// must not initialize or escalate session complexity.
 func isClaudeCodeHousekeepingText(text string) bool {
 	text = strings.TrimSpace(text)
-	return strings.HasPrefix(text, claudeSessionEnvelopeOpen) ||
-		strings.HasPrefix(text, claudeResumeRecapPrefix)
+	return strings.HasPrefix(text, claudeResumeRecapPrefix)
 }
 
 func sanitizeSystemText(text string, harness complexityHarness) string {
