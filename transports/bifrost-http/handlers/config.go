@@ -887,9 +887,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
 			// Password is considered changed when it was intentionally submitted —
-			// ShouldPreserveStored() returns false for both plain values and secret refs.
+			// the sentinel-only check returns false for both plain values and secret refs.
+			// Sentinel-only (not ShouldPreserveStored): the GET endpoint returns the
+			// admin password as "<redacted>"/FullyRedacted, never the 4+24+4 asterisk
+			// mask, so a submitted value with that shape is a real password (#6413).
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+				!payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly()
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -935,7 +938,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				if payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly() {
 					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
 						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 						return
@@ -975,7 +978,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			if payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly() {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {

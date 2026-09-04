@@ -245,6 +245,37 @@ func (e *SecretVar) IsRedacted() bool {
 	return false
 }
 
+// IsRedactionSentinel reports whether the value is one of the fixed redaction
+// sentinels ("<redacted>" / "[REDACTED]", case-insensitive) or a secret
+// reference. Unlike IsRedacted it never matches the positional
+// 4-chars + 24-asterisks + 4-chars masking pattern, so a real credential that
+// happens to have that shape is not misclassified. Use this for fields the
+// server only ever redacts to a sentinel (e.g. the admin password, which the
+// config GET returns as "<redacted>" or FullyRedacted, never partially masked).
+func (e *SecretVar) IsRedactionSentinel() bool {
+	if e == nil {
+		return false
+	}
+	if e.IsFromSecret() {
+		return true
+	}
+	return strings.EqualFold(e.Val, "<redacted>") || strings.EqualFold(e.Val, "[REDACTED]")
+}
+
+// ShouldPreserveStoredSentinelOnly is ShouldPreserveStored for fields the
+// server never partially masks: only an empty value or an exact redaction
+// sentinel counts as "unchanged". A value shaped like the 4+24+4 asterisk
+// masking pattern is treated as a genuine new credential, not a placeholder.
+func (e *SecretVar) ShouldPreserveStoredSentinelOnly() bool {
+	if e == nil {
+		return true
+	}
+	if e.IsFromSecret() {
+		return false
+	}
+	return e.GetValue() == "" || e.IsRedactionSentinel()
+}
+
 // Equals checks if two SecretVars are equal.
 func (e *SecretVar) Equals(other *SecretVar) bool {
 	if e == nil && other == nil {
