@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -20,6 +21,30 @@ type responseHandler[T any] func(responseBody []byte, response *T, requestBody [
 // content blocks; the o-series and GPT-5 carry it as summary[] entries.
 func defaultSupportsReasoningContentBlocks(model string) bool {
 	return strings.Contains(strings.ToLower(model), "gpt-oss")
+}
+
+// targetsOpenAIHostedAPI reports whether this attempt is going to OpenAI's own API
+// rather than an OpenAI-compatible backend (Ollama, vLLM, llama.cpp, LM Studio,
+// LiteLLM, ...) reached through a custom network_config.base_url. The OpenAI
+// model-name gates in this package describe api.openai.com only; a self-hosted
+// backend decides for itself which parameters it accepts.
+//
+// No base URL on the context (direct converter calls, tests) or an unparsable one
+// is treated as hosted, which preserves the historical filtering.
+func targetsOpenAIHostedAPI(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return true
+	}
+	baseURL, _ := ctx.Value(schemas.BifrostContextKeyProviderBaseURL).(string)
+	if baseURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Hostname() == "" {
+		return true
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.com")
 }
 
 // IsOpenAIReasoningModel matches OpenAI-family models that accept

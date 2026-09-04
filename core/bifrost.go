@@ -6862,6 +6862,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
+		// Lets converters distinguish a vendor's own API from an OpenAI-compatible backend
+		// (Ollama, vLLM, ...) configured through network_config.base_url on a built-in provider.
+		req.Context.SetValue(schemas.BifrostContextKeyProviderBaseURL, config.NetworkConfig.BaseURL)
 
 		bifrost.endCoreSpan(workerSetupSpan)
 

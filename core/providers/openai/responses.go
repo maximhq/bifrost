@@ -355,7 +355,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) {
+			//
+			// Scoped to api.openai.com: a custom base_url means an OpenAI-compatible
+			// backend (Ollama, vLLM, ...) whose models fail the OpenAI name allowlist
+			// yet accept reasoning.effort, including "none" to switch thinking off.
+			// The backend decides what it accepts, so the block is forwarded as-is.
+			if bifrostReq.Provider == schemas.OpenAI && targetsOpenAIHostedAPI(ctx) &&
+				!caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
