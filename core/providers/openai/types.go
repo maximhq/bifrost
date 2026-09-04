@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1020,6 +1021,37 @@ type OpenAIListModelsResponse struct {
 	Data   []OpenAIModel `json:"data"`
 }
 
+// UnmarshalJSON accepts both OpenAI envelopes and compatible top-level model arrays.
+func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
+	type envelope OpenAIListModelsResponse
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return sonic.Unmarshal(trimmed, (*envelope)(response))
+	}
+
+	var models []struct {
+		OpenAIModel
+		Organization  string `json:"organization"`
+		ContextLength *int   `json:"context_length,omitempty"`
+	}
+	if err := sonic.Unmarshal(trimmed, &models); err != nil {
+		return err
+	}
+
+	response.Data = make([]OpenAIModel, len(models))
+	for i, model := range models {
+		response.Data[i] = model.OpenAIModel
+		if response.Data[i].OwnedBy == "" {
+			response.Data[i].OwnedBy = model.Organization
+		}
+		if response.Data[i].ContextWindow == nil {
+			response.Data[i].ContextWindow = model.ContextLength
+		}
+	}
+	return nil
+}
+
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
 type OpenAIImageGenerationRequest struct {
 	Model  string `json:"model"`
@@ -1139,8 +1171,9 @@ var ValidOpenAIVideoSizes = map[string]bool{
 
 // OpenAIVideoGenerationRequest is the request body for OpenAI video generation.
 type OpenAIVideoGenerationRequest struct {
-	Prompt         string `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
-	InputReference []byte `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	Prompt         string  `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
+	InputReference []byte  `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	VideoURI       *string `json:"video_uri,omitempty"`       // Optional source video for video-to-video
 
 	Model string `json:"model"` // Video generation model (defaults to sora-2)
 
@@ -1153,6 +1186,35 @@ type OpenAIVideoGenerationRequest struct {
 // GetExtraParams implements the ExtraParamsGetter interface
 func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
+}
+
+// OpenAIVideoEditRequest is the request body for OpenAI video edits. The source video is either an
+// uploaded file, sent as multipart, or a reference to a completed video, sent as JSON.
+type OpenAIVideoEditRequest struct {
+	Prompt string                    `json:"prompt"` // Text prompt describing how to edit the source video
+	Video  OpenAIVideoEditVideoInput `json:"video"`  // Source video: uploaded bytes or a video reference
+
+	Model string `json:"model,omitempty"` // Inferred from the source video when it is referenced by ID
+
+	// Provider is resolved by the transport from the provider query parameter, the x-model-provider
+	// header, or a provider suffix on the source video ID. The official SDKs send no model on this
+	// route, so it is often the only routing signal available.
+	Provider schemas.ModelProvider `json:"-"`
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// OpenAIVideoEditVideoInput is the "video" field, which is overloaded: a file part on a multipart
+// request, or an object carrying the ID of a completed video on a JSON one.
+type OpenAIVideoEditVideoInput struct {
+	ID    string `json:"id,omitempty"`
+	Bytes []byte `json:"-"`
+}
+
+// GetExtraParams implements the ExtraParamsGetter interface
+func (r *OpenAIVideoEditRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // OpenAIVideoRemixRequest represents an OpenAI video remix request

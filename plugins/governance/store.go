@@ -5,25 +5,35 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/routing"
 	"gorm.io/gorm"
 )
 
-type EntityWiseBudgets map[string][]*configstoreTables.TableBudget
-type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
+type (
+	EntityWiseBudgets    map[string][]*configstoreTables.TableBudget
+	EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
+)
 
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
+	// inMemoryStore supplies the MCP clients open to every virtual key when building the
+	// grant a key carries. Optional: without it, no client is treated as open.
+	inMemoryStore InMemoryStore
 	// Core data maps using sync.Map for lock-free reads
+	// virtualKeys is keyed by VK value; during the rotation grace period a VK is
+	// registered under two keys (current + previous value) pointing at the same
+	// object. GetVirtualKey validates which key matched and lazily removes
+	// expired/stale value keys (a plain Delete on the value key only - the ID
+	// index must survive such cleanup).
 	virtualKeys sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
 	// virtualKeysByID is a secondary index over virtualKeys keyed by VK row ID,
 	// giving O(1) by-ID lookups (e.g. the /mcp JWT auth path) without an O(n)
@@ -36,7 +46,10 @@ type LocalGovernanceStore struct {
 	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
 	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
-	routingRules    sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	// Keying definitions by ID (not by VK) makes an edit one Store that every assigned VK reads at once.
+	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
+	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
+	virtualMCPAssignMu sync.Mutex // serializes the assignment-slice read-modify-write in attach/detach
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -59,10 +72,6 @@ type LocalGovernanceStore struct {
 	// to clear the matching baseline, so this adds no new lock.
 	budgetResetGens map[string]uint64
 
-	// CEL caching layer for routing rules
-	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
-	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
-
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
 
@@ -79,15 +88,14 @@ type LocalGovernanceStore struct {
 }
 
 type GovernanceData struct {
-	VirtualKeys  map[string]*configstoreTables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        map[string]*configstoreTables.TableTeam        `json:"teams"`
-	Customers    map[string]*configstoreTables.TableCustomer    `json:"customers"`
-	Users        map[string]*UserGovernance                     `json:"users"` // User-level governance (enterprise-only)
-	Budgets      map[string]*configstoreTables.TableBudget      `json:"budgets"`
-	RateLimits   map[string]*configstoreTables.TableRateLimit   `json:"rate_limits"`
-	RoutingRules map[string]*configstoreTables.TableRoutingRule `json:"routing_rules"`
-	ModelConfigs []*configstoreTables.TableModelConfig          `json:"model_configs"`
-	Providers    []*configstoreTables.TableProvider             `json:"providers"`
+	VirtualKeys  map[string]*configstoreTables.TableVirtualKey `json:"virtual_keys"`
+	Teams        map[string]*configstoreTables.TableTeam       `json:"teams"`
+	Customers    map[string]*configstoreTables.TableCustomer   `json:"customers"`
+	Users        map[string]*UserGovernance                    `json:"users"` // User-level governance (enterprise-only)
+	Budgets      map[string]*configstoreTables.TableBudget     `json:"budgets"`
+	RateLimits   map[string]*configstoreTables.TableRateLimit  `json:"rate_limits"`
+	ModelConfigs []*configstoreTables.TableModelConfig         `json:"model_configs"`
+	Providers    []*configstoreTables.TableProvider            `json:"providers"`
 }
 
 // BusinessUnitGovernance holds in-memory budget and rate limit data for a business unit
@@ -121,43 +129,114 @@ type BudgetAndRateLimitStatus struct {
 //     DB-backed) and prevents retry loops on policy violations.
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
+	GetGovernanceUsageData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
 	GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool)
+	// ResolvePermits reports the permits a request carries: the ones its caller holds, the permit
+	// scoping the request, and the mode composing them.
+	//
+	// Everything is resolved from the request itself, starting with the identity the transport
+	// settled on its grant, so a caller needs nothing but the context to ask.
+	//
+	// A store that knows only about virtual keys answers with the presented key's permit and nothing
+	// scoping it. A store that resolves other holders answers for those too, including a caller whose
+	// permits do not come from a key at all, and it may answer with several: a caller holding more
+	// than one is read as holding all of them at once.
+	//
+	// Answering with nothing means one of two things the funnel tells apart by what was presented: a
+	// request that presented nothing carries no access and is governed as unrestricted, and one that
+	// presented something this store resolves permits from, which resolved to nothing, is refused.
+	//
+	// A store that resolves a project the request named answers the same way about that: the scoping
+	// slot is filled when the request may be scoped by the project it named, and left empty when it
+	// may not. Which of those happened is not this store's to report: the funnel refuses a request
+	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
+	// credential nothing granted.
+	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
+	// GatherLimits assembles every limit an attempt answers to, once its provider and model are
+	// known: the deployment's own for the pair, what funds each holder the request carries, and what
+	// funds their use of the provider. Which holders pay is the store's to say: a store that composes
+	// several possible payers settles here on who pays, and everything downstream (the checks, the
+	// co-payers named on the log row, the charge) reads that one settled answer off the grant rather
+	// than assembling its own.
+	//
+	// An error is a request whose payers cannot be settled at all, which the funnel refuses as such;
+	// it is not a limit being exhausted, which the checks report.
+	GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error)
+	// The gather primitives below are one vocabulary: who holds the money (the deployment, or a
+	// permit's holder) crossed with what scopes it (a provider, or a model on a provider), plus
+	// HolderLimits for what funds the holder whichever provider serves. GatherLimits composes them;
+	// nothing else decides who is charged. All are resolved per attempt because a request can fail
+	// over to another provider or have its model rewritten, so none of them are facts about the
+	// permit.
+
+	// GlobalProviderLimits reports the deployment's own limits on a provider, spent by every
+	// request that provider serves whatever granted it.
+	GlobalProviderLimits(ctx context.Context, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// GlobalModelLimits reports the deployment's own model-config limits covering the pair,
+	// wildcard tiers included.
+	GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// HolderLimits reports what funds a permit's holder whichever provider serves the request: for a
+	// virtual key, its own limits plus its team's and customer's. Not on the permit because these
+	// cannot tell one provider from another, so load balancing has no use for them and asking once
+	// per candidate answers the same question N times.
+	//
+	// This is the seam a deployment reimplements to fund requests from something other than a key.
+	// Nothing downstream asks what kind of holder answered.
+	HolderLimits(ctx context.Context, permit schemas.Permit) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// PermitProviderLimits reports what funds a permit's use of one provider: the limits configured
+	// against that provider on the holder, and no other. These are the limits that can tell one
+	// provider from another, which is what load balancing asks about, and they are gathered again
+	// with the rest once the attempt's provider is settled. A permit describes what may be reached;
+	// what that costs is the store's to know, keyed by the permit's identity.
+	PermitProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// PermitModelLimits reports the permit holder's own model-config limits covering the pair,
+	// keyed by the permit's identity the way PermitProviderLimits is. The deployment's are not
+	// folded in, so a caller composing several holders can ask about each without gathering the
+	// same deployment rows once per holder.
+	PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit)
+	// CheckBudgets reports whether any of the given budgets is exhausted, and CheckRateLimits the
+	// same for rate limits. What to check is the caller's to assemble; these only evaluate, so
+	// neither knows what kind of holder is paying.
+	CheckBudgets(ctx context.Context, limits []schemas.Limit, baselines map[string]float64) (Decision, error)
+	CheckRateLimits(ctx context.Context, limits []schemas.Limit, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
+	// ChargeBudgets bills a cost to the given budgets, and ChargeRateLimits counts a request against the
+	// given rate limits. What to charge is the caller's to have settled: these are handed the same list
+	// the checks were, so a request cannot be checked against one set and billed to another.
+	ChargeBudgets(ctx context.Context, limits []schemas.Limit, cost float64) error
+	ChargeRateLimits(ctx context.Context, limits []schemas.Limit, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
+	// CheckProviderCandidateExclusion reports whether a load-balancing candidate can serve this
+	// request right now, answering with a Decision like the checks above. What to tell the caller
+	// about a refusal is the caller's to word: it is the one writing a routing log. Only spending
+	// decides here: what a candidate may reach was already settled by the access it came from.
+	//
+	// Only the limits that can tell one candidate from another are asked about: the deployment's own
+	// on that provider, and what every permit that pays for the pair is funded by on it. A limit
+	// covering every provider answers the same for all of them, so it can only exclude every
+	// candidate at once, which is a refusal, and one the funnel states with a reason.
+	//
+	// The store answers because the store owns what pays for a candidate. A store that knows only
+	// about virtual keys looks at what the presented key funds; a store that funds candidates from
+	// something else answers for that too, and load balancing does not need to know the difference.
+	CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error)
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
 	// BumpBudgetUsage increment is never clobbered.
 	LoadBudget(ctx context.Context, budgetID string) *configstoreTables.TableBudget
+	BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error
 	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget)
 	DeleteBudget(ctx context.Context, budgetID string)
 	// Rate limit crud. UpsertRateLimitConfig carries in-memory counter state
 	// (token + request CurrentUsage/LastReset) forward across replacements —
 	// same rationale as UpsertBudgetConfig.
 	LoadRateLimit(ctx context.Context, rateLimitID string) *configstoreTables.TableRateLimit
+	BumpRateLimitUsage(ctx context.Context, rateLimitID string, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error
 	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
-	// Provider-level governance checks
-	CheckProviderBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckProviderRateLimit(ctx context.Context, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	// Model-level governance checks
-	CheckModelBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckModelRateLimit(ctx context.Context, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	// Scoped model-level governance checks (aggregate with the global model checks above).
-	// scope/scopeID identify the owning entity (e.g. "virtual_key" + VK.ID, or any other
-	// scope registered via tables.RegisterModelConfigScope). An empty scope or scopeID
-	// is a no-op (returns DecisionAllow).
-	CheckScopedModelBudget(ctx context.Context, scope, scopeID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckScopedModelRateLimit(ctx context.Context, scope, scopeID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	// VK-level governance checks
-	CheckVirtualKeyBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckVirtualKeyRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
 	// In-memory usage updates (for VK-level)
-	UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error
-	UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory usage updates for scoped model configs (mirror the global model updates).
 	// scope/scopeID identify the owning entity; an empty scope or scopeID is a no-op.
-	UpdateScopedModelBudgetUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error
-	UpdateScopedModelRateLimitUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
@@ -175,8 +254,6 @@ type GovernanceStore interface {
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
 	// Provider and model-level usage updates (combined)
-	UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error
-	UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// Dump operations
 	DumpRateLimits(ctx context.Context, tokenBaselines map[string]int64, requestBaselines map[string]int64) error
 	DumpBudgets(ctx context.Context, baselines map[string]float64) error
@@ -191,27 +268,12 @@ type GovernanceStore interface {
 	CreateCustomerInMemory(ctx context.Context, customer *configstoreTables.TableCustomer)
 	UpdateCustomerInMemory(ctx context.Context, customer *configstoreTables.TableCustomer, budgetBaselines map[string]float64)
 	DeleteCustomerInMemory(ctx context.Context, customerID string)
-	// Team level CheckUserBudget
-	CheckTeamBudget(ctx context.Context, teamID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckTeamRateLimit(ctx context.Context, teamID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	// Team-level live budget/rate-limit collectors (resolved from the hot maps);
-	// used by the enterprise user→team→business-unit hierarchy collector.
-	CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget
-	CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit
-	// Customer-level governance checks
-	CheckCustomerBudget(ctx context.Context, customerID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckCustomerRateLimit(ctx context.Context, customerID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
 	// User governance in-memory operations (enterprise-only, but interface defined here for compatibility)
 	GetUserGovernance(ctx context.Context, userID string) (*UserGovernance, bool)
 	CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	DeleteUserGovernanceInMemory(ctx context.Context, userID string)
 	CreateUserNameInMemory(ctx context.Context, userID string, userName string)
-	// User-level governance checks (enterprise-only)
-	CheckUserBudget(ctx context.Context, userID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
-	CheckUserRateLimit(ctx context.Context, userID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	UpdateUserBudgetUsageInMemory(ctx context.Context, userID string, cost float64) error
-	UpdateUserRateLimitUsageInMemory(ctx context.Context, userID string, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// Model config in-memory operations
 	UpdateModelConfigInMemory(ctx context.Context, mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig
 	DeleteModelConfigInMemory(ctx context.Context, mcID string)
@@ -219,37 +281,31 @@ type GovernanceStore interface {
 	// Provider in-memory operations
 	UpdateProviderInMemory(ctx context.Context, provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
 	DeleteProviderInMemory(ctx context.Context, providerName string)
-	// Routing Rules CEL caching
-	GetRoutingProgram(ctx context.Context, rule *configstoreTables.TableRoutingRule) (cel.Program, error)
 	// Budget and rate limit status queries for routing with baseline support
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
-	// Routing Rules CRUD
-	HasRoutingRules(ctx context.Context) bool
-	GetAllRoutingRules(ctx context.Context) []*configstoreTables.TableRoutingRule
-	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
-	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
-	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
-	// CollectApplicableGovernanceIDs returns every budget and rate-limit ID this node charges for the given (virtualKey, userID, provider, model).
-	// The IDs are stamped on the log row so ghost-node reconciliation can re-attribute cost and tokens;
-	// missing any ID here means that usage vanishes from cluster baselines when the node ghosts.
-	// userID contributes the user-scoped model-config IDs;
-	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+	// GetBudgetAndRateLimitStatus reports how close the request is to what it answers to for a
+	// provider and model pair, read from the access on its grant. Routing asks this before an attempt's
+	// limits are settled, one pair at a time, so it gathers rather than reads the settled set.
+	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	// CollectModelScopedGovernanceIDs returns the budget and rate-limit IDs owned by
+	// model configs matching (provider, model) across the global and virtual-key scopes,
+	// plus whatever scopes a registered resolver derives from the IDs (see
+	// RegisterExtraScopedIDsResolver). It takes the virtual key's ID rather than its
+	// value, so a caller settling long after the request — batch accounting, which has
+	// only a stored row — can still reach the same configs.
+	CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
-// NewLocalGovernanceStore creates a new in-memory governance store
+// NewLocalGovernanceStore creates a new in-memory governance store.
+//
 // The modelCatalog parameter is optional (can be nil) and enables cross-provider model matching
-// for governance lookups (e.g., "openai/gpt-4o" matching config for "gpt-4o").
-func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelCatalog *modelcatalog.ModelCatalog) (*LocalGovernanceStore, error) {
-	// Create singleton CEL environment once for all routing rule compilations
-	env, err := createCELEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-	}
-
+// for governance lookups (e.g., "openai/gpt-4o" matching config for "gpt-4o"). inMemoryStore is
+// the deployment's view of its configured MCP clients, read when building the grant a key carries
+// so the clients allowed by default are appended; without it, no client is treated as open.
+func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelCatalog *modelcatalog.ModelCatalog, inMemoryStore InMemoryStore) (*LocalGovernanceStore, error) {
 	store := &LocalGovernanceStore{
+		inMemoryStore:                  inMemoryStore,
 		configStore:                    configStore,
 		logger:                         logger,
-		routingCELEnv:                  env,
 		modelCatalog:                   modelCatalog,
 		LastDBUsagesBudgets:            make(map[string]float64),
 		LastDBUsagesRequestsRateLimits: make(map[string]int64),
@@ -539,7 +595,7 @@ const maxRequestTimeResetAttempts = 3
 //
 // This is the serialisation point for every usage increment: callers MUST
 // funnel through this method (directly or via one of the higher-level
-// Update*BudgetUsageInMemory wrappers) rather than doing a plain
+// ChargeBudgets) rather than doing a plain
 // Load → clone → mutate → Store, which races.
 func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error {
 	resetAttempts := 0
@@ -823,6 +879,33 @@ func (gs *LocalGovernanceStore) RebaseRateLimit(ctx context.Context, rateLimitID
 	}
 }
 
+// GetGovernanceUsageData returns a snapshot containing only budgets and rate limits.
+// Use this when callers do not require the complete governance state.
+func (gs *LocalGovernanceStore) GetGovernanceUsageData(_ context.Context) *GovernanceData {
+	budgets := make(map[string]*configstoreTables.TableBudget)
+	gs.budgets.Range(func(key, value interface{}) bool {
+		budget, ok := value.(*configstoreTables.TableBudget)
+		if ok && budget != nil {
+			budgets[key.(string)] = budget
+		}
+		return true
+	})
+
+	rateLimits := make(map[string]*configstoreTables.TableRateLimit)
+	gs.rateLimits.Range(func(key, value interface{}) bool {
+		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
+		if ok && rateLimit != nil {
+			rateLimits[key.(string)] = rateLimit
+		}
+		return true
+	})
+
+	return &GovernanceData{
+		Budgets:    budgets,
+		RateLimits: rateLimits,
+	}
+}
+
 // GetGovernanceData returns a snapshot of the current governance data.
 func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *GovernanceData {
 	refreshVKAssociations := func(vk *configstoreTables.TableVirtualKey) {
@@ -1033,20 +1116,6 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		rateLimits[key.(string)] = rateLimit
 		return true // continue iteration
 	})
-	routingRules := make(map[string]*configstoreTables.TableRoutingRule)
-	gs.routingRules.Range(func(key, value any) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok || rules == nil {
-			return true // continue
-		}
-		// Flatten the rules array (stored as []*TableRoutingRule by scope:scopeID)
-		for _, rule := range rules {
-			if rule != nil {
-				routingRules[rule.ID] = rule
-			}
-		}
-		return true // continue iteration
-	})
 	var modelConfigsList []*configstoreTables.TableModelConfig
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
@@ -1114,13 +1183,14 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		Customers:    customers,
 		Budgets:      budgets,
 		RateLimits:   rateLimits,
-		RoutingRules: routingRules,
 		ModelConfigs: modelConfigsList,
 		Providers:    providersList,
 	}
 }
 
-// GetVirtualKey retrieves a virtual key by its value (lock-free) with all relationships preloaded
+// GetVirtualKey retrieves a virtual key by its value (lock-free) with all relationships preloaded.
+// A VK can be reachable under two keys: its current value and, during the
+// rotation grace period, its previous value. The matched key decides validity.
 func (gs *LocalGovernanceStore) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
 	value, exists := gs.virtualKeys.Load(vkValue)
 	if !exists || value == nil {
@@ -1130,7 +1200,26 @@ func (gs *LocalGovernanceStore) GetVirtualKey(ctx context.Context, vkValue strin
 	if !ok || vk == nil {
 		return nil, false
 	}
-	return vk, true
+	switch vkValue {
+	case vk.Value.GetValue():
+		return vk, true
+	case vk.PreviousValue.GetValue():
+		if vk.HasActivePreviousValue(time.Now()) {
+			gs.logger.Debug("virtual key %s authenticated via rotation grace-period value", vk.ID)
+			return vk, true
+		}
+		// Grace window over: lazily drop only this value-keyed entry. Never use
+		// deleteVirtualKeyByValue here - it would also remove the ID index entry
+		// that the live current-value entry still needs. Compare against the
+		// entry we just read so a key that claimed this value in the meantime
+		// keeps its registration.
+		gs.virtualKeys.CompareAndDelete(vkValue, value)
+		return nil, false
+	default:
+		// Stale entry left behind by an earlier value change; same lazy cleanup.
+		gs.virtualKeys.CompareAndDelete(vkValue, value)
+		return nil, false
+	}
 }
 
 // GetVirtualKeyByID retrieves a virtual key by its row ID (lock-free) with all
@@ -1149,12 +1238,706 @@ func (gs *LocalGovernanceStore) GetVirtualKeyByID(ctx context.Context, vkID stri
 	return vk, true
 }
 
+// ResolvePermits reports the permits a request carries. This store knows only about virtual keys,
+// so the presented key's permit is the whole answer and nothing scopes it.
+func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, schemas.Permit, grant.CompositionMode) {
+	virtualKeyValue := PresentedVirtualKey(ctx)
+	if virtualKeyValue == "" {
+		// A key is the only thing this store resolves permits from, so no key means nothing granted
+		// this request anything. It carries no access, which is what a request with no credential has
+		// always been: unrestricted, and still bound by the deployment's own limits, which are gathered
+		// for it whether or not it carries a permit.
+		return nil, nil, ""
+	}
+	virtualKey, ok := gs.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || virtualKey == nil {
+		// A credential was presented and resolves to nothing. That is refused, not widened: the
+		// funnel's identity step tells the two apart by what was presented.
+		return nil, nil, ""
+	}
+	StampVirtualKeyScope(ctx, virtualKey)
+	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, nil, ""
+}
+
+// PresentedVirtualKey is the virtual key the request presented, read off the identity the
+// transport settled on its grant. A grant nothing settled an identity on is read the way it always
+// was, from the key stamped on the context directly.
+//
+// Exported because a store that resolves permits from something other than a key still resolves
+// keys, and which key a request presented is the same question either way.
+func PresentedVirtualKey(ctx *schemas.BifrostContext) string {
+	if identity := ctx.Grant().Identity(); identity != nil {
+		if credential := identity.Credential(); credential.Kind == string(grant.CredentialVirtualKey) {
+			return credential.Value
+		}
+		// An identity was settled and it is not a key: whatever the context also carries under the
+		// key's own name did not authenticate this request.
+		return ""
+	}
+	virtualKeyValue, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	return virtualKeyValue
+}
+
+// StampVirtualKeyScope records which key a request was made with, and the team and customer it sits
+// under, so everything downstream reads the identity that resolving the access answered for rather
+// than looking it up again. It is recorded twice: on the request's identity, which is what carries
+// who the request is from here on, and under the context keys everything that predates the identity
+// still reads.
+//
+// Exported because a store that resolves permits from something other than a key still resolves
+// keys, and the scope a key puts on a request is the same either way. Two copies of this would be
+// two records of who the caller is, free to disagree about a key that names a customer directly and
+// also reaches one through its team, the case the ordering below decides.
+func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	if ctx == nil || virtualKey == nil {
+		return
+	}
+	recordVirtualKeyIdentity(ctx, virtualKey)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKey.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
+	if virtualKey.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		if virtualKey.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, virtualKey.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Team.Customer.Name)
+		}
+	}
+	// A customer the key names directly wins over one reached through its team: it is the more specific
+	// statement of who pays, and it is stamped second so it overwrites.
+	if virtualKey.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, virtualKey.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+	}
+}
+
+// recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:
+// the key itself, and the team and customer it sits under, the attributed one first. What the
+// transport settled, the credential and any user it named, is kept. A grant nothing settled an
+// identity on has nothing to complete.
+func recordVirtualKeyIdentity(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	current := ctx.Grant().Identity()
+	if current == nil {
+		return
+	}
+	var teams, customers []schemas.EntityRef
+	if virtualKey.Team != nil {
+		teams = append(teams, schemas.EntityRef{ID: virtualKey.Team.ID, Name: virtualKey.Team.Name})
+	}
+	// The customer the key names directly is the one the request is attributed to, and comes first;
+	// one reached through the team is still one the request happens under.
+	if virtualKey.Customer != nil {
+		customers = append(customers, schemas.EntityRef{ID: virtualKey.Customer.ID, Name: virtualKey.Customer.Name})
+	}
+	if virtualKey.Team != nil && virtualKey.Team.Customer != nil &&
+		(virtualKey.Customer == nil || virtualKey.Customer.ID != virtualKey.Team.Customer.ID) {
+		customers = append(customers, schemas.EntityRef{ID: virtualKey.Team.Customer.ID, Name: virtualKey.Team.Customer.Name})
+	}
+	ctx.Grant().SetIdentity(grant.NewIdentity(
+		current.Credential(),
+		current.User(),
+		&schemas.EntityRef{ID: virtualKey.ID, Name: virtualKey.Name},
+		teams,
+		customers,
+		current.BusinessUnits(),
+		current.Project(),
+	))
+}
+
+// CheckProviderCandidateExclusion reports whether a load-balancing candidate can serve this request
+// right now: DecisionAllow when nothing stops it, and otherwise whichever refusal the checks below
+// produced, unchanged. The caller decides what to say about it, because the caller is the one writing
+// a routing log and this store has no business inventing the words for one.
+//
+// Only spending decides here: what a candidate may reach was already settled by the grant it came from.
+//
+// It asks about the limits that can tell one candidate from another, and only those: the deployment's
+// own limits on that provider, its model configs scoped to the provider, and what the grant's configs
+// for it are funded by, the holder's provider-scoped model configs included. A limit that covers
+// every provider answers the same for all of them, so it cannot make one candidate better than
+// another: it can only exclude every candidate at once, which is a refusal, and the funnel states it
+// with a reason rather than load balancing quietly running out of options. That is why the
+// provider-less model-config tiers stay out (see ProviderScopedModelLimits).
+//
+// So load balancing routes around a provider that is out of room, and being out of money overall is
+// left to the funnel, which is the only place that can say so.
+//
+// The model says two things here: which permits pay for the candidate (every permit that permits the
+// model on the candidate's provider is funded on it, and a candidate is affordable only when all of
+// them have room), and which per-model configs cover the pair on this provider and no other.
+func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error) {
+	if spendingChecksSkipped(ctx) {
+		return DecisionAllow, nil
+	}
+
+	provider := schemas.ModelProvider(candidate.Provider)
+	budgets, rateLimits := gs.GlobalProviderLimits(ctx, provider)
+	modelBudgets, modelRateLimits := gs.ProviderScopedModelLimits(ctx, nil, provider, model)
+	budgets = append(budgets, modelBudgets...)
+	rateLimits = append(rateLimits, modelRateLimits...)
+	if access != nil {
+		for _, permit := range access.PermitsForModel(candidate.Provider, model) {
+			permitBudgets, permitRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
+			budgets = append(budgets, permitBudgets...)
+			rateLimits = append(rateLimits, permitRateLimits...)
+			permitModelBudgets, permitModelRateLimits := gs.ProviderScopedModelLimits(ctx, permit, provider, model)
+			budgets = append(budgets, permitModelBudgets...)
+			rateLimits = append(rateLimits, permitModelRateLimits...)
+		}
+	}
+
+	if decision, err := gs.CheckRateLimits(ctx, rateLimits, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return decision, err
+	}
+	if decision, err := gs.CheckBudgets(ctx, budgets, nil); err != nil || isBudgetViolation(decision) {
+		return decision, err
+	}
+	return DecisionAllow, nil
+}
+
+// permitForVirtualKey builds the permit a virtual key confers: one provider permit per configured
+// provider, and one MCP permit per MCP client the key may execute tools of: its own MCP configs,
+// plus the clients allowed by default.
+//
+// allowedByDefaultClients maps client id to client name, as the in-memory store reports it. A client
+// the key configures explicitly is never widened by that map: the explicit config decides, including
+// when it grants no tool at all.
+//
+// The result is a snapshot for one attempt. Provider permits carry a copy of the config they came
+// from, so a key reloaded mid-attempt cannot change what that attempt has already resolved. A later
+// attempt builds its own and picks the reload up. What funds the key is not here: see HolderLimits
+// and PermitProviderLimits, which read it by the permit's identity when an attempt's provider is known.
+func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *configstoreTables.TableVirtualKey) *grant.Permit {
+	if vk == nil {
+		return nil
+	}
+
+	var allowedByDefaultClients map[string]string
+	if gs.inMemoryStore != nil {
+		allowedByDefaultClients = gs.inMemoryStore.GetMCPClientsAllowedByDefault()
+	}
+
+	providerPermits := make([]schemas.ProviderPermit, 0, len(vk.ProviderConfigs))
+	for i := range vk.ProviderConfigs {
+		config := vk.ProviderConfigs[i]
+		providerPermits = append(providerPermits, schemas.ProviderPermit{
+			Provider:          config.Provider,
+			AllowedModels:     config.AllowedModels,
+			BlacklistedModels: config.BlacklistedModels,
+			KeyIDs:            config.KeyIDs(),
+			Weight:            config.Weight,
+		})
+	}
+
+	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
+	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
+	vmcpIDs := gs.assignedVirtualMCPIDs(vk.ID)
+	acc := NewMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
+	for i := range vk.MCPConfigs {
+		acc.addMCPConfig(&vk.MCPConfigs[i])
+	}
+	for _, id := range vmcpIDs {
+		def := gs.virtualMCPByID(id)
+		if def == nil || !def.Enabled {
+			continue
+		}
+		acc.AddVirtualMCP(def)
+		// A key's direct assignment makes the vMCP addressable at /mcp/<slug>.
+		RecordGrantedVirtualMCP(ctx, def)
+	}
+	mcpPermits := MCPPermitsFromAccumulator(acc, "virtual key", vk.Name, gs.mcpClientNames(), gs.logger)
+	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.ConfiguredClients(), allowedByDefaultClients)
+
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAllowAllProviders(vk.AllowAllProviders))
+}
+
+// virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
+func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.TableVirtualMCP {
+	if v, ok := gs.virtualMCPs.Load(id); ok {
+		return v.(*configstoreTables.TableVirtualMCP)
+	}
+	return nil
+}
+
+// assignedVirtualMCPIDs returns a VK's assigned Virtual MCP IDs, or nil if none.
+func (gs *LocalGovernanceStore) assignedVirtualMCPIDs(vkID string) []uint {
+	if v, ok := gs.virtualMCPIDsByVK.Load(vkID); ok {
+		return v.([]uint)
+	}
+	return nil
+}
+
+// grantedVirtualMCPsKey keys the per-request set of addressable Virtual MCPs.
+type grantedVirtualMCPsKey struct{}
+
+// grantedVirtualMCPs is the per-request set of vMCPs reachable at /mcp/<slug>, keyed by slug. Only the
+// addressable paths record here (direct key assignment; enterprise access profiles); legacy
+// team/customer/provider scopes don't, so those grant on /mcp but not /mcp/<slug>.
+type grantedVirtualMCPs struct {
+	bySlug map[string]configstoreTables.TableVirtualMCP
+}
+
+// grantedVirtualMCPsMu guards the per-request set's get-or-create and its bySlug map. Resolution is
+// single-goroutine per request today, so it is uncontended; it stops a concurrent-map panic if a
+// record path is ever parallelized.
+var grantedVirtualMCPsMu sync.Mutex
+
+// RecordGrantedVirtualMCP records an enabled vMCP as reachable at /mcp/<slug> for this request. No-op
+// off the gateway path or for a disabled/slug-less vMCP. Exported so enterprise records profile vMCPs.
+func RecordGrantedVirtualMCP(ctx context.Context, vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil || !vmcp.Enabled || vmcp.EndpointSlug == "" {
+		return
+	}
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return
+	}
+	if gateway, _ := bctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
+		return
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		set = &grantedVirtualMCPs{bySlug: make(map[string]configstoreTables.TableVirtualMCP)}
+		bctx.SetValue(grantedVirtualMCPsKey{}, set)
+	}
+	set.bySlug[vmcp.EndpointSlug] = *vmcp
+}
+
+// grantedVirtualMCP returns the Virtual MCP recorded under slug for the request, if any.
+func grantedVirtualMCP(ctx context.Context, slug string) (*configstoreTables.TableVirtualMCP, bool) {
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return nil, false
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		return nil, false
+	}
+	v, ok := set.bySlug[slug]
+	if !ok {
+		return nil, false
+	}
+	return &v, true
+}
+
+// VirtualMCPToolAccess resolves the tool include-list a /mcp/<slug> request may see. The slug must
+// have been recorded addressable during resolution (assigned=false → the caller answers 403); its
+// tools are then narrowed to what the request's access grants, so an excluded tool can't leak. A nil
+// access restricts nothing, so the vMCP's own tools are served as-is.
+func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool) {
+	target, ok := grantedVirtualMCP(ctx, slug)
+	if !ok {
+		return nil, false
+	}
+
+	var clientNames map[string]string
+	if gs.inMemoryStore != nil {
+		clientNames = gs.inMemoryStore.GetMCPClientNames()
+	}
+	requested := make([]string, 0, len(target.ParsedTools))
+	for _, spec := range target.ParsedTools {
+		name := clientNames[spec.MCPClientID]
+		if name == "" {
+			// Client no longer configured (or unnamed): nothing to serve for it.
+			continue
+		}
+		// WhiteList semantics: ["*"] serves the whole client (name-*), [] serves nothing, a named list
+		// serves those tools. grant.Wildcard is "*", so the loop below produces name-* for the all case.
+		for _, tool := range spec.ToolNames {
+			if tool == "" {
+				continue
+			}
+			requested = append(requested, name+"-"+tool)
+		}
+	}
+	if access == nil {
+		return requested, true
+	}
+	return access.NarrowMCPToolIncludeList(requested), true
+}
+
+// MCPClientToolAccess resolves what a /mcp/<slug> request may see for one MCP client: the client's tools
+// narrowed to the caller's access (empty → not granted → the caller answers 403). Nil access serves the
+// whole client. No per-request recording (unlike a Virtual MCP): the access already names the clients.
+func (gs *LocalGovernanceStore) MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool) {
+	if gs.inMemoryStore == nil {
+		return nil, false
+	}
+	_, clientName, found := gs.inMemoryStore.GetMCPClientBySlug(slug)
+	if !found || clientName == "" {
+		return nil, false
+	}
+	// Narrow the whole client (name-*) to what access grants; empty means not granted.
+	whole := []string{clientName + "-" + grant.Wildcard}
+	if access == nil {
+		return whole, true
+	}
+	served = access.NarrowMCPToolIncludeList(whole)
+	return served, len(served) > 0
+}
+
+// loadVirtualMCPs fills both caches from the store at startup; surgical updates keep them current
+// after. On error the caches are left as-is, not cleared.
+func (gs *LocalGovernanceStore) loadVirtualMCPs(ctx context.Context) error {
+	if gs.configStore == nil {
+		return nil
+	}
+	defs, err := gs.configStore.GetVirtualMCPs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP definitions: %w", err)
+	}
+	for i := range defs {
+		def := defs[i]
+		gs.virtualMCPs.Store(def.ID, &def)
+	}
+	assignments, err := gs.configStore.GetVirtualMCPAssignments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP assignments: %w", err)
+	}
+	for vkID, ids := range assignments {
+		// Sorted so resolution processes a VK's vMCPs in a stable order, keeping the permit's per-client
+		// tool union deterministic across nodes and rebuilds.
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		gs.virtualMCPIDsByVK.Store(vkID, ids)
+	}
+	return nil
+}
+
+// CreateVirtualMCPInMemory stores one definition by ID. Definitions are shared, so this one Store is
+// the whole ripple across every VK the definition is assigned to.
+func (gs *LocalGovernanceStore) CreateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil {
+		return
+	}
+	clone := *vmcp
+	// Deep-copy the tool slices so the cached definition is independent of the caller's struct (a plain
+	// struct copy shares the ParsedTools and ToolNames backing arrays). Matches the *InMemory siblings.
+	clone.ParsedTools = make([]configstoreTables.MCPToolSpec, len(vmcp.ParsedTools))
+	for i, spec := range vmcp.ParsedTools {
+		spec.ToolNames = append([]string(nil), spec.ToolNames...)
+		clone.ParsedTools[i] = spec
+	}
+	gs.virtualMCPs.Store(clone.ID, &clone)
+}
+
+// UpdateVirtualMCPInMemory replaces a cached definition.
+func (gs *LocalGovernanceStore) UpdateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	gs.CreateVirtualMCPInMemory(vmcp)
+}
+
+// DeleteVirtualMCPInMemory drops a definition; resolution skips assignment IDs whose definition is
+// gone, so VK slices need no prune.
+func (gs *LocalGovernanceStore) DeleteVirtualMCPInMemory(vmcpID uint) {
+	gs.virtualMCPs.Delete(vmcpID)
+}
+
+// AttachVirtualMCPInMemory adds an assignment; DetachVirtualMCPInMemory removes one. Both rewrite the
+// VK's ID slice under virtualMCPAssignMu so concurrent same-VK writes don't lose an update.
+func (gs *LocalGovernanceStore) AttachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	for _, id := range ids {
+		if id == vmcpID {
+			return
+		}
+	}
+	next := make([]uint, len(ids)+1)
+	copy(next, ids)
+	next[len(ids)] = vmcpID
+	sort.Slice(next, func(i, j int) bool { return next[i] < next[j] })
+	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	if len(ids) == 0 {
+		return
+	}
+	next := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id != vmcpID {
+			next = append(next, id)
+		}
+	}
+	if len(next) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+// virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store
+// funds, so any other permit answers with nothing.
+func (gs *LocalGovernanceStore) virtualKeyOf(ctx context.Context, permit schemas.Permit) *configstoreTables.TableVirtualKey {
+	if permit == nil || permit.Type() != string(grant.PermitVirtualKey) || permit.ID() == "" {
+		return nil
+	}
+	vk, ok := gs.GetVirtualKeyByID(ctx, permit.ID())
+	if !ok || vk == nil {
+		return nil
+	}
+	return vk
+}
+
+// PermitProviderLimits reports what funds a key's use of one provider: the limits of every provider config
+// the key holds for it. Every config, not the first: two configs for one provider are funded
+// separately, and a request served by that provider draws on both. A config keeps its own row
+// identity as holder, because nothing makes a provider unique within a key.
+func (gs *LocalGovernanceStore) PermitProviderLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	vk := gs.virtualKeyOf(ctx, permit)
+	if vk == nil || provider == "" {
+		return nil, nil
+	}
+	for i := range vk.ProviderConfigs {
+		config := vk.ProviderConfigs[i]
+		if config.Provider != string(provider) {
+			continue
+		}
+		holderID := strconv.FormatUint(uint64(config.ID), 10)
+		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", budgetIDs(config.Budgets)...)...)
+		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", rateLimitIDs(config.RateLimitID)...)...)
+	}
+	return budgets, rateLimits
+}
+
+// HolderLimits reports what funds a permit's holder whichever provider serves the request: for a
+// virtual key, its own limits plus those of the team and customer it sits under.
+//
+// Separate from the permit, and resolved when a request's provider and model are settled rather than
+// when its permit is built, because these limits cannot tell one provider from another. Load
+// balancing asks which provider still has room; a limit that answers the same for every provider
+// cannot help it choose, and asking it once per candidate is how the same question gets answered N
+// times. PermitProviderLimits answers what discriminates, and this answers the rest.
+//
+// This is the seam a deployment reimplements to fund requests from something other than a key.
+// Nothing downstream asks what kind of holder came back, so answering with a project's limits, or a
+// user's, or both according to how that deployment is configured, needs no other path to change.
+func (gs *LocalGovernanceStore) HolderLimits(ctx context.Context, permit schemas.Permit) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	vk := gs.virtualKeyOf(ctx, permit)
+	if vk == nil {
+		return nil, nil
+	}
+
+	budgets = grant.LimitsHeldBy(grant.LimitHolderVirtualKey, vk.ID, vk.Name, "", "", budgetIDs(vk.Budgets)...)
+	rateLimits = grant.LimitsHeldBy(grant.LimitHolderVirtualKey, vk.ID, vk.Name, "", "", rateLimitIDs(vk.RateLimitID)...)
+
+	orgBudgets, orgRateLimits := gs.organizationLimitsForVirtualKey(ctx, vk)
+	return append(budgets, orgBudgets...), append(rateLimits, orgRateLimits...)
+}
+
+// The team and customer rows a holder sits under, read straight from the in-memory maps.
+//
+// These answer "what does this team fund" without deciding who is asking or how the hierarchy above
+// them is shaped. This store walks a key's team and customer itself, just below; a store that
+// composes a different hierarchy (more levels, several customers per team, its own filtering) needs
+// the same rows to walk and cannot reach this state any other way, so the lookups are exported and
+// the walk is not.
+
+// GetTeamCustomerID returns a team's scalar customer id (TableTeam.CustomerID), or "" if the team is unknown or has no scalar customer. The enterprise layer uses it to exclude that customer from its M2M team→customer propagation so the OSS VK→team→customer hierarchy doesn't double-charge it.
+func (gs *LocalGovernanceStore) GetTeamCustomerID(ctx context.Context, teamID string) string {
+	if teamID == "" {
+		return ""
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return ""
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.CustomerID == nil {
+		return ""
+	}
+	return *team.CustomerID
+}
+
+// CollectTeamBudgets returns the live budget objects configured for a team,
+// resolved by ID from the hot budgets map (so usage counters and recent edits
+// are reflected). Mirrors the read pattern in CheckTeamBudget. Returns nil when
+// the team is unknown or has no budgets. Exported so the enterprise layer can
+// fold team budgets into a user→team→business-unit hierarchy collector the same
+// way collectBudgetsFromHierarchy folds them into the VK hierarchy.
+func (gs *LocalGovernanceStore) CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || len(team.Budgets) == 0 {
+		return nil
+	}
+	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
+	for _, b := range team.Budgets {
+		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	return list
+}
+
+// CollectTeamRateLimits returns the live rate-limit object configured for a team
+// (at most one), resolved by ID from the hot rate-limits map. Mirrors the read
+// pattern in CheckTeamRateLimit. Returns nil when the team is unknown or has no
+// rate limit. Exported for the enterprise user-hierarchy collector.
+func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.RateLimitID == nil {
+		return nil
+	}
+	rl := gs.LoadRateLimit(ctx, *team.RateLimitID)
+	if rl == nil {
+		return nil
+	}
+	return []*configstoreTables.TableRateLimit{rl}
+}
+
+// CollectCustomerBudgets returns the customer's live budgets resolved from the hot budgets map, or nil if the customer is unknown or has none.
+func (gs *LocalGovernanceStore) CollectCustomerBudgets(ctx context.Context, customerID string) []*configstoreTables.TableBudget {
+	if customerID == "" {
+		return nil
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return nil
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil || len(customer.Budgets) == 0 {
+		return nil
+	}
+	list := make([]*configstoreTables.TableBudget, 0, len(customer.Budgets))
+	for i := range customer.Budgets {
+		if hot := gs.LoadBudget(ctx, customer.Budgets[i].ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	return list
+}
+
+// CollectCustomerRateLimits returns the customer's live rate-limit (at most one) resolved from the hot rate-limits map, or nil if the customer is unknown or has none.
+func (gs *LocalGovernanceStore) CollectCustomerRateLimits(ctx context.Context, customerID string) []*configstoreTables.TableRateLimit {
+	if customerID == "" {
+		return nil
+	}
+	customerValue, exists := gs.customers.Load(customerID)
+	if !exists || customerValue == nil {
+		return nil
+	}
+	customer, ok := customerValue.(*configstoreTables.TableCustomer)
+	if !ok || customer == nil || customer.RateLimitID == nil {
+		return nil
+	}
+	rl := gs.LoadRateLimit(ctx, *customer.RateLimitID)
+	if rl == nil {
+		return nil
+	}
+	return []*configstoreTables.TableRateLimit{rl}
+}
+
+// organizationLimitsForVirtualKey collects the limits a key answers to because of where it sits in
+// the organization: its team's, and its customer's.
+//
+// The chain matches how enforcement derives it. A key attached straight to a customer answers to
+// that customer; otherwise a customer is reached through the key's team, so a team's requests count
+// against the customer containing it. Team and customer limits are provider-agnostic (they govern
+// everything under them, whichever provider serves it), so they carry no provider of their own.
+//
+// The identities come from the key's preloaded relations, but the limits come from the store's own
+// team and customer records: the key is loaded with enough of its team to know which team it is,
+// not with that team's budgets.
+func (gs *LocalGovernanceStore) organizationLimitsForVirtualKey(ctx context.Context, vk *configstoreTables.TableVirtualKey) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if vk.TeamID != nil && *vk.TeamID != "" {
+		if teamValue, ok := gs.teams.Load(*vk.TeamID); ok && teamValue != nil {
+			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
+				budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderTeam, team.ID, team.Name, "", "", budgetIDs(team.Budgets)...)...)
+				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderTeam, team.ID, team.Name, "", "", rateLimitIDs(team.RateLimitID)...)...)
+			}
+		}
+	}
+
+	customerID := ""
+	customerFromTeam := false
+	switch {
+	case vk.CustomerID != nil && *vk.CustomerID != "":
+		customerID = *vk.CustomerID
+	case vk.Team != nil && vk.Team.CustomerID != nil && *vk.Team.CustomerID != "":
+		customerID = *vk.Team.CustomerID
+		customerFromTeam = true
+	}
+
+	// A request can be scoped to one customer of the key's team, and then only that customer pays.
+	// The customer a key reaches through its team is dropped when the request is scoped to a
+	// different one: the scoped customer is enforced by whoever scoped it, and charging the team's
+	// as well would bill a customer the request was explicitly directed away from. A customer the
+	// key names directly is not reached through a team, so scoping cannot redirect it.
+	if scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string); customerFromTeam &&
+		scopedCustomerID != "" && scopedCustomerID != customerID {
+		customerID = ""
+	}
+
+	if customerID != "" {
+		if customerValue, ok := gs.customers.Load(customerID); ok && customerValue != nil {
+			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
+				budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", budgetIDs(customer.Budgets)...)...)
+				rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", rateLimitIDs(customer.RateLimitID)...)...)
+			}
+		}
+	}
+
+	return budgets, rateLimits
+}
+
+// budgetIDs names a set of budget rows. Knowing what a budget row looks like is this package's
+// business, not the grant model's, so the rows stop here and only identities travel on.
+func budgetIDs(rows []configstoreTables.TableBudget) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+// rateLimitIDs names a holder's single optional rate limit as the list a grant records. A key, a
+// provider config, a team and a customer each carry at most one, but how many limits a holder
+// answers to is the holder's business: a caller written against exactly one would have to be
+// rewritten for the first holder with two.
+func rateLimitIDs(rateLimitID *string) []string {
+	if rateLimitID == nil {
+		return nil
+	}
+	return []string{*rateLimitID}
+}
+
 // storeVirtualKey writes vk into both the value-keyed primary map and the
 // ID-keyed secondary index, keeping the two in lock-step. Every writer to
 // virtualKeys must go through here so the ID index never diverges.
 func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTables.TableVirtualKey) {
 	if value == "" {
 		if vk != nil {
+			// Fail closed: an unresolvable VK must be unavailable on BOTH
+			// lookup paths. Callers that delete value keys directly rely on
+			// this to also retire the ID index entry, otherwise
+			// GetVirtualKeyByID would keep serving the stale object.
+			if vk.ID != "" {
+				gs.virtualKeysByID.Delete(vk.ID)
+			}
 			gs.logger.Warn("skipping virtual key %s with unresolvable value (env/vault ref could not be resolved)", vk.ID)
 		}
 		return
@@ -1163,17 +1946,64 @@ func (gs *LocalGovernanceStore) storeVirtualKey(value string, vk *configstoreTab
 	if vk != nil && vk.ID != "" {
 		gs.virtualKeysByID.Store(vk.ID, vk)
 	}
+	// Register an active grace-period previous value as a second key onto the
+	// same object, so a rotated-out value keeps authenticating until expiry.
+	if vk != nil && vk.HasActivePreviousValue(time.Now()) {
+		if prev := vk.PreviousValue.GetValue(); prev != "" && prev != value {
+			// Never displace the key that owns this value as its CURRENT
+			// credential. The previous-value hash index is deliberately
+			// non-unique, so a retired value can equal another key's live
+			// value; handing the alias the entry would authenticate that
+			// key's holder as this VK. Current ownership wins, matching the
+			// database lookup order (current hash first, grace hash second).
+			// LoadOrStore claims the slot atomically when it is free.
+			if existing, loaded := gs.virtualKeys.LoadOrStore(prev, vk); loaded {
+				owner, ok := existing.(*configstoreTables.TableVirtualKey)
+				// Only a DIFFERENT key that still holds this value as its
+				// current credential keeps the entry. Our own pre-rotation
+				// entry looks like that too, so it must be replaced by the
+				// rotated object, otherwise the retired value would keep
+				// resolving as a current value and never expire.
+				if !ok || owner == nil || owner.ID == vk.ID || owner.Value.GetValue() != prev {
+					gs.virtualKeys.Store(prev, vk)
+				}
+			}
+		}
+	}
 }
 
 // deleteVirtualKeyByValue removes the VK stored under value from both the
 // primary map and the ID-keyed secondary index.
 func (gs *LocalGovernanceStore) deleteVirtualKeyByValue(value string) {
-	if existing, ok := gs.virtualKeys.Load(value); ok {
-		if vk, ok := existing.(*configstoreTables.TableVirtualKey); ok && vk != nil && vk.ID != "" {
-			gs.virtualKeysByID.Delete(vk.ID)
-		}
+	existing, ok := gs.virtualKeys.Load(value)
+	if !ok {
+		return
 	}
-	gs.virtualKeys.Delete(value)
+	if vk, isVK := existing.(*configstoreTables.TableVirtualKey); isVK && vk != nil && vk.ID != "" {
+		gs.virtualKeysByID.Delete(vk.ID)
+	}
+	// Compare-and-delete so a concurrent writer that has already replaced this
+	// entry keeps its own registration.
+	gs.virtualKeys.CompareAndDelete(value, existing)
+}
+
+// deleteVirtualKeyAlias drops a value-keyed entry only while it still belongs to
+// vkID. The previous-value hash index is deliberately non-unique, so a value one
+// key is retiring may already be another key's current credential; deleting it
+// blindly would deauthenticate that live key. CompareAndDelete then makes the
+// removal atomic against a writer claiming the value in between.
+func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string) {
+	if value == "" {
+		return
+	}
+	existing, ok := gs.virtualKeys.Load(value)
+	if !ok {
+		return
+	}
+	if owner, isVK := existing.(*configstoreTables.TableVirtualKey); isVK && owner != nil && owner.ID != vkID {
+		return
+	}
+	gs.virtualKeys.CompareAndDelete(value, existing)
 }
 
 // CheckRateLimit checks rate limits for tokens and requests across categories
@@ -1291,87 +2121,6 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 	return DecisionAllow, nil
 }
 
-// CheckVirtualKeyBudget performs virtual key level budget checking using in-memory store data (lock-free for high performance)
-func (gs *LocalGovernanceStore) CheckVirtualKeyBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	if vk == nil {
-		return DecisionVirtualKeyNotFound, fmt.Errorf("virtual key cannot be nil")
-	}
-	// This is to prevent nil pointer dereference
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	// Extract provider from request
-	var provider schemas.ModelProvider
-	if request != nil {
-		provider = request.Provider
-	}
-	// Use helper to collect budgets and their names (lock-free)
-	budgetsWithCategories := gs.collectBudgetsFromHierarchy(ctx, vk, provider)
-	gs.logger.Debug("LocalStore CheckBudget: Received %d baselines from remote nodes", len(baselines))
-	for budgetID, baseline := range baselines {
-		gs.logger.Debug("  - Baseline for budget %s: %.4f", budgetID, baseline)
-	}
-	return gs.CheckBudget(ctx, budgetsWithCategories, baselines)
-}
-
-// CheckProviderBudget performs budget checking for provider-level configs (lock-free for high performance)
-func (gs *LocalGovernanceStore) CheckProviderBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	// This is to prevent nil pointer dereference
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	// Extract provider from request
-	var provider schemas.ModelProvider
-	if request != nil {
-		provider = request.Provider
-	}
-	// Get provider config
-	providerKey := string(provider)
-	value, exists := gs.providers.Load(providerKey)
-	if !exists || value == nil {
-		// No provider config found, allow request
-		return DecisionAllow, nil
-	}
-	providerTable, ok := value.(*configstoreTables.TableProvider)
-	if !ok || providerTable == nil || providerTable.BudgetID == nil {
-		// No budget configured for provider, allow request
-		return DecisionAllow, nil
-	}
-	// Read from budgets map to get the latest updated budget (same source as UpdateProviderBudgetUsage)
-	budget := gs.LoadBudget(ctx, *providerTable.BudgetID)
-	if budget == nil {
-		return DecisionAllow, nil
-	}
-	return gs.CheckBudget(ctx, map[string][]*configstoreTables.TableBudget{providerKey: {budget}}, baselines)
-}
-
-// CheckProviderRateLimit checks provider-level rate limits and returns evaluation result if violated
-func (gs *LocalGovernanceStore) CheckProviderRateLimit(ctx context.Context, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	// Extract provider from request
-	var provider schemas.ModelProvider
-	if request != nil {
-		provider = request.Provider
-	}
-	// Get provider config
-	providerKey := string(provider)
-	value, exists := gs.providers.Load(providerKey)
-	if !exists || value == nil {
-		// No provider config found, allow request
-		return DecisionAllow, nil
-	}
-	providerTable, ok := value.(*configstoreTables.TableProvider)
-	if !ok || providerTable == nil || providerTable.RateLimitID == nil {
-		// No rate limit configured for provider, allow request
-		return DecisionAllow, nil
-	}
-	// Read from rateLimits map to get the latest updated rate limit (same source as UpdateProviderRateLimitUsage)
-	rateLimit := gs.LoadRateLimit(ctx, *providerTable.RateLimitID)
-	if rateLimit == nil {
-		return DecisionAllow, nil
-	}
-	return gs.CheckRateLimit(ctx, EntityWiseRateLimits{providerKey: []*configstoreTables.TableRateLimit{rateLimit}}, tokensBaselines, requestsBaselines)
-}
-
 const modelConfigWildcard = configstoreTables.ModelConfigAllModels
 
 // modelConfigStoreKey builds the in-memory cache key for a model config.
@@ -1384,22 +2133,6 @@ func modelConfigStoreKey(scope, scopeID, modelKey string, provider *string) stri
 		return base
 	}
 	return fmt.Sprintf("%s:%s:%s", scope, scopeID, base)
-}
-
-// modelConfigScope is one level of the model-config scope chain (name + target ID).
-type modelConfigScope struct {
-	name string
-	id   string
-}
-
-// nonGlobalModelConfigScopeChain returns the non-global scopes that apply to a request
-// made with the given virtual key, most specific first. The global scope is intentionally
-// excluded because it is enforced separately (and unconditionally) by EvaluateModelAndProviderRequest.
-func nonGlobalModelConfigScopeChain(vk *configstoreTables.TableVirtualKey) []modelConfigScope {
-	if vk == nil {
-		return nil
-	}
-	return []modelConfigScope{{name: configstoreTables.ModelConfigScopeVirtualKey, id: vk.ID}}
 }
 
 // findScopedModelOnlyConfig looks up a model-only config (no provider) within a specific
@@ -1503,202 +2236,6 @@ func modelConfigEntityKey(mc *configstoreTables.TableModelConfig) string {
 	return key
 }
 
-// loadModelConfigBudgets returns the hot in-memory budget rows owned by a model config
-func (gs *LocalGovernanceStore) loadModelConfigBudgets(ctx context.Context, mc *configstoreTables.TableModelConfig) []*configstoreTables.TableBudget {
-	if mc == nil || len(mc.Budgets) == 0 {
-		return nil
-	}
-	out := make([]*configstoreTables.TableBudget, 0, len(mc.Budgets))
-	for i := range mc.Budgets {
-		if budget := gs.LoadBudget(ctx, mc.Budgets[i].ID); budget != nil {
-			out = append(out, budget)
-		}
-	}
-	return out
-}
-
-// CheckModelBudget performs budget checking for global-scope model-level configs, across all
-// four tiers (exact model±provider and all-models "*"±provider).
-func (gs *LocalGovernanceStore) CheckModelBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	// This is to prevent nil pointer dereference
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	model, provider := extractModelAndProvider(request)
-	entityWiseBudgets := EntityWiseBudgets{}
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, provider) {
-		if budgets := gs.loadModelConfigBudgets(ctx, mc); len(budgets) > 0 {
-			entityWiseBudgets[modelConfigEntityKey(mc)] = budgets
-		}
-	}
-	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
-}
-
-// CheckTeamBudget checks team-level budget and returns evaluation result if violated
-func (gs *LocalGovernanceStore) CheckTeamBudget(ctx context.Context, teamID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	if teamID == "" {
-		return DecisionAllow, nil
-	}
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	teamValue, exists := gs.teams.Load(teamID)
-	if !exists || teamValue == nil {
-		return DecisionAllow, nil
-	}
-	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || len(team.Budgets) == 0 {
-		return DecisionAllow, nil
-	}
-	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
-	for _, b := range team.Budgets {
-		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
-			list = append(list, hot)
-		}
-	}
-	if len(list) == 0 {
-		return DecisionAllow, nil
-	}
-	key := fmt.Sprintf("Team:%s", teamID)
-	return gs.CheckBudget(ctx, EntityWiseBudgets{key: list}, baselines)
-}
-
-// CheckTeamRateLimit checks team-level rate limit and returns evaluation result if violated
-func (gs *LocalGovernanceStore) CheckTeamRateLimit(ctx context.Context, teamID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	if tokensBaselines == nil {
-		tokensBaselines = map[string]int64{}
-	}
-	if requestsBaselines == nil {
-		requestsBaselines = map[string]int64{}
-	}
-	teamValue, exists := gs.teams.Load(teamID)
-	if !exists || teamValue == nil {
-		return DecisionAllow, nil
-	}
-	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team.RateLimitID == nil {
-		return DecisionAllow, nil
-	}
-	teamRateLimit := gs.LoadRateLimit(ctx, *team.RateLimitID)
-	if teamRateLimit == nil {
-		return DecisionAllow, nil
-	}
-	key := fmt.Sprintf("Team:%s", teamID)
-	entityWiseRateLimits := EntityWiseRateLimits{key: {teamRateLimit}}
-	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
-}
-
-// CollectTeamBudgets returns the live budget objects configured for a team,
-// resolved by ID from the hot budgets map (so usage counters and recent edits
-// are reflected). Mirrors the read pattern in CheckTeamBudget. Returns nil when
-// the team is unknown or has no budgets. Exported so the enterprise layer can
-// fold team budgets into a user→team→business-unit hierarchy collector the same
-// way collectBudgetsFromHierarchy folds them into the VK hierarchy.
-func (gs *LocalGovernanceStore) CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget {
-	if teamID == "" {
-		return nil
-	}
-	teamValue, exists := gs.teams.Load(teamID)
-	if !exists || teamValue == nil {
-		return nil
-	}
-	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team == nil || len(team.Budgets) == 0 {
-		return nil
-	}
-	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
-	for _, b := range team.Budgets {
-		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
-			list = append(list, hot)
-		}
-	}
-	if len(list) == 0 {
-		return nil
-	}
-	return list
-}
-
-// CollectTeamRateLimits returns the live rate-limit object configured for a team
-// (at most one), resolved by ID from the hot rate-limits map. Mirrors the read
-// pattern in CheckTeamRateLimit. Returns nil when the team is unknown or has no
-// rate limit. Exported for the enterprise user-hierarchy collector.
-func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit {
-	if teamID == "" {
-		return nil
-	}
-	teamValue, exists := gs.teams.Load(teamID)
-	if !exists || teamValue == nil {
-		return nil
-	}
-	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team == nil || team.RateLimitID == nil {
-		return nil
-	}
-	rl := gs.LoadRateLimit(ctx, *team.RateLimitID)
-	if rl == nil {
-		return nil
-	}
-	return []*configstoreTables.TableRateLimit{rl}
-}
-
-// CollectCustomerBudgets returns the customer's live budgets resolved from the hot budgets map, or nil if the customer is unknown or has none.
-func (gs *LocalGovernanceStore) CollectCustomerBudgets(ctx context.Context, customerID string) []*configstoreTables.TableBudget {
-	if customerID == "" {
-		return nil
-	}
-	customerValue, exists := gs.customers.Load(customerID)
-	if !exists || customerValue == nil {
-		return nil
-	}
-	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || customer == nil || len(customer.Budgets) == 0 {
-		return nil
-	}
-	list := make([]*configstoreTables.TableBudget, 0, len(customer.Budgets))
-	for i := range customer.Budgets {
-		if hot := gs.LoadBudget(ctx, customer.Budgets[i].ID); hot != nil {
-			list = append(list, hot)
-		}
-	}
-	return list
-}
-
-// CollectCustomerRateLimits returns the customer's live rate-limit (at most one) resolved from the hot rate-limits map, or nil if the customer is unknown or has none.
-func (gs *LocalGovernanceStore) CollectCustomerRateLimits(ctx context.Context, customerID string) []*configstoreTables.TableRateLimit {
-	if customerID == "" {
-		return nil
-	}
-	customerValue, exists := gs.customers.Load(customerID)
-	if !exists || customerValue == nil {
-		return nil
-	}
-	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || customer == nil || customer.RateLimitID == nil {
-		return nil
-	}
-	rl := gs.LoadRateLimit(ctx, *customer.RateLimitID)
-	if rl == nil {
-		return nil
-	}
-	return []*configstoreTables.TableRateLimit{rl}
-}
-
-// GetTeamCustomerID returns a team's scalar customer id (TableTeam.CustomerID), or "" if the team is unknown or has no scalar customer. The enterprise layer uses it to exclude that customer from its M2M team→customer propagation so the OSS VK→team→customer hierarchy doesn't double-charge it.
-func (gs *LocalGovernanceStore) GetTeamCustomerID(ctx context.Context, teamID string) string {
-	if teamID == "" {
-		return ""
-	}
-	teamValue, exists := gs.teams.Load(teamID)
-	if !exists || teamValue == nil {
-		return ""
-	}
-	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team == nil || team.CustomerID == nil {
-		return ""
-	}
-	return *team.CustomerID
-}
-
 // GetTeamName returns a team's display name from the in-memory store, or "" if
 // the team is unknown. The enterprise layer uses it as the fallback for log
 // stamping when its edge-driven name caches miss (e.g. a team with no user
@@ -1733,313 +2270,6 @@ func (gs *LocalGovernanceStore) GetCustomerName(ctx context.Context, customerID 
 		return ""
 	}
 	return customer.Name
-}
-
-// CheckCustomerBudget checks customer-level budget and returns evaluation result if violated
-func (gs *LocalGovernanceStore) CheckCustomerBudget(ctx context.Context, customerID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	if customerID == "" {
-		return DecisionAllow, nil
-	}
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	customerValue, exists := gs.customers.Load(customerID)
-	if !exists || customerValue == nil {
-		return DecisionAllow, nil
-	}
-	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || len(customer.Budgets) == 0 {
-		return DecisionAllow, nil
-	}
-	key := fmt.Sprintf("Customer:%s", customerID)
-	var customerBudgets []*configstoreTables.TableBudget
-	for i := range customer.Budgets {
-		if b := gs.LoadBudget(ctx, customer.Budgets[i].ID); b != nil {
-			customerBudgets = append(customerBudgets, b)
-		}
-	}
-	if len(customerBudgets) == 0 {
-		return DecisionAllow, nil
-	}
-	entityWiseBudgets := EntityWiseBudgets{key: customerBudgets}
-	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
-}
-
-// CheckCustomerRateLimit checks customer-level rate limit and returns evaluation result if violated
-func (gs *LocalGovernanceStore) CheckCustomerRateLimit(ctx context.Context, customerID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	if customerID == "" {
-		return DecisionAllow, nil
-	}
-	if tokensBaselines == nil {
-		tokensBaselines = map[string]int64{}
-	}
-	if requestsBaselines == nil {
-		requestsBaselines = map[string]int64{}
-	}
-	customerValue, exists := gs.customers.Load(customerID)
-	if !exists || customerValue == nil {
-		return DecisionAllow, nil
-	}
-	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || customer.RateLimitID == nil {
-		return DecisionAllow, nil
-	}
-	customerRateLimit := gs.LoadRateLimit(ctx, *customer.RateLimitID)
-	if customerRateLimit == nil {
-		return DecisionAllow, nil
-	}
-	key := fmt.Sprintf("Customer:%s", customerID)
-	entityWiseRateLimits := EntityWiseRateLimits{key: {customerRateLimit}}
-	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
-}
-
-// CheckUserBudget checks if user's budget allows the request (enterprise-only)
-// Community build: silent no-op so user-governance absence never silently denies requests.
-func (gs *LocalGovernanceStore) CheckUserBudget(ctx context.Context, userID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	return DecisionAllow, nil
-}
-
-// CheckModelRateLimit checks global-scope model-level rate limits across all four tiers
-func (gs *LocalGovernanceStore) CheckModelRateLimit(ctx context.Context, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	// This is to prevent nil pointer dereference
-	if tokensBaselines == nil {
-		tokensBaselines = map[string]int64{}
-	}
-	if requestsBaselines == nil {
-		requestsBaselines = map[string]int64{}
-	}
-	model, provider := extractModelAndProvider(request)
-	entityWiseRateLimits := make(EntityWiseRateLimits)
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, provider) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
-			entityWiseRateLimits[modelConfigEntityKey(mc)] = []*configstoreTables.TableRateLimit{rateLimit}
-		}
-	}
-	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
-}
-
-// CheckScopedModelBudget enforces budgets from model configs scoped to the given
-// (scope, scopeID) — e.g. ("virtual_key", vk.ID). Checked in addition to the global
-// model budgets; a request must satisfy both. Empty scope or scopeID is a no-op.
-func (gs *LocalGovernanceStore) CheckScopedModelBudget(ctx context.Context, scope, scopeID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
-	if scope == "" || scopeID == "" {
-		return DecisionAllow, nil
-	}
-	if baselines == nil {
-		baselines = map[string]float64{}
-	}
-	model, provider := extractModelAndProvider(request)
-	entityWiseBudgets := EntityWiseBudgets{}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, provider) {
-		if budgets := gs.loadModelConfigBudgets(ctx, mc); len(budgets) > 0 {
-			entityWiseBudgets[modelConfigEntityKey(mc)] = budgets
-		}
-	}
-	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
-}
-
-// CheckScopedModelRateLimit enforces rate limits from model configs scoped to the given
-// (scope, scopeID), in addition to the global model rate limits.
-func (gs *LocalGovernanceStore) CheckScopedModelRateLimit(ctx context.Context, scope, scopeID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	if scope == "" || scopeID == "" {
-		return DecisionAllow, nil
-	}
-	if tokensBaselines == nil {
-		tokensBaselines = map[string]int64{}
-	}
-	if requestsBaselines == nil {
-		requestsBaselines = map[string]int64{}
-	}
-	model, provider := extractModelAndProvider(request)
-	entityWiseRateLimits := make(EntityWiseRateLimits)
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, provider) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
-			entityWiseRateLimits[modelConfigEntityKey(mc)] = []*configstoreTables.TableRateLimit{rateLimit}
-		}
-	}
-	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
-}
-
-// CheckUserRateLimit checks if user's rate limit allows the request (enterprise-only)
-// Community build: silent no-op so user-governance absence never silently denies requests.
-func (gs *LocalGovernanceStore) CheckUserRateLimit(ctx context.Context, userID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	return DecisionAllow, nil
-}
-
-// CheckVirtualKeyRateLimit checks a virtual key  rate limit and returns evaluation result if violated (true if violated, false if not)
-func (gs *LocalGovernanceStore) CheckVirtualKeyRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
-	// Extract provider from request
-	var provider schemas.ModelProvider
-	if request != nil {
-		provider = request.Provider
-	}
-	// Collect rate limits and their names from the hierarchy
-	entityWiseRateLimits := gs.collectRateLimitsFromHierarchy(ctx, vk, provider)
-	// This is to prevent nil pointer dereference
-	if tokensBaselines == nil {
-		tokensBaselines = map[string]int64{}
-	}
-	if requestsBaselines == nil {
-		requestsBaselines = map[string]int64{}
-	}
-	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
-}
-
-// UpdateVirtualKeyBudgetUsageInMemory performs atomic budget updates across the hierarchy (both in memory and in database)
-func (gs *LocalGovernanceStore) UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
-	if vk == nil {
-		return fmt.Errorf("virtual key cannot be nil")
-	}
-	// Collect budget IDs using fast in-memory lookup instead of DB queries
-	budgetIDs := gs.collectBudgetIDsFromMemory(ctx, vk, provider)
-	for _, budgetID := range budgetIDs {
-		if err := gs.BumpBudgetUsage(ctx, budgetID, cost); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateProviderAndModelBudgetUsageInMemory performs atomic budget updates for both provider-level and model-level configs (in memory)
-func (gs *LocalGovernanceStore) UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error {
-	// 1. Update provider-level budget (if provider is set)
-	if provider != "" {
-		providerKey := string(provider)
-		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
-			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.BudgetID != nil {
-				if err := gs.BumpBudgetUsage(ctx, *providerTable.BudgetID, cost); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// 2. Update global-scope model-level budgets across all four tiers (incl. the
-	// all-models "*:provider" tier that now carries provider-level governance).
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-		for i := range mc.Budgets {
-			if err := gs.BumpBudgetUsage(ctx, mc.Budgets[i].ID, cost); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// UpdateUserBudgetUsageInMemory updates user's budget usage in memory (enterprise-only)
-// Community build: silent no-op to avoid per-request error spam when a userID is set.
-func (gs *LocalGovernanceStore) UpdateUserBudgetUsageInMemory(ctx context.Context, userID string, cost float64) error {
-	return nil
-}
-
-// UpdateProviderAndModelRateLimitUsageInMemory updates rate limit counters for both provider-level and model-level rate limits.
-func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	// 1. Update provider-level rate limit (if provider is set)
-	if provider != "" {
-		providerKey := string(provider)
-		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
-			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.RateLimitID != nil {
-				if err := gs.BumpRateLimitUsage(ctx, *providerTable.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// 2. Update global-scope model-level rate limits across all four tiers (incl. the
-	// all-models "*:provider" tier that now carries provider-level governance).
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// UpdateScopedModelBudgetUsageInMemory bumps budget usage for model configs scoped to the
-// given (scope, scopeID). Post-response counterpart to CheckScopedModelBudget — without it,
-// scoped budgets never increase and never trip. Empty scope/scopeID/model is a no-op.
-func (gs *LocalGovernanceStore) UpdateScopedModelBudgetUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error {
-	if scope == "" || scopeID == "" {
-		return nil
-	}
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerStr) {
-		for i := range mc.Budgets {
-			if err := gs.BumpBudgetUsage(ctx, mc.Budgets[i].ID, cost); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// UpdateScopedModelRateLimitUsageInMemory bumps rate limit counters for model configs scoped
-// to the given (scope, scopeID). Post-response counterpart to CheckScopedModelRateLimit.
-func (gs *LocalGovernanceStore) UpdateScopedModelRateLimitUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	if scope == "" || scopeID == "" {
-		return nil
-	}
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateVirtualKeyRateLimitUsageInMemory updates rate limit counters for VK-level rate limits.
-func (gs *LocalGovernanceStore) UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	if vk == nil {
-		return fmt.Errorf("virtual key cannot be nil")
-	}
-	// Collect rate limit IDs using fast in-memory lookup instead of DB queries
-	rateLimitIDs := gs.collectRateLimitIDsFromMemory(ctx, vk, provider)
-	for _, rateLimitID := range rateLimitIDs {
-		if err := gs.BumpRateLimitUsage(ctx, rateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateUserRateLimitUsageInMemory updates user's rate limit usage in memory (enterprise-only)
-// Community build: silent no-op to avoid per-request error spam when a userID is set.
-func (gs *LocalGovernanceStore) UpdateUserRateLimitUsageInMemory(ctx context.Context, userID string, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	return nil
 }
 
 // budgetResetTarget returns the LastReset value to write when budget is expired,
@@ -2889,16 +3119,17 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 		return fmt.Errorf("failed to load providers: %w", err)
 	}
 
-	// Load routing rules
-	routingRules, err := gs.configStore.GetRoutingRules(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load routing rules: %w", err)
-	}
-
 	// Rebuild in-memory structures (lock-free)
 	rebuildStart := time.Now()
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 	gs.logger.Info("[startup-timing] loadFromDatabase rebuildInMemoryStructures took %v", time.Since(rebuildStart))
+
+	// Load the Virtual MCP caches (DB-only: vMCPs have no config-memory form, and the config-memory
+	// init path carries no config store). A failure is logged, not fatal: it withholds Virtual MCP
+	// tools, never denies a key what it already has.
+	if err := gs.loadVirtualMCPs(ctx); err != nil {
+		gs.logger.Warn("failed to load virtual MCP assignments: %v", err)
+	}
 
 	return nil
 }
@@ -2929,9 +3160,6 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 
 	// Load providers
 	providers := config.Providers
-
-	// Load routing rules
-	routingRules := config.RoutingRules
 
 	// Populate model configs with their relationships (Budgets and RateLimit)
 	for i := range modelConfigs {
@@ -3039,13 +3267,13 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	}
 
 	// Rebuild in-memory structures (lock-free)
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 
 	return nil
 }
 
 // rebuildInMemoryStructures rebuilds all in-memory data structures (lock-free)
-func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider, routingRules []configstoreTables.TableRoutingRule) {
+func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider) {
 	// Clear existing data by creating new sync.Maps
 	gs.virtualKeys = sync.Map{}
 	gs.virtualKeysByID = sync.Map{}
@@ -3055,7 +3283,6 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.rateLimits = sync.Map{}
 	gs.modelConfigs = sync.Map{}
 	gs.providers = sync.Map{}
-	gs.routingRules = sync.Map{}
 
 	// Build customers map
 	for i := range customers {
@@ -3151,43 +3378,6 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		gs.providers.Store(provider.Name, provider)
 	}
 
-	// Build routing rules map - O(n) single pass
-	// Key format: "scope:scopeID" (scopeID empty string for global)
-	rulesMap := make(map[string][]*configstoreTables.TableRoutingRule)
-
-	for i := range routingRules {
-		rule := &routingRules[i]
-
-		// Build key
-		key := rule.Scope + ":"
-		if rule.ScopeID != nil {
-			key += *rule.ScopeID
-		}
-
-		// Group rules by key
-		rulesMap[key] = append(rulesMap[key], rule)
-	}
-
-	// Sort each group by priority ASC (0 is highest priority, higher numbers are lower priority)
-	for key, rules := range rulesMap {
-		sort.Slice(rules, func(i, j int) bool {
-			return rules[i].Priority < rules[j].Priority
-		})
-		gs.routingRules.Store(key, rules)
-	}
-
-	// Pre-compile all routing rule programs to avoid first-request latency
-	gs.routingRules.Range(func(key, value interface{}) bool {
-		if rules, ok := value.([]*configstoreTables.TableRoutingRule); ok {
-			for _, rule := range rules {
-				if _, err := gs.GetRoutingProgram(ctx, rule); err != nil {
-					gs.logger.Warn("Failed to pre-compile routing program for rule %s: %v", rule.Name, err)
-				}
-			}
-		}
-		return true
-	})
-
 	// Load last DB usages from database entities (assign and populate inside mutexes to avoid race with ResetExpired*InMemory)
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets = make(map[string]float64)
@@ -3210,277 +3400,49 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
-// collectRateLimitsFromHierarchy collects rate limits and their metadata from the hierarchy (Provider Configs → VK → Team → Customer)
-func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, requestedProvider schemas.ModelProvider) map[string][]*configstoreTables.TableRateLimit {
-	if vk == nil {
-		return nil
-	}
-
-	rateLimitsWithCategories := map[string][]*configstoreTables.TableRateLimit{}
+// limitIDsOf names the limits of several lists as one deduplicated list of identifiers, in the order
+// first seen. A limit reached twice is one limit, and charging it twice for one request would bill
+// the same budget twice.
+func limitIDsOf(lists ...[]schemas.Limit) []string {
+	ids := []string{}
 	seen := map[string]bool{}
-
-	// See collectBudgetsFromHierarchy: when a team-VK request is scoped to a specific
-	// customer, only charge the scalar team.CustomerID customer if it is the scoped one.
-	scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
-
-	for _, pc := range vk.ProviderConfigs {
-		if pc.RateLimitID != nil && pc.Provider == string(requestedProvider) {
-			if rateLimitValue, exists := gs.rateLimits.Load(*pc.RateLimitID); exists && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					if categoryRateLimits := rateLimitsWithCategories[pc.Provider]; categoryRateLimits == nil {
-						rateLimitsWithCategories[pc.Provider] = []*configstoreTables.TableRateLimit{}
-					}
-					rateLimitsWithCategories[pc.Provider] = append(rateLimitsWithCategories[pc.Provider], rateLimit)
-					seen[rateLimit.ID] = true
-				}
-			}
-		}
-	}
-
-	if vk.RateLimitID != nil {
-		if rateLimitValue, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && rateLimitValue != nil {
-			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-				if categoryRateLimits := rateLimitsWithCategories["VK"]; categoryRateLimits == nil {
-					rateLimitsWithCategories["VK"] = []*configstoreTables.TableRateLimit{}
-				}
-				rateLimitsWithCategories["VK"] = append(rateLimitsWithCategories["VK"], rateLimit)
-				seen[rateLimit.ID] = true
-			}
-		}
-	}
-
-	// Check Team rate limit if VK belongs to a team
-	var teamCustomerID string
-	if vk.TeamID != nil {
-		if teamValue, exists := gs.teams.Load(*vk.TeamID); exists && teamValue != nil {
-			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
-				if team.RateLimitID != nil {
-					if rateLimitValue, exists := gs.rateLimits.Load(*team.RateLimitID); exists && rateLimitValue != nil {
-						if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-							if categoryRateLimits := rateLimitsWithCategories["Team"]; categoryRateLimits == nil {
-								rateLimitsWithCategories["Team"] = []*configstoreTables.TableRateLimit{}
-							}
-							rateLimitsWithCategories["Team"] = append(rateLimitsWithCategories["Team"], rateLimit)
-							seen[rateLimit.ID] = true
-						}
-					}
-				}
-
-				// Check if team belongs to a customer. Skip charging it when the request
-				// is scoped to a different customer (header-driven, team-VK path).
-				if team.CustomerID != nil {
-					teamCustomerID = *team.CustomerID
-					chargeTeamCustomer := scopedCustomerID == "" || scopedCustomerID == teamCustomerID
-					if customerValue, exists := gs.customers.Load(*team.CustomerID); chargeTeamCustomer && exists && customerValue != nil {
-						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-							if customer.RateLimitID != nil {
-								if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
-									if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-										if categoryRateLimits := rateLimitsWithCategories["Customer"]; categoryRateLimits == nil {
-											rateLimitsWithCategories["Customer"] = []*configstoreTables.TableRateLimit{}
-										}
-										rateLimitsWithCategories["Customer"] = append(rateLimitsWithCategories["Customer"], rateLimit)
-										seen[rateLimit.ID] = true
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Check Customer rate limit if VK directly belongs to a customer (skip if already collected via team)
-	if vk.CustomerID != nil && (teamCustomerID == "" || *vk.CustomerID != teamCustomerID) {
-		if customerValue, exists := gs.customers.Load(*vk.CustomerID); exists && customerValue != nil {
-			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-				if customer.RateLimitID != nil {
-					if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
-						if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-							if categoryRateLimits := rateLimitsWithCategories["Customer"]; categoryRateLimits == nil {
-								rateLimitsWithCategories["Customer"] = []*configstoreTables.TableRateLimit{}
-							}
-							rateLimitsWithCategories["Customer"] = append(rateLimitsWithCategories["Customer"], rateLimit)
-							seen[rateLimit.ID] = true
-						}
-					}
-				}
-			}
-		}
-	}
-	return rateLimitsWithCategories
-}
-
-// collectBudgetsFromHierarchy collects budgets and their metadata from the hierarchy (Provider Configs → VK → Customer -> User -> Team → BusinessUnit)
-func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, requestedProvider schemas.ModelProvider) EntityWiseBudgets {
-	if vk == nil {
-		return nil
-	}
-	// When a team-VK request is scoped to a specific customer (x-bf-customer-id /
-	// x-bf-customer-name header, resolved and stamped by the enterprise plugin),
-	// the scalar team.CustomerID customer is only charged when it is the scoped one;
-	// otherwise the enterprise layer charges the scoped customer instead. Empty key
-	// (the common case / pure-OSS) leaves behavior unchanged.
-	scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
-	entityWiseBudgets := make(EntityWiseBudgets)
-	// Collect all budgets in hierarchy order using lock-free sync.Map access (Provider Configs → VK → Team → Customer)
-	seen := make(map[string]bool)
-	for _, pc := range vk.ProviderConfigs {
-		if pc.Provider != string(requestedProvider) {
-			continue
-		}
-		// Multi-budgets
-		for _, b := range pc.Budgets {
-			if seen[b.ID] {
+	for _, list := range lists {
+		for _, limit := range list {
+			if limit.ID == "" || seen[limit.ID] {
 				continue
 			}
-			if budgetValue, exists := gs.budgets.Load(b.ID); exists && budgetValue != nil {
-				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-					if categoryBudgets := entityWiseBudgets[pc.Provider]; categoryBudgets == nil {
-						entityWiseBudgets[pc.Provider] = []*configstoreTables.TableBudget{}
-					}
-					entityWiseBudgets[pc.Provider] = append(entityWiseBudgets[pc.Provider], budget)
-					seen[budget.ID] = true
-				}
-			}
+			seen[limit.ID] = true
+			ids = append(ids, limit.ID)
 		}
 	}
-	// VK-level multi-budgets
-	for _, b := range vk.Budgets {
-		if seen[b.ID] {
-			continue
-		}
-		if budgetValue, exists := gs.budgets.Load(b.ID); exists && budgetValue != nil {
-			if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-				if categoryBudgets := entityWiseBudgets["VK"]; categoryBudgets == nil {
-					entityWiseBudgets["VK"] = []*configstoreTables.TableBudget{}
-				}
-				entityWiseBudgets["VK"] = append(entityWiseBudgets["VK"], budget)
-				seen[budget.ID] = true
-			}
-		}
-	}
-	var teamCustomerID string
-	if vk.TeamID != nil {
-		if teamValue, exists := gs.teams.Load(*vk.TeamID); exists && teamValue != nil {
-			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
-				for _, tb := range team.Budgets {
-					if seen[tb.ID] {
-						continue
-					}
-					if budgetValue, exists := gs.budgets.Load(tb.ID); exists && budgetValue != nil {
-						if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-							if categoryBudgets := entityWiseBudgets["Team"]; categoryBudgets == nil {
-								entityWiseBudgets["Team"] = []*configstoreTables.TableBudget{}
-							}
-							entityWiseBudgets["Team"] = append(entityWiseBudgets["Team"], budget)
-							seen[budget.ID] = true
-						}
-					}
-				}
-
-				// Check if team belongs to a customer. Skip charging it when the request
-				// is scoped to a different customer (header-driven, team-VK path).
-				if team.CustomerID != nil {
-					teamCustomerID = *team.CustomerID
-					chargeTeamCustomer := scopedCustomerID == "" || scopedCustomerID == teamCustomerID
-					if customerValue, exists := gs.customers.Load(*team.CustomerID); chargeTeamCustomer && exists && customerValue != nil {
-						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-							for _, cb := range customer.Budgets {
-								if budgetValue, exists := gs.budgets.Load(cb.ID); exists && budgetValue != nil {
-									if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-										if entityWiseBudgets["Customer"] == nil {
-											entityWiseBudgets["Customer"] = []*configstoreTables.TableBudget{}
-										}
-										entityWiseBudgets["Customer"] = append(entityWiseBudgets["Customer"], budget)
-										seen[budget.ID] = true
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	// Check Customer budget if VK directly belongs to a customer (skip if already collected via team)
-	if vk.CustomerID != nil && (teamCustomerID == "" || *vk.CustomerID != teamCustomerID) {
-		if customerValue, exists := gs.customers.Load(*vk.CustomerID); exists && customerValue != nil {
-			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-				for _, cb := range customer.Budgets {
-					if budgetValue, exists := gs.budgets.Load(cb.ID); exists && budgetValue != nil {
-						if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-							if entityWiseBudgets["Customer"] == nil {
-								entityWiseBudgets["Customer"] = []*configstoreTables.TableBudget{}
-							}
-							entityWiseBudgets["Customer"] = append(entityWiseBudgets["Customer"], budget)
-							seen[budget.ID] = true
-						}
-					}
-				}
-			}
-		}
-	}
-	return entityWiseBudgets
+	return ids
 }
 
-// collectBudgetIDsFromMemory collects budget IDs from in-memory store data (lock-free)
-func (gs *LocalGovernanceStore) collectBudgetIDsFromMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) []string {
-	budgetsWithCategory := gs.collectBudgetsFromHierarchy(ctx, vk, provider)
-	budgetIDs := []string{}
-	for _, budgets := range budgetsWithCategory {
-		for _, budget := range budgets {
-			budgetIDs = append(budgetIDs, budget.ID)
-		}
-	}
-	return budgetIDs
-}
-
-// collectRateLimitIDsFromMemory collects rate limit IDs from in-memory store data (lock-free)
-func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) []string {
-	rateLimitsWithCategories := gs.collectRateLimitsFromHierarchy(ctx, vk, provider)
-	rateLimitIDs := []string{}
-	for _, rateLimits := range rateLimitsWithCategories {
-		for _, rateLimit := range rateLimits {
-			rateLimitIDs = append(rateLimitIDs, rateLimit.ID)
-		}
-	}
-	return rateLimitIDs
-}
-
-// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that are
-// affected by a request with the given virtual key, provider, and model.
-// It combines provider-level, model-level, and VK-hierarchy (team/customer) IDs.
-// All lookups are fast in-memory sync.Map reads.
-func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+// CollectModelScopedGovernanceIDs returns only the model-config-owned IDs for a
+// (provider, model) pair, across the global and virtual-key scopes plus whatever
+// scopes a registered resolver derives from the IDs (see RegisterExtraScopedIDsResolver).
+//
+// It exists for delayed settlement. A request's limits are settled while it is in
+// flight, and a batch create carries no top-level model (each input-file row names
+// its own), so collectModelConfigsFor matches only the all-models wildcards and
+// never the exact-model configs. Those are precisely where
+// a model-level budget lives (an access profile's per-model limits materialise as
+// user-scoped configs naming one model and provider), so batch spend never reached
+// them. Settlement does know the models, and calls this per model to charge what
+// the create-time collection could not see.
+//
+// Callers must subtract the IDs already charged for the request: the wildcard tiers
+// returned here overlap what was settled at create time by design, since both walk
+// the same four tiers.
+func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
 	seenBudgets := map[string]bool{}
 	seenRateLimits := map[string]bool{}
-
-	// --- Provider-level ---
-	if provider != "" {
-		providerKey := string(provider)
-		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
-			if pt, ok := value.(*configstoreTables.TableProvider); ok && pt != nil {
-				if pt.BudgetID != nil && !seenBudgets[*pt.BudgetID] {
-					budgetIDs = append(budgetIDs, *pt.BudgetID)
-					seenBudgets[*pt.BudgetID] = true
-				}
-				if pt.RateLimitID != nil && !seenRateLimits[*pt.RateLimitID] {
-					rateLimitIDs = append(rateLimitIDs, *pt.RateLimitID)
-					seenRateLimits[*pt.RateLimitID] = true
-				}
-			}
-		}
-	}
 
 	var providerStr *string
 	if provider != "" {
 		p := string(provider)
 		providerStr = &p
 	}
-	// addModelConfigIDs accumulates the (multi-)budget and rate-limit IDs owned by a
-	// model config, matching what the enforcement/recording paths count.
 	addModelConfigIDs := func(mc *configstoreTables.TableModelConfig) {
 		for i := range mc.Budgets {
 			if id := mc.Budgets[i].ID; !seenBudgets[id] {
@@ -3494,47 +3456,79 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 		}
 	}
 
-	// --- Model-level (global scope), all four tiers incl. provider/all-models wildcards ---
-	if model != "" {
-		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
+	scopes := []struct{ name, id string }{
+		{configstoreTables.ModelConfigScopeGlobal, ""},
+		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
+	}
+	for _, scope := range scopes {
+		if scope.name != configstoreTables.ModelConfigScopeGlobal && scope.id == "" {
+			continue
+		}
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
 			addModelConfigIDs(mc)
 		}
 	}
-
-	// --- User-scoped model configs (user / AP path) ---
-	if userID != "" && model != "" {
-		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeUser, userID, model, providerStr) {
+	// Downstream-registered scopes (e.g. enterprise's per-access-profile per-model
+	// budgets, keyed by a user-access-profile association ID rather than the raw
+	// user/VK ID) — see RegisterExtraScopedIDsResolver.
+	for _, pair := range collectExtraScopedIDs(ctx, virtualKeyID, userID) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr) {
 			addModelConfigIDs(mc)
 		}
 	}
-
-	// --- VK hierarchy (VK-scoped model configs + team/customer) ---
-	if virtualKey != "" {
-		if vk, exists := gs.GetVirtualKey(ctx, virtualKey); exists && vk != nil {
-			// VK-scoped model configs (provider-level + all-models wildcards).
-			if model != "" {
-				for _, scope := range nonGlobalModelConfigScopeChain(vk) {
-					for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
-						addModelConfigIDs(mc)
-					}
-				}
-			}
-			for _, id := range gs.collectBudgetIDsFromMemory(ctx, vk, provider) {
-				if !seenBudgets[id] {
-					budgetIDs = append(budgetIDs, id)
-					seenBudgets[id] = true
-				}
-			}
-			for _, id := range gs.collectRateLimitIDsFromMemory(ctx, vk, provider) {
-				if !seenRateLimits[id] {
-					rateLimitIDs = append(rateLimitIDs, id)
-					seenRateLimits[id] = true
-				}
-			}
-		}
-	}
-
 	return budgetIDs, rateLimitIDs
+}
+
+// ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
+// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
+// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
+// budget/rate-limit IDs, since that path never attributes a limit to a holder.
+type ScopedID struct {
+	Scope   string
+	ScopeID string
+	Kind    grant.LimitHolderKind
+}
+
+// ExtraScopedIDsResolver returns additional (scope, scope_id) pairs to check for
+// model-config-based budgets/rate-limits on a request, given its virtual key and
+// user IDs. Lets downstream consumers (e.g. enterprise access profiles) graft
+// extra scopes onto CollectModelScopedGovernanceIDs's built-in global/
+// virtual_key set without this package needing to know their scope semantics.
+// Must be fast and non-blocking (in-memory only) — called on every request.
+//
+// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
+// is what a refusal names as the holder of the limit that ran out — see ScopedID.
+type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
+
+var (
+	extraScopedIDsResolversMu sync.RWMutex
+	extraScopedIDsResolvers   []ExtraScopedIDsResolver
+)
+
+// RegisterExtraScopedIDsResolver adds fn to the resolvers consulted by
+// CollectModelScopedGovernanceIDs. Intended to be called once at process
+// startup; safe to call concurrently.
+func RegisterExtraScopedIDsResolver(fn ExtraScopedIDsResolver) {
+	if fn == nil {
+		return
+	}
+	extraScopedIDsResolversMu.Lock()
+	extraScopedIDsResolvers = append(extraScopedIDsResolvers, fn)
+	extraScopedIDsResolversMu.Unlock()
+}
+
+func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []ScopedID {
+	extraScopedIDsResolversMu.RLock()
+	resolvers := extraScopedIDsResolvers
+	extraScopedIDsResolversMu.RUnlock()
+	if len(resolvers) == 0 {
+		return nil
+	}
+	var out []ScopedID
+	for _, fn := range resolvers {
+		out = append(out, fn(ctx, virtualKeyID, userID)...)
+	}
+	return out
 }
 
 // PUBLIC API METHODS
@@ -3755,10 +3749,28 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 		}
-		if existingVKKey != "" && existingVKKey != vk.Value.GetValue() {
-			gs.deleteVirtualKeyByValue(existingVKKey)
+		// Reconcile value keys: keep the new current value plus an active
+		// grace-period previous value; drop every other key that pointed at this
+		// VK (the old current value on a plain value change, and a stale previous
+		// value after repeated rotation). Direct deletes keep the ID index intact;
+		// storeVirtualKey refreshes it below.
+		newValue := clone.Value.GetValue()
+		keep := make(map[string]bool)
+		if newValue != "" {
+			// An unresolvable current value keeps keep empty so every alias —
+			// including an active grace-period previous value — is dropped:
+			// fail closed on all lookup paths, matching storeVirtualKey.
+			keep[newValue] = true
+			if clone.HasActivePreviousValue(time.Now()) {
+				keep[clone.PreviousValue.GetValue()] = true
+			}
 		}
-		gs.storeVirtualKey(vk.Value.GetValue(), &clone)
+		for _, oldKey := range []string{existingVKKey, existingVK.Value.GetValue(), existingVK.PreviousValue.GetValue()} {
+			if oldKey != "" && !keep[oldKey] {
+				gs.deleteVirtualKeyAlias(oldKey, clone.ID)
+			}
+		}
+		gs.storeVirtualKey(newValue, &clone)
 	} else {
 		gs.CreateVirtualKeyInMemory(ctx, vk)
 	}
@@ -3802,6 +3814,15 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 			}
 
 			gs.deleteVirtualKeyByValue(key.(string))
+			// The VK can be registered under a second key (current or
+			// grace-period previous value); remove both so neither
+			// authenticates after deletion.
+			if prev := vk.PreviousValue.GetValue(); prev != "" && prev != key.(string) {
+				gs.deleteVirtualKeyAlias(prev, vkID)
+			}
+			if cur := vk.Value.GetValue(); cur != "" && cur != key.(string) {
+				gs.deleteVirtualKeyAlias(cur, vkID)
+			}
 			return false // stop iteration
 		}
 		return true // continue iteration
@@ -4249,6 +4270,30 @@ func (gs *LocalGovernanceStore) ScopedModelConfigIDs(scope, scopeID string) []st
 	return ids
 }
 
+// ScopedModelConfigs returns the in-memory model configs for the given (scope, scopeID), as
+// currently cached. Callers that diff against the DB result use it to find the budgets and rate
+// limits a still-present config no longer names, which DeleteModelConfigInMemory cannot see once
+// the config itself is kept. The entries are the live cache records and must be treated as
+// read-only.
+func (gs *LocalGovernanceStore) ScopedModelConfigs(scope, scopeID string) []*configstoreTables.TableModelConfig {
+	var configs []*configstoreTables.TableModelConfig
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		mcScopeID := ""
+		if mc.ScopeID != nil {
+			mcScopeID = *mc.ScopeID
+		}
+		if mc.Scope == scope && mcScopeID == scopeID {
+			configs = append(configs, mc)
+		}
+		return true
+	})
+	return configs
+}
+
 // UpdateProviderInMemory adds or updates a provider in the in-memory store (lock-free)
 // Preserves existing usage values when updating budgets and rate limits
 // Returns the updated provider with potentially modified usage values
@@ -4525,390 +4570,388 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 	})
 }
 
-// HasRoutingRules checks if there are any routing rules configured
-// Quick check to determine if we need to run routing evaluation at all
-func (gs *LocalGovernanceStore) HasRoutingRules(ctx context.Context) bool {
-	hasAny := false
-	gs.routingRules.Range(func(_, _ interface{}) bool {
-		hasAny = true
-		return false // stop after first entry
-	})
-	return hasAny
+// GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
+// for the pair, from the store and the access on its grant, and reports the fullest budget and rate
+// limit among them. A request with no access still answers to the deployment's own limits.
+// GatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
+// every permit the request carries, what funds the holder and the holder's own model limits; and
+// for every permit that pays for the pair, what funds its use of the provider.
+//
+// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
+// whose budget is spent is spent, however the request reached the provider. Only what is funded
+// per provider follows the pair, and which permits pay for it is the access's to say (see
+// PermitsForModel).
+//
+// The deployment's own come first, because that is the order refusals report in: what the
+// deployment imposes before what the holder is funded by. Every carried permit is gathered: this
+// store resolves one permit per credential, so there is nothing to pick between, and one limit
+// reached twice is still one limit once the list is settled.
+func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
+	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	budgets = append(budgets, globalModelBudgets...)
+	rateLimits = append(rateLimits, globalModelRateLimits...)
+	if access == nil {
+		return budgets, rateLimits, nil
+	}
+	carried := access.Bases()
+	if scoping := access.Scoping(); scoping != nil {
+		carried = append(carried, scoping)
+	}
+	for _, permit := range carried {
+		heldBudgets, heldRateLimits := gs.HolderLimits(ctx, permit)
+		budgets = append(budgets, heldBudgets...)
+		rateLimits = append(rateLimits, heldRateLimits...)
+
+		// The holder's own model limits, gathered per permit because they are keyed by the
+		// permit's identity.
+		modelBudgets, modelRateLimits := gs.PermitModelLimits(ctx, permit, provider, model)
+		budgets = append(budgets, modelBudgets...)
+		rateLimits = append(rateLimits, modelRateLimits...)
+	}
+	for _, permit := range access.PermitsForModel(string(provider), model) {
+		providerBudgets, providerRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
+		budgets = append(budgets, providerBudgets...)
+		rateLimits = append(rateLimits, providerRateLimits...)
+	}
+	return budgets, rateLimits, nil
 }
 
-// GetAllRoutingRules gets all routing rules from in-memory cache
-func (gs *LocalGovernanceStore) GetAllRoutingRules(ctx context.Context) []*configstoreTables.TableRoutingRule {
-	var result []*configstoreTables.TableRoutingRule
+func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	budgets, rateLimits, _ := gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
+	status := &BudgetAndRateLimitStatus{}
 
-	// Iterate through all cached rules
-	gs.routingRules.Range(func(_, value interface{}) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok {
-			return true
+	for _, limit := range budgets {
+		budget := gs.LoadBudget(ctx, limit.ID)
+		if budget == nil {
+			continue
 		}
-		result = append(result, rules...)
-		return true
-	})
-
-	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority), then created_at ASC
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Priority != result[j].Priority {
-			return result[i].Priority < result[j].Priority
+		maxLimit := budget.EffectiveMaxLimit()
+		if maxLimit <= 0 {
+			continue
 		}
-		return result[i].CreatedAt.After(result[j].CreatedAt)
-	})
-
-	return result
-}
-
-// GetScopedRoutingRules retrieves routing rules by scope and scope ID (from in-memory cache)
-// Rules are already sorted by priority ASC (0 is highest priority)
-func (gs *LocalGovernanceStore) GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule {
-	// Build cache key: "scope:scopeID" (scopeID empty string for global)
-	var key string
-	if scope == "global" {
-		key = "global:"
-	} else {
-		key = fmt.Sprintf("%s:%s", scope, scopeID)
+		if percent := (budget.CurrentUsage + budgetBaselines[budget.ID]) / maxLimit * 100; percent > status.BudgetPercentUsed {
+			status.BudgetPercentUsed = percent
+		}
 	}
 
-	// Load from in-memory sync.Map
-	rules, ok := gs.routingRules.Load(key)
-	if !ok {
+	for _, limit := range rateLimits {
+		rateLimit := gs.LoadRateLimit(ctx, limit.ID)
+		if rateLimit == nil {
+			continue
+		}
+		if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+			used := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
+			if used > status.RateLimitTokenPercentUsed {
+				status.RateLimitTokenPercentUsed = used
+			}
+		}
+		if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+			used := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
+			if used > status.RateLimitRequestPercentUsed {
+				status.RateLimitRequestPercentUsed = used
+			}
+		}
+	}
+
+	return status
+}
+
+// GlobalProviderLimits reports the deployment's own limits on a provider: unscoped to any holder,
+// the way ModelConfigScopeGlobal names the model configs nobody owns. Every request to the provider
+// counts against them, whatever granted it, and they are the only limits besides a permit's own
+// provider configs that can tell one provider apart from another, which is what makes them the pair
+// load balancing asks about.
+//
+// Exported alongside the other gather primitives so a store that answers ResolvePermits from
+// something other than a key can ask the same narrow question over its own baseline-aware checks,
+// which this package's cannot answer for it. GlobalModelLimits answers with every model-config
+// tier, including the ones that cover every provider, and those cannot tell one candidate from
+// another; the model-config limits that can are ProviderScopedModelLimits's to report.
+func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provider schemas.ModelProvider) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	providerName := string(provider)
+	if providerName == "" {
+		return nil, nil
+	}
+	value, exists := gs.providers.Load(providerName)
+	if !exists || value == nil {
+		return nil, nil
+	}
+	providerTable, ok := value.(*configstoreTables.TableProvider)
+	if !ok || providerTable == nil {
+		return nil, nil
+	}
+	return grant.LimitsHeldBy(grant.LimitHolderProvider, providerName, providerName, providerName, "", idOrEmpty(providerTable.BudgetID)...),
+		grant.LimitsHeldBy(grant.LimitHolderProvider, providerName, providerName, providerName, "", idOrEmpty(providerTable.RateLimitID)...)
+}
+
+// ProviderScopedModelLimits reports the model-config limits that can tell one
+// load-balancing candidate from another for this model: the configs scoped to the candidate's
+// provider, exact pair and all-models-on-the-provider, in the scope the permit selects (the
+// deployment's own for nil, the holder's otherwise).
+//
+// The provider-less tiers are deliberately absent, and this method rather than GlobalModelLimits
+// or PermitModelLimits is what routing asks so they stay absent: a limit covering every provider
+// answers the same for every candidate, so it can only exclude all of them at once, which is a
+// refusal for the funnel to state with a reason rather than load balancing quietly running out of
+// options.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
+// the given holder kind: the routing-side counterpart of ScopedModelLimits, and there for the same
+// reason. A store layered on this one may impose per-model limits on the caller themselves, under
+// a scope no permit stands for, and a provider-scoped one of those prices the caller out of that
+// provider exactly as a permit's would. Load balancing has to ask about it the same way, or it
+// routes to a provider the funnel then refuses.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
+// providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
+// provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
+// configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
+// funnel's.
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	providerName := string(provider)
+	for _, scope := range scopes {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
+			if mc == nil || mc.Provider == nil {
+				continue
+			}
+			budgets = append(budgets, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
+			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+		}
+	}
+	return budgets, rateLimits
+}
+
+// modelLimitsInScopes names the model-config limits covering the pair in the given scopes.
+// collectModelConfigsFor walks the four tiers, most specific first: exact pair, exact model on any
+// provider, any model on this provider, any model anywhere.
+//
+// A request with no model still walks the scopes: only the wildcard tiers can match then, and an
+// all-models budget covers a request whatever it runs. Batch creation is the case that carries no
+// top-level model, and skipping the walk there left the unscoped budget a key was created with
+// unchecked and never bumped.
+func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	providerName := string(provider)
+	var providerArg *string
+	if providerName != "" {
+		providerArg = &providerName
+	}
+	for _, scope := range scopes {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg) {
+			if mc == nil {
+				continue
+			}
+			budgets = append(budgets, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
+			rateLimits = append(rateLimits, grant.LimitsHeldBy(scope.kind, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+		}
+	}
+	return budgets, rateLimits
+}
+
+// GlobalModelLimits reports the deployment's own model-config limits covering the pair.
+//
+// Resolved per attempt rather than carried on the grant. A grant is built before a provider is
+// chosen, and an attempt can fail over to a different provider or have its model rewritten, so
+// which configs apply is a fact about the attempt. Resolving them here costs four keyed lookups
+// per scope instead of a scan over every model config the deployment has. The caller gathers these
+// into the attempt's settled limits rather than storing them anywhere longer-lived, so one
+// attempt's limits are never charged to the next.
+func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model)
+}
+
+// PermitModelLimits reports the permit holder's own model-config limits covering the pair, in the
+// scope the permit's identity selects and no other: the deployment's rows are GlobalModelLimits's
+// to report, so a caller composing several holders never gathers them once per holder. Per attempt
+// for the reasons on GlobalModelLimits.
+func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	if permit == nil || permit.ID() == "" {
+		// A permit selects the scope, so no permit selects nothing: falling through would answer
+		// with the deployment's rows under a method that promised one holder's.
+		return nil, nil
+	}
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
+// to the given holder kind.
+//
+// The scope is named directly rather than derived from a permit, because a scope can belong to an
+// identity no permit stands for: a store layered on this one may impose per-model limits on the
+// caller themselves, whose rows are keyed by a scope this package has no permit type for. What
+// covers a pair stays modelLimitsInScopes's single answer.
+func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
+// limitScope is one model-config scope to resolve limits from, with the holder kind its limits are
+// attributed to.
+type limitScope struct {
+	name string
+	id   string
+	kind grant.LimitHolderKind
+}
+
+// modelConfigScopesFor lists the model-config scopes one permit selects: the deployment's global
+// scope for a nil permit, and the permit holder's own scope otherwise.
+//
+// The holder's scope is keyed by the permit's identity rather than by a virtual key, so a permit
+// from any other kind of holder is looked up the same way without this needing to know what it is.
+// One permit, one holder's scope: whoever gathers an attempt's limits asks once per permit it means
+// to charge, which is what lets it charge one holder among several without collecting the others.
+func modelConfigScopesFor(permit schemas.Permit) []limitScope {
+	if permit == nil || permit.ID() == "" {
+		return []limitScope{{
+			name: configstoreTables.ModelConfigScopeGlobal,
+			kind: grant.LimitHolderModelConfig,
+		}}
+	}
+	return []limitScope{{
+		name: modelConfigScopeFor(permit.Type()),
+		id:   permit.ID(),
+		kind: scopedModelConfigKind(permit.Type()),
+	}}
+}
+
+// modelConfigScopeFor is the scope a permit holder's own model configs are stored under.
+//
+// A permit type and a model-config scope are different vocabularies: the scope is a persisted
+// column, the type names what resolved the permit, and for virtual keys the two spell it
+// differently. The translation is explicit because casting one to the other silently finds
+// nothing: the lookup is keyed by scope name, so a near-miss reads as "this holder configured no
+// model limits" rather than as an error.
+func modelConfigScopeFor(permitType string) string {
+	switch permitType {
+	case string(grant.PermitVirtualKey):
+		return configstoreTables.ModelConfigScopeVirtualKey
+	case string(grant.PermitProject):
+		return configstoreTables.ModelConfigScopeProject
+	default:
+		return permitType
+	}
+}
+
+// scopedModelConfigKind is the kind a permit holder's own per-model limits are attributed to, so a
+// refusal can say whose model limit ran out.
+func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
+	switch permitType {
+	case string(grant.PermitVirtualKey):
+		return grant.LimitHolderVirtualKeyModelConfig
+	case string(grant.PermitProject):
+		return grant.LimitHolderProjectModelConfig
+	default:
+		return grant.LimitHolderUserAccessProfileModelConfig
+	}
+}
+
+// modelConfigDisplayName is what a refusal calls a model config's limit.
+func modelConfigDisplayName(mc *configstoreTables.TableModelConfig) string {
+	if mc.Provider != nil && *mc.Provider != "" {
+		return fmt.Sprintf("%s on %s", mc.ModelName, *mc.Provider)
+	}
+	return mc.ModelName
+}
+
+// budgetIDsOf names a set of budget rows.
+func budgetIDsOf(rows []configstoreTables.TableBudget) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+// idOrEmpty reads an optional identifier as the list LimitsHeldBy takes.
+func idOrEmpty(id *string) []string {
+	if id == nil {
 		return nil
 	}
-
-	rulesList, ok := rules.([]*configstoreTables.TableRoutingRule)
-	if !ok {
-		return nil
-	}
-
-	// Filter by enabled and return
-	var enabledRules []*configstoreTables.TableRoutingRule
-	for _, rule := range rulesList {
-		if rule.EnabledValue() {
-			enabledRules = append(enabledRules, rule)
-		}
-	}
-
-	return enabledRules
+	return []string{*id}
 }
 
-// GetRoutingProgram compiles a CEL expression and caches the resulting program
-// Uses the singleton CEL environment for efficiency
-// Returns error if compilation fails
-func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *configstoreTables.TableRoutingRule) (cel.Program, error) {
-	if rule == nil {
-		return nil, fmt.Errorf("routing rule cannot be nil")
+// CheckBudgets reports whether any of the given budgets is exhausted.
+//
+// It is the only budget check: what to check is decided by whoever assembled the limits (an attempt's
+// resolved set, filtered to the holder kinds in force), and this evaluates whatever it is handed. That
+// is what lets a caller stop knowing whether a virtual key, a team, an access profile or a model
+// config is paying.
+func (gs *LocalGovernanceStore) CheckBudgets(ctx context.Context, limits []schemas.Limit, baselines map[string]float64) (Decision, error) {
+	if len(limits) == 0 {
+		return DecisionAllow, nil
 	}
-
-	// Check cache first to avoid recompilation
-	if prog, ok := gs.compiledRoutingPrograms.Load(rule.ID); ok {
-		if celProg, ok := prog.(cel.Program); ok {
-			return celProg, nil
+	entityWise := make(EntityWiseBudgets, len(limits))
+	for _, limit := range limits {
+		budget := gs.LoadBudget(ctx, limit.ID)
+		if budget == nil {
+			continue
 		}
+		label := limitLabel(limit)
+		entityWise[label] = append(entityWise[label], budget)
 	}
-
-	// Get CEL expression, default to "true" if empty
-	expr := rule.CelExpression
-	if expr == "" {
-		expr = "true"
+	if len(entityWise) == 0 {
+		return DecisionAllow, nil
 	}
-
-	// Normalize header and param keys to lowercase so CEL expressions match normalized map keys
-	expr = routing.NormalizeMapKeysInCEL(expr)
-
-	// Validate expression format
-	if err := routing.ValidateCELExpression(expr); err != nil {
-		return nil, fmt.Errorf("invalid CEL expression: %w", err)
-	}
-
-	// Compile using singleton environment
-	ast, issues := gs.routingCELEnv.Compile(expr)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
-	}
-
-	// Create program. Partial evaluation is only needed for complexity rules,
-	// where routing treats unavailable complexity_tier as unknown instead of
-	// leaking an empty-string sentinel.
-	var program cel.Program
-	var err error
-	if celASTReferencesIdentifier(ast, "complexity_tier") {
-		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
-	} else {
-		program, err = gs.routingCELEnv.Program(ast)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("CEL program creation error: %w", err)
-	}
-
-	// Cache the compiled program
-	gs.compiledRoutingPrograms.Store(rule.ID, program)
-
-	return program, nil
+	return gs.CheckBudget(ctx, entityWise, baselines)
 }
 
-// GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
-// Accounts for baseline usage from remote nodes when calculating percentages
-func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	// Prevent nil pointer dereferences
-	if budgetBaselines == nil {
-		budgetBaselines = map[string]float64{}
+// CheckRateLimits is CheckBudgets for rate limits.
+func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []schemas.Limit, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
+	if len(limits) == 0 {
+		return DecisionAllow, nil
 	}
-	if tokenBaselines == nil {
-		tokenBaselines = map[string]int64{}
-	}
-	if requestBaselines == nil {
-		requestBaselines = map[string]int64{}
-	}
-
-	result := &BudgetAndRateLimitStatus{
-		BudgetPercentUsed:           0,
-		RateLimitTokenPercentUsed:   0,
-		RateLimitRequestPercentUsed: 0,
-	}
-
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-
-	// applyModelConfig folds a model config's rate-limit and budgets into the running max.
-	applyModelConfig := func(modelConfig *configstoreTables.TableModelConfig) {
-		if modelConfig.RateLimitID != nil {
-			if rateLimitValue, ok := gs.rateLimits.Load(*modelConfig.RateLimitID); ok && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-						tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-						if tokenPercent > result.RateLimitTokenPercentUsed {
-							result.RateLimitTokenPercentUsed = tokenPercent
-						}
-					}
-					// Calculate request percent used
-					if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-						requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-						if requestPercent > result.RateLimitRequestPercentUsed {
-							result.RateLimitRequestPercentUsed = requestPercent
-						}
-					}
-				}
-			}
+	entityWise := make(EntityWiseRateLimits, len(limits))
+	for _, limit := range limits {
+		rateLimit := gs.LoadRateLimit(ctx, limit.ID)
+		if rateLimit == nil {
+			continue
 		}
-		// Get budget status (max percent across the config's budgets)
-		for bi := range modelConfig.Budgets {
-			if budgetValue, ok := gs.budgets.Load(modelConfig.Budgets[bi].ID); ok && budgetValue != nil {
-				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-					if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-						budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-						if budgetPercent > result.BudgetPercentUsed {
-							result.BudgetPercentUsed = budgetPercent
-						}
-					}
-				}
-			}
-		}
+		label := limitLabel(limit)
+		entityWise[label] = append(entityWise[label], rateLimit)
 	}
-
-	// Model-level (global scope), all tiers incl. the "*:provider" / "*:nil" wildcards
-	// that carry provider-level governance after the provider-governance migration.
-	if model != "" {
-		for _, modelConfig := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-			applyModelConfig(modelConfig)
-		}
+	if len(entityWise) == 0 {
+		return DecisionAllow, nil
 	}
-
-	// VK-scoped model configs. The per-VK provider budget set via the model limits UI now
-	// lives here (scope=virtual_key, model="*"); before the provider-governance migration it
-	// was read from vk.ProviderConfigs below. Mirror the scope walk enforcement uses.
-	if model != "" && vk != nil {
-		for _, scope := range nonGlobalModelConfigScopeChain(vk) {
-			for _, modelConfig := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
-				applyModelConfig(modelConfig)
-			}
-		}
-	}
-
-	// Check global provider-specific rate limits and budgets
-	providerValue, ok := gs.providers.Load(string(provider))
-	if ok && providerValue != nil {
-		if providerTable, ok := providerValue.(*configstoreTables.TableProvider); ok && providerTable != nil {
-			// Get rate limit status
-			if providerTable.RateLimitID != nil {
-				if rateLimitValue, ok := gs.rateLimits.Load(*providerTable.RateLimitID); ok && rateLimitValue != nil {
-					if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-						// Calculate token percent used
-						if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-							tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-							if tokenPercent > result.RateLimitTokenPercentUsed {
-								result.RateLimitTokenPercentUsed = tokenPercent
-							}
-						}
-						// Calculate request percent used
-						if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-							requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-							if requestPercent > result.RateLimitRequestPercentUsed {
-								result.RateLimitRequestPercentUsed = requestPercent
-							}
-						}
-					}
-				}
-			}
-			// Get budget status
-			if providerTable.BudgetID != nil {
-				if budgetValue, ok := gs.budgets.Load(*providerTable.BudgetID); ok && budgetValue != nil {
-					if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-						if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-							budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-							if budgetPercent > result.BudgetPercentUsed {
-								result.BudgetPercentUsed = budgetPercent
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Check virtual key level provider-specific rate limits and budgets
-	// NO LONGER NEEDED - provider budgets are now handled in model configs under the virtual key scope. Keeping this code here for now, but it can be removed.
-	if vk != nil {
-		if vk.ProviderConfigs != nil {
-			for _, pc := range vk.ProviderConfigs {
-				if pc.Provider == string(provider) {
-					// Get rate limit status
-					if pc.RateLimit != nil {
-						// Look up canonical rate limit from gs.rateLimits
-						if rateLimitValue, ok := gs.rateLimits.Load(pc.RateLimit.ID); ok && rateLimitValue != nil {
-							if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-								// Calculate token percent used
-								if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-									tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-									if tokenPercent > result.RateLimitTokenPercentUsed {
-										result.RateLimitTokenPercentUsed = tokenPercent
-									}
-								}
-								// Calculate request percent used
-								if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-									requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-									if requestPercent > result.RateLimitRequestPercentUsed {
-										result.RateLimitRequestPercentUsed = requestPercent
-									}
-								}
-							}
-						}
-					}
-					// Get budget status from multi-budgets
-					for _, b := range pc.Budgets {
-						if budgetValue, ok := gs.budgets.Load(b.ID); ok && budgetValue != nil {
-							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-								if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-									budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-									if budgetPercent > result.BudgetPercentUsed {
-										result.BudgetPercentUsed = budgetPercent
-									}
-								}
-							}
-						}
-					}
-					break
-				}
-			}
-		}
-	}
-	return result
+	return gs.CheckRateLimit(ctx, entityWise, tokensBaselines, requestsBaselines)
 }
 
-// UpdateRoutingRuleInMemory updates a routing rule in the in-memory cache
-func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error {
-	if rule == nil {
-		return fmt.Errorf("routing rule cannot be nil")
-	}
-	// First, remove the rule from ALL scopes (in case it was moved from one scope to another)
-	gs.routingRules.Range(func(key, value interface{}) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok {
-			return true
+// ChargeBudgets bills a cost to every budget it is handed. The list is the one the check read, so a
+// request is billed to exactly what it was checked against.
+func (gs *LocalGovernanceStore) ChargeBudgets(ctx context.Context, limits []schemas.Limit, cost float64) error {
+	for _, budgetID := range limitIDsOf(limits) {
+		if err := gs.BumpBudgetUsage(ctx, budgetID, cost); err != nil {
+			return err
 		}
-
-		// Filter out the rule if it exists in this scope
-		newRules := make([]*configstoreTables.TableRoutingRule, 0, len(rules))
-		for _, r := range rules {
-			if r.ID != rule.ID {
-				newRules = append(newRules, r)
-			}
-		}
-
-		// Update the scope with the filtered rules
-		if len(newRules) != len(rules) {
-			if len(newRules) == 0 {
-				gs.routingRules.Delete(key)
-			} else {
-				gs.routingRules.Store(key, newRules)
-			}
-		}
-		return true
-	})
-	// Build cache key for the new scope
-	var key string
-	if rule.Scope == "global" {
-		key = "global:"
-	} else {
-		scopeID := ""
-		if rule.ScopeID != nil {
-			scopeID = *rule.ScopeID
-		}
-		key = fmt.Sprintf("%s:%s", rule.Scope, scopeID)
-	}
-	// Load existing rules for this scope
-	var rules []*configstoreTables.TableRoutingRule
-	if value, ok := gs.routingRules.Load(key); ok {
-		if existing, ok := value.([]*configstoreTables.TableRoutingRule); ok {
-			rules = existing
-		}
-	}
-	// Add the rule to the new scope
-	rules = append(rules, rule)
-	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority)
-	sort.Slice(rules, func(i, j int) bool {
-		return rules[i].Priority < rules[j].Priority
-	})
-	// Store back in cache
-	gs.routingRules.Store(key, rules)
-	// Invalidate compiled program cache for this rule (expression may have changed)
-	gs.compiledRoutingPrograms.Delete(rule.ID)
-	// Recompile the program immediately to update cache with fresh compilation
-	if _, err := gs.GetRoutingProgram(ctx, rule); err != nil {
-		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.Name, err)
 	}
 	return nil
 }
 
-// DeleteRoutingRuleInMemory removes a routing rule from the in-memory cache
-func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(ctx context.Context, id string) error {
-	// Loop over all rules and delete the one with the matching id
-	gs.routingRules.Range(func(key, value interface{}) bool {
-		rules, ok := value.([]*configstoreTables.TableRoutingRule)
-		if !ok {
-			return true
+// ChargeRateLimits counts a request against every rate limit it is handed, for the same reason as
+// ChargeBudgets.
+func (gs *LocalGovernanceStore) ChargeRateLimits(ctx context.Context, limits []schemas.Limit, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	for _, rateLimitID := range limitIDsOf(limits) {
+		if err := gs.BumpRateLimitUsage(ctx, rateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			return err
 		}
-		// Find and filter out the rule with matching ID
-		var filteredRules []*configstoreTables.TableRoutingRule
-		for _, r := range rules {
-			if r.ID != id {
-				filteredRules = append(filteredRules, r)
-			}
-		}
-		// Update or delete the key
-		if len(filteredRules) == 0 {
-			gs.routingRules.Delete(key)
-		} else {
-			gs.routingRules.Store(key, filteredRules)
-		}
-		return true
-	})
-	// Invalidate compiled program cache for this rule
-	gs.compiledRoutingPrograms.Delete(id)
+	}
 	return nil
+}
+
+// limitLabel names a limit's holder for the log lines and refusals the check emits. It is what the
+// per-holder checks used to hardcode, now read off the limit itself.
+func limitLabel(limit schemas.Limit) string {
+	if limit.HolderName != "" {
+		return fmt.Sprintf("%s %s", limit.HolderKind, limit.HolderName)
+	}
+	return string(limit.HolderKind)
 }

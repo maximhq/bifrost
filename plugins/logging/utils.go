@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -113,6 +114,9 @@ type LogManager interface {
 
 	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
 	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableProjects returns all unique project ID-Name pairs from logs
+	GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
 	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
@@ -368,6 +372,10 @@ func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, que
 
 func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableProjects(ctx, limit, query)
 }
 
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
@@ -828,6 +836,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		ServiceTier:           result.ServiceTier,
 		CacheDebug:            result.CacheDebug,
 		GuardrailDebug:        result.GuardrailDebug,
 		Cost:                  result.Cost,
@@ -890,7 +899,9 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 }
 
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
-// Format: [timestamp] [engine] - message
+// Format: [timestamp] [engine] [level] - message
+// The level token lets the log detail view filter and badge each line by severity.
+// An entry recorded without a level is written as info so every line keeps the same shape.
 // Parameters:
 //   - logs: Slice of routing engine log entries
 //
@@ -902,7 +913,22 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 	}
 	var sb strings.Builder
 	for _, log := range logs {
-		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
+		level := log.Level
+		if level == "" {
+			level = schemas.LogLevelInfo
+		}
+		sb.WriteString(fmt.Sprintf("[%d] [%s] [%s] - %s\n", log.Timestamp, log.Engine, level, log.Message))
 	}
 	return sb.String()
+}
+
+func stringSlicePtr(values []string) *string {
+	if len(values) == 0 {
+		return nil
+	}
+	out, err := sonic.MarshalString(values)
+	if err != nil {
+		return nil
+	}
+	return &out
 }

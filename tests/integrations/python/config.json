@@ -1,18 +1,13 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
-  "env_label": "Development",
   "mcp": {
     "client_configs": [
       {
         "name": "sse_mcp",
         "connection_type": "sse",
         "connection_string": "http://localhost:3012/sse",
-        "tools_to_execute": [
-          "*"
-        ],
-        "tools_to_auto_execute": [
-          "*"
-        ]
+        "tools_to_execute": ["*"],
+        "tools_to_auto_execute": ["*"]
       }
     ]
   },
@@ -23,9 +18,7 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -39,9 +32,7 @@
           "name": "ElevenLabs API Key",
           "value": "env.ELEVENLABS_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": false
         }
       ],
@@ -55,9 +46,7 @@
           "name": "Xai API Key",
           "value": "env.XAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": false
         }
       ],
@@ -71,9 +60,7 @@
           "name": "Hugging Face API Key",
           "value": "env.HUGGING_FACE_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": false
         }
       ],
@@ -87,9 +74,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -103,9 +88,7 @@
           "name": "Gemini API Key",
           "value": "env.GEMINI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -123,9 +106,7 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true,
           "blacklisted_models": [
             "claude-sonnet-4-6",
@@ -160,9 +141,7 @@
           "name": "Mistral API Key",
           "value": "env.MISTRAL_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -175,9 +154,7 @@
           "name": "Cohere API Key",
           "value": "env.COHERE_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -190,9 +167,7 @@
           "name": "Parasail API Key",
           "value": "env.PARASAIL_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -205,9 +180,7 @@
           "name": "Groq API Key",
           "value": "env.GROQ_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -220,9 +193,7 @@
           "name": "Perplexity API Key",
           "value": "env.PERPLEXITY_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -235,9 +206,7 @@
           "name": "Cerebras API Key",
           "value": "env.CEREBRAS_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -250,9 +219,7 @@
           "name": "OpenRouter API Key",
           "value": "env.OPENROUTER_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -287,9 +254,7 @@
             }
           },
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -307,9 +272,7 @@
             "region": "env.AWS_REGION"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -327,9 +290,7 @@
             "region": "env.AWS_REGION"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": true
         }
       ],
@@ -342,6 +303,18 @@
         {
           "name": "Replicate API Key",
           "value": "env.REPLICATE_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "runware": {
+      "keys": [
+        {
+          "name": "Runware API Key",
+          "value": "env.RUNWARE_API_KEY",
           "weight": 1
         }
       ],
@@ -379,9 +352,7 @@
           "name": "DeepSeek API Key",
           "value": "env.DEEPSEEK_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_for_batch_api": false
         }
       ],
@@ -421,182 +392,110 @@
         "provider_configs": [
           {
             "provider": "openai",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "elevenlabs",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "xai",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "huggingface",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "anthropic",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "gemini",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "vertex",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "mistral",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "cohere",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "parasail",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "groq",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "perplexity",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "cerebras",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "openrouter",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "azure",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "bedrock",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "bedrock_mantle",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           },
           {
             "provider": "deepseek",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "*"
-            ],
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           }
         ]
@@ -609,9 +508,7 @@
   "client": {
     "drop_excess_requests": false,
     "initial_pool_size": 300,
-    "allowed_origins": [
-      "*"
-    ],
+    "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
     "max_request_body_size_mb": 100

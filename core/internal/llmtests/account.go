@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -144,6 +145,11 @@ type ComprehensiveTestConfig struct {
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+
+	// SkipEmptyToolSchemas skips the empty/nil function-schema tool tests for providers that
+	// reject a function schema whose properties object is empty or absent (e.g. Runware, whose
+	// OpenAI-compatible endpoint requires a non-empty properties object).
+	SkipEmptyToolSchemas bool
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -188,6 +194,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.Databricks,
+		schemas.GithubCopilot,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -488,6 +496,33 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Databricks:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.DATABRICKS_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
+				},
+			},
+		}, nil
+	case schemas.GithubCopilot:
+		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
+		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
+					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
+					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
+					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
+				},
+			},
+		}, nil
 	case schemas.Gemini:
 		return []schemas.Key{
 			{
@@ -574,8 +609,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.VLLM:
-		return []schemas.Key{
+		apiKeyValue := *schemas.NewSecretVar("env.VLLM_API_KEY") // empty when the vLLM instance has no auth (e.g. local/unprotected)
+		keys := []schemas.Key{
 			{
+				Value:          apiKeyValue,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -583,7 +620,42 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					URL: *schemas.NewSecretVar("env.VLLM_BASE_URL"),
 				},
 			},
-		}, nil
+		}
+
+		// A single vLLM server only ever serves one model, so a scenario that
+		// needs a differently-configured deployment (e.g. a reasoning-enabled
+		// instance vs. the default) needs its own pod/URL. Each optional
+		// secondary instance below gets its own key, and its model name is
+		// blacklisted on the default key so requests for it always route to
+		// the dedicated instance instead of round-robining between the two.
+		secondaryVLLMInstances := []struct {
+			urlEnv   string
+			modelEnv string
+		}{
+			{"VLLM_REASONING_BASE_URL", "VLLM_REASONING_MODEL"},
+			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
+			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
+			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+		}
+		for _, instance := range secondaryVLLMInstances {
+			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
+			model := strings.TrimSpace(os.Getenv(instance.modelEnv))
+			if url == "" || model == "" {
+				continue
+			}
+			keys[0].BlacklistedModels = append(keys[0].BlacklistedModels, model)
+			keys = append(keys, schemas.Key{
+				Value:          apiKeyValue,
+				Models:         []string{model},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				VLLMKeyConfig: &schemas.VLLMKeyConfig{
+					URL:       *schemas.NewSecretVar("env." + instance.urlEnv),
+					ModelName: model,
+				},
+			})
+		}
+		return keys, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -830,6 +902,32 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Wafer:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Databricks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.GithubCopilot:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

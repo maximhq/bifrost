@@ -55,6 +55,7 @@ type MetricsExporter struct {
 
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
+	overheadLatencyMicros          *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -131,6 +132,17 @@ var (
 	upstreamLatencyBuckets = []float64{
 		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
+	// blocked on upstream sockets, in microseconds. A different scale entirely from
+	// upstream latency: healthy values run from sub-millisecond to low tens of ms,
+	// dominated by request and response marshalling. Microseconds keep the fast,
+	// sub-millisecond common case as clean integers instead of tiny fractions. The
+	// tail up to 30_000_000us catches queue saturation and pathological payloads.
+	overheadLatencyBuckets = []float64{
+		100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000,
+		250000, 500000, 1000000, 2500000, 5000000, 10000000, 30000000,
 	}
 
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
@@ -386,6 +398,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
+	m.overheadLatencyMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_latency_microseconds",
+		desc:       "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -520,6 +540,13 @@ func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeco
 	m.upstreamLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordOverheadLatency records the latency Bifrost itself added to a request, in
+// microseconds. Recorded once per trace (off the root span), not once per attempt:
+// the underlying accumulator already spans every retry and fallback.
+func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadLatencyMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -578,8 +605,9 @@ func resolveServiceInstanceID() string {
 }
 
 // team/customer/businessUnit args are canonical comma-joined sets; label names stay
-// singular (team_id, ...) for dashboard compatibility.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
+// singular (team_id, ...) for dashboard compatibility. A request is scoped to at most
+// one project, so projectID/projectName are plain scalars.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames, projectID, projectName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -595,6 +623,8 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("customer_name", customerNames),
 		attribute.String("business_unit_id", businessUnitIDs),
 		attribute.String("business_unit_name", businessUnitNames),
+		attribute.String("project_id", projectID),
+		attribute.String("project_name", projectName),
 		attribute.String("service_instance_id", serviceInstanceID),
 	}
 }

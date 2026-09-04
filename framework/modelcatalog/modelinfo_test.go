@@ -62,12 +62,14 @@ func modelInfoCatalog(t *testing.T) *ModelCatalog {
 	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load model-parameters testdata: %v", err)
 	}
-	return &ModelCatalog{
+	mc := &ModelCatalog{
 		datasheet: ds,
 		live:      live.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
+	mc.initCaches()
+	return mc
 }
 
 func TestGetModelInfoPopulatesPricingAndLimits(t *testing.T) {

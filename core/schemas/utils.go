@@ -3,14 +3,13 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Ptr creates a pointer to any value.
@@ -19,16 +18,19 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// GetRandomString generates a random alphanumeric string of the given length.
+// letters is the hex alphabet GetRandomString draws from.
+const letters = "abcdef0123456789"
+
+// GetRandomString generates a random hex string of the given length.
+// Uses rand/v2 (seedless, per-thread): the old per-call time-seeded source cost
+// ~7µs per call and could mint identical strings for same-tick calls.
 func GetRandomString(length int) string {
 	if length <= 0 {
 		return ""
 	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
+	b := make([]byte, length)
 	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
+		b[i] = letters[rand.IntN(len(letters))]
 	}
 	return string(b)
 }
@@ -1688,6 +1690,12 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
+// case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
+func IsDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -1701,15 +1709,15 @@ func IsOpenAIModel(model string) bool {
 	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
 	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
 	// avoiding false matches on substrings like "co1" or "model-o3x".
-	return isOpenAIReasoningModel(model)
+	return isOSeriesModel(model)
 }
 
-// isOpenAIReasoningModel reports whether model names an OpenAI o-series
-// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
-// an "o" followed by a single digit, where the next character is either end of
-// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
-// do not.
-func isOpenAIReasoningModel(model string) bool {
+// isOSeriesModel reports whether model names an OpenAI o-series model. It
+// strips any provider prefix (e.g. "openai/o3") and matches an "o" followed by
+// a single digit, where the next character is either end of string or a "-"
+// separator, so "o3" and "o4-mini" match but "co1" and "o3x" do not. Narrower
+// than IsOpenAIReasoningModel, which also covers GPT-5.x and gpt-oss.
+func isOSeriesModel(model string) bool {
 	name := model
 	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
 		name = name[idx+1:]
@@ -1723,6 +1731,25 @@ func isOpenAIReasoningModel(model string) bool {
 // IsAzureModelRouter reports whether model is Azure's model-router model.
 func IsAzureModelRouter(model string) bool {
 	return strings.Contains(model, "model-router")
+}
+
+// ServedModel returns the model the provider named on the response body. It can
+// differ from the model the caller addressed.
+func (r *BifrostResponse) ServedModel() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.Model
+	case r.ResponsesResponse != nil:
+		return r.ResponsesResponse.Model
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Model
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.Model
+	}
+	return ""
 }
 
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
@@ -1744,6 +1771,33 @@ func BedrockModelSupportsCachePoints(model string) bool {
 // "Extended TTL prompt caching is only supported for Anthropic models".
 func BedrockModelSupportsExtendedCacheTTL(model string) bool {
 	return IsAnthropicModel(model)
+}
+
+// BedrockModelSupportsS3Location reports whether the model's Converse backend actually
+// resolves the s3Location member of an image/document/video source union.
+//
+// s3Location is part of the Converse schema for every model, but the API reference is
+// explicit that reading it is not: "To see which models support S3 uploads, see Supported
+// models and features for Converse."
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
+//
+// The gate has to exist because an unsupported model does not produce an s3Location error.
+// Converse validates the union, translates the request into the model's native format, and
+// drops the member when that format has no S3 source type. Anthropic's does not, so the
+// model receives an empty source and answers in its own vocabulary:
+//
+//	messages.0.content.0.document.source.type: Field required
+//
+// naming a field Converse has never had. Nothing upstream of the model ever touches S3, so
+// the object's existence and the caller's permissions are irrelevant to that failure.
+//
+// Allowlist rather than a denylist: AWS folded the per-model matrix into its model cards
+// and no longer publishes an S3 column, so "supported" is only knowable where it has been
+// observed. Nova is the family AWS's own Converse S3 examples use. Add families here as
+// they are confirmed - a model missing from this list is refused with an actionable error
+// rather than silently mangled, which is the safer way to be wrong.
+func BedrockModelSupportsS3Location(model string) bool {
+	return IsNovaModel(model)
 }
 
 // IsMistralModel checks if the model is a Mistral or Codestral model.

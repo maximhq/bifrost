@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 type testRealtimeObservabilityPlugin struct {
@@ -60,7 +61,7 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 		injected: make(chan *schemas.Trace, 1),
 	}
 
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 	tracer.CompleteAndFlushTrace(traceID)
 
 	select {
@@ -77,6 +78,34 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 	}
 }
 
+// TestTracer_TransformPausedStreamBufferForwardsToAccumulator verifies the production tracer exposes the gate transformation capability.
+func TestTracer_TransformPausedStreamBufferForwardsToAccumulator(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	const traceID = "trace-transform-paused"
+	tracer.PauseStream(traceID)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	called := false
+	err := ctx.TransformPausedStreamBuffer(func(chunks []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		called = true
+		return schemas.PausedStreamBufferTransformResult{Chunks: chunks}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !called {
+		t.Fatal("TransformPausedStreamBuffer() did not reach the streaming accumulator")
+	}
+}
+
 func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
@@ -88,7 +117,7 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 	plugin := &testRealtimeObservabilityPlugin{
 		injectedPayload: make(chan string, 1),
 	}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	// Store replacements before output attributes are populated. This mirrors
 	// streaming, where the final accumulated output lands near trace completion.
@@ -142,7 +171,7 @@ func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t
 	plugin := &testRealtimeObservabilityPlugin{
 		injectedPayload: make(chan string, 1),
 	}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
 	_, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
@@ -415,6 +444,70 @@ func TestTracer_SetAttribute(t *testing.T) {
 	if span.Attributes["http.status_code"] != 200 {
 		t.Errorf("span attribute http.status_code = %v, want 200", span.Attributes["http.status_code"])
 	}
+}
+
+// A cancelled stream reaches PopulateLLMResponseAttributes with an accumulated
+// response whose usage exists but reads zero (the final usage chunk never
+// arrived) and an error carrying the authoritative BilledUsage. The response
+// side's zero aggregates must not survive onto the span: PopulateErrorAttributes
+// gates its emissions on > 0, so a details-only BilledUsage would otherwise
+// leave a false zero in gen_ai.usage.*.
+func TestTracer_PopulateLLMResponseAttributesDropsZeroAggregatesWhenBilled(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		},
+	}
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "client cancelled the stream"}}
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 120},
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, bifrostErr)
+
+	span := store.GetTrace(traceID).RootSpan
+	for _, key := range []string{schemas.AttrInputTokens, schemas.AttrOutputTokens, schemas.AttrTotalTokens} {
+		if v, ok := span.Attributes[key]; ok {
+			t.Errorf("zero-valued response aggregate %s = %v survived onto the billed failed span", key, v)
+		}
+	}
+	if got := span.Attributes[schemas.AttrPromptTokenDetailsCachedWrite5m]; got != 120 {
+		t.Errorf("attribute %s = %v, want 120", schemas.AttrPromptTokenDetailsCachedWrite5m, got)
+	}
+}
+
+func TestTracer_PopulateLLMResponseAttributesRecordsComplexityScore(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.875)
+
+	_, handle := tracer.StartSpan(ctx, "llm-call", schemas.SpanKindLLMCall)
+	tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
+
+	trace := store.GetTrace(traceID)
+	require.NotNil(t, trace)
+	require.Equal(t, 0.875, trace.RootSpan.Attributes[schemas.AttrBifrostComplexityScore])
 }
 
 func TestTracer_GetSpanHandleByID_RootSpan(t *testing.T) {

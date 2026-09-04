@@ -137,7 +137,20 @@ func FinalizeResponseWithLargeDetection(
 	ctx *schemas.BifrostContext,
 	resp *fasthttp.Response,
 	logger schemas.Logger,
-) ([]byte, bool, *schemas.BifrostError) {
+) (body []byte, isLarge bool, finalizeErr *schemas.BifrostError) {
+	// "response-finalize" overhead phase: reading, decompressing (gzip/br/zstd), and
+	// copying the provider response body is payload-scaled work. Nil-safe; folds away
+	// when no trace is active.
+	if ft, fh := startPhaseSpan(ctx, "response-finalize"); ft != nil {
+		defer func() {
+			if finalizeErr != nil {
+				ft.EndSpan(fh, schemas.SpanStatusError, "response finalize failed")
+			} else {
+				ft.EndSpan(fh, schemas.SpanStatusOk, "")
+			}
+		}()
+	}
+
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
 
 	// No threshold — normal buffered read (feature-off path)
@@ -146,8 +159,8 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		// Copy body before caller releases resp
-		return append([]byte(nil), body...), false, nil
+		// CheckAndDecodeBody already returns an owned copy, safe after release.
+		return body, false, nil
 	}
 
 	contentLength := resp.Header.ContentLength()
@@ -170,7 +183,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Unknown Content-Length (chunked transfer encoding) — buffer up to responseThreshold
@@ -217,7 +230,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Known large response (Content-Length > threshold) — prefetch first 64KB for
@@ -232,7 +245,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Decompress on-the-fly if provider returned gzip-encoded response.

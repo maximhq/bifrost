@@ -31,7 +31,7 @@ import (
 func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		stream := make(chan *schemas.BifrostStreamChunk)
-		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 		ctx := &fasthttp.RequestCtx{}
 		router.handleStreaming(ctx, nil, RouteConfig{}, stream, func() {})
 
@@ -56,6 +56,46 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Contains(t, result.body, ": heartbeat\n", "expected at least one heartbeat comment frame during the idle gap")
 		assert.NotContains(t, result.body, ": heartbeat\n\n", "heartbeat must not carry a blank line, which non-conforming decoders dispatch as an empty event (#5874)")
+	})
+}
+
+// Test_handleStreamingGenAIDelimitsHeartbeatComment verifies the GenAI integration emits
+// its heartbeat as a self-contained SSE comment block. The official Google GenAI SDK splits
+// streams on blank-line delimiters and otherwise groups a bare comment line with the next
+// data event, causing that event to be discarded because the combined block starts with ':'.
+func Test_handleStreamingGenAIDelimitsHeartbeatComment(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+		ctx := &fasthttp.RequestCtx{}
+		var streamRoute *RouteConfig
+		routes := CreateGenAIRouteConfigs("/genai")
+		for i := range routes {
+			if routes[i].StreamConfig != nil {
+				streamRoute = &routes[i]
+				break
+			}
+		}
+		require.NotNil(t, streamRoute)
+		router.handleStreaming(ctx, nil, *streamRoute, stream, func() {})
+
+		bodyStream := ctx.Response.BodyStream()
+		type readResult struct {
+			body string
+			err  error
+		}
+		readDone := make(chan readResult, 1)
+		go func() {
+			b, err := io.ReadAll(bodyStream)
+			readDone <- readResult{body: string(b), err: err}
+		}()
+
+		time.Sleep(2*lib.DefaultSSEHeartbeatInterval + time.Millisecond)
+		close(stream)
+
+		result := <-readDone
+		require.NoError(t, result.err)
+		assert.Contains(t, result.body, ": heartbeat\n\n")
 	})
 }
 

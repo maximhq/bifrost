@@ -384,6 +384,32 @@ The IAM user or role needs the following permissions on your bucket:
 | `endpoint` | Custom endpoint for MinIO / Cloudflare R2 |
 | `force_path_style` | Use path-style URLs (required for MinIO, default: `false`) |
 
+<Accordion title="Using KMS to encrypt your bucket?">
+
+1. Attach this IAM policy to whichever AWS principal Bifrost authenticates as: the IAM user behind `access_key_id`/`secret_access_key`, or the IAM role behind `role_arn`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "KMSAccess",
+      "Effect": "Allow",
+      "Action": ["kms:GenerateDataKey", "kms:Decrypt"],
+      "Resource": "arn:aws:kms:us-east-1:123456789012:key/your-key-id"
+    }
+  ]
+}
+```
+
+2. If you're using a **customer-managed key** (not the AWS-managed `aws/s3` key), it also needs permission granted separately on the **key's own policy** (in the KMS console). Add that same IAM user or role ARN there too ([AWS guide](https://repost.aws/knowledge-center/s3-bucket-access-default-encryption)). AWS-managed keys don't allow their key policy to be edited, so this step doesn't apply if you're using the default `aws/s3` key.
+
+<Info>
+Default encryption applies KMS without requiring encryption headers from the uploader. Bifrost's IAM identity still needs the KMS permissions above regardless of encryption mode. If instead your bucket policy denies uploads that don't include the encryption header, note that Bifrost does not send that header, so uploads will fail under that policy.
+</Info>
+
+</Accordion>
+
 </Tab>
 <Tab title="Google Cloud Storage">
 

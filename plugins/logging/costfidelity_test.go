@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
@@ -347,6 +349,37 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 	})
 }
 
+// TestStreamingServiceTierSurvivesAccumulatorHandoff covers the streaming leak: the
+// accumulator resolves the served tier across chunks, but it then crosses the tracer
+// boundary as a schemas.StreamAccumulatorResult. That struct carried no ServiceTier
+// field, so every streamed row logged an empty service_tier and repriced at standard
+// rates — the same class of mis-billing #5669 fixed for non-streamed rows.
+func TestStreamingServiceTierSurvivesAccumulatorHandoff(t *testing.T) {
+	priority := schemas.BifrostServiceTierPriority
+
+	processed := convertToProcessedStreamResponse(&schemas.StreamAccumulatorResult{
+		RequestID:      "req-stream-tier",
+		RequestedModel: "gpt-4o",
+		ResolvedModel:  "gpt-4o",
+		Provider:       schemas.OpenAI,
+		Status:         "success",
+		ServiceTier:    &priority,
+		TokenUsage:     &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, schemas.ChatCompletionStreamRequest)
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected a processed stream response with data")
+	}
+	if processed.Data.ServiceTier == nil || *processed.Data.ServiceTier != schemas.BifrostServiceTierPriority {
+		t.Fatalf("expected priority tier to survive the conversion, got %v", processed.Data.ServiceTier)
+	}
+
+	entry := &logstore.Log{}
+	(&LoggerPlugin{}).applyStreamingOutputToEntry(entry, processed, false, false)
+	if entry.ServiceTier == nil || *entry.ServiceTier != "priority" {
+		t.Fatalf("expected service_tier priority on the log entry, got %v", entry.ServiceTier)
+	}
+}
+
 // TestCalculateCostForLogPricesOneHourCacheWrites covers the Responses-path leak:
 // CachedWriteTokenDetails was dropped in the conversion, so 1h cache writes billed at
 // the cheaper 5m rate.
@@ -602,9 +635,9 @@ func (s *legacyOffloadedStore) HydrateBillingChunk(_ context.Context, logs []*lo
 	return result, nil
 }
 
-func (s *legacyOffloadedStore) BulkUpdateCost(_ context.Context, updates map[string]float64) error {
+func (s *legacyOffloadedStore) BulkUpdateCost(_ context.Context, updates map[string]logstore.CostUpdate) error {
 	for id, c := range updates {
-		s.costs[id] = c
+		s.costs[id] = c.Total
 	}
 	return nil
 }
@@ -917,4 +950,609 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 	assert.Equal(t, 1, store.fetches,
 		"the second pass must be served entirely from the database; fetches should still be 1")
 	assertCostsEqual(t, "recompute after backfill", store.costs["backfill-1"], firstCost)
+}
+
+// These tests cover calculateBatchAggregateCost and its wiring into
+// RecalculateCosts: a batch aggregate row (object=batch_results) spanning more
+// than one model has Model="mixed" and one blended token_usage, so the generic
+// calculateCostForLog path can never price it — "mixed" has no catalog entry.
+// calculateBatchAggregateCost reprices per model_breakdown entry instead, the
+// same way settlement originally priced each result item.
+
+
+// repriceAggregate drives the production seam: RepriceLog asks whichever job kind
+// owns the row to recompute it. Returns the cost and the kind's re-serialized
+// debug blob, matching the shape the old plugin-local helper returned.
+func repriceAggregate(t *testing.T, plugin *LoggerPlugin, entry *logstore.Log) (float64, string, error) {
+	t.Helper()
+	repriced, err := jobaccounting.RepriceLog(entry, plugin.pricingManager)
+	if err != nil {
+		return 0, "", err
+	}
+	if repriced == nil {
+		return 0, "", nil
+	}
+	return repriced.Cost, repriced.DebugJSON, nil
+}
+
+// aggregateLogID is the id a real settlement writes, so batchRowRoleOf classifies
+// the fixture as the aggregate that owns the bill rather than a /results echo.
+func aggregateLogID(provider schemas.ModelProvider, batchID string) string {
+	return jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, provider, batchID)
+}
+
+func batchModelBreakdown(promptTokens, completionTokens int) schemas.BatchModelBreakdown {
+	return schemas.BatchModelBreakdown{
+		RequestCount: 1,
+		Usage: schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+		},
+	}
+}
+
+// TestCalculateBatchAggregateCost_MultiModel prices two models in one row —
+// gpt-4o (1.25e-06/5e-06 batch rate) and gpt-4o-mini (7.5e-08/3e-07) in
+// testdata/pricing.json. A batch is inherently single-provider (one provider's
+// batch API), so both models share the row's Provider; the defaultBatchPricingRatio
+// fallback itself is already covered directly at the pricing-engine level
+// (TestCalculateCostForUsage_BatchResultsDefaultsToHalfStandardRate) and at the
+// settlement level (TestBatchPricing_ClaudeHaiku45_DefaultsToHalfStandardRate) —
+// this test's job is the multi-model loop and per-model write-back, not re-proving
+// that math. Both models' costs must land in the summed total and in their own
+// ModelBreakdown entry.
+func TestCalculateBatchAggregateCost_MultiModel(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	entry := &logstore.Log{
+		ID:       aggregateLogID(schemas.OpenAI, "batch_multi"),
+		Object:   string(schemas.BatchResultsRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "mixed",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_multi",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":      batchModelBreakdown(1000, 200),
+					"gpt-4o-mini": batchModelBreakdown(500, 100),
+				},
+			},
+		},
+	}
+
+	cost, batchDebugJSON, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assert.NotEmpty(t, batchDebugJSON)
+
+	wantGPT4o := 1000*1.25e-06 + 200*5e-06
+	wantGPT4oMini := 500*7.5e-08 + 100*3e-07
+	assertCostsEqual(t, "batch multi-model total", cost, wantGPT4o+wantGPT4oMini)
+
+	breakdowns := entry.BatchDebugParsed.Accounting.ModelBreakdowns
+	require.NotNil(t, breakdowns["gpt-4o"].Cost)
+	assertCostsEqual(t, "gpt-4o breakdown cost", *breakdowns["gpt-4o"].Cost, wantGPT4o)
+	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
+	assertCostsEqual(t, "gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
+
+	// The returned JSON is what gets persisted to batch_debug — it must reflect
+	// the same mutated breakdowns, not a stale pre-pricing snapshot.
+	var roundTripped schemas.BifrostBatchDebug
+	require.NoError(t, sonic.UnmarshalString(batchDebugJSON, &roundTripped))
+	require.NotNil(t, roundTripped.Accounting.ModelBreakdowns["gpt-4o"].Cost)
+	assertCostsEqual(t, "round-tripped gpt-4o cost", *roundTripped.Accounting.ModelBreakdowns["gpt-4o"].Cost, wantGPT4o)
+}
+
+// TestCalculateBatchAggregateCost_PartiallyUnpriced covers a batch where one
+// model prices and another has no catalog entry at all (not even a standard
+// rate to default from): the total must reflect only the priced model, and the
+// unpriced model's breakdown Cost must stay nil rather than being reported as a
+// real (and wrong) zero.
+func TestCalculateBatchAggregateCost_PartiallyUnpriced(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	entry := &logstore.Log{
+		ID:       aggregateLogID(schemas.OpenAI, "batch_partial"),
+		Object:   string(schemas.BatchResultsRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "mixed",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_partial",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":                batchModelBreakdown(1000, 200),
+					"totally-unknown-model": batchModelBreakdown(300, 50),
+				},
+			},
+		},
+	}
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "partially-unpriced batch total", cost, 1000*1.25e-06+200*5e-06)
+
+	breakdowns := entry.BatchDebugParsed.Accounting.ModelBreakdowns
+	require.NotNil(t, breakdowns["gpt-4o"].Cost)
+	assert.Nil(t, breakdowns["totally-unknown-model"].Cost,
+		"a model with no pricing at all must stay nil, not be reported as free")
+}
+
+// TestCalculateBatchAggregateCost_EmbeddingEndpointUsesEmbeddingRates covers the
+// modality the row itself cannot express: Object is "batch_results" for every
+// batch and normalizes to "chat", so an embeddings batch used to look for chat
+// rates on an embedding-only model and could never reprice at all. The endpoint
+// settlement recorded in batch_debug is what makes the lookup land.
+func TestCalculateBatchAggregateCost_EmbeddingEndpointUsesEmbeddingRates(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	newEntry := func(endpoint string) *logstore.Log {
+		return &logstore.Log{
+			ID:       aggregateLogID(schemas.OpenAI, "batch_embeddings"),
+			Object:   string(schemas.BatchResultsRequest),
+			Provider: string(schemas.OpenAI),
+			Model:    "text-embedding-3-small",
+			BatchDebugParsed: &schemas.BifrostBatchDebug{
+				BatchID:  "batch_embeddings",
+				Endpoint: endpoint,
+				Accounting: &schemas.BatchAccountingDebug{
+					ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+						"text-embedding-3-small": batchModelBreakdown(1000, 0),
+					},
+				},
+			},
+		}
+	}
+
+	cost, _, err := repriceAggregate(t, plugin, newEntry(string(schemas.BatchEndpointEmbeddings)))
+	require.NoError(t, err)
+	// testdata input_cost_per_token_batches for text-embedding-3-small: 1e-08.
+	assertCostsEqual(t, "embeddings batch total", cost, 1000*1e-08)
+
+	// Rows written before the endpoint was persisted keep the old behavior rather
+	// than being guessed at — for an embedding-only model that still means unpriceable.
+	_, _, err = repriceAggregate(t, plugin, newEntry(""))
+	require.ErrorIs(t, err, errPricingInputsUnavailable)
+}
+
+// TestCalculateBatchAggregateCost_PartialRepriceMarksIncomplete pins the agreement
+// between settlement and recalculation: recovering some of a batch's cost is worth
+// persisting, but the total must not present itself as whole while a model is still
+// rateless. The flag is the durable record that it under-states.
+func TestCalculateBatchAggregateCost_PartialRepriceMarksIncomplete(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	entry := &logstore.Log{
+		ID:       aggregateLogID(schemas.OpenAI, "batch_still_partial"),
+		Object:   string(schemas.BatchResultsRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "mixed",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_still_partial",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":                batchModelBreakdown(1000, 200),
+					"totally-unknown-model": batchModelBreakdown(300, 50),
+				},
+			},
+		},
+	}
+
+	_, batchDebugJSON, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assert.True(t, entry.BatchDebugParsed.Accounting.Incomplete)
+
+	var roundTripped schemas.BifrostBatchDebug
+	require.NoError(t, sonic.UnmarshalString(batchDebugJSON, &roundTripped))
+	assert.True(t, roundTripped.Accounting.Incomplete,
+		"the flag must survive into the persisted batch_debug, not just the in-memory copy")
+}
+
+// TestCalculateBatchAggregateCost_IncompleteIsNeverCleared: the flag can stand for
+// usage that is not in ModelBreakdowns at all — rows whose model the provider never
+// named, rows lost to parse errors — and repricing the breakdowns that did land says
+// nothing about those. A pass that priced everything it can see must not close it.
+func TestCalculateBatchAggregateCost_IncompleteIsNeverCleared(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	entry := &logstore.Log{
+		ID:       aggregateLogID(schemas.OpenAI, "batch_parse_errors"),
+		Object:   string(schemas.BatchResultsRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_parse_errors",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o": batchModelBreakdown(1000, 200),
+				},
+				ParseErrorCount: 3,
+				Incomplete:      true,
+			},
+		},
+	}
+
+	_, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assert.True(t, entry.BatchDebugParsed.Accounting.Incomplete,
+		"unparseable rows are gone for good; a successful reprice does not recover them")
+	assert.Equal(t, 3, entry.BatchDebugParsed.Accounting.ParseErrorCount)
+}
+
+// TestCalculateBatchAggregateCost_AllUnpriced covers a batch where nothing can
+// price: it must report errPricingInputsUnavailable, the same sentinel every
+// other genuinely-unpriceable row reports, so the recalc job's Unpriceable
+// counter (not just Skipped) reflects it.
+func TestCalculateBatchAggregateCost_AllUnpriced(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	entry := &logstore.Log{
+		ID:       "batch-none",
+		Object:   string(schemas.BatchResultsRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "totally-unknown-model",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_none",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"totally-unknown-model": batchModelBreakdown(300, 50),
+				},
+			},
+		},
+	}
+
+	_, _, err := repriceAggregate(t, plugin, entry)
+	require.ErrorIs(t, err, errPricingInputsUnavailable)
+}
+
+// TestRecalculateCostsReprisesMixedModelBatchRow is the end-to-end regression
+// test: a real "mixed"-model batch row, stuck with cost=nil because Model="mixed"
+// has no catalog entry, must come out of RecalculateCosts with both the row's
+// cost and its batch_debug model_breakdowns correctly populated — not just one
+// of the two, which would leave them permanently disagreeing.
+func TestRecalculateCostsReprisesMixedModelBatchRow(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	store := plugin.store
+
+	entry := &logstore.Log{
+		ID:        jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_e2e_mixed"),
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "mixed",
+		Status:    "success",
+		Cost:      nil,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_e2e_mixed",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":      batchModelBreakdown(1000, 200),
+					"gpt-4o-mini": batchModelBreakdown(500, 100),
+				},
+			},
+		},
+	}
+	require.NoError(t, store.Create(context.Background(), entry))
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Updated)
+
+	logged, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_e2e_mixed"))
+	require.NoError(t, err)
+	require.NotNil(t, logged.Cost)
+
+	wantGPT4o := 1000*1.25e-06 + 200*5e-06
+	wantGPT4oMini := 500*7.5e-08 + 100*3e-07
+	assertCostsEqual(t, "e2e mixed-model row cost", *logged.Cost, wantGPT4o+wantGPT4oMini)
+
+	require.NotNil(t, logged.BatchDebugParsed)
+	require.NotNil(t, logged.BatchDebugParsed.Accounting)
+	breakdowns := logged.BatchDebugParsed.Accounting.ModelBreakdowns
+	require.NotNil(t, breakdowns["gpt-4o"].Cost)
+	assertCostsEqual(t, "e2e gpt-4o breakdown cost", *breakdowns["gpt-4o"].Cost, wantGPT4o)
+	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
+	assertCostsEqual(t, "e2e gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
+}
+
+// test: the background job is the path the /api/logs/recalculate-cost endpoint
+// actually runs, and it persisted pages independently of RecalculateCosts. A batch
+// aggregate row prices to a scalar total with no breakdown, so the job fed nil to
+// CostUpdateFromBreakdown and wrote the resulting zero over an already-correct
+// cost — a full recalculation silently zeroed every settled batch in the window.
+func TestRunCostRecalcJobDoesNotZeroPricedBatchRow(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	store := plugin.store
+	ctx := context.Background()
+
+	wantGPT4o := 1000*1.25e-06 + 200*5e-06
+	wantGPT4oMini := 500*7.5e-08 + 100*3e-07
+	settledCost := wantGPT4o + wantGPT4oMini
+
+	entry := &logstore.Log{
+		ID:        jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_job_priced"),
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "mixed",
+		Status:    "success",
+		Cost:      &settledCost,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID: "batch_job_priced",
+			Accounting: &schemas.BatchAccountingDebug{
+				ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+					"gpt-4o":      batchModelBreakdown(1000, 200),
+					"gpt-4o-mini": batchModelBreakdown(500, 100),
+				},
+			},
+		},
+	}
+	require.NoError(t, store.Create(ctx, entry))
+
+	// MissingCostOnly=false is the "recalculate everything in this window" scope,
+	// which is what visits an already-priced row in the first place.
+	metaJSON, err := plugin.BuildCostRecalcJobMeta(ctx, logstore.SearchFilters{}, false)
+	require.NoError(t, err)
+
+	finalJSON, err := plugin.RunCostRecalcJob(ctx, metaJSON, func(string) error { return nil })
+	require.NoError(t, err)
+
+	var meta CostRecalcJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &meta))
+	require.Equal(t, 1, meta.Updated)
+
+	logged, err := store.FindByID(ctx, jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, "batch_job_priced"))
+	require.NoError(t, err)
+	require.NotNil(t, logged.Cost)
+	assertCostsEqual(t, "batch row cost after background recalculation", *logged.Cost, settledCost)
+
+	// The breakdowns must be rewritten alongside the cost, not left behind.
+	require.NotNil(t, logged.BatchDebugParsed)
+	require.NotNil(t, logged.BatchDebugParsed.Accounting)
+	breakdowns := logged.BatchDebugParsed.Accounting.ModelBreakdowns
+	require.NotNil(t, breakdowns["gpt-4o"].Cost)
+	assertCostsEqual(t, "gpt-4o breakdown cost", *breakdowns["gpt-4o"].Cost, wantGPT4o)
+	require.NotNil(t, breakdowns["gpt-4o-mini"].Cost)
+	assertCostsEqual(t, "gpt-4o-mini breakdown cost", *breakdowns["gpt-4o-mini"].Cost, wantGPT4oMini)
+}
+
+// TestRecalculateCostsDoesNotBillBatchEchoRow is the regression test for a
+// recalculation turning one batch into N charges. A repeated /results fetch gets
+// its own log row carrying the settled breakdowns and a snapshot cost, and it is
+// indistinguishable from the settlement row by object type — so repricing wrote a
+// full copy of the batch bill onto every one of them. The echo row must keep a
+// NULL cost (it contributes to no total) while the price it displays is refreshed.
+func TestRecalculateCostsDoesNotBillBatchEchoRow(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	store := plugin.store
+	ctx := context.Background()
+
+	const batchID = "batch_echo"
+	aggregateID := jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenAI, batchID)
+	staleCost := 42.0
+	now := time.Now().UTC()
+
+	breakdowns := func() map[string]schemas.BatchModelBreakdown {
+		return map[string]schemas.BatchModelBreakdown{"gpt-4o": batchModelBreakdown(1000, 200)}
+	}
+	wantCost := 1000*1.25e-06 + 200*5e-06
+
+	aggregate := &logstore.Log{
+		ID:        aggregateID,
+		Timestamp: now,
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID:    batchID,
+			Accounting: &schemas.BatchAccountingDebug{ModelBreakdowns: breakdowns()},
+		},
+	}
+	echo := &logstore.Log{
+		ID:        "echo-results-fetch",
+		Timestamp: now.Add(time.Minute),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+		BatchDebugParsed: &schemas.BifrostBatchDebug{
+			BatchID:    batchID,
+			Accounting: &schemas.BatchAccountingDebug{ModelBreakdowns: breakdowns(), Cost: &staleCost},
+		},
+	}
+	require.NoError(t, store.Create(ctx, aggregate))
+	require.NoError(t, store.Create(ctx, echo))
+
+	_, err := plugin.RecalculateCosts(ctx, logstore.SearchFilters{}, 10)
+	require.NoError(t, err)
+
+	settled, err := store.FindByID(ctx, aggregateID)
+	require.NoError(t, err)
+	require.NotNil(t, settled.Cost, "the settlement row owns the bill")
+	assertCostsEqual(t, "aggregate row cost", *settled.Cost, wantCost)
+
+	fetched, err := store.FindByID(ctx, "echo-results-fetch")
+	require.NoError(t, err)
+	require.Nil(t, fetched.Cost, "an echo row must never be billed")
+	require.NotNil(t, fetched.BatchDebugParsed)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting.Cost)
+	assertCostsEqual(t, "echo row displayed cost", *fetched.BatchDebugParsed.Accounting.Cost, wantCost)
+	require.NotNil(t, fetched.BatchDebugParsed.Accounting.ModelBreakdowns["gpt-4o"].Cost)
+}
+
+// These tests cover calculateVideoAggregateCost and isVideoAggregateRow: a video
+// settlement row (object=video_retrieve) cannot be repriced by the generic path at
+// all. calculateBaseCost returns nil for video_retrieve so polling is never billed,
+// and the row's dimensions — seconds, resolution, clip count — are not tokens, so
+// they are nowhere in token_usage. Without the dedicated branch a reprice would wipe
+// every settled video cost to nothing.
+
+func videoSettlementRow(id string, accounting *schemas.VideoAccountingDebug, status schemas.VideoStatus) *logstore.Log {
+	return &logstore.Log{
+		ID:       id,
+		Object:   string(schemas.VideoRetrieveRequest),
+		Provider: string(schemas.OpenAI),
+		Model:    "sora-2-pro",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{
+			VideoID:    "vid_" + id,
+			Status:     status,
+			Accounting: accounting,
+		},
+	}
+}
+
+func TestIsVideoAggregateRow_OnlyTheSettlementCarriesAccounting(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	settlement := videoSettlementRow("s", &schemas.VideoAccountingDebug{
+		Seconds: new(4), Size: "1792x1024", OutputCount: 1, RequestType: schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusCompleted)
+	owned, err := jobaccounting.RepriceLog(settlement, plugin.pricingManager)
+	require.NoError(t, err)
+	assert.NotNil(t, owned, "the settlement row is owned by the video kind")
+
+	// The submission row carries video_debug too, but no accounting. Object cannot
+	// tell them apart either — every poll is also video_retrieve.
+	submission := &logstore.Log{
+		ID:               "sub",
+		Object:           string(schemas.VideoGenerationRequest),
+		VideoDebugParsed: &schemas.BifrostVideoDebug{VideoID: "vid_s", Status: schemas.VideoStatusQueued},
+	}
+	notOwned, err := jobaccounting.RepriceLog(submission, plugin.pricingManager)
+	require.NoError(t, err)
+	assert.Nil(t, notOwned, "the submission row carries no accounting, so no kind owns it")
+
+	// A plain poll has no video_debug at all.
+	poll, err := jobaccounting.RepriceLog(&logstore.Log{ID: "poll", Object: string(schemas.VideoRetrieveRequest)}, plugin.pricingManager)
+	require.NoError(t, err)
+	assert.Nil(t, poll, "a plain poll has no video_debug at all")
+}
+
+// The whole point of the dedicated branch: a banded video reprices to its band's
+// rate, from dimensions that live in video_debug rather than in token_usage.
+func TestCalculateVideoAggregateCost_RepricesFromCapturedDimensions(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v1", &schemas.VideoAccountingDebug{
+		Seconds:     new(4),
+		Size:        "1792x1024",
+		OutputCount: 1,
+		RequestType: schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusCompleted)
+
+	cost, videoDebugJSON, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "1024p banded reprice", cost, 0.5*4)
+	assert.NotEmpty(t, videoDebugJSON)
+
+	var roundTripped schemas.BifrostVideoDebug
+	require.NoError(t, sonic.UnmarshalString(videoDebugJSON, &roundTripped))
+	assert.Equal(t, "1792x1024", roundTripped.Accounting.Size)
+}
+
+// A provider that reported its own cost is right about its own bill. Without this
+// a full reprice would replace an exact figure with a catalog estimate — Runware
+// bills exactly, and its rows must survive a repricing pass untouched.
+func TestCalculateVideoAggregateCost_KeepsProviderReportedCost(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	providerCost := 0.0432
+	entry := videoSettlementRow("v2", &schemas.VideoAccountingDebug{
+		Seconds:      new(4),
+		Size:         "1792x1024",
+		OutputCount:  1,
+		RequestType:  schemas.VideoGenerationRequest,
+		ProviderCost: &providerCost,
+	}, schemas.VideoStatusCompleted)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "provider cost preserved", cost, providerCost)
+	assert.NotEqual(t, 0.5*4, cost, "the catalog rate must not override the provider's own figure")
+}
+
+// A failed generation settled at a real price of zero. Repricing must not turn that
+// into an error and park it in the backfill for every MissingCostOnly pass to retry.
+func TestCalculateVideoAggregateCost_FailedStaysZero(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v3", &schemas.VideoAccountingDebug{
+		RequestType: schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusFailed)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assert.Zero(t, cost)
+}
+
+// Rows written before RequestType was recorded kept the creating type in Object.
+// Reading it back is what keeps them repriceable at the rates they were billed with.
+func TestCalculateVideoAggregateCost_LegacyRowReadsTypeFromObject(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v4", &schemas.VideoAccountingDebug{
+		Seconds:     new(4),
+		Size:        "1792x1024",
+		OutputCount: 1,
+	}, schemas.VideoStatusCompleted)
+	entry.Object = string(schemas.VideoGenerationRequest)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "legacy row still prices", cost, 0.5*4)
+}
+
+// TestGenericPathCannotPriceAVideoSettlement is why calculateVideoAggregateCost
+// exists at all, and it holds for the row's OLD shape (object=video_generation)
+// just as much as the new one — so the dedicated branch is not a workaround for
+// renaming the object, it closes a gap that predates it.
+//
+// The aggregate row is synthesized by the settler, not logged from a provider
+// response: it carries no video_generation_output, no usage, nothing. The generic
+// path reconstructs a response from the row's payload and patches Seconds in from
+// VideoGenerationOutputParsed — which is nil here — so it reprices to nothing and
+// would wipe a settled cost on any full recalculation pass.
+func TestGenericPathCannotPriceAVideoSettlement(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+
+	for _, object := range []schemas.RequestType{schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest} {
+		t.Run(string(object), func(t *testing.T) {
+			entry := videoSettlementRow("generic", &schemas.VideoAccountingDebug{
+				Seconds:     new(4),
+				Size:        "1792x1024",
+				OutputCount: 1,
+				RequestType: schemas.VideoGenerationRequest,
+			}, schemas.VideoStatusCompleted)
+			entry.Object = string(object)
+
+			breakdown, err := plugin.calculateCostBreakdownForLog(entry)
+			if err == nil && breakdown != nil {
+				assert.Zero(t, breakdown.TotalCost,
+					"the generic path has no dimensions to price from, so it must not invent a cost")
+			}
+
+			// The dedicated branch prices the same row correctly from video_debug.
+			cost, _, err := repriceAggregate(t, plugin, entry)
+			require.NoError(t, err)
+			assertCostsEqual(t, "dedicated branch prices it", cost, 0.5*4)
+		})
+	}
+}
+
+// A failed video settled at a real, final zero. Repricing must record that as an
+// answer rather than a non-result: MissingCostOnly matches "cost IS NULL OR cost
+// <= 0", so a row skipped here matches again on every subsequent backfill pass and
+// churns forever.
+func TestFailedVideoRepricesAsSettledZeroNotSkipped(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("failed-zero", &schemas.VideoAccountingDebug{
+		RequestType: schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusFailed)
+
+	repriced, err := jobaccounting.RepriceLog(entry, plugin.pricingManager)
+	require.NoError(t, err)
+	require.NotNil(t, repriced, "the video kind owns this row and answered for it")
+	assert.Zero(t, repriced.Cost)
+	assert.False(t, repriced.DisplayOnly, "a failed video is settled, not display-only")
+
+	// This is the condition persistRecalcOutcomes uses to tell a settled zero from
+	// an unresolved one. Getting it wrong is invisible until the backfill never drains.
+	settledZero := repriced.Cost <= 0 && !repriced.DisplayOnly
+	assert.True(t, settledZero, "must persist CostUpdate{} and count as priced")
 }

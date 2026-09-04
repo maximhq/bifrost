@@ -458,6 +458,14 @@ func TestIsJSONContentType(t *testing.T) {
 	}
 }
 
+// The handler finds the governance plugin by type-asserting each base plugin
+// against governance.BaseGovernancePlugin, so a mock that falls behind the
+// interface stops being found — silently, and without a build failure. Minting
+// then skips governance entirely and every assertion below still reads as a
+// passing "no governance configured" path. This line turns that drift into a
+// compile error at the point the interface grows.
+var _ governance.BaseGovernancePlugin = (*mockRealtimeMintingGovernancePlugin)(nil)
+
 type mockRealtimeMintingGovernancePlugin struct {
 	err            *schemas.BifrostError
 	seenUserID     string
@@ -471,25 +479,30 @@ func (m *mockRealtimeMintingGovernancePlugin) GetName() string {
 	return governance.PluginName
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest, _ schemas.RequestType) (*governance.EvaluationResult, *schemas.BifrostError) {
+func (m *mockRealtimeMintingGovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest) (*governance.EvaluationResult, *schemas.BifrostError) {
 	m.evaluateCalls++
 	m.seenUserID = ""
 	m.seenVirtualKey = ""
 	m.seenProvider = ""
 	m.seenModel = ""
 	if evaluationRequest != nil {
-		m.seenUserID = evaluationRequest.UserID
-		m.seenVirtualKey = evaluationRequest.VirtualKey
 		m.seenProvider = evaluationRequest.Provider
 		m.seenModel = evaluationRequest.Model
 	}
-	if ctx != nil && m.seenVirtualKey == "" {
+	// The credential and the user are the request's, carried on its context: the handler no longer
+	// restates them, so this is where they are observed.
+	if ctx != nil {
 		m.seenVirtualKey = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+		m.seenUserID = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	}
 	if m.err != nil {
 		return nil, m.err
 	}
 	return &governance.EvaluationResult{Decision: governance.DecisionAllow}, nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
@@ -525,6 +538,21 @@ func (m *mockRealtimeMintingGovernancePlugin) Cleanup() error {
 }
 
 func (m *mockRealtimeMintingGovernancePlugin) GetGovernanceStore() governance.GovernanceStore {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ string) {
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
+	return nil, nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
 }
 

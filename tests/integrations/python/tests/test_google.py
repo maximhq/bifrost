@@ -70,6 +70,9 @@ from google.genai.types import HttpOptions
 from PIL import Image
 
 from .utils.common import (
+    RERANK_DOCUMENTS,
+    RERANK_QUERY,
+    assert_valid_rerank_results,
     BASE64_IMAGE,
     # Batch API utilities
     BATCH_INLINE_PROMPTS,
@@ -120,7 +123,7 @@ from .utils.common import (
     stage_vertex_batch_input,
     skip_if_no_api_key,
 )
-from .utils.config_loader import get_config, get_model
+from .utils.config_loader import get_config, get_integration_url, get_model
 from .utils.parametrize import (
     format_provider_model,
     get_cross_provider_params_for_scenario,
@@ -3953,3 +3956,76 @@ def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:
                 continue
 
     return function_calls
+
+
+class TestGoogleRerank:
+    """Rerank via Bifrost's /genai/v1/rank route (Vertex Discovery Engine shape).
+
+    Discovery Engine's rank API is ID-keyed rather than index-keyed, so these assert the
+    caller's own record ids come back rather than the synthetic ids Bifrost uses upstream.
+    The google-genai SDK has no binding for this endpoint, so it is driven over HTTP.
+    """
+
+    @staticmethod
+    def _rank(provider: str, model: str, payload_extra: Dict[str, Any] = None) -> Dict[str, Any]:
+        payload = {
+            "model": model,
+            "query": RERANK_QUERY,
+            "records": [
+                {"id": f"record-{index}", "title": f"Doc {index}", "content": document}
+                for index, document in enumerate(RERANK_DOCUMENTS)
+            ],
+        }
+        payload.update(payload_extra or {})
+
+        response = requests.post(
+            f"{get_integration_url('google')}/v1/rank",
+            json=payload,
+            headers={"x-model-provider": provider},
+            timeout=60,
+        )
+        assert response.status_code == 200, (
+            f"rank failed for {provider}: {response.status_code} {response.text[:300]}"
+        )
+        return response.json()
+
+    @staticmethod
+    def _pairs(body: Dict[str, Any]) -> List[tuple]:
+        """Normalize ranked records into (index, score), recovering index from the record id."""
+        records = body["records"]
+        for record in records:
+            assert record["id"].startswith("record-"), (
+                f"caller record id was not restored, got {record['id']!r} "
+                "(upstream synthetic ids must never reach the client)"
+            )
+        return [(int(r["id"].split("-")[1]), r["score"]) for r in records]
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_rank_returns_caller_record_ids(self, provider, model):
+        """Records come back keyed by the caller's ids, with details by default."""
+        body = self._rank(provider, model)
+
+        assert_valid_rerank_results(self._pairs(body))
+
+        top = body["records"][0]
+        assert top.get("content"), "record details are returned unless suppressed"
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_rank_ignore_record_details(self, provider, model):
+        """ignoreRecordDetailsInResponse drops title/content but keeps id and score.
+
+        The id is identity rather than detail, so suppressing details must not cost the
+        caller the ability to map a result back to the record they sent.
+        """
+        body = self._rank(provider, model, {"ignoreRecordDetailsInResponse": True})
+
+        assert_valid_rerank_results(self._pairs(body))
+
+        for record in body["records"]:
+            assert "content" not in record, f"content leaked despite suppression: {record}"
+            assert "title" not in record, f"title leaked despite suppression: {record}"
+            assert record["id"] and record["score"] is not None

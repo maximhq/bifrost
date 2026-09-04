@@ -1,28 +1,58 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
-// newTestMCPHandler builds an MCPServerHandler around the given config without
-// going through NewMCPServerHandler (which needs a live tool manager). Per-VK
-// servers are looked up from vkMCPServers; tests pre-seed it to keep the VK
-// path from building a real server.
+// newTestMCPHandler builds an MCPServerHandler around the given config without going through
+// NewMCPServerHandler (which needs a live tool manager). No admitter is wired, so admission
+// resolves nothing; tests of the admission step install a fakeAdmitter.
 func newTestMCPHandler(cfg *lib.Config) *MCPServerHandler {
-	return &MCPServerHandler{
-		globalMCPServer: server.NewMCPServer("test", "v0", server.WithToolCapabilities(true)),
-		vkMCPServers:    map[string]*server.MCPServer{},
-		config:          cfg,
-	}
+	h := &MCPServerHandler{config: cfg}
+	h.mcpServer.Store(server.NewMCPServer("test", "v0", server.WithToolCapabilities(true)))
+	return h
+}
+
+// fakeAdmitter stands in for governance: it hands back a fixed access or a fixed refusal, and
+// remembers the context it was asked about.
+type fakeAdmitter struct {
+	access  schemas.Access
+	refusal *schemas.BifrostError
+	seen    *schemas.BifrostContext
+}
+
+func (f *fakeAdmitter) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
+	f.seen = ctx
+	return f.access, f.refusal
+}
+
+// newRequestCtx returns the pair a request is handled with: the fasthttp request, and a
+// BifrostContext standing in for what ConvertToBifrostContext would have produced from it.
+func newRequestCtx() (*fasthttp.RequestCtx, *schemas.BifrostContext) {
+	return &fasthttp.RequestCtx{}, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+func stringFromCtx(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) string {
+	value, _ := ctx.Value(key).(string)
+	return value
+}
+
+// restrictedAccess is the access of a caller granted the listed tools of one client.
+func restrictedAccess(client string, tools ...string) schemas.Access {
+	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-1", "Caller Key", true, false, nil,
+		[]schemas.MCPPermit{{Client: client + "-id", ClientName: client, Tools: tools}})
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
 }
 
 // TestGetVKFromRequest verifies the VK value is extracted from each supported
@@ -91,503 +121,391 @@ func TestGetVKFromRequest(t *testing.T) {
 	}
 }
 
-// TestGetMCPServerForRequest_JWTPath covers the JWT branch of /mcp auth across
-// modes and identity kinds: the security contract for OAuth-authenticated calls.
-func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
+// TestAuthenticate_JWTPath covers the JWT branch of /mcp authentication across modes and identity
+// kinds: what is verified, what is refused, and what identity is stamped for governance to resolve.
+func TestAuthenticate_JWTPath(t *testing.T) {
 	SetLogger(&mockLogger{})
 	key, priv := newTestSigningKey(t)
 
-	t.Run("oauth mode: valid vk JWT with active key is accepted", func(t *testing.T) {
+	vkToken := func(sub string) string {
+		return mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+			c["bf_mode"] = string(schemas.MCPAuthModeVK)
+			c["sub"] = sub
+		})
+	}
+	userToken := func(sub string) string {
+		return mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+			c["bf_mode"] = string(schemas.MCPAuthModeUser)
+			c["sub"] = sub
+		})
+	}
+	sessionToken := func(sub string) string {
+		return mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+			c["bf_mode"] = string(schemas.MCPAuthModeSession)
+			c["sub"] = sub
+		})
+	}
+
+	t.Run("oauth mode: vk JWT stamps the key's value for governance to resolve", func(t *testing.T) {
 		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
-		h := newTestMCPHandler(cfg)
-		// Pre-seed the per-VK server so the accepted path does not build one.
-		h.vkMCPServers[activeVK.Value.GetValue()] = server.NewMCPServer("vk", "v0")
+		store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK}}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeVK)
-			c["sub"] = "vk-row-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+vkToken("vk-row-1"))
 
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-		require.NotNil(t, res.jwtClaims)
-		require.NotNil(t, res.jwtVK)
-		assert.Equal(t, "vk-row-1", res.jwtVK.ID)
-		assert.NotNil(t, res.mcpServer)
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+		assert.Equal(t, "sk-bf-active", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyVirtualKey))
+		assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
 	})
 
-	t.Run("vk JWT with inactive key is rejected", func(t *testing.T) {
+	// Whether a key may still be used is governance's answer, read off the grant it resolves, so the
+	// same key is refused the same way on every path. Authentication only stamps it.
+	t.Run("vk JWT with an inactive key is stamped rather than refused here", func(t *testing.T) {
 		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": inactiveVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{"vk-row-1": inactiveVK}}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeVK)
-			c["sub"] = "vk-row-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+vkToken("vk-row-1"))
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "inactive")
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+		assert.Equal(t, "sk-bf-x", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyVirtualKey))
 	})
 
-	t.Run("vk JWT for unknown key is rejected", func(t *testing.T) {
+	t.Run("vk JWT for an unknown key is rejected", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{}}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
+
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+vkToken("missing-vk"))
+
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
+		assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyVirtualKey))
+	})
+
+	t.Run("vk JWT is rejected once virtual-key identity is disabled and user mode is offered", func(t *testing.T) {
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+		store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK}}
 		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
 		h := newTestMCPHandler(cfg)
+		h.identityResolver = &fakeResolver{userModeAvailable: true}
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeVK)
-			c["sub"] = "missing-vk"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+vkToken("vk-row-1"))
 
-		_, err := h.getMCPServerForRequest(ctx)
+		err := h.authenticate(ctx, bifrostCtx)
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no longer accepted")
+		assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
 	})
 
-	t.Run("user JWT without a session is allowed", func(t *testing.T) {
+	t.Run("user JWT without a session stamps the user", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+userToken("user-1"))
 
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-		// No resolver wired → falls back to the global server.
-		assert.Equal(t, h.globalMCPServer, res.mcpServer)
-	})
-
-	t.Run("user JWT is scoped to the user's representative virtual key", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
-		// Resolver maps the user to a representative VK; pre-seed its server so the
-		// scoped path does not build a real one.
-		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-		vkServer := server.NewMCPServer("vk", "v0")
-		h.vkMCPServers[activeVK.Value.GetValue()] = vkServer
-
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
-
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-		// Served the user's scoped VK server, NOT the global (unscoped) server.
-		assert.Equal(t, vkServer, res.mcpServer)
-		assert.NotEqual(t, h.globalMCPServer, res.mcpServer)
-		// User mode keeps the user identity — no VK identity is attributed.
-		assert.Nil(t, res.jwtVK)
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+		assert.Equal(t, "user-1", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+		assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyVirtualKey), "user mode attributes no virtual key")
 	})
 
 	t.Run("user JWT is rejected when the user is no longer active", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
-		// The resolver still maps the user to a VK, but reports the user as gone.
-		// The request must be rejected at request time rather than falling through
-		// to the global (unscoped) server until the access token expires.
-		h.identityResolver = &fakeResolver{userVKID: "vk-row-1", userInactive: true}
-
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
-
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("user JWT falls back to the global server when the user has no virtual key", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
-		h.identityResolver = &fakeResolver{userVKID: ""} // user has no AP-managed VK
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
+		h.identityResolver = &fakeResolver{userInactive: true}
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+userToken("user-1"))
 
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, h.globalMCPServer, res.mcpServer)
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
+		assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
 	})
 
 	t.Run("user JWT with a matching session is accepted", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+userToken("user-1"))
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
 	})
 
 	t.Run("user JWT with a mismatched session is rejected", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeUser)
-			c["sub"] = "user-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+userToken("user-1"))
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "someone-else")
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
 	})
 
 	t.Run("session JWT is rejected when auth is enforced", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeSession)
-			c["sub"] = "session-abc"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+sessionToken("session-abc"))
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
+		assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyMCPSessionID))
 	})
 
-	t.Run("session JWT is accepted when auth is not enforced", func(t *testing.T) {
+	t.Run("session JWT stamps the session when auth is not enforced", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeSession)
-			c["sub"] = "session-abc"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+sessionToken("session-abc"))
 
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, h.globalMCPServer, res.mcpServer)
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+		assert.Equal(t, "session-abc", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyMCPSessionID))
 	})
 
 	t.Run("both mode: session token with a header VK is rejected", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeSession)
-			c["sub"] = "session-abc"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+sessionToken("session-abc"))
 		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-header")
 
-		_, err := h.getMCPServerForRequest(ctx)
+		err := h.authenticate(ctx, bifrostCtx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "conflicting credentials")
 	})
 
 	t.Run("both mode: vk token with a header VK is rejected", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
 
-		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
-			c["bf_mode"] = string(schemas.MCPAuthModeVK)
-			c["sub"] = "vk-row-1"
-		})
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set("Authorization", "Bearer "+raw)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+vkToken("vk-row-1"))
 		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-header")
 
-		_, err := h.getMCPServerForRequest(ctx)
+		err := h.authenticate(ctx, bifrostCtx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "conflicting credentials")
 	})
 }
 
-// TestGetMCPServerForRequest_PreAuthenticatedUserPath covers the path where an
-// upstream auth layer has already authenticated the caller as a user and stamped
-// the user id onto the request context (BifrostContextKeyUserID). In headers/both
-// modes the request is scoped to the user's representative virtual key, just like
-// a user-mode token; oauth-strict ignores it (Bifrost-issued tokens only).
-func TestGetMCPServerForRequest_PreAuthenticatedUserPath(t *testing.T) {
+// TestAuthenticate_HeaderAndAnonPath covers header credentials, identities an upstream auth layer
+// stamped, anonymous access, and oauth-strict rejection.
+func TestAuthenticate_HeaderAndAnonPath(t *testing.T) {
 	SetLogger(&mockLogger{})
 	key, _ := newTestSigningKey(t)
 
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
-	newStore := func() *mockOAuth2Store {
-		return &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
-		}
-	}
-
-	for _, mode := range []configtables.MCPServerAuthMode{
-		configtables.MCPServerAuthModeHeaders,
-		configtables.MCPServerAuthModeBoth,
-	} {
-		t.Run(string(mode)+" mode: stamped user id is scoped to the user's virtual key", func(t *testing.T) {
-			cfg := newTestOAuth2Config(newStore(), mode, true)
-			h := newTestMCPHandler(cfg)
-			h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-			vkServer := server.NewMCPServer("vk", "v0")
-			h.vkMCPServers[activeVK.Value.GetValue()] = vkServer
-
-			ctx := &fasthttp.RequestCtx{}
-			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-
-			res, err := h.getMCPServerForRequest(ctx)
-			require.NoError(t, err)
-			require.NotNil(t, res)
-			// Served the user's scoped VK server, NOT the global (unscoped) one.
-			assert.Equal(t, vkServer, res.mcpServer)
-			assert.NotEqual(t, h.globalMCPServer, res.mcpServer)
-			// Identity stays the user; no VK identity or JWT claims are attributed.
-			assert.Nil(t, res.jwtVK)
-			assert.Nil(t, res.jwtClaims)
-		})
-	}
-
-	t.Run("user with no virtual key is rejected (strict VK parity)", func(t *testing.T) {
-		cfg := newTestOAuth2Config(newStore(), configtables.MCPServerAuthModeBoth, true)
-		h := newTestMCPHandler(cfg)
-		h.identityResolver = &fakeResolver{userVKID: ""} // no AP-managed VK
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no MCP access grant")
-	})
-
-	// A stamped user id wins over any virtual key sent in the request headers: the
-	// request is scoped to the user's representative VK and the header VK is never
-	// honoured. Rejecting the pair as conflicting is deliberately NOT this
-	// function's job — that decision belongs upstream, in the SCIM inference
-	// middleware, which applies the operator's dual_credential_conflict_behavior
-	// before any identity is stamped (see getMCPServerForRequest). What matters
-	// here is that a header VK cannot escalate or redirect an already-authenticated
-	// user to a different key.
-	t.Run("stamped user id takes precedence over a header VK", func(t *testing.T) {
-		cfg := newTestOAuth2Config(newStore(), configtables.MCPServerAuthModeBoth, true)
-		h := newTestMCPHandler(cfg)
-		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-		userVKServer := server.NewMCPServer("vk", "v0")
-		h.vkMCPServers[activeVK.Value.GetValue()] = userVKServer
-		headerVKServer := server.NewMCPServer("header-vk", "v0")
-		h.vkMCPServers["sk-bf-header"] = headerVKServer
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-header")
-
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-		assert.Equal(t, userVKServer, res.mcpServer)
-		assert.NotEqual(t, headerVKServer, res.mcpServer)
-		assert.Nil(t, res.jwtVK)
-		assert.Nil(t, res.jwtClaims)
-	})
-
-	t.Run("inactive representative virtual key is rejected", func(t *testing.T) {
-		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": inactiveVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true)
-		h := newTestMCPHandler(cfg)
-		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "inactive")
-	})
-
-	t.Run("oauth-strict mode ignores the stamped user id", func(t *testing.T) {
-		cfg := newTestOAuth2Config(newStore(), configtables.MCPServerAuthModeOAuth, true)
-		h := newTestMCPHandler(cfg)
-		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-
-		// No bearer JWT, and header credentials are rejected in oauth-strict: the
-		// user-id check does not run, so this falls through to the strict rejection.
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "OAuth JWT")
-	})
-
-	t.Run("no resolver: stamped user id is ignored", func(t *testing.T) {
-		cfg := newTestOAuth2Config(newStore(), configtables.MCPServerAuthModeHeaders, false)
-		h := newTestMCPHandler(cfg)
-		// identityResolver is nil (pure OSS, no IdP); enforce=false → anonymous.
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
-
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, h.globalMCPServer, res.mcpServer)
-	})
-}
-
-// TestGetMCPServerForRequest_HeaderAndAnonPath covers the legacy header-VK path,
-// anonymous access, and oauth-strict header rejection.
-func TestGetMCPServerForRequest_HeaderAndAnonPath(t *testing.T) {
-	SetLogger(&mockLogger{})
-	key, _ := newTestSigningKey(t)
-
-	t.Run("headers mode: active header VK connects", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByValue: map[string]*configtables.TableVirtualKey{"sk-bf-active": activeVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true)
-		h := newTestMCPHandler(cfg)
-		h.vkMCPServers[activeVK.Value.GetValue()] = server.NewMCPServer("vk", "v0")
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-active")
-
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		assert.Nil(t, res.jwtClaims)
-		assert.NotNil(t, res.mcpServer)
-	})
-
-	t.Run("inactive header VK is rejected at the shared chokepoint", func(t *testing.T) {
-		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
-		store := &mockOAuth2Store{
-			signingKey: key,
-			vksByValue: map[string]*configtables.TableVirtualKey{"sk-bf-x": inactiveVK},
-		}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true)
-		h := newTestMCPHandler(cfg) // not pre-seeded: must traverse ensureVKMCPServer
-
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-x")
-
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "inactive")
-	})
-
-	t.Run("anonymous access yields the global server when auth is not enforced", func(t *testing.T) {
+	// The key is not looked up here: governance resolves it from the value the request converter
+	// stamped, and refuses one that does not exist, is inactive or has expired.
+	t.Run("headers mode: a header VK is accepted without being looked up", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true))
 
-		ctx := &fasthttp.RequestCtx{}
-		res, err := h.getMCPServerForRequest(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, h.globalMCPServer, res.mcpServer)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-anything")
+
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+	})
+
+	t.Run("anonymous access is accepted when auth is not enforced", func(t *testing.T) {
+		store := &mockOAuth2Store{signingKey: key}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false))
+
+		ctx, bifrostCtx := newRequestCtx()
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
 	})
 
 	t.Run("no credentials rejected when auth is enforced", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true))
 
-		ctx := &fasthttp.RequestCtx{}
-		_, err := h.getMCPServerForRequest(ctx)
+		ctx, bifrostCtx := newRequestCtx()
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
+	})
+
+	for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeHeaders, configtables.MCPServerAuthModeBoth} {
+		t.Run(string(mode)+" mode: an identity stamped upstream satisfies enforced auth", func(t *testing.T) {
+			store := &mockOAuth2Store{signingKey: key}
+			h := newTestMCPHandler(newTestOAuth2Config(store, mode, true))
+
+			ctx, bifrostCtx := newRequestCtx()
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+
+			require.NoError(t, h.authenticate(ctx, bifrostCtx))
+			assert.Equal(t, "user-1", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+		})
+	}
+
+	t.Run("oauth strict mode ignores an identity stamped upstream", func(t *testing.T) {
+		store := &mockOAuth2Store{signingKey: key}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, true))
+
+		ctx, bifrostCtx := newRequestCtx()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+
+		err := h.authenticate(ctx, bifrostCtx)
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OAuth JWT")
 	})
 
 	t.Run("oauth strict mode rejects a header VK with WWW-Authenticate", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx, bifrostCtx := newRequestCtx()
 		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-active")
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
 		assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
 	})
 
 	t.Run("oauth strict mode with no credentials sets WWW-Authenticate", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
 
-		ctx := &fasthttp.RequestCtx{}
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
+		ctx, bifrostCtx := newRequestCtx()
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
 		assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
 	})
 
 	t.Run("headers mode: a JWT bearer is not treated as a credential", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true)
-		h := newTestMCPHandler(cfg)
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true))
 
 		// A JWT-looking bearer in headers mode: discovery is off, so the JWT path
-		// is skipped and the token is not a VK — with auth enforced this rejects.
-		ctx := &fasthttp.RequestCtx{}
+		// is skipped and the token is not a VK; with auth enforced this rejects.
+		ctx, bifrostCtx := newRequestCtx()
 		ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig")
 
-		_, err := h.getMCPServerForRequest(ctx)
-		require.Error(t, err)
+		require.Error(t, h.authenticate(ctx, bifrostCtx))
+	})
+}
+
+// TestAdmit covers the step after authentication: governance's answer is either a refusal, mapped to
+// the status it carries, or an access whose tool list is stamped for the tool filter and the executor.
+func TestAdmit(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, _ := newTestSigningKey(t)
+	newHandler := func(mode configtables.MCPServerAuthMode, admitter MCPGatewayAdmitter) *MCPServerHandler {
+		h := newTestMCPHandler(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, mode, false))
+		h.admitter = admitter
+		return h
+	}
+	includeTools := func(ctx *schemas.BifrostContext) any { return ctx.Value(schemas.MCPContextKeyIncludeTools) }
+
+	t.Run("a refusal is answered with the status it carries", func(t *testing.T) {
+		for _, tc := range []struct {
+			status  int
+			message string
+		}{
+			{fasthttp.StatusForbidden, "virtual key is inactive"},
+			{fasthttp.StatusPaymentRequired, "Budget exceeded"},
+			{fasthttp.StatusTooManyRequests, "Rate limit exceeded"},
+		} {
+			h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{refusal: &schemas.BifrostError{
+				StatusCode: new(tc.status), Error: &schemas.ErrorField{Message: tc.message},
+			}})
+			ctx, bifrostCtx := newRequestCtx()
+			refusal := h.admit(ctx, bifrostCtx)
+			require.NotNil(t, refusal)
+			assert.Equal(t, tc.status, refusal.status)
+			assert.Contains(t, refusal.message, tc.message)
+			assert.Nil(t, includeTools(bifrostCtx), "a refused request has no tool list")
+		}
+	})
+
+	t.Run("a 401 refusal points at the authorization server when discovery is enabled", func(t *testing.T) {
+		refusal := &schemas.BifrostError{StatusCode: new(fasthttp.StatusUnauthorized), Error: &schemas.ErrorField{Message: "access not found"}}
+
+		h := newHandler(configtables.MCPServerAuthModeBoth, &fakeAdmitter{refusal: refusal})
+		ctx, bifrostCtx := newRequestCtx()
+		require.Equal(t, fasthttp.StatusUnauthorized, h.admit(ctx, bifrostCtx).status)
+		assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
+
+		h = newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{refusal: refusal})
+		ctx, bifrostCtx = newRequestCtx()
+		require.Equal(t, fasthttp.StatusUnauthorized, h.admit(ctx, bifrostCtx).status)
+		assert.Empty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
+	})
+
+	t.Run("a refusal without a status is forbidden", func(t *testing.T) {
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{refusal: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no"}}})
+		ctx, bifrostCtx := newRequestCtx()
+		assert.Equal(t, fasthttp.StatusForbidden, h.admit(ctx, bifrostCtx).status)
+	})
+
+	t.Run("restricted access stamps the tools it grants", func(t *testing.T) {
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{access: restrictedAccess("sentry", "find_projects", "search_issues")})
+		ctx, bifrostCtx := newRequestCtx()
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeTools(bifrostCtx))
+	})
+
+	t.Run("access granting no tool stamps an empty list, which permits none", func(t *testing.T) {
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{access: restrictedAccess("sentry")})
+		ctx, bifrostCtx := newRequestCtx()
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Equal(t, []string{}, includeTools(bifrostCtx))
+	})
+
+	t.Run("a caller's list narrows within the access and cannot widen it", func(t *testing.T) {
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{access: restrictedAccess("sentry", "find_projects", "search_issues")})
+		ctx, bifrostCtx := newRequestCtx()
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"sentry-find_projects", "sentry-delete_project", "github-*"})
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Equal(t, []string{"sentry-find_projects"}, includeTools(bifrostCtx))
+	})
+
+	t.Run("no access leaves the caller's list alone and stamps nothing of its own", func(t *testing.T) {
+		// Nothing restricts a request that carries no access: it presented nothing, or the deployment
+		// has nothing to resolve access with.
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{})
+		ctx, bifrostCtx := newRequestCtx()
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"sentry-*"})
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Equal(t, []string{"sentry-*"}, includeTools(bifrostCtx))
+
+		ctx, bifrostCtx = newRequestCtx()
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Nil(t, includeTools(bifrostCtx), "an empty list would read as no tool at all")
+	})
+
+	t.Run("nothing resolved stamps nothing", func(t *testing.T) {
+		h := newHandler(configtables.MCPServerAuthModeHeaders, &fakeAdmitter{})
+		ctx, bifrostCtx := newRequestCtx()
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Nil(t, includeTools(bifrostCtx))
+
+		h = newHandler(configtables.MCPServerAuthModeHeaders, nil)
+		ctx, bifrostCtx = newRequestCtx()
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Nil(t, includeTools(bifrostCtx))
+	})
+
+	t.Run("governance is asked about the request's own context, after authentication", func(t *testing.T) {
+		admitter := &fakeAdmitter{access: restrictedAccess("sentry", "find_projects")}
+		h := newHandler(configtables.MCPServerAuthModeHeaders, admitter)
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-active")
+		require.Nil(t, h.admit(ctx, bifrostCtx))
+		assert.Same(t, bifrostCtx, admitter.seen)
+	})
+
+	t.Run("a request that fails authentication is refused before governance is asked", func(t *testing.T) {
+		admitter := &fakeAdmitter{access: restrictedAccess("sentry", "find_projects")}
+		h := newTestMCPHandler(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeHeaders, true))
+		h.admitter = admitter
+		ctx, bifrostCtx := newRequestCtx()
+		refusal := h.admit(ctx, bifrostCtx)
+		require.NotNil(t, refusal)
+		assert.Equal(t, fasthttp.StatusUnauthorized, refusal.status)
+		assert.Nil(t, admitter.seen)
 	})
 }

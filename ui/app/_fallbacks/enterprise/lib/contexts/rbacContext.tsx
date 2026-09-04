@@ -17,6 +17,7 @@ export enum RbacResource {
 	Plugins = "Plugins",
 	MCPGateway = "MCPGateway",
 	MCPToolGroups = "MCPToolGroups",
+	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
@@ -28,6 +29,7 @@ export enum RbacResource {
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
 	AccessProfiles = "AccessProfiles",
+	Projects = "Projects",
 	APIKeys = "APIKeys",
 	Inference = "Inference",
 	Metrics = "Metrics",
@@ -37,6 +39,7 @@ export enum RbacResource {
 	Inventory = "Inventory",
 	EdgeConfig = "EdgeConfig",
 	SkillsRepository = "SkillsRepository",
+	Notifications = "Notifications",
 }
 
 // RBAC Operation Names (must match backend definitions)

@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -205,6 +208,28 @@ func TestValidateExternalURL(t *testing.T) {
 	}
 }
 
+// TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture ensures plugin-owned embeddings never inherit provider raw capture.
+func TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	PrepareContextForInternalEmbeddingRequest(ctx)
+
+	applyRawCaptureSignals(ctx, &schemas.ProviderConfig{
+		SendBackRawRequest:      true,
+		SendBackRawResponse:     true,
+		StoreRawRequestResponse: true,
+	})
+
+	for key, name := range map[schemas.BifrostContextKey]string{
+		schemas.BifrostContextKeyCaptureRawRequest:    "capture raw request",
+		schemas.BifrostContextKeyCaptureRawResponse:   "capture raw response",
+		schemas.BifrostContextKeyShouldStoreRawInLogs: "store raw request/response",
+	} {
+		if enabled, _ := ctx.Value(key).(bool); enabled {
+			t.Errorf("%s = true, want false", name)
+		}
+	}
+}
+
 // TestValidateExternalURLBoundsDNSLookup guards against regressing to the package-level
 // net.LookupIP (which has no context/deadline of its own, and previously let a stalled
 // resolver block the caller indefinitely -- see externalURLDNSLookupTimeout's doc). A
@@ -332,9 +357,9 @@ func TestIsPrivateIP(t *testing.T) {
 		// Public IPv6
 		{"2606:4700::1", false},
 		// Unspecified addresses (fail-closed)
-		{"0.0.0.0", true},                   // IPv4 unspecified
-		{"0:0:0:0:0:0:0:0", true},           // IPv6 unspecified long form
-		{"::", true},                         // IPv6 unspecified short form
+		{"0.0.0.0", true},         // IPv4 unspecified
+		{"0:0:0:0:0:0:0:0", true}, // IPv6 unspecified long form
+		{"::", true},              // IPv6 unspecified short form
 	}
 
 	for _, tt := range tests {
@@ -350,3 +375,122 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// Failing over starts a fresh attempt, so the state the previous attempt resolved for itself must not
+// survive into it. What the request may reach is not among it: that is a fact about the caller, not
+// the attempt, and the presented credential and the caller's identity survive with it so the limits
+// of the next attempt can be resolved against the same access.
+func TestClearCtxForFallback(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyAttemptTrail,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeySupportsAssistantPrefill,
+	}
+	// The next attempt resolves its own limits, which needs the same credential and caller.
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForFallback(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next attempt", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
+		}
+	}
+}
+
+// TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
+// provider would reject at request time. Accepting a whitespace-only field here defers the
+// failure to the first inference call, where it reads like a runtime fault rather than a
+// setup mistake.
+func TestValidateKeyGithubCopilot(t *testing.T) {
+	fullAppConfig := func() *schemas.GithubCopilotKeyConfig {
+		return &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		}
+	}
+	blank := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
+		c := fullAppConfig()
+		mutate(c)
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{
+			name: "a direct token is sufficient",
+			key:  schemas.Key{Value: *schemas.NewSecretVar("tid=abc")},
+		},
+		{
+			name: "the full app config is sufficient",
+			key:  schemas.Key{GithubCopilotKeyConfig: fullAppConfig()},
+		},
+		{
+			name:      "a whitespace-only token is not a credential",
+			key:       schemas.Key{Value: *schemas.NewSecretVar("   ")},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "no credential at all",
+			key:       schemas.Key{},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "whitespace-only app_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.AppID = *schemas.NewSecretVar("  ") })},
+			wantError: "github_copilot_key_config.app_id is required",
+		},
+		{
+			name:      "whitespace-only installation_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.InstallationID = *schemas.NewSecretVar("\t") })},
+			wantError: "github_copilot_key_config.installation_id is required",
+		},
+		{
+			name:      "whitespace-only repository_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.RepositoryID = *schemas.NewSecretVar(" ") })},
+			wantError: "github_copilot_key_config.repository_id is required",
+		},
+		{
+			name:      "whitespace-only private_key",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.PrivateKey = *schemas.NewSecretVar("\n") })},
+			wantError: "github_copilot_key_config.private_key is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.GithubCopilot, &key)
+
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+
+	}
+}

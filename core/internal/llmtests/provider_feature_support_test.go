@@ -1,6 +1,7 @@
 package llmtests
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -11,7 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestProviderToolValidation verifies that unsupported tools are rejected per provider
+// TestProviderToolValidation verifies that unsupported tools are rejected per provider.
+//
+// This covers the provider-level gate only. Bedrock's web_search and
+// code_interpreter pass it for any model via the WebSearchNova / CodeExecNova
+// carve-outs, because Bedrock serves them as nova_grounding and
+// nova_code_interpreter system tools. The model-level gate lives in the
+// converters, which call convertToNovaSystemTool and drop the tool when
+// IsNova2Model is false — so a Bedrock Claude request passes here and is
+// dropped there. Both stages append to the same list, merged onto
+// BifrostContextKeyDroppedUnsupportedTools, so the caller sees one answer
+// regardless of which stage dropped it. The model below therefore only has to
+// be a valid Anthropic-family name; it does not steer these expectations.
 func TestProviderToolValidation(t *testing.T) {
 	t.Parallel()
 
@@ -219,13 +231,13 @@ func TestProviderToolValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := anthropic.ValidateToolsForProvider(tt.tools, tt.provider)
+			caps := schemas.ResolveModelCaps(tt.provider, "claude-sonnet-4-5")
+			_, dropped := anthropic.ValidateResponsesToolsForProvider(tt.tools, caps)
 			if tt.expectErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errSubstr)
-				assert.Contains(t, err.Error(), string(tt.provider))
+				require.NotEmpty(t, dropped)
+				assert.Contains(t, strings.Join(dropped, ","), tt.errSubstr)
 			} else {
-				assert.NoError(t, err)
+				assert.Empty(t, dropped)
 			}
 		})
 	}
@@ -765,15 +777,15 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                    string
-		provider                schemas.ModelProvider
-		model                   string
-		tools                   []schemas.ResponsesTool
-		expectConversionErr     bool
-		errSubstr               string
-		expectedWebSearchType   string // expected web_search tool type after conversion
-		expectedBetaHeaders     []string
-		unexpectedBetaHeaders   []string
+		name                  string
+		provider              schemas.ModelProvider
+		model                 string
+		tools                 []schemas.ResponsesTool
+		expectToolDropped     bool
+		errSubstr             string
+		expectedWebSearchType string // expected web_search tool type after conversion
+		expectedBetaHeaders   []string
+		unexpectedBetaHeaders []string
 	}{
 		// ── Vertex: web_search with filters → basic version, no dynamic headers ──
 		{
@@ -811,8 +823,8 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 			tools: []schemas.ResponsesTool{
 				{Type: schemas.ResponsesToolTypeWebFetch, ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{}},
 			},
-			expectConversionErr: true,
-			errSubstr:           "web_fetch",
+			expectToolDropped: true,
+			errSubstr:         "web_fetch",
 		},
 		// ── Anthropic: web_search 4.6 gets dynamic filtering ──
 		{
@@ -887,12 +899,13 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 			}
 
 			// Step 1: Validate tools for provider
-			if valErr := anthropic.ValidateToolsForProvider(tt.tools, tt.provider); valErr != nil {
-				if tt.expectConversionErr {
-					assert.Contains(t, valErr.Error(), tt.errSubstr)
+			if _, dropped := anthropic.ValidateResponsesToolsForProvider(tt.tools,
+				schemas.ResolveModelCaps(tt.provider, model)); len(dropped) > 0 {
+				if tt.expectToolDropped {
+					assert.Contains(t, strings.Join(dropped, ","), tt.errSubstr)
 					return
 				}
-				t.Fatalf("unexpected validation error: %v", valErr)
+				t.Fatalf("unexpected dropped tools: %v", dropped)
 			}
 
 			// Step 2: Convert bifrost request → anthropic request
@@ -908,11 +921,6 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 			}
 
 			result, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
-			if tt.expectConversionErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errSubstr)
-				return
-			}
 			require.NoError(t, err)
 			require.NotNil(t, result)
 

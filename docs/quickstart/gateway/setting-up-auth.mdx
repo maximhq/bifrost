@@ -8,6 +8,12 @@ icon: "lock"
 
 Bifrost provides built-in authentication to protect your dashboard and admin API endpoints. When enabled, users must log in with credentials before accessing the dashboard or making admin API calls. This feature helps secure your Bifrost instance, especially when deployed in production environments.
 
+<Note>
+  **Bifrost Enterprise:** you do not need this password toggle if you use single sign-on. Configuring OAuth 2.0 /
+  OIDC login or inbound SCIM 2.0 provisioning already counts as configured dashboard authentication, and it gates
+  the dashboard and admin API the same way. See [User Provisioning](/enterprise/user-provisioning).
+</Note>
+
 ## Enabling Authentication
 
 ### Step 1: Navigate to Security Settings

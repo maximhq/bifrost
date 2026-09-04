@@ -5,16 +5,17 @@ import { EmptyState } from "@/app/workspace/logs/views/emptyState";
 import { LogsHeaderView } from "@/app/workspace/logs/views/logsHeaderView";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
+import { MetricStrip } from "@/app/workspace/logs/views/metricStrip";
 import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent } from "@/components/ui/card";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
 	useGetAvailableFilterDataQuery,
+	useGetLogsCostHistogramQuery,
 	useGetLogsHistogramQuery,
+	useGetLogsLatencyHistogramQuery,
 	useGetLogsQuery,
 	useGetLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
@@ -22,11 +23,9 @@ import {
 import { useLazyGetLogByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/logsApi";
 import type { DisplayLogEntry, LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
-import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
-import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -90,11 +89,16 @@ export default function LogsPage() {
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
+			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
+			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
+			project_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
+			request_id: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
@@ -121,7 +125,7 @@ export default function LogsPage() {
 	const polling = urlState.polling;
 	// Grouped view collapses fallback chains under their root. Disabled while a
 	// session filter is active — that view is already scoped to one chain/session.
-	const grouped = urlState.grouped && !urlState.parent_request_id;
+	const grouped = urlState.grouped && !urlState.parent_request_id && !urlState.session_id;
 
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
@@ -139,11 +143,16 @@ export default function LogsPage() {
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
+			complexity_tiers: urlState.complexity_tiers,
+			complexity_mechanisms: urlState.complexity_mechanisms,
+			session_id: urlState.session_id,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
+			project_ids: urlState.project_ids,
 			content_search: urlState.content_search,
+			request_id: urlState.request_id,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
@@ -177,11 +186,16 @@ export default function LogsPage() {
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
+			urlState.complexity_tiers,
+			urlState.complexity_mechanisms,
+			urlState.session_id,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
 			urlState.business_unit_ids,
+			urlState.project_ids,
 			urlState.content_search,
+			urlState.request_id,
 			urlState.parent_request_id,
 			urlState.missing_cost_only,
 			urlState.cache_hit_types,
@@ -211,8 +225,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -237,11 +250,16 @@ export default function LogsPage() {
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
+				complexity_tiers: newFilters.complexity_tiers || [],
+				complexity_mechanisms: newFilters.complexity_mechanisms || [],
+				session_id: newFilters.session_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
+				project_ids: newFilters.project_ids || [],
 				content_search: newFilters.content_search || "",
+				request_id: newFilters.request_id || "",
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
@@ -321,11 +339,40 @@ export default function LogsPage() {
 	const {
 		data: stats,
 		isFetching: statsIsFetching,
+		error: statsError,
 		refetch: refetchStats,
 	} = useGetLogsStatsQuery(
 		{
 			filters,
+			comparePrevious: true,
 		},
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+
+	// Sparkline sources for the metric strip. The request series reuses the
+	// histogram already fetched below for the volume chart, so only latency and
+	// cost add a request.
+	const {
+		data: latencyHistogram,
+		isFetching: latencyIsFetching,
+		refetch: refetchLatencyHistogram,
+	} = useGetLogsLatencyHistogramQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+
+	const {
+		data: costHistogram,
+		isFetching: costIsFetching,
+		refetch: refetchCostHistogram,
+	} = useGetLogsCostHistogramQuery(
+		{ filters },
 		{
 			pollingInterval: polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
@@ -335,6 +382,7 @@ export default function LogsPage() {
 	const {
 		data: histogram,
 		isLoading: histogramIsLoading,
+		isFetching: histogramIsFetching,
 		refetch: refetchHistogram,
 	} = useGetLogsHistogramQuery(
 		{
@@ -345,6 +393,24 @@ export default function LogsPage() {
 			skipPollingIfUnfocused: true,
 		},
 	);
+
+	// The metric strip reads three separate queries, so refreshing only the stats
+	// would leave its latency and cost sparklines showing an older window beside
+	// freshly updated numbers. Listing them in one place is what keeps that from
+	// drifting again: the fan-out used to be spelled out at each call site, and a
+	// query added later was missed at every one of them.
+	const refreshStrip = useCallback(() => {
+		refetchStats();
+		refetchLatencyHistogram();
+		refetchCostHistogram();
+	}, [refetchStats, refetchLatencyHistogram, refetchCostHistogram]);
+
+	/** Everything the page displays, for the actions that invalidate all of it. */
+	const refreshAll = useCallback(() => {
+		refetchLogs();
+		refreshStrip();
+		refetchHistogram();
+	}, [refetchLogs, refreshStrip, refetchHistogram]);
 
 	// Set showEmptyState on first response; clear it as soon as logs appear.
 	useEffect(() => {
@@ -367,7 +433,20 @@ export default function LogsPage() {
 				parent_request_id: parentRequestId,
 			});
 		},
-		[filters, setFilters],
+		[filters, setFilters, setUrlState],
+	);
+
+	const handleFilterBySessionId = useCallback(
+		(sessionId: string) => {
+			setSelectedSessionId(null);
+			setSessionHighlightedLogId(null);
+			setUrlState({ selected_log: "" }, { history: "replace" });
+			setFilters({
+				...filters,
+				session_id: sessionId,
+			});
+		},
+		[filters, setFilters, setUrlState],
 	);
 
 	// --- Grouped view: chain expansion state -------------------------------
@@ -437,26 +516,22 @@ export default function LogsPage() {
 				if (urlState.selected_log === log.id) {
 					setUrlState({ selected_log: "" });
 				}
-				refetchLogs();
-				refetchStats();
-				refetchHistogram();
+				refreshAll();
 			} catch (err) {
 				setError(getErrorMessage(err));
 			}
 		},
-		[deleteLogs, urlState.selected_log, setUrlState, refetchLogs, refetchStats, refetchHistogram],
+		[deleteLogs, urlState.selected_log, setUrlState, refreshAll],
 	);
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
 			setUrlState({ polling: enabled });
 			if (enabled) {
-				refetchLogs();
-				refetchStats();
-				refetchHistogram();
+				refreshAll();
 			}
 		},
-		[setUrlState, refetchLogs, refetchStats, refetchHistogram],
+		[setUrlState, refreshAll],
 	);
 
 	// Period selection: store relative period + fresh timestamps in URL (bypasses setFilters
@@ -480,71 +555,6 @@ export default function LogsPage() {
 			}
 		},
 		[setUrlState],
-	);
-
-	const statCards = useMemo(
-		() => [
-			{
-				title: "Total Requests",
-				value: <NumberFlow value={stats?.total_requests ?? 0} format={COMPACT_NUMBER_FORMAT} />,
-				icon: <BarChart className="size-4" />,
-			},
-			{
-				title: "Success Rate",
-				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
-				icon: <CheckCircle className="size-4" />,
-				description:
-					"Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
-			},
-			{
-				title: "User Success Rate",
-				value: (
-					<NumberFlow
-						value={stats?.user_facing_success_rate ?? 0}
-						format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}
-						suffix="%"
-					/>
-				),
-				icon: <CheckCircle className="size-4" />,
-				description: "Success rate as perceived by the end user. It includes fallback chains as one request.",
-			},
-			{
-				title: "Avg Latency",
-				value: (
-					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
-				),
-				icon: <Clock className="size-4" />,
-			},
-			{
-				title: "Total Tokens",
-				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
-				icon: <Hash className="size-4" />,
-				subValue: (
-					<>
-						<NumberFlow value={stats?.prompt_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
-						<span> in / </span>
-						<NumberFlow value={stats?.completion_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
-						<span> out</span>
-					</>
-				),
-				description: "Total tokens used, split into input (prompt) and output (completion) tokens.",
-			},
-			{
-				title: "Total Cost",
-				value: (
-					<NumberFlow
-						value={stats?.total_cost ?? 0}
-						format={{
-							...COMPACT_NUMBER_FORMAT,
-							style: "currency",
-							currency: "USD",
-						}}
-					/>
-				),
-				icon: <DollarSign className="size-4" />,
-			},
-		],
-		[stats],
 	);
 
 	// Only need metadata_keys here (used to render dynamic columns even when the
@@ -589,6 +599,7 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			service_tier: "Service Tier",
 			virtual_key: "Virtual Key",
 			routing_rule: "Routing Rule",
 			team: "Team",
@@ -599,7 +610,10 @@ export default function LogsPage() {
 		[],
 	);
 
-	const DEFAULT_HIDDEN_COLUMNS = useMemo(() => ["virtual_key", "routing_rule", "team", "customer", "user", "business_unit"], []);
+	const DEFAULT_HIDDEN_COLUMNS = useMemo(
+		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		[],
+	);
 
 	const {
 		entries: columnEntries,
@@ -645,10 +659,22 @@ export default function LogsPage() {
 		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
 		[expandedChainIds, loadingChainIds, handleToggleChain],
 	);
-	const selectedLogFromData = useMemo(
-		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
-		[selectedLogId, logs],
-	);
+	// Resolve the selected log from data already on screen — the page of roots
+	// first, then the children of any expanded chain. Children live outside
+	// `logs`, so without this second lookup clicking a child would fall through
+	// to the fetch-by-id effect below and the sheet would only appear after that
+	// round trip. Resolving locally opens the sheet immediately; the sheet still
+	// fetches the full record and shows its own loader while that lands.
+	const selectedLogFromData = useMemo(() => {
+		if (!selectedLogId) return null;
+		const root = logs.find((l) => l.id === selectedLogId);
+		if (root) return root;
+		for (const children of Object.values(chainChildren)) {
+			const child = children.find((l) => l.id === selectedLogId);
+			if (child) return child;
+		}
+		return null;
+	}, [selectedLogId, logs, chainChildren]);
 
 	useEffect(() => {
 		if (!selectedLogId || selectedLogFromData) {
@@ -734,16 +760,20 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
+		// Below lg the strip, the volume chart and the table cannot all share one
+		// viewport-height column - the table collapses to a couple of rows. There the
+		// page itself scrolls and each section keeps its natural height; from lg up
+		// the fixed-height, inner-scrolling layout is untouched.
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] overflow-y-auto lg:overflow-y-visible">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (
-				<div className="bg-background flex h-full w-full grow gap-3">
+				<div className="bg-background flex min-h-full w-full grow gap-3 lg:h-full">
 					{/* Sidebar Filters */}
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 rounded-md border p-4 pb-2 lg:overflow-hidden">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}
@@ -752,7 +782,7 @@ export default function LogsPage() {
 									await refetchLogs();
 								}}
 								fetchStats={async () => {
-									await refetchStats();
+									refreshStrip();
 								}}
 								fetchHistogram={async () => {
 									await refetchHistogram();
@@ -771,40 +801,19 @@ export default function LogsPage() {
 								onResetColumns={resetColumns}
 							/>
 						</div>
-						<div className="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-							{statCards.map((card) => (
-								<Card key={card.title} className="py-4 shadow-none">
-									<CardContent
-										className={`flex items-center justify-between px-4 transition-opacity duration-200 ${statsIsFetching ? "opacity-50" : "opacity-100"}`}
-									>
-										<div className="w-full min-w-0">
-											<div className="text-muted-foreground flex items-center gap-1 text-xs">
-												<span className="truncate">{card.title}</span>
-												{"description" in card && card.description && (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<button
-																type="button"
-																aria-label={`${card.title} info`}
-																data-testid={`logs-metric-info-${card.title.toLowerCase().replace(/\s+/g, "-")}`}
-																className="inline-flex items-center"
-															>
-																<Info className="size-3 cursor-help" />
-															</button>
-														</TooltipTrigger>
-														<TooltipContent className="max-w-72 text-left text-xs text-wrap">{card.description}</TooltipContent>
-													</Tooltip>
-												)}
-											</div>
-											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
-											{"subValue" in card && card.subValue && (
-												<div className="truncate font-mono text-[10.5px] tabular-nums">{card.subValue}</div>
-											)}
-										</div>
-									</CardContent>
-								</Card>
-							))}
-						</div>
+						{/* The four queries resolve independently, so `data` can hold the
+						    previous window's result for one of them while another has already
+						    moved on - the strip is dimmed until every one of them agrees on
+						    the current filters. Switching them to `currentData` instead would
+						    empty the strip to zeros on every filter change. */}
+						<MetricStrip
+							stats={stats}
+							requestHistogram={histogram ?? undefined}
+							latencyHistogram={latencyHistogram}
+							costHistogram={costHistogram}
+							loading={statsIsFetching || latencyIsFetching || costIsFetching || histogramIsFetching}
+							error={statsError}
+						/>
 
 						<div className="shrink-0">
 							<LogsVolumeChart
@@ -830,7 +839,10 @@ export default function LogsPage() {
 							</Alert>
 						)}
 
-						<div className="min-h-0 flex-1">
+						{/* The min-height is what makes the table usable on a scrolling page:
+						    without it the flex child shrinks to its content and the strip plus
+						    the chart leave it a few rows tall. */}
+						<div className="min-h-[28rem] flex-1 lg:min-h-0">
 							<LogsDataTable
 								columns={columns}
 								data={displayLogs}
@@ -869,6 +881,7 @@ export default function LogsPage() {
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
+						onFilterBySessionId={handleFilterBySessionId}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);

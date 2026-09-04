@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -64,6 +65,9 @@ func (h *WebhookHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.POST("/api/webhooks/{id}/rotate-secret", lib.ChainMiddlewares(h.rotateWebhookEndpointSecret, middlewares...))
 	r.POST("/api/webhooks/{id}/test", lib.ChainMiddlewares(h.testWebhookEndpoint, middlewares...))
 	r.GET("/api/webhooks/{id}/deliveries", lib.ChainMiddlewares(h.listWebhookDeliveries, middlewares...))
+	// Static "deliveries" sibling of the {id} wildcard, as with the redeliver
+	// route below. Cross-endpoint and filterable, unlike the per-endpoint route.
+	r.GET("/api/webhooks/deliveries", lib.ChainMiddlewares(h.searchWebhookDeliveries, middlewares...))
 	r.POST("/api/webhooks/deliveries/{id}/redeliver", lib.ChainMiddlewares(h.redeliverWebhook, middlewares...))
 }
 
@@ -461,9 +465,112 @@ func (h *WebhookHandler) listWebhookDeliveries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	limit, offset = ClampPaginationParams(limit, offset)
-	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, id, logstore.PaginationOptions{Limit: limit, Offset: offset})
+	filters := &logstore.WebhookDeliverySearchFilters{EndpointIDs: []string{id}}
+	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, filters, logstore.PaginationOptions{Limit: limit, Offset: offset})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to list webhook deliveries: %v", err))
+		return
+	}
+	SendJSON(ctx, result)
+}
+
+// parseWebhookDeliveryFilters reads the delivery-history filters off the query
+// string. `period` (e.g. "1h") wins over an explicit start_time/end_time pair,
+// mirroring parseMCPFiltersAndPagination.
+func parseWebhookDeliveryFilters(ctx *fasthttp.RequestCtx) (*logstore.WebhookDeliverySearchFilters, error) {
+	filters := &logstore.WebhookDeliverySearchFilters{}
+	if endpointIDs := string(ctx.QueryArgs().Peek("endpoint_ids")); endpointIDs != "" {
+		filters.EndpointIDs = parseCommaSeparated(endpointIDs)
+	}
+	if events := string(ctx.QueryArgs().Peek("events")); events != "" {
+		filters.Events = parseCommaSeparated(events)
+	}
+	if outcomes := string(ctx.QueryArgs().Peek("outcomes")); outcomes != "" {
+		filters.Outcomes = parseCommaSeparated(outcomes)
+	}
+	if statusClass := string(ctx.QueryArgs().Peek("status_class")); statusClass != "" {
+		for _, class := range parseCommaSeparated(statusClass) {
+			switch class {
+			case logstore.WebhookDeliveryStatusClass2xx,
+				logstore.WebhookDeliveryStatusClass4xx,
+				logstore.WebhookDeliveryStatusClass5xx,
+				logstore.WebhookDeliveryStatusClassNone:
+				filters.StatusClass = append(filters.StatusClass, class)
+			default:
+				return nil, fmt.Errorf("invalid status_class value %q: must be one of 2xx, 4xx, 5xx, none", class)
+			}
+		}
+	}
+	filters.RequestID = string(ctx.QueryArgs().Peek("request_id"))
+	filters.DeliveryID = string(ctx.QueryArgs().Peek("delivery_id"))
+
+	var startTimeErr, endTimeErr error
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339Nano, startTime)
+		if err != nil {
+			startTimeErr = fmt.Errorf("invalid start_time format: %w", err)
+		} else {
+			filters.StartTime = &t
+		}
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339Nano, endTime)
+		if err != nil {
+			endTimeErr = fmt.Errorf("invalid end_time format: %w", err)
+		} else {
+			filters.EndTime = &t
+		}
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := ResolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+			startTimeErr = nil
+			endTimeErr = nil
+		}
+	}
+	if startTimeErr != nil {
+		return nil, startTimeErr
+	}
+	if endTimeErr != nil {
+		return nil, endTimeErr
+	}
+	return filters, nil
+}
+
+// searchWebhookDeliveries returns one page of delivery history across every
+// endpoint the filters select, newest first. It backs the dedicated deliveries
+// page; the per-endpoint listWebhookDeliveries above backs the endpoint sheet.
+func (h *WebhookHandler) searchWebhookDeliveries(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	if h.store.LogsStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Logs store is not available")
+		return
+	}
+	filters, err := parseWebhookDeliveryFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	limit, offset := 0, 0
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		if limit, err = strconv.Atoi(limitStr); err != nil || limit < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid limit parameter: must be a non-negative number")
+			return
+		}
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		if offset, err = strconv.Atoi(offsetStr); err != nil || offset < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid offset parameter: must be a non-negative number")
+			return
+		}
+	}
+	limit, offset = ClampPaginationParams(limit, offset)
+	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, filters, logstore.PaginationOptions{Limit: limit, Offset: offset})
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to search webhook deliveries: %v", err))
 		return
 	}
 	SendJSON(ctx, result)

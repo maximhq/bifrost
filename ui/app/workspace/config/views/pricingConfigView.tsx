@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -89,10 +90,7 @@ export default function PricingConfigView() {
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="pricing-config-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Pricing Configuration</h2>
-					<p className="text-muted-foreground text-sm">Configure custom pricing datasheet and sync intervals.</p>
-				</div>
+				<PageTitle title="Pricing Configuration">Configure custom pricing datasheet and sync intervals.</PageTitle>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}

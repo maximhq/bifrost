@@ -583,6 +583,71 @@ When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials
 
 </Tab>
 
+<Tab title="Databricks">
+
+### Databricks
+
+Databricks keys carry a workspace URL and, optionally, an OAuth machine-to-machine service principal. Both Databricks inference surfaces are served by this one provider; `api_format` selects between them, and `auto` picks by model name.
+
+<Tabs>
+<Tab title="Personal Access Token">
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-main",
+          "value": "env.DATABRICKS_TOKEN",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "auto"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="OAuth M2M (Service Principal)">
+
+Leave `value` unset. Bifrost mints and refreshes tokens from the workspace OIDC endpoint.
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-service-principal",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "model_serving",
+            "client_id": "env.DATABRICKS_CLIENT_ID",
+            "client_secret": "env.DATABRICKS_CLIENT_SECRET",
+            "forward_gateway_tags": true
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+See [Databricks](/providers/supported-providers/databricks) for the full field reference.
+
+</Tab>
+
 <Tab title="Groq / Gemini / Mistral / Others">
 
 ### Standard API-Key Providers

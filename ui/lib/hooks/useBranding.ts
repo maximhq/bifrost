@@ -131,6 +131,31 @@ export interface BrandingAssets {
  * the response is outstanding. The pre-hydration shell is separately rewritten
  * server-side to cover the initial document load, before any of this runs.
  */
+function toBrandingAssets(branding: BrandingState | undefined, isDark: boolean): BrandingAssets {
+	const hasLogo = Boolean(branding?.has_logo && branding.logo_url);
+	const hasIcon = Boolean(branding?.has_icon && branding.icon_url);
+
+	return {
+		logoSrc: hasLogo ? resolveBrandingAssetUrl(branding!.logo_url) : isDark ? DEFAULT_LOGO_DARK : DEFAULT_LOGO_LIGHT,
+		iconSrc: hasIcon ? resolveBrandingAssetUrl(branding!.icon_url) : isDark ? DEFAULT_ICON_DARK : DEFAULT_ICON_LIGHT,
+		isCustom: Boolean(branding?.enabled),
+		logoAlt: branding?.enabled ? "" : "Bifrost",
+	};
+}
+
+/**
+ * Branding for surfaces that render outside <ReduxProvider> — the version-skew
+ * updating screen sits above RouterProvider and is also the router's error
+ * component, so it has no store to query and calling the hook there throws.
+ *
+ * Cache-only by design: those screens paint during an upgrade, when the API is
+ * mid-rollout and a request would likely fail anyway. Falls back to the bundled
+ * defaults when nothing has been cached yet.
+ */
+export function getCachedBrandingAssets(isDark: boolean): BrandingAssets {
+	return toBrandingAssets(IS_ENTERPRISE ? readCachedBranding() : undefined, isDark);
+}
+
 export function useBranding(isDark: boolean): BrandingAssets {
 	// Fires on the login screen too, where no session exists — the endpoint is
 	// public precisely so this works pre-auth. Skipped on OSS, where the whole
@@ -149,13 +174,5 @@ export function useBranding(isDark: boolean): BrandingAssets {
 	// hydrateRoot), so there is no server markup for this to mismatch against.
 	const branding = data ?? (IS_ENTERPRISE ? readCachedBranding() : undefined);
 
-	const hasLogo = Boolean(branding?.has_logo && branding.logo_url);
-	const hasIcon = Boolean(branding?.has_icon && branding.icon_url);
-
-	return {
-		logoSrc: hasLogo ? resolveBrandingAssetUrl(branding!.logo_url) : isDark ? DEFAULT_LOGO_DARK : DEFAULT_LOGO_LIGHT,
-		iconSrc: hasIcon ? resolveBrandingAssetUrl(branding!.icon_url) : isDark ? DEFAULT_ICON_DARK : DEFAULT_ICON_LIGHT,
-		isCustom: Boolean(branding?.enabled),
-		logoAlt: branding?.enabled ? "" : "Bifrost",
-	};
+	return toBrandingAssets(branding, isDark);
 }

@@ -2,6 +2,8 @@ import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chart
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import {
 	getProviderLabel,
@@ -14,7 +16,7 @@ import {
 	Status,
 	StatusBarColors,
 } from "@/lib/constants/logs";
-import { ChatMessageContent, DisplayLogEntry, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ChatMessageContent, DisplayLogEntry, LLMUsage, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
@@ -28,6 +30,28 @@ export interface LogsTableMeta {
 	expandedChainIds: Set<string>;
 	loadingChainIds: Set<string>;
 	onToggleChain: (log: LogEntry) => void;
+}
+
+function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage } | null {
+	const breakdowns = log.batch_debug?.accounting?.model_breakdowns;
+	if (!breakdowns) {
+		return null;
+	}
+	const entries = Object.values(breakdowns);
+	if (entries.length === 0) {
+		return null;
+	}
+	const model = entries.length === 1 ? entries[0].model : "mixed";
+	const usage: LLMUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+	for (const entry of entries) {
+		usage.prompt_tokens = (usage.prompt_tokens ?? 0) + (entry.usage?.prompt_tokens ?? 0);
+		usage.completion_tokens = (usage.completion_tokens ?? 0) + (entry.usage?.completion_tokens ?? 0);
+		usage.total_tokens = (usage.total_tokens ?? 0) + (entry.usage?.total_tokens ?? 0);
+	}
+	if ((usage.total_tokens ?? 0) === 0) {
+		return null;
+	}
+	return { model, usage };
 }
 
 function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
@@ -196,7 +220,7 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 				</span>
 			)}
 			{realtimeMessages &&
-				(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
@@ -223,17 +247,7 @@ const MAX_ATTRIBUTION_LINES = 1;
 // plural names -> singular name -> plural ids -> singular id. When a plural
 // (array) source is used, values render one per line, capped at
 // MAX_ATTRIBUTION_LINES with a "+N more" indicator for the remainder.
-function AttributionCell({
-	names,
-	name,
-	ids,
-	id,
-}: {
-	names?: string[];
-	name?: string | null;
-	ids?: string[];
-	id?: string | null;
-}) {
+function AttributionCell({ names, name, ids, id }: { names?: string[]; name?: string | null; ids?: string[]; id?: string | null }) {
 	let values: string[] = [];
 	if (Array.isArray(names) && names.filter(Boolean).length > 0) {
 		values = names.filter(Boolean);
@@ -275,43 +289,45 @@ export const createColumns = (
 	// corner connector instead so the hierarchy stays readable in any column order.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
-			{
-				id: "expand",
-				header: "",
-				size: 52,
-				cell: ({ row, table }) => {
-					const meta = table.options.meta as LogsTableMeta | undefined;
-					const log = row.original as DisplayLogEntry;
-					if (log.__chainChild) {
-						return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
-					}
-					const childCount = log.child_count ?? 0;
-					if (!childCount || !meta) return null;
-					const isExpanded = meta.expandedChainIds.has(log.id);
-					const isLoading = meta.loadingChainIds.has(log.id);
-					return (
-						<button
-							type="button"
-							data-testid="log-chain-expand-btn"
-							aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
-							aria-expanded={isExpanded}
-							className="text-muted-foreground hover:text-foreground gap-1 rounded-sm transition-colors absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center cursor-pointer"
-							onClick={(event) => {
-								event.stopPropagation();
-								meta.onToggleChain(log);
-							}}
-						>
-							{isLoading ? (
-								<Loader2 className="size-3.5 animate-spin" />
-							) : (
-								<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
-							)}
-							<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
-						</button>
-					);
+				{
+					id: "expand",
+					header: "",
+					size: 52,
+					cell: ({ row, table }) => {
+						const meta = table.options.meta as LogsTableMeta | undefined;
+						const log = row.original as DisplayLogEntry;
+						if (log.__chainChild) {
+							return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
+						}
+						const childCount = log.child_count ?? 0;
+						if (!childCount || !meta) return null;
+						const isExpanded = meta.expandedChainIds.has(log.id);
+						const isLoading = meta.loadingChainIds.has(log.id);
+						return (
+							<button
+								type="button"
+								data-testid="log-chain-expand-btn"
+								// Not always a fallback chain: a settled async job nests its cost row
+								// here too, and calling that an "attempt" misreads what it is.
+								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
+								aria-expanded={isExpanded}
+								className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center gap-1 rounded-sm transition-colors"
+								onClick={(event) => {
+									event.stopPropagation();
+									meta.onToggleChain(log);
+								}}
+							>
+								{isLoading ? (
+									<Loader2 className="size-3.5 animate-spin" />
+								) : (
+									<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
+								)}
+								<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
+							</button>
+						);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	const baseColumns: ColumnDef<LogEntry>[] = [
@@ -379,12 +395,14 @@ export const createColumns = (
 			size: 190,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
-				const model = row.original.model;
+				const model = row.original.model || batchAccountingDisplay(row.original)?.model;
+				const canonicalModel = row.original.canonical_model_name;
+				const modelLabel = canonicalModel && canonicalModel !== model ? `${canonicalModel} (${model})` : model;
 				return (
 					<div className="flex min-w-0 items-center gap-2">
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
-							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
+							<TruncatedLabel className="font-mono text-[12px]">{modelLabel || "N/A"}</TruncatedLabel>
 							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
 						</div>
 					</div>
@@ -444,7 +462,7 @@ export const createColumns = (
 			),
 			size: 190,
 			cell: ({ row }) => {
-				const tokenUsage = row.original.token_usage;
+				const tokenUsage = row.original.token_usage ?? batchAccountingDisplay(row.original)?.usage;
 				if (!tokenUsage) {
 					return <div className="pl-4 font-mono text-xs">N/A</div>;
 				}
@@ -487,6 +505,37 @@ export const createColumns = (
 			size: 120,
 			cell: ({ row }) => {
 				if (row.original.cost == null) {
+					const batchCost = row.original.batch_debug?.accounting?.cost;
+					if (batchCost != null) {
+						return (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(batchCost)}</div>
+								</TooltipTrigger>
+								<TooltipContent>Settled cost of this batch, billed once.</TooltipContent>
+							</Tooltip>
+						);
+					}
+					// A settled async job writes its cost to a child row rather than back
+					// onto the request, so the request itself has no cost of its own.
+					// children_cost is that rollup, computed per page.
+					const settledCost = row.original.children_cost;
+					if (settledCost != null && settledCost > 0) {
+						return (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(settledCost)}</div>
+								</TooltipTrigger>
+								{/* The expand chevron only exists in the grouped view, so pointing at
+								    it anywhere else sends people looking for a control that is not there. */}
+								<TooltipContent>
+									{groupedView
+										? "Settled after this request completed. Expand the row to see it."
+										: "Settled after this request completed, on its own row."}
+								</TooltipContent>
+							</Tooltip>
+						);
+					}
 					return <div className="pl-4 font-mono text-[12px]">N/A</div>;
 				}
 				return <div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.cost)}</div>;
@@ -495,6 +544,22 @@ export const createColumns = (
 	];
 
 	const attributionColumns: ColumnDef<LogEntry>[] = [
+		{
+			id: "service_tier",
+			header: "Service Tier",
+			size: 130,
+			cell: ({ row }) => {
+				const tier = row.original.service_tier;
+				if (!tier) {
+					return <div className="font-mono text-xs">-</div>;
+				}
+				return (
+					<Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[11px] uppercase">
+						{tier}
+					</Badge>
+				);
+			},
+		},
 		{
 			id: "virtual_key",
 			header: "Virtual Key",
@@ -552,6 +617,12 @@ export const createColumns = (
 				/>
 			),
 		},
+		{
+			id: "project",
+			header: "Project",
+			size: 150,
+			cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
+		},
 	];
 
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
@@ -566,20 +637,20 @@ export const createColumns = (
 
 	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
 		? [
-			{
-				id: "actions",
-				header: "",
-				size: 56,
-				cell: ({ row }) => {
-					const log = row.original;
-					return (
-						<div className="flex justify-center">
-							<LogActionsMenu log={log} onDelete={onDelete} />
-						</div>
-					);
+				{
+					id: "actions",
+					header: "",
+					size: 56,
+					cell: ({ row }) => {
+						const log = row.original;
+						return (
+							<div className="flex justify-center">
+								<LogActionsMenu log={log} onDelete={onDelete} />
+							</div>
+						);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	return [...expandColumn, ...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];

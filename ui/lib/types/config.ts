@@ -222,6 +222,45 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
+export interface DatabricksKeyConfig {
+	workspace_url: SecretVar;
+	api_format?: "auto" | "model_serving" | "ai_gateway";
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	forward_gateway_tags?: boolean;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "pat" | "oauth_m2m";
+}
+
+// Default DatabricksKeyConfig
+export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
+	workspace_url: { value: "", ref: "" },
+	api_format: "auto",
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	forward_gateway_tags: false,
+	_auth_type: "pat",
+} as const satisfies Required<DatabricksKeyConfig>;
+
+// GithubCopilotKeyConfig matching Go's schemas.GithubCopilotKeyConfig
+export interface GithubCopilotKeyConfig {
+	app_id: SecretVar;
+	installation_id: SecretVar;
+	repository_id: SecretVar;
+	private_key: SecretVar;
+	github_domain?: SecretVar;
+}
+
+// Default GithubCopilotKeyConfig
+export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
+	app_id: { value: "", ref: "" },
+	installation_id: { value: "", ref: "" },
+	repository_id: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	github_domain: { value: "", ref: "" },
+} as const satisfies Required<GithubCopilotKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -242,6 +281,8 @@ export interface ModelProviderKey {
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
+	databricks_key_config?: DatabricksKeyConfig;
+	github_copilot_key_config?: GithubCopilotKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -326,6 +367,7 @@ export type RequestType =
 	| "ocr"
 	| "ocr_stream"
 	| "video_generation"
+	| "video_edit"
 	| "video_retrieve"
 	| "video_download"
 	| "video_delete"
@@ -336,6 +378,7 @@ export type RequestType =
 	| "batch_list"
 	| "batch_retrieve"
 	| "batch_cancel"
+	| "batch_delete"
 	| "batch_results"
 	| "file_upload"
 	| "file_list"
@@ -383,6 +426,7 @@ export interface AllowedRequests {
 	list_models: boolean;
 	rerank: boolean;
 	video_generation: boolean;
+	video_edit: boolean;
 	video_retrieve: boolean;
 	video_download: boolean;
 	video_delete: boolean;
@@ -597,6 +641,7 @@ export interface CompatConfig {
 	convert_chat_to_responses: boolean;
 	should_drop_params: boolean;
 	should_convert_params: boolean;
+	azure_deepseek: boolean;
 }
 
 // Core Bifrost configuration types
@@ -610,6 +655,10 @@ export interface CoreConfig {
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
+	// Grace period after a virtual key rotation during which the previous value
+	// still authenticates. API returns int64 nanoseconds; writes accept a Go
+	// duration string like "5m". 0 = old value stops working immediately.
+	vk_rotation_cooldown?: number | string;
 	disable_db_pings_in_health: boolean;
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
@@ -652,6 +701,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
+	vk_rotation_cooldown: 0,
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
@@ -659,7 +709,13 @@ export const DefaultCoreConfig: CoreConfig = {
 	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
+	compat: {
+		convert_text_to_chat: false,
+		convert_chat_to_responses: false,
+		should_drop_params: false,
+		should_convert_params: false,
+		azure_deepseek: false,
+	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",

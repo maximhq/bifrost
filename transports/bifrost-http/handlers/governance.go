@@ -3,13 +3,10 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -20,14 +17,12 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -66,10 +61,13 @@ type GovernanceManager interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
-	ReloadRoutingRule(ctx context.Context, id string) error
-	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
+	ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error)
+	RemoveVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
@@ -92,12 +90,6 @@ const (
 	BudgetOwnerCustomer    = "customer"
 	BudgetOwnerModelConfig = "model_config"
 )
-
-type complexityAnalyzerConfigReloader interface {
-	// HTTP server bridge signature: BifrostHTTPServer implements this and adapts
-	// to the governance plugin's in-memory ReloadComplexityAnalyzerConfig(config).
-	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
-}
 
 // GovernanceHandler manages HTTP requests for governance operations
 // ScopeNameResolver returns the human-readable name for a non-global model
@@ -137,18 +129,78 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	return fn, ok
 }
 
+// ManagedByResolver returns a human-readable label for what externally manages
+// a non-global model config's scope target (e.g. the access profile that
+// materialized it), distinct from ScopeNameResolver's "who this applies to"
+// name. The second return value is false when no managing entity applies; the
+// UI then renders nothing extra. Implementations must be safe to call
+// concurrently.
+type ManagedByResolver func(ctx context.Context, scopeID string) (configstoreTables.SourceRef, bool)
+
+// managedByResolvers is the package-level registry consulted by
+// resolveModelConfigManagedBy. Empty by default in OSS; downstream builds
+// register resolvers at startup via RegisterManagedByResolver. Guarded by
+// managedByResolversMu.
+var (
+	managedByResolversMu sync.RWMutex
+	managedByResolvers   = map[string]ManagedByResolver{}
+)
+
+// RegisterManagedByResolver wires a managed-by resolver for a model_config
+// scope value. Intended to be called once at process startup, before serving
+// requests. Overwrites any previously registered resolver for the same scope.
+// Safe to call concurrently.
+func RegisterManagedByResolver(scope string, fn ManagedByResolver) {
+	if scope == "" || fn == nil {
+		return
+	}
+	managedByResolversMu.Lock()
+	managedByResolvers[scope] = fn
+	managedByResolversMu.Unlock()
+}
+
+func lookupManagedByResolver(scope string) (ManagedByResolver, bool) {
+	managedByResolversMu.RLock()
+	defer managedByResolversMu.RUnlock()
+	fn, ok := managedByResolvers[scope]
+	return fn, ok
+}
+
 // ExternalQuotaBudgetResolver returns budgets that govern a VK but whose usage is
 // tracked OUTSIDE the VK's own budget rows
 type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
 
+// SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
+// quota responses that can be composed from more than one source. The embedded
+// SourceRef is the same one model configs carry, so both APIs describe an origin
+// with identical keys. All three fields are empty when there is nothing to
+// disambiguate, e.g. a virtual key's own budget rows.
+type SourcedBudget struct {
+	configstoreTables.TableBudget
+	configstoreTables.SourceRef
+}
+
+// SourcedRateLimit is SourcedBudget's counterpart for rate limits.
+type SourcedRateLimit struct {
+	configstoreTables.TableRateLimit
+	configstoreTables.SourceRef
+}
+
 // ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
 // authoritative usage lives outside its own budget rows.
 type ExternalQuotaBudgetResult struct {
-	// Budgets replaces the VK's own budget rows in the quota response.
-	Budgets []configstoreTables.TableBudget
-	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
-	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	// Budgets replaces the VK's own budget rows in the quota response, each tagged
+	// with what governs it.
+	Budgets []SourcedBudget
+	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise: the
+	// single effective, tightest-per-dimension rate limit that carries the real
+	// usage for an AP-managed VK). Kept for backward compatibility with existing
+	// readers of this field.
 	RateLimit *configstoreTables.TableRateLimit
+	// RateLimits lists every rate limit RateLimit was merged from, each tagged with
+	// its source, so a caller can see which one is actually binding instead of only
+	// the merged result. Empty when there's at most one source.
+	RateLimits []SourcedRateLimit
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -238,13 +290,14 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID          *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
-	CustomerID      *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
+	TeamID            *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID        *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	IsActive          *bool                   `json:"is_active,omitempty"`
+	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
+	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
+	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -283,14 +336,15 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID           schemas.OptionalJSON[string] `json:"team_id,omitempty"`
-	CustomerID       schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
-	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
-	IsActive         *bool                        `json:"is_active,omitempty"`
-	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
-	ExpiresAt        *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
+	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	IsActive          *bool                        `json:"is_active,omitempty"`
+	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
+	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
+	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
+	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -354,46 +408,6 @@ type BudgetOverrideRequest struct {
 type BudgetOverrideResponse struct {
 	Budget            *configstoreTables.TableBudget `json:"budget"`
 	EffectiveMaxLimit float64                        `json:"effective_max_limit"`
-}
-
-// RoutingTarget represents a single weighted routing target within a rule.
-// All fields except Weight are optional; nil means "use the incoming request's value".
-// Weights across all targets in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0).
-type RoutingTarget struct {
-	Provider *string `json:"provider,omitempty"` // nil = use incoming provider
-	Model    *string `json:"model,omitempty"`    // nil = use incoming model
-	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
-	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
-}
-
-// CreateRoutingRuleRequest represents the request body for creating a routing rule
-type CreateRoutingRuleRequest struct {
-	Name          string          `json:"name" validate:"required"`
-	Description   string          `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool           `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string          `json:"cel_expression"`
-	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Scope         string          `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string         `json:"scope_id,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
-}
-
-// UpdateRoutingRuleRequest represents the request body for updating a routing rule
-type UpdateRoutingRuleRequest struct {
-	Name          *string         `json:"name,omitempty"`
-	Description   *string         `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`
-	ChainRule     *bool           `json:"chain_rule,omitempty"`
-	CelExpression *string         `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      *int            `json:"priority,omitempty"`
-	Scope         *string         `json:"scope,omitempty"`
-	ScopeID       *string         `json:"scope_id,omitempty"`
 }
 
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
@@ -1279,7 +1293,11 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
 	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
 	vk.IsAccessProfileManaged = ext.Managed
-	vk.Budgets = ext.Budgets
+	budgets := make([]configstoreTables.TableBudget, len(ext.Budgets))
+	for i := range ext.Budgets {
+		budgets[i] = ext.Budgets[i].TableBudget
+	}
+	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
 }
 
@@ -1377,10 +1395,6 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 // RegisterRoutesWithOverrides registers governance routes while allowing downstream editions to replace route families.
 func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overrides GovernanceRouteOverrides, middlewares ...schemas.BifrostHTTPMiddleware) {
-	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
-	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
-	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
-
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
@@ -1408,11 +1422,6 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
 	// Routing Rules CRUD operations
-	r.GET("/api/governance/routing-rules", lib.ChainMiddlewares(h.getRoutingRules, middlewares...))
-	r.POST("/api/governance/routing-rules", lib.ChainMiddlewares(h.createRoutingRule, middlewares...))
-	r.GET("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.getRoutingRule, middlewares...))
-	r.PUT("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRule, middlewares...))
-	r.DELETE("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRule, middlewares...))
 
 	// Model Config CRUD operations
 	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
@@ -1470,88 +1479,6 @@ func (h *GovernanceHandler) registerTeamRoutes(r *router.Router, overrides *Gove
 	if overrides != nil && overrides.Extensions != nil {
 		overrides.Extensions(r, middlewares...)
 	}
-}
-
-func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
-	cfg, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get complexity analyzer config: %v", err))
-		return
-	}
-	if cfg == nil {
-		defaults := complexity.DefaultAnalyzerConfig()
-		SendJSON(ctx, defaults)
-		return
-	}
-	SendJSON(ctx, cfg)
-}
-
-func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
-	var payload complexity.AnalyzerConfig
-	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
-		return
-	}
-
-	normalized, err := complexity.ValidateAndNormalize(&payload)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
-		return
-	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
-		return
-	}
-
-	SendJSON(ctx, normalized)
-}
-
-func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
-	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
-		return
-	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
-		return
-	}
-
-	SendJSON(ctx, defaults)
-}
-
-func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
-	reloader, ok := h.governanceManager.(complexityAnalyzerConfigReloader)
-	if !ok {
-		return fmt.Errorf("governance manager does not support complexity analyzer config reload")
-	}
-	return reloader.ReloadComplexityAnalyzerConfig(ctx, config)
 }
 
 // Virtual Key CRUD Operations
@@ -1766,15 +1693,16 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var vk configstoreTables.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		vk = configstoreTables.TableVirtualKey{
-			ID:              uuid.NewString(),
-			Name:            req.Name,
-			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
-			Description:     req.Description,
-			TeamID:          req.TeamID,
-			CustomerID:      req.CustomerID,
-			IsActive:        isActive,
-			CalendarAligned: req.CalendarAligned,
-			ExpiresAt:       req.ExpiresAt,
+			ID:                uuid.NewString(),
+			Name:              req.Name,
+			Value:             *schemas.NewSecretVar(governance.GenerateVirtualKey()),
+			Description:       req.Description,
+			TeamID:            req.TeamID,
+			CustomerID:        req.CustomerID,
+			IsActive:          isActive,
+			CalendarAligned:   req.CalendarAligned,
+			AllowAllProviders: req.AllowAllProviders,
+			ExpiresAt:         req.ExpiresAt,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1966,8 +1894,16 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
 
+	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
+	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
 	SendJSON(ctx, map[string]interface{}{
-		"virtual_key": vk,
+		"virtual_key":     vk,
+		"virtual_mcp_ids": vmcpIDs,
 	})
 }
 
@@ -2159,6 +2095,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.CalendarAligned != nil {
 			alignmentSwitchedOn = !vk.CalendarAligned && *req.CalendarAligned
 			vk.CalendarAligned = *req.CalendarAligned
+		}
+		if req.AllowAllProviders != nil {
+			vk.AllowAllProviders = *req.AllowAllProviders
 		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
@@ -2540,10 +2479,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
-	// changed. Mirrors the AP-propagation path: enterprise orphans /
+	// changed. Mirrors the AP-propagation path: the store orphans /
 	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
 	// VK's owner (user-keyed creds) against the new effective allowlist
-	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	// (explicit rows ∪ MCPs with AllowByDefault=true). A store without
+	// per-user credentials does nothing.
 	// Must run before ReloadVirtualKey: the reload also evicts this VK's
 	// cached OAuth tokens and header credentials, and an eviction that lands
 	// before these writes could be refilled from the pre-reconcile rows and
@@ -2570,6 +2510,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// vkRotationCooldown reads the effective rotation grace period from the stored
+// client config. Errors degrade to 0 (immediate flip), never block a rotation.
+func (h *GovernanceHandler) vkRotationCooldown(ctx context.Context) time.Duration {
+	clientConfig, err := h.configStore.GetClientConfig(ctx)
+	if err != nil || clientConfig == nil {
+		return 0
+	}
+	return clientConfig.VKRotationCooldown.D()
+}
+
 func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
@@ -2579,6 +2529,20 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
+	}
+	// RotatedAt marks this update as a rotation, making the grace-period fields
+	// authoritative in UpdateVirtualKey (a plain update carries them over
+	// instead). With a cooldown the retired value keeps authenticating until
+	// the expiry; repeated rotation overwrites the previous value, so only one
+	// grace value exists at a time and the second-oldest dies immediately.
+	now := time.Now().UTC()
+	vk.RotatedAt = &now
+	if cooldown := h.vkRotationCooldown(ctx); cooldown > 0 {
+		vk.PreviousValue = *schemas.NewSecretVar(oldValue)
+		expiresAt := now.Add(cooldown)
+		vk.PreviousValueExpiresAt = &expiresAt
+	} else {
+		vk.ClearPreviousValue()
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
 		return nil, err
@@ -3699,6 +3663,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		}
 		page := all[offset:end]
 		h.enrichModelConfigScopeNames(ctx, page)
+		h.enrichModelConfigManagedBy(ctx, page)
 		SendJSON(ctx, map[string]any{
 			"model_configs": page,
 			"count":         len(page),
@@ -3718,10 +3683,18 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
 	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
-		// Paginated path
+		// Paginated path. `scope` accepts a comma-separated list so one UI filter
+		// option can cover several scope values; scope values are identifiers and
+		// never contain commas, so splitting is unambiguous.
+		var scopes []string
+		for _, s := range strings.Split(scope, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				scopes = append(scopes, s)
+			}
+		}
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
-			Scope:    scope,
+			Scopes:   scopes,
 			ScopeID:  scopeID,
 			Provider: provider,
 		}
@@ -3758,6 +3731,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		h.enrichModelConfigScopeNames(ctx, modelConfigs)
+		h.enrichModelConfigManagedBy(ctx, modelConfigs)
 		SendJSON(ctx, map[string]any{
 			"model_configs": modelConfigs,
 			"count":         len(modelConfigs),
@@ -3776,6 +3750,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
+	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{
 		"model_configs": modelConfigs,
 		"count":         len(modelConfigs),
@@ -3798,6 +3773,7 @@ func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.resolveModelConfigScopeName(ctx, mc, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, mc, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"model_config": mc,
 	})
@@ -3826,6 +3802,41 @@ func (h *GovernanceHandler) resolveModelConfigScopeName(ctx context.Context, mc 
 		cache[key] = name
 	}
 	mc.ScopeName = name
+}
+
+// resolveModelConfigManagedBy populates the transient ManagedBy for a single non-global
+// model config by dispatching to the resolver registered for mc.Scope. Unknown scopes
+// (no resolver registered) and resolution failures are non-fatal — ManagedBy stays empty
+// and the UI renders nothing extra. The cache lets callers dedupe lookups across many
+// configs; it is keyed by (scope, scope_id) so distinct scopes never collide. Kept
+// separate from resolveModelConfigScopeName (different registry, different meaning —
+// "who this applies to" vs. "what manages it") so neither can affect the other.
+func (h *GovernanceHandler) resolveModelConfigManagedBy(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]configstoreTables.SourceRef) {
+	if mc == nil || mc.Scope == "" || mc.ScopeID == nil {
+		return
+	}
+	resolver, ok := lookupManagedByResolver(mc.Scope)
+	if !ok {
+		return
+	}
+	id := *mc.ScopeID
+	key := mc.Scope + "|" + id
+	ref, cached := cache[key]
+	if !cached {
+		if resolved, found := resolver(ctx, id); found {
+			ref = resolved
+		}
+		cache[key] = ref
+	}
+	mc.SourceRef = ref
+}
+
+// enrichModelConfigManagedBy populates ManagedBy for each non-global config in the slice.
+func (h *GovernanceHandler) enrichModelConfigManagedBy(ctx context.Context, configs []configstoreTables.TableModelConfig) {
+	cache := map[string]configstoreTables.SourceRef{}
+	for i := range configs {
+		h.resolveModelConfigManagedBy(ctx, &configs[i], cache)
+	}
 }
 
 // enrichModelConfigScopeNames populates ScopeName for each non-global config in the slice.
@@ -3979,6 +3990,7 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		preloadedMC = &mc
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
@@ -4116,6 +4128,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, updatedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
@@ -4494,379 +4507,6 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 }
 
 // Routing Rules CRUD Operations
-
-// getRoutingRules retrieves all routing rules with optional filtering from database
-func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
-	// Get query parameters for filtering
-	scope := string(ctx.QueryArgs().Peek("scope"))
-	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
-
-	// If scope/scopeID filters are specified, use the existing non-paginated path
-	if scope != "" || scopeID != "" {
-		rules, err := h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
-		if err != nil {
-			SendError(ctx, 500, "Failed to get routing rules")
-			return
-		}
-		response := make([]configstoreTables.TableRoutingRule, 0, len(rules))
-		for _, rule := range rules {
-			response = append(response, rule)
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"rules":       response,
-			"count":       len(response),
-			"total_count": len(response),
-			"limit":       len(response),
-			"offset":      0,
-		})
-		return
-	}
-
-	// Check for pagination parameters
-	limitStr := string(ctx.QueryArgs().Peek("limit"))
-	offsetStr := string(ctx.QueryArgs().Peek("offset"))
-	search := string(ctx.QueryArgs().Peek("search"))
-
-	if limitStr != "" || offsetStr != "" || search != "" {
-		// Paginated path
-		params := configstore.RoutingRulesQueryParams{
-			Search: search,
-		}
-		if limitStr != "" {
-			n, err := strconv.Atoi(limitStr)
-			if err != nil {
-				SendError(ctx, 400, "Invalid limit parameter: must be a number")
-				return
-			}
-			if n < 0 {
-				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
-				return
-			}
-			params.Limit = n
-		}
-		if offsetStr != "" {
-			n, err := strconv.Atoi(offsetStr)
-			if err != nil {
-				SendError(ctx, 400, "Invalid offset parameter: must be a number")
-				return
-			}
-			if n < 0 {
-				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
-				return
-			}
-			params.Offset = n
-		}
-
-		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
-		rules, totalCount, err := h.configStore.GetRoutingRulesPaginated(ctx, params)
-		if err != nil {
-			logger.Error("failed to retrieve routing rules: %v", err)
-			SendError(ctx, 500, "Failed to retrieve routing rules")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"rules":       rules,
-			"count":       len(rules),
-			"total_count": totalCount,
-			"limit":       params.Limit,
-			"offset":      params.Offset,
-		})
-		return
-	}
-
-	// Non-paginated path: return all routing rules
-	rules, err := h.configStore.GetRoutingRules(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve routing rules: %v", err)
-		SendError(ctx, 500, "Failed to retrieve routing rules")
-		return
-	}
-	SendJSON(ctx, map[string]interface{}{
-		"rules":       rules,
-		"count":       len(rules),
-		"total_count": len(rules),
-		"limit":       len(rules),
-		"offset":      0,
-	})
-}
-
-// getRoutingRule retrieves a single routing rule by ID from database
-func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
-	ruleID := ctx.UserValue("rule_id").(string)
-
-	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
-	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, 404, "Routing rule not found")
-			return
-		}
-		logger.Error("failed to get routing rule: %v", err)
-		SendError(ctx, 500, "Failed to retrieve routing rule")
-		return
-	}
-
-	SendJSON(ctx, map[string]interface{}{
-		"rule": rule,
-	})
-}
-
-// createRoutingRule creates a new routing rule
-func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
-	// Parse request body
-	var req CreateRoutingRuleRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, 400, "Invalid JSON")
-		return
-	}
-
-	// Validate required fields
-	if req.Name == "" {
-		SendError(ctx, 400, "name field is required")
-		return
-	}
-
-	// Validate targets
-	if len(req.Targets) == 0 {
-		SendError(ctx, 400, "at least one target is required")
-		return
-	}
-	if err := validateRoutingTargets(req.Targets); err != nil {
-		SendError(ctx, 400, err.Error())
-		return
-	}
-	if err := validateRoutingFallbacks(req.Fallbacks); err != nil {
-		SendError(ctx, 400, err.Error())
-		return
-	}
-	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
-	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
-		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
-		return
-	}
-
-	// Set defaults and normalize scope/scope_id
-	scope := req.Scope
-	if scope == "" {
-		scope = "global"
-	}
-
-	// Validate scope value before normalization
-	if err := validateRoutingScope(scope); err != nil {
-		SendError(ctx, 400, err.Error())
-		return
-	}
-
-	// Validate: scope_id required for non-global scopes; must be nil/empty for global
-	if scope == "global" {
-		req.ScopeID = nil // normalize: global rules must not have scope_id
-	} else if req.ScopeID == nil || *req.ScopeID == "" {
-		SendError(ctx, 400, "scope_id field is required when scope is not global")
-		return
-	} else if err := h.validateRoutingScopeID(ctx, scope, *req.ScopeID); err != nil {
-		sendRoutingScopeIDValidationError(ctx, err)
-		return
-	}
-
-	// Build targets
-	ruleID := uuid.NewString()
-	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
-	for _, t := range req.Targets {
-		targets = append(targets, configstoreTables.TableRoutingTarget{
-			Provider: t.Provider,
-			Model:    t.Model,
-			KeyID:    t.KeyID,
-			Weight:   t.Weight,
-		})
-	}
-
-	// Create routing rule
-	// Handle Enabled/ChainRule: nil means use DB default (true/false), otherwise use provided value
-	enabled := req.Enabled
-	if enabled == nil {
-		enabled = bifrost.Ptr(true)
-	}
-	chainRule := false // DB default
-	if req.ChainRule != nil {
-		chainRule = *req.ChainRule
-	}
-	rule := &configstoreTables.TableRoutingRule{
-		ID:              ruleID,
-		Name:            req.Name,
-		Description:     req.Description,
-		Enabled:         enabled,
-		ChainRule:       chainRule,
-		CelExpression:   req.CelExpression,
-		Targets:         targets,
-		Scope:           scope,
-		ScopeID:         req.ScopeID,
-		Priority:        req.Priority,
-		ParsedFallbacks: req.Fallbacks,
-		ParsedQuery:     req.Query,
-	}
-
-	// Create in database
-	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
-		return
-	}
-
-	// Update in-memory store via manager callback
-	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
-		return
-	}
-
-	SendJSON(ctx, map[string]interface{}{
-		"message": "Routing rule created successfully",
-		"rule":    rule,
-	})
-}
-
-// updateRoutingRule updates an existing routing rule
-func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
-	ruleID := ctx.UserValue("rule_id").(string)
-
-	// Parse request body
-	var req UpdateRoutingRuleRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, 400, "Invalid JSON")
-		return
-	}
-
-	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
-	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, 404, "Routing rule not found")
-			return
-		}
-		logger.Error("failed to get routing rule: %v", err)
-		SendError(ctx, 500, "Failed to retrieve routing rule")
-		return
-	}
-
-	// Update fields if provided
-	if req.Name != nil && *req.Name != "" {
-		rule.Name = *req.Name
-	}
-	if req.Description != nil {
-		rule.Description = *req.Description
-	}
-	if req.Enabled != nil {
-		rule.Enabled = req.Enabled
-	}
-	if req.ChainRule != nil {
-		rule.ChainRule = *req.ChainRule
-	}
-	if req.CelExpression != nil {
-		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
-		// enabled) never start failing on a pre-existing malformed expression.
-		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
-			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
-			return
-		}
-		rule.CelExpression = *req.CelExpression
-	}
-	if req.Targets != nil {
-		if len(req.Targets) == 0 {
-			SendError(ctx, 400, "at least one routing target is required")
-			return
-		}
-		if err := validateRoutingTargets(req.Targets); err != nil {
-			SendError(ctx, 400, err.Error())
-			return
-		}
-		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
-		for _, t := range req.Targets {
-			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
-			})
-		}
-		rule.Targets = newTargets
-	}
-	if req.Priority != nil {
-		rule.Priority = *req.Priority
-	}
-	if req.Query != nil {
-		rule.ParsedQuery = req.Query
-	}
-	if req.Fallbacks != nil {
-		if err := validateRoutingFallbacks(req.Fallbacks); err != nil {
-			SendError(ctx, 400, err.Error())
-			return
-		}
-		rule.ParsedFallbacks = req.Fallbacks
-	}
-	if req.Scope != nil && *req.Scope != "" {
-		// Validate scope value before updating
-		if err := validateRoutingScope(*req.Scope); err != nil {
-			SendError(ctx, 400, err.Error())
-			return
-		}
-		rule.Scope = *req.Scope
-	}
-	if req.ScopeID != nil {
-		rule.ScopeID = req.ScopeID
-	}
-
-	// If scope is global, ensure scope_id is nil
-	if rule.Scope == "global" {
-		rule.ScopeID = nil
-	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
-		SendError(ctx, 400, "scope_id field is required when scope is not global")
-		return
-	} else if req.Scope != nil || req.ScopeID != nil {
-		// Only re-validate when scope or scope_id actually changed in this request;
-		// avoids re-checking on every unrelated update (e.g. toggling enabled).
-		if err := h.validateRoutingScopeID(ctx, rule.Scope, *rule.ScopeID); err != nil {
-			sendRoutingScopeIDValidationError(ctx, err)
-			return
-		}
-	}
-
-	// Update in database
-	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
-		return
-	}
-
-	// Update in-memory store via manager callback
-	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
-		return
-	}
-
-	SendJSON(ctx, map[string]interface{}{
-		"message": "Routing rule updated successfully",
-		"rule":    rule,
-	})
-}
-
-// deleteRoutingRule deletes a routing rule
-func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
-	ruleID := ctx.UserValue("rule_id").(string)
-
-	// Delete from database
-	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, 404, "Routing rule not found")
-			return
-		}
-		SendError(ctx, 500, fmt.Sprintf("Failed to delete routing rule from database: %v", err))
-		return
-	}
-
-	// Remove from in-memory store via manager callback (non-fatal: DB already updated)
-	if err := h.governanceManager.RemoveRoutingRule(ctx, ruleID); err != nil {
-		logger.Error("failed to remove routing rule from memory: %v", err)
-	}
-
-	SendJSON(ctx, map[string]interface{}{
-		"message": "Routing rule deleted successfully",
-	})
-}
 
 // ---------------------------------------------------------------------------
 // Pricing Override Operations
@@ -5253,135 +4893,6 @@ func normalizeOptionalString(value *string) *string {
 	return &trimmed
 }
 
-// validRoutingScopes contains the allowed scope values for routing rules
-var validRoutingScopes = map[string]bool{
-	"global":      true,
-	"team":        true,
-	"customer":    true,
-	"virtual_key": true,
-	"user":        true,
-}
-
-// errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
-// "entity doesn't exist" rejection, as opposed to a store error (DB down, timeout,
-// context cancellation). Callers use errors.Is to tell the two apart: the former
-// is a 400 (bad request data), the latter a 500 (server couldn't verify).
-var errRoutingScopeIDNotFound = errors.New("routing rule scope_id not found")
-
-// validateRoutingScopeID checks that scopeID resolves to an existing entity of the
-// given scope type. A rule whose scope_id doesn't resolve silently matches zero
-// requests (the routing engine caches rules keyed by the real entity ID), so this
-// must be rejected at write time rather than left to fail invisibly at eval time.
-func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope string, scopeID string) error {
-	switch scope {
-	case "virtual_key":
-		if _, err := h.configStore.GetVirtualKey(ctx, scopeID); err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				return fmt.Errorf("virtual key '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
-			}
-			return fmt.Errorf("failed to verify virtual key: %w", err)
-		}
-	case "team":
-		if _, err := h.configStore.GetTeam(ctx, scopeID); err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				return fmt.Errorf("team '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
-			}
-			return fmt.Errorf("failed to verify team: %w", err)
-		}
-	case "customer":
-		if _, err := h.configStore.GetCustomer(ctx, scopeID); err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				return fmt.Errorf("customer '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
-			}
-			return fmt.Errorf("failed to verify customer: %w", err)
-		}
-	case "user":
-		// User ids live outside the config store (they arrive on requests via
-		// the resolved identity context), so existence cannot be verified
-		// here; the id is matched at eval time against the calling user.
-	}
-	return nil
-}
-
-// sendRoutingScopeIDValidationError maps a validateRoutingScopeID error to the
-// right HTTP status: 400 when scope_id genuinely doesn't resolve, 500 when the
-// store itself failed and existence couldn't be determined.
-func sendRoutingScopeIDValidationError(ctx *fasthttp.RequestCtx, err error) {
-	if errors.Is(err, errRoutingScopeIDNotFound) {
-		SendError(ctx, 400, err.Error())
-		return
-	}
-	logger.Error("failed to validate routing rule scope_id: %v", err)
-	SendError(ctx, 500, "Failed to verify scope_id")
-}
-
-// validateRoutingScope validates that the scope value is one of the allowed values
-func validateRoutingScope(scope string) error {
-	if scope == "" {
-		return nil // Empty scope will default to "global" later
-	}
-	if !validRoutingScopes[scope] {
-		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key, user", scope)
-	}
-	return nil
-}
-
-// validateRoutingTargets checks that all weights are positive, that no two
-// targets share the same (provider, model, key_id) identity, and that all
-// weights sum to 1.
-func validateRoutingTargets(targets []RoutingTarget) error {
-	seen := make(map[string]struct{}, len(targets))
-	total := 0.0
-	for _, t := range targets {
-		if t.Weight < 0 {
-			return fmt.Errorf("each target weight must be positive")
-		}
-		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
-			return fmt.Errorf("key_id requires provider to be set")
-		}
-
-		// Canonicalise identity: lowercase provider/model, treat nil == "".
-		provider := ""
-		if t.Provider != nil {
-			provider = strings.ToLower(*t.Provider)
-		}
-		model := ""
-		if t.Model != nil {
-			model = strings.ToLower(*t.Model)
-		}
-		keyID := ""
-		if t.KeyID != nil {
-			keyID = *t.KeyID
-		}
-		key := provider + "|" + model + "|" + keyID
-		if _, exists := seen[key]; exists {
-			return fmt.Errorf("duplicate target entry: provider=%q model=%q key_id=%q", provider, model, keyID)
-		}
-		seen[key] = struct{}{}
-
-		total += t.Weight
-	}
-	if math.Abs(total-1.0) > 0.001 {
-		return fmt.Errorf("target weights must sum to 1, got %.4f", total)
-	}
-	return nil
-}
-
-// validateRoutingFallbacks ensures each fallback parses to a non-empty known provider via
-// schemas.ParseModelString (e.g. "openai/gpt-4o", or "azure/" to use the incoming model).
-func validateRoutingFallbacks(fallbacks []string) error {
-	for i, fb := range fallbacks {
-		if strings.TrimSpace(fb) == "" {
-			return fmt.Errorf("fallbacks[%d] must not be empty", i)
-		}
-		provider, _ := schemas.ParseModelString(fb, "")
-		if provider == "" {
-			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb)
-		}
-	}
-	return nil
-}
-
 // quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets
 // and rate limit (with their current usage) for a specific model governed under this VK.
 // Mirrors how provider_configs surface per-provider governance.
@@ -5437,6 +4948,11 @@ type quotaModelSpend struct {
 	TotalRequests int64   `json:"total_requests"`
 	TotalTokens   int64   `json:"total_tokens"`
 	TotalCost     float64 `json:"total_cost"`
+	// Per-category cost split; sums to TotalCost. AdditionalCost holds internal
+	// sidecar costs with no input/output token category (guardrail, MCP).
+	InputCost      float64 `json:"input_cost"`
+	OutputCost     float64 `json:"output_cost"`
+	AdditionalCost float64 `json:"additional_cost"`
 }
 
 // quotaBudget is a VK budget plus the actual per-model spend (from request logs) accumulated
@@ -5446,16 +4962,19 @@ type quotaModelSpend struct {
 // (both measured since last_reset). models is empty when logging is disabled.
 type quotaBudget struct {
 	configstoreTables.TableBudget
+	// Identifies what governs this budget (e.g. an access profile), when the caller
+	// supplied one. Empty for a VK's own budget rows.
+	configstoreTables.SourceRef
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
 // buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
 // request logs over that budget's current cycle
-func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []SourcedBudget, now time.Time) ([]quotaBudget, error) {
 	out := make([]quotaBudget, 0, len(budgets))
 	for i := range budgets {
-		b := &budgets[i]
-		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
+		b := &budgets[i].TableBudget
+		entry := quotaBudget{TableBudget: *b, SourceRef: budgets[i].SourceRef, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
@@ -5478,11 +4997,14 @@ func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usa
 			if ranking != nil {
 				for _, r := range ranking.Rankings {
 					entry.Models = append(entry.Models, quotaModelSpend{
-						Model:         r.Model,
-						Provider:      r.Provider,
-						TotalRequests: r.TotalRequests,
-						TotalTokens:   r.TotalTokens,
-						TotalCost:     r.TotalCost,
+						Model:          r.Model,
+						Provider:       r.Provider,
+						TotalRequests:  r.TotalRequests,
+						TotalTokens:    r.TotalTokens,
+						TotalCost:      r.TotalCost,
+						InputCost:      r.InputCost,
+						OutputCost:     r.OutputCost,
+						AdditionalCost: r.AdditionalCost,
 					})
 				}
 			}
@@ -5518,6 +5040,16 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// An expired key is spent: it cannot make requests, so it has no business
+	// reading its own governance data either. Matches the inference path's
+	// expiry rejection (resolver.go). Inactive keys are deliberately still
+	// served - the response carries is_active so a dashboard can explain that
+	// state, and reactivation is a live option.
+	if vk.IsExpiredAt(time.Now().UTC()) {
+		SendError(ctx, 403, "Virtual key has expired")
+		return
+	}
+
 	// collectVKModelUsage hydrates the wildcard VK/provider governance (in place) and
 	// returns the configured per-model limits — both from a single VK-scoped model-config load.
 	// Fail closed: a load error must not degrade to empty governance (it would leave vk.Budgets
@@ -5528,8 +5060,15 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	budgetRows := vk.Budgets
+	budgetRows := make([]SourcedBudget, len(vk.Budgets))
+	for i := range vk.Budgets {
+		budgetRows[i] = SourcedBudget{TableBudget: vk.Budgets[i]}
+	}
 	rateLimit := vk.RateLimit
+	rateLimits := []SourcedRateLimit{}
+	if vk.RateLimit != nil {
+		rateLimits = []SourcedRateLimit{{TableRateLimit: *vk.RateLimit}}
+	}
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -5542,6 +5081,10 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
+			rateLimits = ext.RateLimits
+			if rateLimits == nil {
+				rateLimits = []SourcedRateLimit{}
+			}
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -5559,6 +5102,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
+		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

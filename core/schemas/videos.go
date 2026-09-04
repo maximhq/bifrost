@@ -31,7 +31,8 @@ type ContentFilterInfo struct {
 }
 
 type VideoOutput struct {
-	Type        VideoOutputType `json:"type"` // "url" | "base64"
+	ID          string          `json:"id,omitempty"` // provider-side asset identifier, when one is assigned
+	Type        VideoOutputType `json:"type"`         // "url" | "base64"
 	URL         *string         `json:"url,omitempty"`
 	Base64Data  *string         `json:"base64,omitempty"`
 	ContentType string          `json:"content_type"`
@@ -84,6 +85,7 @@ func (b *BifrostVideoGenerationRequest) GetExtraParams() map[string]interface{} 
 type VideoGenerationInput struct {
 	Prompt         string  `json:"prompt"`
 	InputReference *string `json:"input_reference,omitempty"` // Primary image for image-to-video (OpenAI-compatible)
+	VideoURI       *string `json:"video_uri,omitempty"`       // Source video for video-to-video and video tool tasks
 }
 
 type VideoGenerationParameters struct {
@@ -92,9 +94,14 @@ type VideoGenerationParameters struct {
 
 	NegativePrompt *string        `json:"negative_prompt,omitempty"`
 	Seed           *int           `json:"seed,omitempty"`
-	VideoURI       *string        `json:"video_uri,omitempty"` // for video to video generation
+	Type           *string        `json:"type,omitempty"`          // operation selector, e.g. "3d", "upscale"
+	OutputFormat   *string        `json:"output_format,omitempty"` // container, e.g. "mp4", "webm", "mov"
 	Audio          *bool          `json:"audio,omitempty"`
 	ExtraParams    map[string]any `json:"-"`
+
+	// Upscale operations (type "upscale"); mutually exclusive.
+	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
+	TargetMegapixels *int `json:"target_megapixels,omitempty"`
 }
 
 // DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.
@@ -165,10 +172,71 @@ func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if seconds != nil {
 		r.Seconds = seconds
 	}
-	if r.Model == "" && req.VideoGenerationRequest != nil {
-		r.Model = req.VideoGenerationRequest.Model
+	if r.Model == "" {
+		switch {
+		case req.VideoGenerationRequest != nil:
+			r.Model = req.VideoGenerationRequest.Model
+		case req.VideoEditRequest != nil:
+			r.Model = req.VideoEditRequest.Model
+		}
 	}
 }
+
+// --- Video Edit ---
+
+// BifrostVideoEditRequest represents a video edit request in bifrost format. Model is optional:
+// when the source video is referenced by an ID that already carries its provider suffix, the
+// provider is resolved from that ID and the upstream API infers the model from the source.
+type BifrostVideoEditRequest struct {
+	Provider       ModelProvider        `json:"provider"`
+	Model          string               `json:"model,omitempty"`
+	Input          *VideoEditInput      `json:"input"`
+	Params         *VideoEditParameters `json:"params,omitempty"`
+	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
+	RawRequestBody []byte               `json:"-"`
+}
+
+// GetRawRequestBody implements [utils.RequestBodyGetter].
+func (b *BifrostVideoEditRequest) GetRawRequestBody() []byte {
+	return b.RawRequestBody
+}
+
+func (b *BifrostVideoEditRequest) GetExtraParams() map[string]interface{} {
+	if b == nil || b.Params == nil {
+		return nil
+	}
+	return b.Params.ExtraParams
+}
+
+type VideoEditInput struct {
+	Video  VideoInput `json:"video"`
+	Prompt string     `json:"prompt"`
+}
+
+// VideoInput is the source video for an edit, in whichever form the caller supplied it. Exactly
+// one of the three is expected; providers that cannot accept a given form reject it.
+type VideoInput struct {
+	Video []byte `json:"video,omitempty"` // raw bytes, from a multipart upload
+	URL   string `json:"url,omitempty"`   // public URL or data URI
+	ID    string `json:"id,omitempty"`    // provider-side video ID
+}
+
+// VideoEditParameters holds the knobs video edit APIs actually accept. Geometry and duration are
+// deliberately absent: an edit inherits both from its source video, so no provider takes them.
+type VideoEditParameters struct {
+	Type         *string        `json:"type,omitempty"` // operation selector, e.g. "upscale", "background_removal"
+	Seed         *int           `json:"seed,omitempty"`
+	OutputFormat *string        `json:"output_format,omitempty"` // container, e.g. "mp4", "webm", "mov"
+	ExtraParams  map[string]any `json:"-"`
+
+	// Upscale operations (type "upscale"); mutually exclusive.
+	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
+	TargetMegapixels *int `json:"target_megapixels,omitempty"`
+}
+
+// BifrostVideoEditResponse is the video edit job response. Video edit returns the same job object
+// as generation, so callers poll and download it through the existing video endpoints.
+type BifrostVideoEditResponse = BifrostVideoGenerationResponse
 
 // --- Video Remix ---
 
@@ -253,4 +321,59 @@ type BifrostVideoDownloadResponse struct {
 
 type VideoLogParams struct {
 	VideoID string `json:"video_id"`
+}
+
+// BifrostVideoDebug is the video-kind detail carried on a log row. It mirrors
+// BifrostBatchDebug: video generation is billed at settlement, minutes after the
+// job was submitted, so the cost lands on its own aggregate row rather than on the
+// submission. Without this the aggregate row is indistinguishable from the
+// submission it settles — same object, same model, differing only by a cost.
+//
+// The row's Object stays the real request type (video_generation / video_remix /
+// video_edit) rather than a synthetic one, so a later repricing pass still finds
+// the right rates. Accounting being non-nil is what marks the aggregate row.
+type BifrostVideoDebug struct {
+	VideoID string `json:"video_id,omitempty"`
+	// Status is the provider's video lifecycle status as last known when this row
+	// was written. On the aggregate cost row it is the status settlement observed,
+	// which is always terminal.
+	Status VideoStatus `json:"status,omitempty"`
+	// Accounting is set only on the aggregate cost row, and is what distinguishes
+	// it from the submission row it settles.
+	Accounting *VideoAccountingDebug `json:"accounting,omitempty"`
+	// SettledByRequestID is the request that triggered settlement — a client poll, or
+	// empty when the sweeper got there first. The row's parent points at the request
+	// that CREATED the job so the cost rolls up onto it, so this is where "which call
+	// actually settled this" survives, for debugging a double-settle or a stuck job.
+	SettledByRequestID string `json:"settled_by_request_id,omitempty"`
+}
+
+func (d *BifrostVideoDebug) IsZero() bool {
+	if d == nil {
+		return true
+	}
+	return d.VideoID == "" && d.Status == "" && d.Accounting == nil
+}
+
+// VideoAccountingDebug records how a settled video was priced, so an operator can
+// see why a row cost what it did without re-deriving it from the provider.
+type VideoAccountingDebug struct {
+	// Seconds and Size are the dimensions the price was actually computed from,
+	// after merging the terminal response over the request captured at submission.
+	Seconds *int   `json:"seconds,omitempty"`
+	Size    string `json:"size,omitempty"`
+	// OutputCount is how many clips the job returned; the per-second rate is
+	// multiplied by it.
+	OutputCount int `json:"output_count,omitempty"`
+	// Incomplete marks a row whose cost is known to be short — priced with no rate,
+	// or from dimensions the provider never confirmed.
+	Incomplete bool `json:"incomplete,omitempty"`
+	// RequestType is the request that created the job. The aggregate row's Object is
+	// "video_retrieve" so it reads as the settlement it is, which means Object can no
+	// longer name the rates this was priced at — a repricing pass reads it from here.
+	RequestType RequestType `json:"request_type,omitempty"`
+	// ProviderCost is the figure the provider reported for the job, when it reported
+	// one. A provider is always right about its own bill, so repricing must return
+	// this verbatim rather than substituting a catalog estimate.
+	ProviderCost *float64 `json:"provider_cost,omitempty"`
 }

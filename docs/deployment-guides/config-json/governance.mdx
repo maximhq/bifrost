@@ -87,7 +87,8 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | `customer_id` | No | Associate with a customer |
 | `rate_limit_id` | No | Attach a rate limit |
 | `calendar_aligned` | No | Snap budget resets to day/week/month/year boundaries |
-| `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all) |
+| `allow_all_providers` | No | Default `false`. When `true`, the key can use every provider, including ones added later. Listed `provider_configs` retain their per-provider model/key/budget/rate-limit rules. Providers without an entry get all models, all keys, and no per-provider limits |
+| `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all, unless `allow_all_providers` is `true`) |
 
 ### Provider Config Fields
 
@@ -308,6 +309,90 @@ Define organizational entities and attach rate limits directly. Team budgets ref
   }
 }
 ```
+
+---
+
+## Projects
+
+Declare projects that requests opt into for access and accounting. A project composes with what the caller already holds, spends against its own budgets, the calling principal's, or both as `accounting_mode` directs, and can divide every budget and rate limit it holds equally between its members.
+
+<Note>
+`governance.projects` is an enterprise capability. Members are added from the dashboard: a project declared here starts with none, and membership cannot be declared in the file. The schema rejects a `members` key.
+</Note>
+
+```json
+{
+  "governance": {
+    "projects": [
+      {
+        "name": "atlas",
+        "description": "Atlas research",
+        "access_rule": "union",
+        "split_policy": "equal",
+        "calendar_aligned": true,
+        "budgets": [{ "max_limit": 1000.00, "reset_duration": "1M" }],
+        "rate_limit": { "request_max_limit": 600, "request_reset_duration": "1m" },
+        "provider_configs": [
+          {
+            "provider_name": "openai",
+            "all_models_allowed": false,
+            "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+            "budgets": [{ "max_limit": 400.00, "reset_duration": "1M" }],
+            "model_budgets": [
+              { "model_name": "gpt-4o", "budgets": [{ "max_limit": 100.00, "reset_duration": "1d" }] }
+            ]
+          }
+        ],
+        "mcp_configs": [{ "mcp_client_name": "github", "tools_to_execute": ["*"] }]
+      }
+    ]
+  }
+}
+```
+
+Requests reference a project by name with the `x-bf-project-name` header.
+
+### Project Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique project name. Declarations are matched to stored projects by name |
+| `description` | No | Free-form description |
+| `is_active` | No | Defaults to `true` |
+| `expires_at` | No | RFC 3339 timestamp after which the project grants nothing |
+| `access_rule` | Yes | `union` leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend); `intersect` permits only what both the caller and the project allow |
+| `membership_mode` | No | `explicit` (default) consults the membership rows; `open` lets any caller opt in. An open project cannot use `split_policy: equal` |
+| `accounting_mode` | No | Which ledgers spend lands on: `both` (default), `project_only`, or `principal_only` |
+| `split_policy` | No | `none` (default) shares every cap the project holds; `equal` gives every member an equal slice of every budget and rate limit at every tier: the project's own, each provider's, and each model's |
+| `calendar_aligned` | No | Snap reset windows to calendar boundaries instead of rolling from first use |
+| `budgets` | No | Project-level spend caps, each with `max_limit` and `reset_duration` |
+| `rate_limit` | No | Request and token limits: `request_max_limit`, `request_reset_duration`, `token_max_limit`, `token_reset_duration` |
+| `provider_configs` | No | One entry per provider, see below |
+| `mcp_configs` | No | One entry per MCP client: `mcp_client_name` (as declared under `mcp.client_configs`) and `tools_to_execute` (`["*"]` grants every tool; empty or omitted grants none, regardless of the top-level `version`) |
+
+Budgets and rate limits inside a project are declared without ids.
+
+### Project Provider Config Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider_name` | Yes | Provider this entry grants. A project names each provider at most once |
+| `all_models_allowed` | No | Allow every model of the provider |
+| `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true |
+| `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all |
+| `key_ids` | No | Keys that may serve the request; `["*"]` allows all, empty or omitted allows none, regardless of the top-level `version`. Each id must belong to this provider |
+| `weight` | No | Load-balancer seed weight; omit to leave the caller's own preference standing |
+| `budgets` | No | Spend caps on this provider inside the project |
+| `rate_limit` | No | Request and token limits on this provider inside the project |
+| `model_budgets` | No | Per-model caps under this provider: `model_name`, `budgets`, and an optional `rate_limit`. The `*` tier is not accepted here |
+
+### How projects are reconciled
+
+- **Matched by name.** A name not in the database creates the project; a name already stored updates it when the declaration's hash differs from the one recorded at the last sync, and leaves it alone otherwise, so dashboard edits survive until the file changes.
+- **Edits keep spend.** Budgets are paired with their stored rows by `reset_duration` (in declared order when a duration appears twice), provider configs by `provider_name`, model budgets by `model_name`, and MCP configs by client. A paired row is updated in place, so raising a cap does not forgive what was already spent against it. A budget, provider, or client the file stops declaring is removed.
+- **Equal splits redivide in the background.** Changing a cap or the split policy of a project with `split_policy: equal` queues a recalculation of every member's share, which runs shortly after startup.
+- **Members are never touched.** The file cannot add or remove members; the schema rejects a `members` key on a project.
+- **With `source_of_truth: "config.json"`** and `governance.projects` present, declarations always overwrite the database and projects the file does not declare are deleted, members included.
 
 ---
 

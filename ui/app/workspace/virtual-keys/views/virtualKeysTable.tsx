@@ -1,8 +1,10 @@
+import PageTitle from "@/components/pageTitle";
 import { BudgetDisplay } from "@/components/budgetDisplay";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TruncatedBadge } from "@/components/truncatedBadge";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -26,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { useVirtualKeyAccessAudit } from "@enterprise/lib/hooks/useVirtualKeyAccessAudit";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
@@ -67,6 +70,7 @@ import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
+import { latestGraceDeadline } from "./virtualKeysTable.utils";
 
 // Registers the enterprise user picker as a side effect; a no-op in OSS builds,
 // where the user filter stays hidden because no picker is registered.
@@ -159,16 +163,7 @@ function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 		return <span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>;
 	}
 
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<Badge variant="outline" className="block max-w-full truncate text-left" data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}>
-					{label}
-				</Badge>
-			</TooltipTrigger>
-			<TooltipContent data-testid={`vk-assigned-to-tooltip-content-${vk.name}`}>{label}</TooltipContent>
-		</Tooltip>
-	);
+	return <TruncatedBadge label={label} dataTestId={`vk-assigned-to-tooltip-${vk.name}`} />;
 }
 
 function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
@@ -186,16 +181,37 @@ function VKActiveSwitch({
 	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	// Managed takes precedence: an access-profile-managed VK can't be toggled here even by a
+	// caller who does have update access.
+	const disabledReason = isManagedByProfile
+		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
+		: !hasUpdateAccess
+			? "You don't have permission to update virtual keys."
+			: undefined;
 
-	return (
+	const control = (
 		<Switch
 			checked={vk.is_active}
-			disabled={!hasUpdateAccess || isManagedByProfile}
+			disabled={!!disabledReason}
 			aria-label={`${vk.is_active ? "Disable" : "Enable"} virtual key ${vk.name}`}
 			data-testid={`vk-active-switch-${vk.name}`}
-			title={isManagedByProfile ? "This virtual key is managed by an access profile." : undefined}
 			onAsyncCheckedChange={(checked) => onToggle(vk, checked)}
 		/>
+	);
+
+	if (!disabledReason) return control;
+
+	// A disabled control emits no pointer events, so the tooltip has to hang off a wrapper.
+	// tabIndex keeps the reason reachable by keyboard, since the switch itself is unfocusable.
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<div tabIndex={0} className="inline-flex" data-testid={`vk-active-switch-tooltip-trigger-${vk.name}`}>
+					{control}
+				</div>
+			</TooltipTrigger>
+			<TooltipContent data-testid={`vk-active-switch-tooltip-content-${vk.name}`}>{disabledReason}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -459,10 +475,12 @@ export default function VirtualKeysTable({
 			setShowBulkRotateDialog(false);
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			const graceUntil = latestGraceDeadline(result.virtual_keys);
+			const graceNote = graceUntil ? ` Previous keys remain valid until ${new Date(graceUntil).toLocaleString()}.` : "";
 			if (failureCount > 0) {
-				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
+				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.${graceNote}`);
 			} else {
-				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+				toast.success(`Rotated ${result.virtual_keys.length} virtual keys.${graceNote}`);
 			}
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -550,12 +568,17 @@ export default function VirtualKeysTable({
 		}
 	};
 
+	// Enterprise records reveals and copies in the audit log; a no-op in OSS builds.
+	const reportVkAccess = useVirtualKeyAccessAudit();
+
 	const toggleKeyVisibility = (vkId: string) => {
 		const newRevealed = new Set(revealedKeys);
 		if (newRevealed.has(vkId)) {
 			newRevealed.delete(vkId);
 		} else {
 			newRevealed.add(vkId);
+			// Only the reveal edge is a disclosure; re-hiding is not.
+			reportVkAccess(vkId, "reveal");
 		}
 		setRevealedKeys(newRevealed);
 	};
@@ -674,7 +697,7 @@ export default function VirtualKeysTable({
 					<div className="space-y-4">
 						<div className="space-y-2">
 							<Label className="text-sm">Export scope</Label>
-							<div className="grid grid-cols-2 gap-2" data-testid="vk-export-scope">
+							<div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="vk-export-scope">
 								<button
 									type="button"
 									onClick={() => setExportScope("current_page")}
@@ -767,8 +790,8 @@ export default function VirtualKeysTable({
 						<AlertDialogTitle>Rotate selected virtual keys?</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
-							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values will stop working
-							immediately.
+							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values stop working immediately
+							unless a rotation cooldown is configured, in which case they remain valid until the cooldown ends.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -785,12 +808,75 @@ export default function VirtualKeysTable({
 			</AlertDialog>
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="mb-4 flex shrink-0 items-center justify-between">
-					<div>
-						<h2 className="text-lg font-semibold">Virtual Keys</h2>
-						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
+				{/* Toolbar: Search + Filters + Actions */}
+				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+					<PageTitle title="Virtual Keys">Manage virtual keys, their permissions, budgets, and rate limits.</PageTitle>
+					<div className="relative w-full max-w-sm min-w-0 flex-1 basis-full sm:min-w-[180px] sm:basis-auto">
+						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+						<Input
+							aria-label="Search virtual keys by name"
+							placeholder="Search by name..."
+							value={search}
+							onChange={(e) => onSearchChange(e.target.value)}
+							className="pl-9"
+							data-testid="vk-search-input"
+						/>
 					</div>
-					<div className="flex items-center gap-2">
+					{/* Both filters search server-side and resolve their own label for a
+					    value restored from the URL, so the page fetches no entity lists. */}
+					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-customer-filter">
+						<CustomerSelector
+							value={customerFilter}
+							onChange={onCustomerFilterChange}
+							placeholder="All Customers"
+							triggerClassName="h-9"
+							className="w-full min-w-0"
+						/>
+						<FilterClearButton
+							show={!!customerFilter}
+							label="Clear customer filter"
+							onClear={() => onCustomerFilterChange("")}
+							data-testid="vk-customer-filter-clear-btn"
+						/>
+					</div>
+					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
+					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-team-filter">
+						<TeamSelector
+							value={teamFilter}
+							onChange={onTeamFilterChange}
+							placeholder="All Teams"
+							triggerClassName="h-9"
+							className="w-full min-w-0"
+						/>
+						<FilterClearButton
+							show={!!teamFilter}
+							label="Clear team filter"
+							onClear={() => onTeamFilterChange("")}
+							data-testid="vk-team-filter-clear-btn"
+						/>
+					</div>
+					{UserPicker && (customerFilter || teamFilter) && userFilter && (
+						<span className="text-muted-foreground text-xs font-medium">or</span>
+					)}
+					{UserPicker && (
+						<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-user-filter">
+							<UserPicker
+								value={userFilter}
+								onChange={onUserFilterChange}
+								placeholder="All Users"
+								triggerClassName="h-9"
+								className="w-full min-w-0"
+							/>
+							<FilterClearButton
+								show={!!userFilter}
+								label="Clear user filter"
+								onClear={() => onUserFilterChange("")}
+								data-testid="vk-user-filter-clear-btn"
+							/>
+						</div>
+					)}
+
+					<div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:shrink-0 sm:flex-nowrap">
 						{selectedCount > 0 && (
 							<Button
 								variant="outline"
@@ -811,74 +897,6 @@ export default function VirtualKeysTable({
 							Add Virtual Key
 						</Button>
 					</div>
-				</div>
-
-				{/* Toolbar: Search + Filters */}
-				<div className="mb-4 flex shrink-0 items-center gap-3">
-					<div className="relative max-w-sm flex-1">
-						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-						<Input
-							aria-label="Search virtual keys by name"
-							placeholder="Search by name..."
-							value={search}
-							onChange={(e) => onSearchChange(e.target.value)}
-							className="pl-9"
-							data-testid="vk-search-input"
-						/>
-					</div>
-					{/* Both filters search server-side and resolve their own label for a
-					    value restored from the URL, so the page fetches no entity lists. */}
-					<div className="flex items-center gap-1" data-testid="vk-customer-filter">
-						<CustomerSelector
-							value={customerFilter}
-							onChange={onCustomerFilterChange}
-							placeholder="All Customers"
-							triggerClassName="h-9"
-							className="w-[250px]"
-						/>
-						<FilterClearButton
-							show={!!customerFilter}
-							label="Clear customer filter"
-							onClear={() => onCustomerFilterChange("")}
-							data-testid="vk-customer-filter-clear-btn"
-						/>
-					</div>
-					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<div className="flex items-center gap-1" data-testid="vk-team-filter">
-						<TeamSelector
-							value={teamFilter}
-							onChange={onTeamFilterChange}
-							placeholder="All Teams"
-							triggerClassName="h-9"
-							className="w-[250px]"
-						/>
-						<FilterClearButton
-							show={!!teamFilter}
-							label="Clear team filter"
-							onClear={() => onTeamFilterChange("")}
-							data-testid="vk-team-filter-clear-btn"
-						/>
-					</div>
-					{UserPicker && (customerFilter || teamFilter) && userFilter && (
-						<span className="text-muted-foreground text-xs font-medium">or</span>
-					)}
-					{UserPicker && (
-						<div className="flex items-center gap-1" data-testid="vk-user-filter">
-							<UserPicker
-								value={userFilter}
-								onChange={onUserFilterChange}
-								placeholder="All Users"
-								triggerClassName="h-9"
-								className="w-[250px]"
-							/>
-							<FilterClearButton
-								show={!!userFilter}
-								label="Clear user filter"
-								onClear={() => onUserFilterChange("")}
-								data-testid="vk-user-filter-clear-btn"
-							/>
-						</div>
-					)}
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
@@ -959,7 +977,11 @@ export default function VirtualKeysTable({
 														<Button
 															variant="ghost"
 															size="sm"
-															onClick={() => copyToClipboard(vk.value)}
+															onClick={() => {
+																// Not awaited: the clipboard write must not wait on the beacon.
+																reportVkAccess(vk.id, "copy");
+																copyToClipboard(vk.value);
+															}}
 															data-testid={`vk-copy-btn-${vk.name}`}
 														>
 															<Copy className="h-4 w-4" />

@@ -49,6 +49,25 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddSessionIDColumn verifies that the session lookup
+// column is additive, indexed, and preserves pre-existing request logs.
+func TestMigrationAddSessionIDColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddSessionIDColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "SessionID"))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_session_id"))
+	require.NoError(t, migrationAddSessionIDColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the
@@ -75,6 +94,7 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		return nil
 	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := sqlDB.Ping(); err != nil {
 		return nil
 	}
@@ -492,4 +512,18 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 
 	// Verify the GIN index was created
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should be created")
+}
+
+// TestPerformanceIndexesCoverProjectIDs pins the project indexes to the ensurePerformanceIndexes
+// list: the project column migrations add only the columns (addColumnIfNotExists never creates a
+// field's index), so an upgraded deployment scans logs by project_id unindexed unless the
+// background builder carries both entries. A fresh database gets them from the model's index tags
+// at table creation.
+func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
+	tables := map[string]string{}
+	for _, idx := range performanceIndexes {
+		tables[idx.name] = idx.table
+	}
+	assert.Equal(t, "logs", tables["idx_logs_project_id"])
+	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
 }

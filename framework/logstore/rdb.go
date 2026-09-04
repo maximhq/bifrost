@@ -196,7 +196,7 @@ const (
 // total spend. idCol is an internal constant.
 func isBucketedDimension(idCol string) bool {
 	switch idCol {
-	case "team_id", "business_unit_id", "customer_id", "user_id", "virtual_key_id":
+	case "team_id", "business_unit_id", "customer_id", "user_id", "virtual_key_id", "project_id":
 		return true
 	}
 	return false
@@ -299,6 +299,15 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.StopReasons) > 0 {
 		baseQuery = baseQuery.Where("stop_reason IN ?", filters.StopReasons)
 	}
+	if len(filters.ComplexityTiers) > 0 {
+		baseQuery = baseQuery.Where("complexity_tier IN ?", filters.ComplexityTiers)
+	}
+	if len(filters.ComplexityMechanisms) > 0 {
+		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
+	}
+	if filters.SessionID != "" {
+		baseQuery = baseQuery.Where("session_id = ?", filters.SessionID)
+	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
@@ -307,7 +316,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
-	} else if filters.RootsOnly {
+	} else if filters.RootsOnly && filters.RequestID == "" {
+		// An explicit ID lookup targets exactly one row; collapsing it as a
+		// non-root would hide the very row that was pasted.
 		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
@@ -337,6 +348,11 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
+	}
+	// Scalar, unlike the team, customer and business-unit dimensions: a request is scoped to at most
+	// one project, so there is no array column to OR against.
+	if len(filters.ProjectIDs) > 0 {
+		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		if s.db.Dialector.Name() == "postgres" {
@@ -398,11 +414,18 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 	}
-	if filters.StartTime != nil {
-		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
-	}
-	if filters.EndTime != nil {
-		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+	if filters.RequestID != "" {
+		// The log primary key is the request ID, so this is an exact PK lookup. A
+		// unique ID must not be hidden by the selected window, so the time-range
+		// clauses are skipped for it.
+		baseQuery = baseQuery.Where("id = ?", filters.RequestID)
+	} else {
+		if filters.StartTime != nil {
+			baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+		}
+		if filters.EndTime != nil {
+			baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+		}
 	}
 	if filters.MinLatency != nil {
 		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)
@@ -424,7 +447,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if filters.MissingCostOnly {
 		// cost is null and status is not error
-		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
+		baseQuery = baseQuery.Where(
+			"(cost IS NULL OR cost <= 0) AND status NOT IN ('error') AND COALESCE(batch_debug, '') NOT LIKE ?",
+			"%\"echo\":true%")
 	}
 	if len(filters.CacheHitTypes) > 0 {
 		// Only keep allowed values to avoid passing arbitrary input into the JSON path expression.
@@ -623,7 +648,7 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 
 // BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
 // VALUES update when available and per-row updates for other dialects.
-func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
+func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -633,9 +658,13 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for id, cost := range updates {
-			costValue := cost
-			if err := tx.Model(&Log{}).Where("id = ?", id).Update("cost", costValue).Error; err != nil {
+		for id, u := range updates {
+			if err := tx.Model(&Log{}).Where("id = ?", id).Updates(map[string]interface{}{
+				"cost":            u.Total,
+				"input_cost":      u.Input,
+				"output_cost":     u.Output,
+				"additional_cost": u.Additional,
+			}).Error; err != nil {
 				return err
 			}
 		}
@@ -781,31 +810,41 @@ func serializeLogUpdateEntry(entry any) (any, error) {
 // buildBulkUpdateCostPostgresSQL builds a deterministic UPDATE ... FROM
 // (VALUES ...) statement and argument list for a chunk of PostgreSQL log cost
 // updates.
-func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (string, []interface{}) {
+func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]CostUpdate) (string, []interface{}) {
 	var sqlBuilder strings.Builder
-	args := make([]interface{}, 0, len(ids)*2)
+	const colsPerRow = 5
+	args := make([]interface{}, 0, len(ids)*colsPerRow)
 
-	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost FROM (VALUES ")
+	// Reprice the total and the per-category split together so the denormalized
+	// columns stay reconciled to the cost column.
+	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost, input_cost = v.input_cost, output_cost = v.output_cost, additional_cost = v.additional_cost FROM (VALUES ")
 	for i, id := range ids {
 		if i > 0 {
 			sqlBuilder.WriteString(",")
 		}
-		argOffset := i * 2
+		argOffset := i * colsPerRow
 		sqlBuilder.WriteString("($")
 		sqlBuilder.WriteString(strconv.Itoa(argOffset + 1))
 		sqlBuilder.WriteString("::text,$")
 		sqlBuilder.WriteString(strconv.Itoa(argOffset + 2))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 3))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 4))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 5))
 		sqlBuilder.WriteString("::float8)")
-		args = append(args, id, updates[id])
+		u := updates[id]
+		args = append(args, id, u.Total, u.Input, u.Output, u.Additional)
 	}
-	sqlBuilder.WriteString(") AS v(id, cost) WHERE logs.id = v.id")
+	sqlBuilder.WriteString(") AS v(id, cost, input_cost, output_cost, additional_cost) WHERE logs.id = v.id")
 
 	return sqlBuilder.String(), args
 }
 
 // bulkUpdateCostPostgres applies chunked PostgreSQL bulk cost updates to avoid
 // issuing one UPDATE per log row.
-func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]float64) error {
+func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]CostUpdate) error {
 	ids := make([]string, 0, len(updates))
 	for id := range updates {
 		ids = append(ids, id)
@@ -1226,23 +1265,31 @@ func normalizeAggregateTimestamp(value any) string {
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
-		"canonical_model_name", "alias_model_family", "server_side_fallback_model",
+		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "routing_rule_id", "routing_rule_name",
+		"complexity_tier", "complexity_mechanism", "session_id",
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
+		"project_id", "project_name",
 		"user_agent", "app",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
-		"latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
+		"batch_debug",
+		// video_debug tells a settled video's aggregate cost row apart from the
+		// submission it settles; without it the list shows the same video twice.
+		// Not added to billingScalarColumns: video reprices through the generic
+		// object_type path, so pricing never reads this.
+		"video_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
@@ -1320,8 +1367,9 @@ var billingPayloadColumns = map[string][]string{
 }
 
 // billingScalarColumns is every non-payload column cost recomputation reads, and
-// nothing else. Traced from calculateCostForLog, pricingScopesForLog,
-// servedTierFromLog, isKnownZeroCostLog, and the recalc job's cursor bookkeeping.
+// nothing else. Traced from calculateCostForLog, calculateBatchAggregateCost,
+// pricingScopesForLog, servedTierFromLog, isKnownZeroCostLog, and the recalc
+// job's cursor bookkeeping.
 //
 // Deliberately NOT built on listSelectColumns: that projection serves /api/logs and
 // carries message previews, content summaries, metadata and every denormalized
@@ -1330,15 +1378,19 @@ var billingPayloadColumns = map[string][]string{
 var billingScalarColumns = []string{
 	// Identity and the object-storage key.
 	"id", "timestamp", "object_type",
-	// Pricing lookup: provider, the wire/alias/canonical model triplet, and the
+	// Pricing lookup: provider, the wire/alias/canonical model triplet, the
 	// server-side fallback model that resolvePricing ranks first.
-	"provider", "model", "alias", "canonical_model_name", "server_side_fallback_model",
+	"provider", "model", "alias", "canonical_model_name", "server_side_fallback_model", "served_model",
 	// Override scopes.
 	"selected_key_id", "virtual_key_id", "user_id",
 	// Usage, and the denormalized fallback used when token_usage was offloaded.
 	"token_usage", "prompt_tokens", "completion_tokens", "total_tokens", "cached_read_tokens",
 	// Semantic-cache billing.
 	"cache_debug",
+	// Per-model usage for a batch aggregate row (object_type=batch_results) whose
+	// own Model is "mixed" and token_usage is one blended total — without this,
+	// calculateBatchAggregateCost has nothing to reprice a mixed-model batch from.
+	"batch_debug",
 	// Whether the payload was offloaded, and whether it can ever be fetched back.
 	"has_object", "content_hidden",
 	// Served tier: scales every token rate.
@@ -2282,6 +2334,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
 		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
 		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		AvgOverhead     sql.NullFloat64 `gorm:"column:avg_overhead"`
+		P90Overhead     sql.NullFloat64 `gorm:"column:p90_overhead"`
+		P95Overhead     sql.NullFloat64 `gorm:"column:p95_overhead"`
+		P99Overhead     sql.NullFloat64 `gorm:"column:p99_overhead"`
 		TotalRequests   int64           `gorm:"column:total_requests"`
 	}
 
@@ -2291,6 +2347,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 		quantile(0.90)(latency) as p90_latency,
 		quantile(0.95)(latency) as p95_latency,
 		quantile(0.99)(latency) as p99_latency,
+		AVG(overhead_latency) as avg_overhead,
+		quantile(0.90)(overhead_latency) as p90_overhead,
+		quantile(0.95)(overhead_latency) as p95_overhead,
+		quantile(0.99)(overhead_latency) as p99_overhead,
 		COUNT(*) as total_requests
 	`, unixBucketExpr("clickhouse", bucketSizeSeconds))
 
@@ -2312,6 +2372,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 			P90Latency:    r.P90Latency.Float64,
 			P95Latency:    r.P95Latency.Float64,
 			P99Latency:    r.P99Latency.Float64,
+			AvgOverhead:   r.AvgOverhead.Float64,
+			P90Overhead:   r.P90Overhead.Float64,
+			P95Overhead:   r.P95Overhead.Float64,
+			P99Overhead:   r.P99Overhead.Float64,
 			TotalRequests: r.TotalRequests,
 		}
 	}
@@ -2328,6 +2392,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
 		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
 		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		AvgOverhead     sql.NullFloat64 `gorm:"column:avg_overhead"`
+		P90Overhead     sql.NullFloat64 `gorm:"column:p90_overhead"`
+		P95Overhead     sql.NullFloat64 `gorm:"column:p95_overhead"`
+		P99Overhead     sql.NullFloat64 `gorm:"column:p99_overhead"`
 		TotalRequests   int64           `gorm:"column:total_requests"`
 	}
 
@@ -2337,6 +2405,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 		percentile_cont(0.90) WITHIN GROUP (ORDER BY latency) as p90_latency,
 		percentile_cont(0.95) WITHIN GROUP (ORDER BY latency) as p95_latency,
 		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency) as p99_latency,
+		AVG(overhead_latency) as avg_overhead,
+		percentile_cont(0.90) WITHIN GROUP (ORDER BY overhead_latency) as p90_overhead,
+		percentile_cont(0.95) WITHIN GROUP (ORDER BY overhead_latency) as p95_overhead,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY overhead_latency) as p99_overhead,
 		COUNT(*) as total_requests
 	`, bucketSizeSeconds, bucketSizeSeconds)
 
@@ -2358,6 +2430,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 			P90Latency:    r.P90Latency.Float64,
 			P95Latency:    r.P95Latency.Float64,
 			P99Latency:    r.P99Latency.Float64,
+			AvgOverhead:   r.AvgOverhead.Float64,
+			P90Overhead:   r.P90Overhead.Float64,
+			P95Overhead:   r.P95Overhead.Float64,
+			P99Overhead:   r.P99Overhead.Float64,
 			TotalRequests: r.TotalRequests,
 		}
 	}
@@ -2369,12 +2445,13 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 // which lacks percentile_cont.
 func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Latency         float64         `gorm:"column:latency"`
+		Overhead        sql.NullFloat64 `gorm:"column:overhead_latency"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency, overhead_latency`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -2385,51 +2462,80 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
-	type bucketData struct {
-		latencies []float64
-	}
-	bucketMap := make(map[int64]*bucketData)
+	bucketMap := make(map[int64]*latencyHistogramBucketData)
 	var orderedKeys []int64
 
 	for _, r := range results {
 		bd, exists := bucketMap[r.BucketTimestamp]
 		if !exists {
-			bd = &bucketData{}
+			bd = &latencyHistogramBucketData{}
 			bucketMap[r.BucketTimestamp] = bd
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
+		if r.Overhead.Valid {
+			bd.overheads = append(bd.overheads, r.Overhead.Float64)
+		}
 	}
 
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
 	for ts, bd := range bucketMap {
-		var sum float64
-		for _, v := range bd.latencies {
-			sum += v
-		}
-		computedBuckets[ts] = LatencyHistogramBucket{
-			Timestamp:     time.Unix(ts, 0).UTC(),
-			AvgLatency:    sum / float64(len(bd.latencies)),
-			P90Latency:    computePercentile(bd.latencies, 0.90),
-			P95Latency:    computePercentile(bd.latencies, 0.95),
-			P99Latency:    computePercentile(bd.latencies, 0.99),
-			TotalRequests: int64(len(bd.latencies)),
-		}
+		computedBuckets[ts] = bd.toBucket(ts)
 	}
 
 	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
+}
+
+// latencyHistogramBucketData accumulates per-bucket latency and overhead values
+// for the Go-based percentile paths (SQLite, MySQL). Latencies arrive sorted from
+// the query; overheads arrive in latency order, so toBucket sorts them.
+type latencyHistogramBucketData struct {
+	latencies []float64
+	overheads []float64
+}
+
+func (bd *latencyHistogramBucketData) toBucket(ts int64) LatencyHistogramBucket {
+	b := LatencyHistogramBucket{
+		Timestamp:     time.Unix(ts, 0).UTC(),
+		AvgLatency:    average(bd.latencies),
+		P90Latency:    computePercentile(bd.latencies, 0.90),
+		P95Latency:    computePercentile(bd.latencies, 0.95),
+		P99Latency:    computePercentile(bd.latencies, 0.99),
+		TotalRequests: int64(len(bd.latencies)),
+	}
+	if len(bd.overheads) > 0 {
+		sort.Float64s(bd.overheads)
+		b.AvgOverhead = average(bd.overheads)
+		b.P90Overhead = computePercentile(bd.overheads, 0.90)
+		b.P95Overhead = computePercentile(bd.overheads, 0.95)
+		b.P99Overhead = computePercentile(bd.overheads, 0.99)
+	}
+	return b
+}
+
+// average returns the arithmetic mean, or 0 for an empty slice.
+func average(vs []float64) float64 {
+	if len(vs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range vs {
+		sum += v
+	}
+	return sum / float64(len(vs))
 }
 
 // getLatencyHistogramMySQL uses Go-based percentile computation for MySQL
 // which lacks percentile_cont.
 func (s *RDBLogStore) getLatencyHistogramMySQL(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Latency         float64         `gorm:"column:latency"`
+		Overhead        sql.NullFloat64 `gorm:"column:overhead_latency"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
+		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency, overhead_latency`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -2440,36 +2546,25 @@ func (s *RDBLogStore) getLatencyHistogramMySQL(ctx context.Context, baseQuery *g
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
-	type bucketData struct {
-		latencies []float64
-	}
-	bucketMap := make(map[int64]*bucketData)
+	bucketMap := make(map[int64]*latencyHistogramBucketData)
 	var orderedKeys []int64
 
 	for _, r := range results {
 		bd, exists := bucketMap[r.BucketTimestamp]
 		if !exists {
-			bd = &bucketData{}
+			bd = &latencyHistogramBucketData{}
 			bucketMap[r.BucketTimestamp] = bd
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
+		if r.Overhead.Valid {
+			bd.overheads = append(bd.overheads, r.Overhead.Float64)
+		}
 	}
 
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
 	for ts, bd := range bucketMap {
-		var sum float64
-		for _, v := range bd.latencies {
-			sum += v
-		}
-		computedBuckets[ts] = LatencyHistogramBucket{
-			Timestamp:     time.Unix(ts, 0).UTC(),
-			AvgLatency:    sum / float64(len(bd.latencies)),
-			P90Latency:    computePercentile(bd.latencies, 0.90),
-			P95Latency:    computePercentile(bd.latencies, 0.95),
-			P99Latency:    computePercentile(bd.latencies, 0.99),
-			TotalRequests: int64(len(bd.latencies)),
-		}
+		computedBuckets[ts] = bd.toBucket(ts)
 	}
 
 	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
@@ -2529,9 +2624,13 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN latency ELSE 0 END), 0) as tp_latency_ms
 	`
-	// Only the current-period query scans canonical_name; keeping it out of the
-	// shared clause spares the previous-period query a discarded aggregate.
-	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause
+	// Only the current-period query scans canonical_name and the per-category cost
+	// split; keeping them out of the shared clause spares the previous-period
+	// query aggregates it discards (trend compares totals only).
+	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause + `,
+		COALESCE(SUM(input_cost), 0) as total_input_cost,
+		COALESCE(SUM(output_cost), 0) as total_output_cost,
+		COALESCE(SUM(additional_cost), 0) as total_additional_cost`
 
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -2547,6 +2646,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		SuccessCount       int64           `gorm:"column:success_count"`
 		TotalTokens        sql.NullInt64   `gorm:"column:total_tokens"`
 		TotalCost          sql.NullFloat64 `gorm:"column:total_cost"`
+		InputCost          sql.NullFloat64 `gorm:"column:total_input_cost"`
+		OutputCost         sql.NullFloat64 `gorm:"column:total_output_cost"`
+		AdditionalCost     sql.NullFloat64 `gorm:"column:total_additional_cost"`
 		AvgLatency         sql.NullFloat64 `gorm:"column:avg_latency"`
 		TPCompletionTokens int64           `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
@@ -2630,14 +2732,17 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	rankings := make([]ModelRankingWithTrend, len(currentResults))
 	for i, r := range currentResults {
 		entry := ModelRankingEntry{
-			Model:         r.Model,
-			Provider:      r.Provider,
-			TotalRequests: r.TotalRequests,
-			SuccessCount:  r.SuccessCount,
-			TotalTokens:   r.TotalTokens.Int64,
-			TotalCost:     r.TotalCost.Float64,
-			AvgLatency:    r.AvgLatency.Float64,
-			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
+			Model:          r.Model,
+			Provider:       r.Provider,
+			TotalRequests:  r.TotalRequests,
+			SuccessCount:   r.SuccessCount,
+			TotalTokens:    r.TotalTokens.Int64,
+			TotalCost:      r.TotalCost.Float64,
+			InputCost:      r.InputCost.Float64,
+			OutputCost:     r.OutputCost.Float64,
+			AdditionalCost: r.AdditionalCost.Float64,
+			AvgLatency:     r.AvgLatency.Float64,
+			Throughput:     tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
@@ -2693,6 +2798,10 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
 	currentQuery = currentQuery.Where("user_id IS NOT NULL AND user_id != ''")
+	// The People tab groups by user_id, so it needs the same ceiling as the
+	// user ranking dimension: a caller may hold a row without being allowed to
+	// see whose it is.
+	currentQuery = applyDimensionCeiling(ctx, currentQuery, dimensionReadSource{}, "user_id")
 
 	var currentResults []struct {
 		UserID        string          `gorm:"column:user_id"`
@@ -2828,6 +2937,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	currentQuery := src.base(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
+	currentQuery = applyDimensionCeiling(ctx, currentQuery, src, idCol)
 	if !src.Bucketed {
 		currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 	}
@@ -2885,6 +2995,10 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			attributedQuery := src.base(s.ScopedDB(ctx))
 			attributedQuery = s.applyFilters(attributedQuery, filters)
 			attributedQuery = attributedQuery.Where("status IN ?", terminalLogStatuses)
+			// Same ceiling as the rankings themselves: this total is the sum of
+			// the rows above, so counting attributions the caller may not be
+			// shown would make it disagree with them.
+			attributedQuery = applyDimensionCeiling(ctx, attributedQuery, src, idCol)
 			var attributed int64
 			if err := attributedQuery.Count(&attributed).Error; err != nil {
 				return nil, fmt.Errorf("failed to get attributed dimension ranking totals for %s: %w", dimension, err)
@@ -3582,6 +3696,7 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
@@ -3684,6 +3799,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
 
@@ -3807,6 +3923,7 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
@@ -3904,7 +4021,17 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	return &log, nil
+	// The list rolls a row's children up into ChildrenCost, and a request whose cost
+	// was settled onto a child row has none of its own — so without this the detail
+	// view of a video generation or a batch shows no cost at all while the list
+	// beside it shows one. No filters here: a single row is addressed by id, so the
+	// rollup covers every child rather than only those in some window.
+	rows := []Log{log}
+	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
+		return &log, nil
+	}
+	return &rows[0], nil
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.
@@ -4013,6 +4140,8 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"user_name":          {},
 	"business_unit_id":   {},
 	"business_unit_name": {},
+	"project_id":         {},
+	"project_name":       {},
 }
 
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
@@ -4043,6 +4172,10 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 	if query != "" {
 		q = s.applyLikeFilter(q, nameCol, query)
 	}
+	// A filter dropdown is a list of organisation names with no log row shown
+	// beside it, so it discloses the org chart directly. The row scope alone
+	// does not bound it: one visible row carrying two customers offers both.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, idCol)
 	if err := q.Order("name ASC").Limit(limit).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
 	}
@@ -5058,13 +5191,79 @@ func (s *RDBLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*
 	return &delivery, nil
 }
 
-// SearchWebhookDeliveries returns one page of delivery history for an
-// endpoint. Pagination is by delivery group (webhook_id), not by individual
-// attempt: a page holds every attempt of the webhook_ids it covers, so a
-// delivery run never straddles a page boundary and the caller can group
-// attempts into runs without losing any. Groups are ordered by their most
-// recent attempt, and attempts within the page are returned newest first.
-func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+// webhookDeliveryStatusClassClause returns the SQL predicate for one response
+// status class, or an empty string when the class is unrecognized.
+func webhookDeliveryStatusClassClause(class string) string {
+	switch class {
+	case WebhookDeliveryStatusClass2xx:
+		return "(status_code >= 200 AND status_code < 300)"
+	case WebhookDeliveryStatusClass4xx:
+		return "(status_code >= 400 AND status_code < 500)"
+	case WebhookDeliveryStatusClass5xx:
+		return "(status_code >= 500 AND status_code < 600)"
+	case WebhookDeliveryStatusClassNone:
+		// No response ever arrived (network error): the attempt has no status code.
+		return "(status_code = 0)"
+	default:
+		return ""
+	}
+}
+
+// applyWebhookDeliveryFilters narrows a webhook_deliveries query to the rows
+// matching filters. A nil or zero-valued filter set is a no-op.
+func applyWebhookDeliveryFilters(query *gorm.DB, filters *WebhookDeliverySearchFilters) *gorm.DB {
+	if filters == nil {
+		return query
+	}
+	if len(filters.EndpointIDs) > 0 {
+		query = query.Where("endpoint_id IN ?", filters.EndpointIDs)
+	}
+	if len(filters.Events) > 0 {
+		query = query.Where("event IN ?", filters.Events)
+	}
+	if len(filters.Outcomes) > 0 {
+		query = query.Where("outcome IN ?", filters.Outcomes)
+	}
+	if len(filters.StatusClass) > 0 {
+		// Classes are alternatives, so they OR together into a single clause
+		// rather than AND-ing each into the query.
+		clauses := make([]string, 0, len(filters.StatusClass))
+		for _, class := range filters.StatusClass {
+			if clause := webhookDeliveryStatusClassClause(class); clause != "" {
+				clauses = append(clauses, clause)
+			}
+		}
+		if len(clauses) > 0 {
+			query = query.Where(strings.Join(clauses, " OR "))
+		}
+	}
+	if filters.RequestID != "" {
+		query = query.Where("request_id = ?", filters.RequestID)
+	}
+	if filters.DeliveryID != "" {
+		query = query.Where("webhook_id = ?", filters.DeliveryID)
+	}
+	if filters.StartTime != nil {
+		query = query.Where("created_at >= ?", *filters.StartTime)
+	}
+	if filters.EndTime != nil {
+		query = query.Where("created_at <= ?", *filters.EndTime)
+	}
+	return query
+}
+
+// SearchWebhookDeliveries returns one page of matching delivery history.
+// Pagination is by delivery group (webhook_id), not by individual attempt: a
+// page holds every attempt of the webhook_ids it covers, so a delivery run
+// never straddles a page boundary and the caller can group attempts into runs
+// without losing any. Groups are ordered by their most recent attempt, and
+// attempts within the page are returned newest first.
+//
+// Filters select delivery groups, not attempts: a group is on the page if ANY
+// of its attempts matches. The attempts themselves are then fetched unfiltered,
+// so a run selected by, say, outcome=exhausted still reports its full attempt
+// sequence rather than only the exhausted tail.
+func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
 	limit := pagination.Limit
 	if limit <= 0 || limit > defaultMaxSearchLimit {
 		limit = defaultMaxSearchLimit
@@ -5072,17 +5271,13 @@ func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID st
 	// Total counts delivery groups, so the pager reflects the rows the caller
 	// renders rather than raw attempts.
 	var total int64
-	if err := s.db.WithContext(ctx).Model(&WebhookDelivery{}).
-		Where("endpoint_id = ?", endpointID).
-		Distinct("webhook_id").
-		Count(&total).Error; err != nil {
+	countQuery := applyWebhookDeliveryFilters(s.db.WithContext(ctx).Model(&WebhookDelivery{}), filters)
+	if err := countQuery.Distinct("webhook_id").Count(&total).Error; err != nil {
 		return nil, err
 	}
 	// Select the page of webhook_ids, most-recently-active first.
 	webhookIDs := []string{}
-	pageQuery := s.db.WithContext(ctx).
-		Model(&WebhookDelivery{}).
-		Where("endpoint_id = ?", endpointID).
+	pageQuery := applyWebhookDeliveryFilters(s.db.WithContext(ctx).Model(&WebhookDelivery{}), filters).
 		Group("webhook_id").
 		Order("MAX(created_at) DESC, webhook_id DESC").
 		Limit(limit)
@@ -5092,11 +5287,12 @@ func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID st
 	if err := pageQuery.Pluck("webhook_id", &webhookIDs).Error; err != nil {
 		return nil, err
 	}
-	// Fetch every attempt of the selected groups so no run is split.
+	// Fetch every attempt of the selected groups so no run is split. Deliberately
+	// unfiltered — see the doc comment.
 	deliveries := []WebhookDelivery{}
 	if len(webhookIDs) > 0 {
 		if err := s.db.WithContext(ctx).
-			Where("endpoint_id = ? AND webhook_id IN ?", endpointID, webhookIDs).
+			Where("webhook_id IN ?", webhookIDs).
 			Order("created_at DESC, id DESC").
 			Find(&deliveries).Error; err != nil {
 			return nil, err
@@ -5134,4 +5330,44 @@ func (s *RDBLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64
 		}
 	}
 	return totalDeleted, nil
+}
+
+// applyDimensionCeiling bounds the values a grouped organisation column may
+// take to the ones the caller is allowed to be shown.
+//
+// This is deliberately separate from ScopedDB. ScopedDB decides which rows the
+// caller receives; this decides which ids those rows are allowed to put on a
+// chart. The two coincide only when every row carries exactly one organisation
+// per dimension, and the enterprise governance plugin records the sender's
+// whole hierarchy, so a single request from someone in two teams under
+// different customers carries both customers. Such a row is legitimately
+// visible to a teammate and still must not name the second customer.
+//
+// The column depends on how the read resolved: a fanned-out read exposes each
+// of the row's ids as dim_id, while a single-owner read groups the scalar
+// column directly. Passing the wrong one is a SQL error rather than a silent
+// hole, which is the failure mode to prefer.
+//
+// Rows with no id on this dimension are always kept. They aggregate into the
+// synthetic Unassigned bucket, which names no organisation and therefore
+// discloses nothing — dropping them would understate the caller's own totals
+// and make the rollup stop reconciling.
+func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSource, idCol string) *gorm.DB {
+	scope := queryscope.DimensionFromContext(ctx)
+	if scope == nil {
+		return q
+	}
+	allowed, bounded := scope(idCol)
+	if !bounded {
+		return q
+	}
+	col := idCol
+	if src.FannedOut {
+		col = "dim_id"
+	}
+	unowned := fmt.Sprintf("%s IS NULL OR %s = ''", col, col)
+	if len(allowed) == 0 {
+		return q.Where(unowned)
+	}
+	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
 }

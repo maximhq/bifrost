@@ -449,6 +449,10 @@
                 "shouldConvertParams": {
                   "type": "boolean",
                   "description": "Converts model parameter values that are not supported by the model."
+                },
+                "azureDeepseek": {
+                  "type": "boolean",
+                  "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses."
                 }
               },
               "additionalProperties": false
@@ -663,9 +667,9 @@
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
-                  "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "description": "MCP library sync interval in seconds. Set to 0 to disable background catalog syncing entirely (air-gapped deployments with no local catalog file). Default is 24 hours; minimum when enabled is 3600 seconds (1 hour).",
                   "default": 86400,
-                  "minimum": 3600
+                  "anyOf": [{ "const": 0 }, { "minimum": 3600 }]
                 },
                 "liveModelsSyncInterval": {
                   "type": "integer",
@@ -786,6 +790,11 @@
                         "type": "string"
                       },
                       "description": "Custom labels to add to all metrics"
+                    },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Serve the Prometheus /metrics scrape endpoint. Default true."
                     },
                     "push_gateway": {
                       "type": "object",
@@ -952,15 +961,9 @@
                         "parasail",
                         "perplexity",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "databricks"
                       ]
-                    },
-                    "keys": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "API keys for embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)"
                     },
                     "embedding_model": {
                       "type": "string"
@@ -1037,6 +1040,18 @@
                     { "$ref": "#/$defs/otelProfilesConfig" }
                   ],
                   "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
+                },
+                "semaphore_size": {
+                  "type": "integer",
+                  "description": "Cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide (default: 10000).",
+                  "default": 10000,
+                  "minimum": 1
+                },
+                "inject_timeout": {
+                  "type": "string",
+                  "description": "Timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot.",
+                  "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                  "default": "5s"
                 }
               },
               "if": {
@@ -1158,6 +1173,120 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  }
+                }
+              }
+            },
+            "splunk": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "endpoint": {
+                      "type": "string",
+                      "description": "HEC base URL, e.g. https://localhost:8088 (required when enabled). Do not include the /services/collector path. Supports env.VAR_NAME prefix"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "HEC token, sent as the Authorization: Splunk <token> header (required when enabled). Supports env.VAR_NAME prefix"
+                    },
+                    "events_index": {
+                      "type": "string",
+                      "description": "Splunk event index for per-request events (required when enable_events is true)"
+                    },
+                    "metrics_index": {
+                      "type": "string",
+                      "description": "Splunk metrics index for derived metrics (required when enable_metrics is true)"
+                    },
+                    "source": {
+                      "type": "string",
+                      "description": "HEC source field on every event and metric (default: bifrost)"
+                    },
+                    "sourcetype": {
+                      "type": "string",
+                      "description": "HEC sourcetype for events; metrics use bifrost:metric (default: bifrost:llm)"
+                    },
+                    "host": {
+                      "type": "string",
+                      "description": "HEC host field (defaults to the server hostname)"
+                    },
+                    "enable_events": {
+                      "type": "boolean",
+                      "description": "Emit one flattened event per request to the event index (default: true)"
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Derive and emit the metric set to the metrics index (default: true)"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from events (default: false)"
+                    },
+                    "ca_cert": {
+                      "type": "string",
+                      "description": "PEM-encoded CA certificate to verify the HEC TLS certificate. Supports env.VAR_NAME prefix"
+                    },
+                    "insecure_skip_verify": {
+                      "type": "boolean",
+                      "description": "Disable TLS certificate verification. Development or isolated environments only; use ca_cert in production (default: false)"
+                    },
+                    "custom_fields": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Static key/value fields added to every event and metric"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request-header name patterns to capture onto events. Use an explicit allowlist of exact header names; wildcards can capture credentials"
+                    },
+                    "batch_max_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Flush a HEC batch once its concatenated bodies reach this many bytes (default: 524288)"
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum time buffered events wait before a flush, in ms (default: 1000)"
+                    },
+                    "post_workers": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64,
+                      "description": "Concurrent HEC poster goroutines, capped at 64 (default: 4)"
+                    },
+                    "indexer_ack": {
+                      "type": "boolean",
+                      "description": "Enable HEC indexer acknowledgement for confirmed delivery. Set when the HEC token has acknowledgement enabled (default: false)"
+                    },
+                    "ack_poll_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How often to poll Splunk for acknowledgement, in ms (only used when indexer_ack is true, default: 1000)"
+                    },
+                    "ack_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How long an unacknowledged batch waits before the client resends it, in ms (only used when indexer_ack is true, default: 30000)"
+                    },
+                    "max_ack_attempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum POST attempts per batch before it is dropped (only used when indexer_ack is true, default: 3)"
                     }
                   }
                 }
@@ -1465,6 +1594,18 @@
                     "type": "integer",
                     "default": 0,
                     "description": "Position within placement group. Lower = earlier execution"
+                  },
+                  "semaphore_size": {
+                    "type": "integer",
+                    "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+                    "default": 10000,
+                    "minimum": 1
+                  },
+                  "inject_timeout": {
+                    "type": "string",
+                    "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+                    "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                    "default": "5s"
                   }
                 },
                 "required": ["name", "enabled"]
@@ -1776,6 +1917,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider with a config row keeps its model allow/blacklist, budgets, rate limits, and key selection; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
                   "provider_configs": {
                     "type": "array",
                     "items": {
@@ -2045,71 +2190,272 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'. The optional session block retains the highest tier observed for a session.",
               "properties": {
+                "session": {
+                  "type": "object",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+                    }
+                  },
+                  "required": ["enabled"],
+                  "additionalProperties": false
+                },
+                "semantic": {
+                  "type": "object",
+                  "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the classifier; it embeds the per-tier keyword lists as reference phrases.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to generate embeddings for complexity classification (must have an enabled key)"
+                    },
+                    "embedding_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model used to generate embeddings for complexity classification"
+                    },
+                    "timeout": {
+                      "description": "Per-request embedding timeout (duration string like '1.5s', or milliseconds as a number; default: 1.5s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "min_similarity": {
+                      "type": "number",
+                      "minimum": 0,
+                      "exclusiveMaximum": 1,
+                      "description": "Similarity floor a nearest-phrase match must clear before its tier is used (default: 0, nearest phrase always wins). Compared against the backend's own score scale, so retune when switching vector stores."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are combined (oldest first) into the embedded text (default: 1). Only user turns count; system prompts and assistant replies are never embedded."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+                    },
+                    "vector_store": {
+                      "type": "string",
+                      "enum": ["embedded", "vector_store"],
+                      "description": "Where phrase embeddings are stored: 'embedded' uses the built-in chromem store; 'vector_store' uses the configured top-level vectorStore and falls back to embedded when none is configured (default: embedded)."
+                    },
+                    "fallback": {
+                      "type": "string",
+                      "enum": ["none", "llm"],
+                      "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (default) records the request as skipped; 'llm' asks the chat model configured in the sibling llm block, which is required when this is set."
+                    }
+                  },
+                  "required": ["provider", "embedding_model"],
+                  "additionalProperties": false
+                },
+                "llm": {
+                  "type": "object",
+                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to run the classification chat completion (must have an enabled key)"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                    },
+                    "timeout": {
+                      "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "maxLength": 4000,
+                      "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The gateway always appends a fixed tier-name and response-format reinforcement."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only)."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+                    }
+                  },
+                  "required": ["provider", "model"],
+                  "additionalProperties": false
+                },
                 "tier_boundaries": {
                   "type": "object",
+                  "deprecated": true,
+                  "description": "Deprecated lexical-classifier score thresholds. Optional and accepted for upgrades, but ignored by semantic classification.",
                   "properties": {
                     "simple_medium": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification"
                     },
                     "medium_complex": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification. Must remain greater than simple_medium when the legacy block is supplied."
                     },
                     "complex_reasoning": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Retired REASONING-tier boundary. It is ignored during configuration load because REASONING was merged into COMPLEX; accepted only so older values continue to validate."
                     }
                   },
-                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "required": ["simple_medium", "medium_complex"],
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "type": "object",
-                  "properties": {
-                    "code_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. A request is embedded and takes the tier of its nearest phrase. In split mode these lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
+                      "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+                      "additionalProperties": false
                     },
-                    "reasoning_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                    {
+                      "type": "object",
+                      "deprecated": true,
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
-                    },
-                    "technical_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
-                    },
-                    "simple_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
+                      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
-                  "additionalProperties": false
+                  ]
                 }
               },
-              "required": ["tier_boundaries", "keywords"],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "session": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": ["enabled"]
+                      }
+                    },
+                    "required": ["session"]
+                  },
+                  "then": {
+                    "required": ["semantic"]
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "semantic": {
+                        "properties": {
+                          "fallback": {
+                            "const": "llm"
+                          }
+                        },
+                        "required": ["fallback"]
+                      }
+                    },
+                    "required": ["semantic"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                }
+              ],
+              "required": ["keywords"],
               "additionalProperties": false
             }
           },
@@ -2122,6 +2468,36 @@
             "enabled": {
               "type": "boolean",
               "description": "Whether cluster mode is enabled"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["mesh", "broker"],
+              "description": "Cluster transport mode"
+            },
+            "broker": {
+              "type": "object",
+              "description": "Broker transport configuration",
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "description": "Broker address in host:port format"
+                },
+                "listenPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Broker listen port"
+                },
+                "tls": {
+                  "type": "boolean",
+                  "description": "Whether to use TLS for the broker connection"
+                },
+                "authToken": {
+                  "type": "string",
+                  "description": "Optional shared secret sent when connecting to the broker"
+                }
+              },
+              "additionalProperties": false
             },
             "peers": {
               "type": "array",
@@ -2284,16 +2660,40 @@
               }
             }
           },
-          "if": {
-            "properties": {
-              "enabled": {
-                "const": true
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "type": { "const": "broker" }
+                },
+                "required": ["enabled", "type"]
+              },
+              "then": {
+                "required": ["broker"],
+                "properties": {
+                  "broker": {
+                    "required": ["address"],
+                    "properties": {
+                      "address": { "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "type": { "const": "mesh" }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["gossip"]
               }
             }
-          },
-          "then": {
-            "required": ["gossip"]
-          }
+          ]
         },
         "scim": {
           "type": "object",
@@ -2987,10 +3387,14 @@
                     "minimum": 0,
                     "description": "Timeout in seconds for rule execution"
                   },
+                  "send_all_conversation_turns": {
+                    "type": "boolean",
+                    "description": "Whether to send all input conversation turns to the guardrail provider. When false, max_turns_to_send selects the current input plus preceding turns. Omit this field to preserve legacy behavior."
+                  },
                   "max_turns_to_send": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
+                    "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
                   "evaluation_mode": {
                     "type": "string",
@@ -4203,6 +4607,114 @@
               "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "postgres": {
+              "type": "object",
+              "description": "Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store resolves to postgres). When enabled:false the postgres logs store shares the top-level postgresql connection.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "description": "PostgreSQL port. Accepts an integer (e.g. 5432) or an env.VAR_NAME string for environment-variable substitution.",
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "user": {
+                  "type": "string"
+                },
+                "password": {
+                  "type": "string"
+                },
+                "passwordCommand": {
+                  "type": "object",
+                  "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout. The result is cached for cache_ttl and shared across new physical connections",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^\\S+$"
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "timeout": {
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    },
+                    "cache_ttl": {
+                      "type": "string",
+                      "description": "How long a resolved password is reused across new physical connections (default 60s). Keep below the credential's validity window.",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    }
+                  },
+                  "required": ["command"],
+                  "additionalProperties": false
+                },
+                "connMaxLifetime": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "database": {
+                  "type": "string"
+                },
+                "sslMode": {
+                  "type": "string",
+                  "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+                },
+                "existingSecret": {
+                  "type": "string"
+                },
+                "passwordKey": {
+                  "type": "string"
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": ["host", "port", "user", "database", "sslMode"]
+                  }
+                },
+                {
+                  "if": {
+                    "required": ["passwordCommand"]
+                  },
+                  "then": {
+                    "properties": {
+                      "password": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      },
+                      "existingSecret": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      }
+                    }
+                  }
+                }
+              ],
+              "additionalProperties": false
+            },
             "matviewRefreshInterval": {
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
@@ -4467,13 +4979,20 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  },
+                  "existingSecret": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  }
+                }
               }
             }
           ]
@@ -4510,6 +5029,18 @@
         "primary": {
           "type": "object",
           "properties": {
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the PostgreSQL pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the PostgreSQL pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the PostgreSQL pod assignment"
+            },
             "persistence": {
               "type": "object",
               "properties": {
@@ -4544,7 +5075,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
         },
         "weaviate": {
           "type": "object",
@@ -4857,6 +5388,20 @@
               "then": {
                 "required": ["indexHost"]
               }
+            }
+          }
+        },
+        "chromem": {
+          "type": "object",
+          "description": "Chromem configuration — embedded in-process vector store (no external service). The top-level vectorStore.enabled controls activation. Renders into vector_store.config in config.json.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory for file persistence; omit for a memory-only store that re-populates on restart"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Gzip-compress persisted documents (only used when path is set)"
             }
           }
         }
@@ -5238,6 +5783,18 @@
         },
         "config": {
           "type": "object"
+        },
+        "semaphore_size": {
+          "type": "integer",
+          "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+          "default": 10000,
+          "minimum": 1
+        },
+        "inject_timeout": {
+          "type": "string",
+          "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "default": "5s"
         }
       }
     },
@@ -5371,13 +5928,6 @@
               },
               "description": "Azure scopes for authentication"
             },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
-            },
             "api_version": {
               "type": "string",
               "description": "Azure API version"
@@ -5414,13 +5964,6 @@
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
               "default": false
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             }
           },
           "required": ["project_id", "region"],
@@ -5468,13 +6011,6 @@
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             },
             "batch_s3_config": {
               "type": "object",
@@ -6435,13 +6971,6 @@
                     },
                     "description": "Azure scopes for authentication"
                   },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
@@ -6477,13 +7006,6 @@
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                     "default": false
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   }
                 },
                 "additionalProperties": false
@@ -6526,13 +7048,6 @@
                   "batch_role_arn": {
                     "type": "string",
                     "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   },
                   "batch_s3_config": {
                     "type": "object",

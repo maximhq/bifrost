@@ -12,11 +12,96 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// startTransportSpan opens a nil-safe "transport" internal span for edge
+// (de)serialization: parsing the client request body in, marshalling the response
+// out. The tracer is placed on the request context by TracingMiddleware and the
+// span nests under the root http.request span. Both returns are nil when no trace
+// is active; EndSpan is nil-safe, so callers guard only on the tracer. The name marks
+// the transport phase ("request-unmarshal" for inbound parse, "response-marshal" for
+// outbound serialization); spans sharing a name aggregate into a single bucket.
+func startTransportSpan(ctx *fasthttp.RequestCtx, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// transportPluginSpanName is the span name for an HTTP transport hook. The
+// plugin.<name>.<phase> shape lets the overhead breakdown collapse it into the same
+// plugin.<name> bucket as that plugin's core LLM hooks.
+func transportPluginSpanName(pluginName, phase string) string {
+	return "plugin." + pluginName + "." + phase
+}
+
+// startTransportPluginSpan opens a nil-safe SpanKindPlugin span for an HTTP transport
+// hook, reading the tracer off the request context. Used on the synchronous paths
+// (pre-hook, inline post-hook) where the fasthttp ctx is still live. Returns a nil
+// handle when no trace is active; EndSpan is nil-safe.
+func startTransportPluginSpan(ctx *fasthttp.RequestCtx, pluginName, phase string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, transportPluginSpanName(pluginName, phase), schemas.SpanKindPlugin)
+	return t, h
+}
+
+// endTransportPluginSpan closes a transport-hook span, recording the hook's error.
+func endTransportPluginSpan(t schemas.Tracer, h schemas.SpanHandle, err error) {
+	if t == nil {
+		return
+	}
+	if err != nil {
+		t.EndSpan(h, schemas.SpanStatusError, err.Error())
+	} else {
+		t.EndSpan(h, schemas.SpanStatusOk, "")
+	}
+}
+
+// TimedMiddleware wraps an inference auth/routing middleware so its own work — the
+// time it spends before handing off — is recorded as a middleware.<name> overhead
+// span instead of hiding in the "core" bucket. The span ends the instant the wrapped
+// middleware invokes next (so the whole downstream request is excluded), or when it
+// short-circuits without calling next. Named middleware.<name> so the breakdown groups
+// these into a single "Middleware" category with a per-middleware drill-down. Applied
+// at the middleware-composition site; the wrapped middleware's body is untouched.
+func TimedMiddleware(name string, mw schemas.BifrostHTTPMiddleware) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+			if !ok || t == nil {
+				// No trace on this request: run the middleware untimed.
+				mw(next)(ctx)
+				return
+			}
+			_, h := t.StartSpanID(ctx, "middleware."+name, schemas.SpanKindInternal)
+			ended := false
+			endOnce := func() {
+				if !ended {
+					ended = true
+					t.EndSpan(h, schemas.SpanStatusOk, "")
+				}
+			}
+			// End the span the moment the middleware hands off, so downstream time is
+			// excluded; endOnce below covers the short-circuit (no-next) path.
+			timedNext := func(c *fasthttp.RequestCtx) {
+				endOnce()
+				next(c)
+			}
+			mw(timedNext)(ctx)
+			endOnce()
+		}
+	}
+}
 
 // ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
 // start/end time pointers computed from the current server time. Returns nil, nil for
@@ -82,23 +167,29 @@ func IsUniqueConstraintError(err error, identifiers ...string) bool {
 	return false
 }
 
-// SendJSON sends a JSON response with 200 OK status
+// SendJSON sends a JSON response with 200 OK status.
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	ctx.SetBody(append(body, '\n'))
 }
 
-// SendJSONWithStatus sends a JSON response with a custom status code
+// SendJSONWithStatus sends a JSON response with a custom status code.
 func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode int) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(statusCode)
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	ctx.SetBody(append(body, '\n'))
 }
 
 // SendError sends a BifrostError response

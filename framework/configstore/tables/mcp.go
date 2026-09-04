@@ -16,6 +16,7 @@ type TableMCPClient struct {
 	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
 	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
 	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	EndpointSlug            string             `gorm:"column:endpoint_slug;type:varchar(255);uniqueIndex" json:"endpoint_slug"`
 	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
@@ -41,7 +42,7 @@ type TableMCPClient struct {
 	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
 	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
 	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
-	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
 	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
@@ -67,8 +68,10 @@ type TableMCPClient struct {
 	// integration at exchange time.
 	TokenExchangeJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPTokenExchangeConfig
 
-	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
-	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
+	// AllowByDefault opens the client to every caller not assigned it explicitly. The column keeps the
+	// name the flag was introduced under; only the wire name moved.
+	AllowByDefault bool `gorm:"column:allow_on_all_virtual_keys;default:false" json:"allow_by_default"`
+	Disabled       bool `gorm:"default:false" json:"disabled"` // Whether the client is intentionally disabled
 
 	// PendingOAuthConfigJSON stashes the inline `oauth_config` block from
 	// config.json for shared-OAuth MCP clients (auth_type='oauth') that have

@@ -658,9 +658,10 @@ func TestMarshalSorted_Deterministic(t *testing.T) {
 	}
 }
 
-// TestCheckAndDecodeBody_PooledGzip verifies that CheckAndDecodeBody correctly
-// decompresses gzip-encoded responses using pooled gzip readers.
-func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
+// TestCheckAndDecodeBody_ContentEncodings verifies that unary provider responses
+// are decoded with the shared pooled readers before JSON parsing.
+func TestCheckAndDecodeBody_ContentEncodings(t *testing.T) {
+	chainedPayload := gzipCompress([]byte(`{"message":"chained"}`))
 	tests := []struct {
 		name            string
 		body            []byte
@@ -690,6 +691,36 @@ func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
 			wantErr:         false,
 		},
 		{
+			name:            "brotli encoded body",
+			body:            compressBrotli([]byte(`{"input_tokens":16998}`)),
+			contentEncoding: "br",
+			wantBody:        `{"input_tokens":16998}`,
+		},
+		{
+			name:            "deflate encoded body",
+			body:            compressFlate([]byte(`{"message":"deflate"}`)),
+			contentEncoding: "deflate",
+			wantBody:        `{"message":"deflate"}`,
+		},
+		{
+			name:            "zstd encoded body",
+			body:            compressZstd([]byte(`{"message":"zstd"}`)),
+			contentEncoding: "zstd",
+			wantBody:        `{"message":"zstd"}`,
+		},
+		{
+			name:            "identity encoded body",
+			body:            []byte(`{"message":"identity"}`),
+			contentEncoding: "identity",
+			wantBody:        `{"message":"identity"}`,
+		},
+		{
+			name:            "chained gzip then brotli body",
+			body:            compressBrotli(chainedPayload),
+			contentEncoding: "gzip, br",
+			wantBody:        `{"message":"chained"}`,
+		},
+		{
 			name:            "no encoding - plain body",
 			body:            []byte(`plain text`),
 			contentEncoding: "",
@@ -707,6 +738,30 @@ func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
 			name:            "invalid gzip data",
 			body:            []byte{0xFF, 0xFE, 0xFD},
 			contentEncoding: "gzip",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid brotli data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "br",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid deflate data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "deflate",
+			wantErr:         true,
+		},
+		{
+			name:            "invalid zstd data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "zstd",
+			wantErr:         true,
+		},
+		{
+			name:            "unsupported encoding",
+			body:            []byte(`encoded somehow`),
+			contentEncoding: "snappy",
 			wantErr:         true,
 		},
 	}
@@ -772,8 +827,8 @@ func TestDrainNonSSEStreamReader_SSEWithoutContentTypeStillReadable(t *testing.T
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
 		t.Fatal("expected SSE-looking response without content type to remain readable")
 	}
 
@@ -798,8 +853,8 @@ func TestDrainNonSSEStreamReader_GzipSSEWithoutContentTypeStillReadable(t *testi
 	decompressed, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, decompressed)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, decompressed)
+	if nonSSE != nil {
 		t.Fatal("expected decompressed SSE-looking response without content type to remain readable")
 	}
 
@@ -817,8 +872,8 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte(`{"error":"not stream"}`)
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE == nil {
 		t.Fatal("expected JSON response without content type to be drained")
 	}
 	if reader != nil {
@@ -826,17 +881,23 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	}
 }
 
-func TestDrainNonSSEStreamReader_UppercaseSSEPrefixDrains(t *testing.T) {
+func TestDrainNonSSEStreamReader_UppercaseSSEPrefixIsReadable(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Case folding was added deliberately: an upstream that capitalises its field
+	// names still sends usable SSE, and discarding it lost a working stream.
 	body := []byte("DATA: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
-		t.Fatal("expected uppercase SSE-like prefix to be treated as non-SSE")
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
+		t.Fatalf("expected uppercase SSE prefix to remain readable, drained as %v", nonSSE.Kind)
 	}
-	if reader != nil {
-		t.Fatal("expected drained response to return nil reader")
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected body %q, got %q", body, remaining)
 	}
 }
 
@@ -845,8 +906,8 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
+	if nonSSE != nil {
 		t.Fatal("expected SSE stream with short-read prefix to remain readable")
 	}
 
@@ -856,6 +917,73 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	}
 	if string(remaining) != string(body) {
 		t.Fatalf("expected body %q, got %q", body, remaining)
+	}
+}
+
+// TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE covers an
+// upstream whose first read carries nothing but a UTF-8 BOM or leading
+// horizontal whitespace. hasSSEPrefix only inspects what Peek(1) happened to
+// buffer, so trimSSELeading emptied that window and the stream was written off
+// as non-SSE - draining a perfectly valid SSE body and reporting
+// StreamBodyNonSSE.
+func TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		// chunkSize 3 makes the first Read deliver exactly the trimmable bytes
+		// and nothing else, which is what an upstream flushing the BOM
+		// separately from the first field name looks like on the wire.
+		// chunkSize 1 goes further and splits the BOM itself: trimSSELeading
+		// cannot strip a 3-byte prefix it has only seen one byte of, so the
+		// window is neither empty nor conclusive and a single extra Peek is not
+		// enough to resolve it.
+		chunkSize int
+	}{
+		{
+			name:      "bom alone in the first read",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 3,
+		},
+		{
+			name:      "whitespace alone in the first read",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 3,
+		},
+		{
+			name:      "bom fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "bom then whitespace fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("  data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "whitespace fragmented one byte at a time",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+
+			reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: tc.body, chunkSize: tc.chunkSize})
+			if nonSSE != nil {
+				t.Fatalf("expected a readable SSE stream, got non-SSE verdict %v with sample %q", nonSSE.Kind, nonSSE.Sample)
+			}
+
+			remaining, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatalf("failed to read after the trimmable-prefix guard: %v", err)
+			}
+			if string(remaining) != string(tc.body) {
+				t.Fatalf("expected body %q, got %q", tc.body, remaining)
+			}
+		})
 	}
 }
 
@@ -887,11 +1015,11 @@ func TestDrainNonSSEStreamReader_TinyOpenSSEPrefixReturnsPromptly(t *testing.T) 
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -959,11 +1087,11 @@ func TestDrainNonSSEStreamReader_FragmentedFieldPrefixReturnsPromptly(t *testing
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -1069,8 +1197,8 @@ func TestDrainNonSSEStreamReader_CodexNoContentType(t *testing.T) {
 	reader, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, reader)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, reader)
+	if nonSSE != nil {
 		t.Fatal("SSE body without Content-Type was drained — reproduces the original Codex hang")
 	}
 
@@ -2147,5 +2275,40 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 	}
 	if tracer.endStatus != schemas.SpanStatusOk {
 		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}
+
+// TestProviderSendsDoneMarker guards the stream termination switch: a provider
+// missing from the non-DONE case would make the stream loop in
+// core/providers/openai/openai.go wait indefinitely for a [DONE] marker it never sends.
+func TestProviderSendsDoneMarker(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
+		{schemas.Cerebras, false},
+		{schemas.Perplexity, false},
+		{schemas.Bedrock, false},
+		{schemas.BedrockMantle, false},
+		// Providers that do send a [DONE] marker.
+		{schemas.OpenAI, true},
+		{schemas.Azure, true},
+		{schemas.Anthropic, true},
+		{schemas.Groq, true},
+		{schemas.OpenRouter, true},
+		// HuggingFace's router does send [DONE]. It was previously listed as not
+		// sending one, which made the stream loop break on finish_reason and drop
+		// the trailing usage-only chunk that several inference providers emit
+		// after it, leaving the stream with zero tokens and zero cost.
+		{schemas.HuggingFace, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
+			}
+		})
 	}
 }

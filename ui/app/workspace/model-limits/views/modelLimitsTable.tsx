@@ -19,7 +19,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+import PageTitle from "@/components/pageTitle";
+import { getModelLimitScope, getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
 import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
@@ -64,6 +65,10 @@ function ModelLimitActionsMenu({
 	onDelete: (configId: string) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
+	// A readOnly-registered scope (e.g. enterprise's access_profile) can only be
+	// changed by editing its owner — no delete here, and "Edit" just opens the
+	// sheet's read-only view instead of a form.
+	const isManaged = getModelLimitScope(config.scope ?? "global")?.readOnly === true;
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -81,7 +86,7 @@ function ModelLimitActionsMenu({
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem
 					className="cursor-pointer"
-					disabled={!hasUpdateAccess}
+					disabled={!isManaged && !hasUpdateAccess}
 					data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -90,12 +95,12 @@ function ModelLimitActionsMenu({
 					}}
 				>
 					<Edit className="h-4 w-4" />
-					Edit
+					{isManaged ? "View" : "Edit"}
 				</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
 					className="cursor-pointer"
-					disabled={!hasDeleteAccess}
+					disabled={isManaged || !hasDeleteAccess}
 					data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -218,12 +223,22 @@ export default function ModelLimitsTable({
 
 	const hasActiveFilters = debouncedSearch || scope || provider;
 
+	// Rendered on the empty branch too, not just the populated one: PageTitle
+	// draws nothing inline, and leaving it out drops the topbar to the
+	// route-derived fallback, which for this route reads "Model Limits".
+	const pageTitle = (
+		<PageTitle title="Budgets & Limits">
+			Configure budgets and rate limits at any scope: virtual keys, users, providers, or specific models.
+		</PageTitle>
+	);
+
 	// True empty state: no model limits at all (not just filtered to zero).
 	// Suppress while the initial load is in flight so we don't flash the empty
 	// state before the API responds.
 	if (totalCount === 0 && !hasActiveFilters && !isLoading) {
 		return (
 			<>
+				{pageTitle}
 				{isSheetOpen && <ModelLimitSheet modelConfig={editingModelConfig} onSave={closeModelLimitSheet} onCancel={closeModelLimitSheet} />}
 				<ModelLimitsEmptyState onAddClick={handleAddModelLimit} canCreate={hasCreateAccess} />
 			</>
@@ -259,21 +274,9 @@ export default function ModelLimitsTable({
 			</AlertDialog>
 
 			<div className="flex flex-col overflow-y-auto">
-				<div className="mb-4 flex items-center justify-between">
-					<div>
-						<h1 className="text-lg font-semibold">Budgets &amp; Limits</h1>
-						<p className="text-muted-foreground text-sm">
-							Configure budgets and rate limits at any scope: virtual keys, users, providers, or specific models.
-						</p>
-					</div>
-					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
-						<Plus className="h-4 w-4" />
-						Add Limit
-					</Button>
-				</div>
-
-				{/* Toolbar: Search + Filters */}
+				{/* Toolbar: Search + Filters + Actions */}
 				<div className="mb-4 flex flex-wrap items-center gap-3">
+					{pageTitle}
 					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -292,7 +295,7 @@ export default function ModelLimitsTable({
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="all">All Scopes</SelectItem>
-							{getModelLimitScopes().map((o) => (
+							{getModelLimitScopeFilterOptions().map((o) => (
 								<SelectItem key={o.value} value={o.value}>
 									{o.label}
 								</SelectItem>
@@ -331,6 +334,11 @@ export default function ModelLimitsTable({
 							Clear filters
 						</Button>
 					)}
+
+					<Button className="ml-auto" onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
+						<Plus className="h-4 w-4" />
+						Add Limit
+					</Button>
 				</div>
 
 				<div className="mb-2 overflow-hidden rounded-sm border" data-testid="model-limits-table">
@@ -350,9 +358,7 @@ export default function ModelLimitsTable({
 							{modelConfigs.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">
-											{isLoading ? "Loading limits..." : "No matching limits found."}
-										</span>
+										<span className="text-muted-foreground text-sm">{isLoading ? "Loading limits..." : "No matching limits found."}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -408,16 +414,25 @@ export default function ModelLimitsTable({
 												)}
 											</TableCell>
 											<TableCell>
-												<Badge variant="secondary">{getScopeLabel(config.scope ?? "global")}</Badge>
+												<Badge variant="secondary">
+													{(() => {
+														const entry = getModelLimitScope(config.scope ?? "global");
+														return entry?.displayAsScope ?? getScopeLabel(config.scope ?? "global");
+													})()}
+												</Badge>
 											</TableCell>
 											<TableCell>
+												<div className="flex flex-col items-start gap-1">
 												{config.scope !== "global" && config.scope_id && config.scope_name ? (
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
 																<Badge
 																	variant="secondary"
-																	className="flex max-w-[160px] cursor-pointer items-center gap-1 hover:opacity-80"
+																	className={cn(
+																		"flex max-w-[160px] items-center gap-1",
+																		getModelLimitScope(config.scope ?? "global")?.buildDeepLink && "cursor-pointer hover:opacity-80",
+																	)}
 																	data-testid={`model-limit-scope-target-${config.scope_id}`}
 																	onClick={() => {
 																		if (!config.scope_id) return;
@@ -426,7 +441,9 @@ export default function ModelLimitsTable({
 																	}}
 																>
 																	<span className="truncate">{config.scope_name}</span>
-																	<ArrowUpRight className="h-3 w-3 shrink-0" />
+																	{getModelLimitScope(config.scope ?? "global")?.buildDeepLink && (
+																		<ArrowUpRight className="h-3 w-3 shrink-0" />
+																	)}
 																</Badge>
 															</TooltipTrigger>
 															<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
@@ -435,6 +452,11 @@ export default function ModelLimitsTable({
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
+												{(() => {
+													const ManagedBy = getModelLimitScope(config.scope ?? "global")?.ManagedByComponent;
+													return ManagedBy ? <ManagedBy modelConfig={config} /> : null;
+												})()}
+												</div>
 											</TableCell>
 											<TableCell className="min-w-[180px]">
 												{budgets.length > 0 ? (

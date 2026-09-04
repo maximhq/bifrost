@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,60 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 	}
 	if !shouldUseFilterDataCache(context.Background(), "   ") {
 		t.Fatal("expected whitespace-only query to use filterdata cache")
+	}
+}
+
+// TestParseComplexityFilters verifies complexity-specific query filters are
+// parsed independently from generic log filters.
+func TestParseComplexityFilters(t *testing.T) {
+	t.Run("parses tier and mechanism", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
+		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		filters := &logstore.SearchFilters{}
+
+		parseComplexityFilters(ctx, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"semantic", "lexical"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameters are absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{
+			ComplexityTiers:      []string{"MEDIUM"},
+			ComplexityMechanisms: []string{"skipped"},
+		}
+
+		parseComplexityFilters(&fasthttp.RequestCtx{}, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"MEDIUM"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"skipped"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
+}
+
+// TestParseParentRequestIDFilter verifies the explicit parent-request filter
+// does not consume the distinct generic session_id query parameter.
+func TestParseParentRequestIDFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("parent_request_id", "parent-abc")
+	ctx.QueryArgs().Set("session_id", "session-abc")
+
+	if got, want := parseParentRequestIDFilter(ctx), "parent-abc"; got != want {
+		t.Fatalf("parent request ID = %q, want %q", got, want)
+	}
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("session_id", "session-abc")
+	if got := parseParentRequestIDFilter(ctx); got != "" {
+		t.Fatalf("parent request ID = %q, want empty", got)
 	}
 }
 
@@ -570,7 +625,15 @@ func (s *fakeSidekiqStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, 
 }
 
 type dashboardLogManager struct {
-	failStats              bool
+	failStats bool
+	// statsCalls records every GetStats filter in call order, so tests that
+	// trigger more than one stats query (compare_to_previous) can assert on both
+	// windows rather than just the last one.
+	statsCalls []logstore.SearchFilters
+	// statsFunc, when set, supplies the SearchStats for each GetStats call so a
+	// test can tell the current and previous periods apart.
+	statsFunc              func(filters *logstore.SearchFilters) (*logstore.SearchStats, error)
+	projects               []loggingplugin.KeyPair
 	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
@@ -582,7 +645,8 @@ func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.
 	return nil, nil
 }
 func (m *dashboardLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
-	return nil, nil
+	m.lastLLMFilters = *filters
+	return &logstore.SearchResult{}, nil
 }
 func (m *dashboardLogManager) GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
 	return nil, nil
@@ -592,8 +656,12 @@ func (m *dashboardLogManager) GetSessionSummary(ctx context.Context, sessionID s
 }
 func (m *dashboardLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	m.lastLLMFilters = *filters
+	m.statsCalls = append(m.statsCalls, *filters)
 	if m.failStats {
 		return nil, errors.New("stats failed")
+	}
+	if m.statsFunc != nil {
+		return m.statsFunc(filters)
 	}
 	return &logstore.SearchStats{}, nil
 }
@@ -666,6 +734,9 @@ func (m *dashboardLogManager) GetAvailableUsers(ctx context.Context, limit int, 
 }
 func (m *dashboardLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
 	return nil, nil
+}
+func (m *dashboardLogManager) GetAvailableProjects(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return m.projects, nil
 }
 func (m *dashboardLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
 	return nil, nil
@@ -777,4 +848,79 @@ func (m *dashboardLogManager) GetAvailableMCPApps(ctx context.Context, _ int, _ 
 
 func (m *dashboardLogManager) GetAvailableMCPUserAgents(ctx context.Context, _ int, _ string) ([]string, error) {
 	return nil, nil
+}
+
+// noRedactedKeys is the redaction lookup for a listing that names no keys, which is what an empty
+// search result produces.
+type noRedactedKeys struct{}
+
+func (noRedactedKeys) GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key { return nil }
+func (noRedactedKeys) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey {
+	return nil
+}
+func (noRedactedKeys) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
+	return nil
+}
+
+// TestProjectFilterReachesEveryLogQuery pins that project_ids narrows each route that reads logs:
+// the listing, the stats and every histogram, not just one of them. A filter that one route
+// drops returns another project's traffic in a report that claims to be this one's.
+func TestProjectFilterReachesEveryLogQuery(t *testing.T) {
+	SetLogger(&mockLogger{})
+	routes := []struct {
+		name string
+		uri  string
+		call func(h *LoggingHandler, ctx *fasthttp.RequestCtx)
+	}{
+		{"list", "/api/logs?project_ids=proj-a,proj-b", (*LoggingHandler).getLogs},
+		{"stats", "/api/logs/stats?project_ids=proj-a,proj-b", (*LoggingHandler).getLogsStats},
+		{"histograms", "/api/logs/dashboard?project_ids=proj-a,proj-b", (*LoggingHandler).getDashboard},
+	}
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			mgr := &dashboardLogManager{}
+			h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}}
+			var req fasthttp.Request
+			req.SetRequestURI(route.uri)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+			route.call(h, ctx)
+
+			if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+			}
+			if got := mgr.lastLLMFilters.ProjectIDs; len(got) != 2 || got[0] != "proj-a" || got[1] != "proj-b" {
+				t.Fatalf("expected the project filter to reach the store, got %#v", got)
+			}
+		})
+	}
+}
+
+// TestFilterDataListsProjects pins that the filter dropdowns can offer projects: the dimension is
+// known, served from the log manager, and answered under its own key.
+func TestFilterDataListsProjects(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &dashboardLogManager{projects: []loggingplugin.KeyPair{{ID: "proj-a", Name: "Atlas"}}}
+	h := &LoggingHandler{logManager: mgr}
+	var req fasthttp.Request
+	// A search query bypasses the response cache, which a bare handler does not carry.
+	req.SetRequestURI("/api/logs/filterdata?dimensions=projects&q=at")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.getAvailableFilterData(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+	}
+	var payload struct {
+		Projects []loggingplugin.KeyPair `json:"projects"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &payload); err != nil {
+		t.Fatalf("decode filterdata: %v", err)
+	}
+	if len(payload.Projects) != 1 || payload.Projects[0].ID != "proj-a" || payload.Projects[0].Name != "Atlas" {
+		t.Fatalf("expected the project pair under \"projects\", got %s", ctx.Response.Body())
+	}
 }

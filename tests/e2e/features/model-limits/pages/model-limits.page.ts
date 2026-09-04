@@ -73,6 +73,23 @@ export class ModelLimitsPage extends BasePage {
     await actionsBtn.click()
   }
 
+  private async preserveBudgetUsageIfPrompted(): Promise<void> {
+    const dialog = this.page.getByTestId('model-limit-budget-reset-dialog')
+    const dialogVisible = dialog.waitFor({ state: 'visible', timeout: 5000 }).then(() => 'dialog' as const)
+    const sheetClosed = this.sheet.waitFor({ state: 'hidden', timeout: 5000 }).then(() => 'sheet' as const)
+
+    let winner: 'dialog' | 'sheet'
+    try {
+      winner = await Promise.race([dialogVisible, sheetClosed])
+    } catch {
+      return
+    }
+    if (winner !== 'dialog') return
+
+    await this.page.getByTestId('model-limit-budget-reset-dialog-preserve-btn').click()
+    await dialog.waitFor({ state: 'hidden', timeout: 3000 })
+  }
+
   private async waitForSheetClosedAfterSave(): Promise<void> {
     const closed = await expect(this.sheet)
       .not.toBeVisible({ timeout: 5000 })
@@ -182,6 +199,7 @@ export class ModelLimitsPage extends BasePage {
     const saveBtn = this.page.getByRole('button', { name: /Save Changes|Create Limit/i })
     await expect(saveBtn).toBeEnabled({ timeout: 10000 })
     await saveBtn.click()
+    await this.preserveBudgetUsageIfPrompted()
     await this.waitForSheetClosedAfterSave()
     await expect(this.getModelLimitRow(modelName, provider)).toBeVisible({ timeout: 15000 })
   }

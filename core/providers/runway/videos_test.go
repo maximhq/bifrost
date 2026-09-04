@@ -114,3 +114,40 @@ func TestToRunwayVideoGenerationRequest_ContentModeration(t *testing.T) {
 		assert.NotContains(t, result.ExtraParams, "content_moderation")
 	})
 }
+
+// An empty video_uri is not a video-to-video request. getRunwayEndpoint only routes to
+// /v1/video_to_video for a non-empty URI, so treating an empty one as present would reject
+// supported models and forward an empty videoUri on the image-to-video endpoint.
+func TestToRunwayVideoGenerationRequest_EmptyVideoURI(t *testing.T) {
+	empty := ""
+
+	t.Run("does not reject a model without video-to-video support", func(t *testing.T) {
+		req := makeVideoReq("gen4_turbo", nil)
+		req.Input.VideoURI = &empty
+		req.Input.InputReference = schemas.Ptr("https://example.com/frame.png")
+
+		out, err := ToRunwayVideoGenerationRequest(req)
+		require.NoError(t, err)
+		assert.Nil(t, out.VideoURI, "empty video_uri must not be forwarded")
+		assert.Equal(t, "/v1/image_to_video", getRunwayEndpoint(req), "routing must stay image-to-video")
+	})
+
+	t.Run("a non-empty uri on an unsupported model still errors", func(t *testing.T) {
+		req := makeVideoReq("gen4_turbo", nil)
+		req.Input.VideoURI = schemas.Ptr("https://example.com/clip.mp4")
+
+		_, err := ToRunwayVideoGenerationRequest(req)
+		require.Error(t, err)
+	})
+
+	t.Run("a non-empty uri on a supported model is forwarded", func(t *testing.T) {
+		req := makeVideoReq("gen4_aleph", nil)
+		req.Input.VideoURI = schemas.Ptr("https://example.com/clip.mp4")
+
+		out, err := ToRunwayVideoGenerationRequest(req)
+		require.NoError(t, err)
+		require.NotNil(t, out.VideoURI)
+		assert.Equal(t, "https://example.com/clip.mp4", *out.VideoURI)
+		assert.Equal(t, "/v1/video_to_video", getRunwayEndpoint(req))
+	})
+}

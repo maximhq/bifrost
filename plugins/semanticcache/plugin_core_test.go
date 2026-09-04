@@ -505,6 +505,10 @@ func (m *MockUnsupportedStore) CreateNamespace(ctx context.Context, namespace st
 	return nil
 }
 
+func (m *MockUnsupportedStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
+}
+
 func (m *MockUnsupportedStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	return nil
 }

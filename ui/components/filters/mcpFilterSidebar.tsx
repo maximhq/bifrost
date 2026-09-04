@@ -1,3 +1,5 @@
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
+import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -5,11 +7,12 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-filter-sidebar-collapsed";
@@ -24,14 +27,19 @@ interface MCPFilterSidebarProps {
 }
 
 export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarProps) {
+	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
 	// Load persisted collapsed state on mount
 	useEffect(() => {
 		if (typeof window === "undefined") return;
+		if (isMobile) {
+			setCollapsed(true);
+			return;
+		}
 		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
+		setCollapsed(stored === "true");
+	}, [isMobile]);
 
 	const toggleCollapsed = useCallback(() => {
 		setCollapsed((prev) => {
@@ -62,27 +70,11 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 
 	// Collapsed: thin rail with vertical "Filters" label — whole rail is clickable to expand
 	if (collapsed) {
-		return (
-			<button
-				type="button"
-				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
-			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
-						{activeFilterCount}
-					</span>
-				)}
-			</button>
-		);
+		return <FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} />;
 	}
 
 	return (
-		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
@@ -123,206 +115,6 @@ interface FilterComponentProps {
 	filters: MCPToolLogFilters;
 	onFiltersChange: (filters: MCPToolLogFilters) => void;
 	defaultOpen?: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// FilterSection – collapsible wrapper
-// ---------------------------------------------------------------------------
-
-function FilterSectionSkeleton({ rows = 3 }: { rows?: number }) {
-	return (
-		<>
-			{Array.from({ length: rows }).map((_, i) => (
-				<div key={i} className="flex items-center gap-2.5 px-3 py-2">
-					<Skeleton className="size-4 shrink-0 rounded-[4px]" />
-					<Skeleton className="h-3.5 w-full rounded" />
-				</div>
-			))}
-		</>
-	);
-}
-
-function FilterSection({
-	title,
-	children,
-	defaultOpen = false,
-	loading = false,
-	onOpenChange,
-	testId,
-}: {
-	title: string;
-	children: React.ReactNode;
-	defaultOpen?: boolean;
-	loading?: boolean;
-	onOpenChange?: (open: boolean) => void;
-	testId?: string;
-}) {
-	const [open, setOpen] = useState(defaultOpen);
-
-	useEffect(() => {
-		if (defaultOpen) setOpen(true);
-	}, [defaultOpen]);
-
-	const handleOpenChange = (next: boolean) => {
-		setOpen(next);
-		onOpenChange?.(next);
-	};
-
-	return (
-		<Collapsible open={open} onOpenChange={handleOpenChange} className="last:pb-2">
-			<CollapsibleTrigger
-				className="flex h-8 w-full cursor-pointer items-center gap-1.5 px-2 py-2 text-sm font-medium hover:opacity-80"
-				data-testid={testId}
-			>
-				<ChevronDown className={cn("size-3.5 transition-transform", open ? "rotate-0" : "-rotate-90")} />
-				<span>{title}</span>
-			</CollapsibleTrigger>
-			<CollapsibleContent className="pt-1">
-				<div className="divide-border divide-y overflow-hidden rounded-sm border">{loading ? <FilterSectionSkeleton /> : children}</div>
-			</CollapsibleContent>
-		</Collapsible>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// CheckboxFilterItem
-// ---------------------------------------------------------------------------
-
-function CheckboxFilterItem({
-	label,
-	checked,
-	onCheckedChange,
-	labelClassName,
-	testId,
-}: {
-	label: string;
-	checked: boolean;
-	onCheckedChange: (checked: boolean) => void;
-	labelClassName?: string;
-	testId?: string;
-}) {
-	return (
-		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm" data-testid={testId}>
-			<Checkbox checked={checked} onCheckedChange={onCheckedChange} />
-			<TruncatedLabel className={labelClassName}>{label}</TruncatedLabel>
-		</label>
-	);
-}
-
-// ---------------------------------------------------------------------------
-// SearchableCheckboxList – list of checkbox rows with a search input.
-// Caller passes `inputRef` to control focus (see `useAutoFocusOnOpen`).
-// ---------------------------------------------------------------------------
-
-function useAutoFocusOnOpen(isOpen: boolean) {
-	const ref = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		if (isOpen) ref.current?.focus({ preventScroll: true });
-	}, [isOpen]);
-	return ref;
-}
-
-function SearchableCheckboxList({
-	items,
-	isSelected,
-	onToggle,
-	placeholder = "Search...",
-	inputRef,
-	testIdPrefix,
-	normalizeTestIdKey = false,
-	allowCustom = false,
-	onSearch,
-	fetching,
-}: {
-	items: { key: string; label: string }[];
-	isSelected: (key: string) => boolean;
-	onToggle: (key: string) => void;
-	placeholder?: string;
-	inputRef?: Ref<HTMLInputElement>;
-	testIdPrefix?: string;
-	// When true, item keys are slugified before composing the per-row data-testid
-	// (e.g. "Claude Desktop" -> "claude-desktop"). Use for free-form keys like app
-	// names so E2E selectors stay space/case-stable; leave off for already-safe keys.
-	normalizeTestIdKey?: boolean;
-	allowCustom?: boolean;
-	onSearch?: (query: string) => void;
-	fetching?: boolean;
-}) {
-	const [query, setQuery] = useState("");
-	const normalized = query.trim().toLowerCase();
-	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
-	const trimmed = query.trim();
-	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
-	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
-
-	useEffect(() => {
-		if (!onSearch) return;
-		const timer = setTimeout(() => {
-			onSearch(query.trim());
-		}, 300);
-		return () => clearTimeout(timer);
-	}, [query, onSearch]);
-
-	const commitCustom = () => {
-		if (!showAddCustom) return;
-		onToggle(trimmed);
-		setQuery("");
-	};
-
-	return (
-		<>
-			<div className="relative border-b">
-				{fetching ? (
-					<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
-				) : (
-					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-				)}
-				<Input
-					ref={inputRef}
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") {
-							e.preventDefault();
-							commitCustom();
-						}
-					}}
-					placeholder={placeholder}
-					className="h-8 border-0 pl-8 text-xs"
-					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
-				/>
-			</div>
-			{filtered.map((item) => (
-				<CheckboxFilterItem
-					key={item.key}
-					label={item.label}
-					checked={isSelected(item.key)}
-					onCheckedChange={() => onToggle(item.key)}
-					testId={
-						testIdPrefix
-							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
-							: undefined
-					}
-				/>
-			))}
-			{filtered.length === 0 && !showAddCustom && (
-				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
-			)}
-			{showAddCustom && (
-				<button
-					type="button"
-					onClick={commitCustom}
-					className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left text-sm"
-					data-testid={testIdPrefix ? `${testIdPrefix}-add-custom` : undefined}
-				>
-					<Plus className="text-muted-foreground size-3.5 shrink-0" />
-					<span className="truncate">
-						Use <span className="font-medium">&quot;{trimmed}&quot;</span>
-					</span>
-				</button>
-			)}
-		</>
-	);
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +245,10 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		isLoading,
 	} = useGetMCPLogsFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
 	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
-	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+	const items = useMemo(
+		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
+		[availableApps, filters.apps],
+	);
 
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 

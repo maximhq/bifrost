@@ -81,7 +81,7 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	}
 
 	// This might be a cache hit if semantic similarity is high enough.
-	// Hit/miss is similarity-dependent, but CacheDebug must be stamped either
+	// Hit/miss is similarity-dependent, but cache metadata must be stamped either
 	// way — semantic search ran. This catches a regression where the stamping
 	// stops without making the test flake on similarity scores.
 	if response2.ExtraFields.CacheDebug == nil {
@@ -141,7 +141,7 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	}
 
 	// May or may not be a cache hit depending on semantic similarity, but
-	// CacheDebug must be stamped (regression guard).
+	// Cache metadata must be stamped (regression guard).
 	if response3.ExtraFields.CacheDebug == nil {
 		t.Fatal("expected CacheDebug to be stamped on the response")
 	}
@@ -317,6 +317,10 @@ func (s *directFastPathStore) Ping(ctx context.Context) error { return nil }
 
 func (s *directFastPathStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
 	return nil
+}
+
+func (s *directFastPathStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
 }
 
 func (s *directFastPathStore) DeleteNamespace(ctx context.Context, namespace string) error {

@@ -84,14 +84,17 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const [updateCustomer, { isLoading: isUpdating }] = useUpdateCustomerMutation();
 	const loading = isCreating || isUpdating;
 
+	// Keyed on the customer *id*, not the object: the list behind this sheet is
+	// polled, so an unchanged customer still arrives as a fresh object and an
+	// identity-keyed reset would discard whatever the operator had typed.
 	useEffect(() => {
-		if (open) {
-			const init = createInitialState(customer);
-			setInitialState(init);
-			setFormData({ ...init, isDirty: false });
-			setNameError(null);
-		}
-	}, [open, customer]);
+		if (!open) return;
+		const init = createInitialState(customer);
+		setInitialState(init);
+		setFormData({ ...init, isDirty: false });
+		setNameError(null);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [open, customer?.id]);
 
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		if (checked && isEditing && !initialState.calendarAligned) {
@@ -302,7 +305,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="flex items-center gap-2">
 						{isEditing ? "Edit Customer" : "Create Customer"}
 						{customer?.id && <CopyableId id={customer.id} entityLabel="Customer" />}
@@ -315,7 +318,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit} className="flex flex-1 flex-col">
-					<div className="flex-1 px-8 py-4">
+					<div className="flex-1 px-4 py-4 md:px-8">
 						<div className="space-y-6">
 							<div className="space-y-4">
 								<div className="space-y-2">
@@ -415,7 +418,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 						</div>
 					</div>
 
-					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-6 py-4">
+					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-4 py-4 md:px-6">
 						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
 							Cancel
 						</Button>

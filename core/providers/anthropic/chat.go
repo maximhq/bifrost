@@ -110,7 +110,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 //
 // bash_*, memory_*, code_execution_*, and tool_search_* carry no variant
 // config — their Type + Name alone are enough, handled in the default branch.
-func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (AnthropicTool, bool) {
+func convertServerToolToAnthropic(tool schemas.ChatTool, caps schemas.ModelCaps, provider schemas.ModelProvider) (AnthropicTool, bool) {
 	typeStr := string(tool.Type)
 	if typeStr == "" {
 		return AnthropicTool{}, false
@@ -140,9 +140,9 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (Anthropi
 	// canonical {type, name} pair for the model's generation. Keeps callers
 	// from having to memorize Anthropic's per-generation tool naming matrix.
 	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
-		generation := ComputerUseGeneration(model)
+		generation := ComputerUseGeneration(caps)
 		if baseTool == "text_editor" {
-			generation = TextEditorGeneration(model)
+			generation = TextEditorGeneration(caps)
 		}
 		if wantType, wantName := NormalizedToolSpec(generation, baseTool); wantType != "" {
 			typeStr = wantType
@@ -347,11 +347,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
@@ -387,7 +388,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
-		if !IsAdaptiveOnlyThinkingModel(capModel) {
+		if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -401,12 +402,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
 		// Opus 4.7+ and the Fable/Mythos family reject top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !IsAdaptiveOnlyThinkingModel(capModel) {
+			if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !IsAdaptiveOnlyThinkingModel(capModel) {
+			if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 				anthropicReq.TopK = topK
 			}
 		}
@@ -579,7 +580,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
+			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
@@ -622,7 +623,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// kept. The dropped set is discarded — "silent strip + continue"
 			// policy per user direction. See Bedrock's convertToolConfig for
 			// the direct-Bedrock-path equivalent.
-			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, bifrostReq.Provider)
+			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
@@ -630,7 +631,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
-				if converted, ok := convertServerToolToAnthropic(tool, capModel); ok {
+				if converted, ok := convertServerToolToAnthropic(tool, caps, bifrostReq.Provider); ok {
 					tools = append(tools, converted)
 				}
 			}
@@ -676,7 +677,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if reasoningParams != nil {
 			if reasoningParams.MaxTokens != nil {
-				if IsAdaptiveOnlyThinkingModel(capModel) {
+				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
@@ -696,11 +697,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*reasoningParams.Effort)
-				if SupportsAdaptiveThinking(capModel) {
+				if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
-				} else if SupportsNativeEffort(capModel) {
+				} else if SupportsNativeEffort(caps) {
 					// Opus 4.5: native effort + budget_tokens thinking
 					setEffortOnOutputConfig(anthropicReq, effort)
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
@@ -722,7 +723,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
 				}
-			} else if !IsFableFamily(capModel) {
+			} else if caps.CanDisableReasoning(DefaultCanDisableReasoning(capModel)) {
 				// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
 				// adaptive thinking is always on and cannot be disabled. Omit
 				// the thinking param entirely for that family; all other models
@@ -744,7 +745,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if reasoningParams.Display != nil {
 					anthropicReq.Thinking.Display = reasoningParams.Display
-				} else if IsAdaptiveOnlyThinkingModel(capModel) {
+				} else if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -758,7 +759,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.Thinking = promotedThinking
 			// Same default as the neutral path: adaptive-only models omit reasoning
 			// text unless display is set, so make it visible unless asked otherwise.
-			if anthropicReq.Thinking.Display == nil && IsAdaptiveOnlyThinkingModel(capModel) {
+			if anthropicReq.Thinking.Display == nil && caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 				anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 			}
 		}
@@ -785,7 +786,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// system message and is emitted as role:"system" in the messages array
 	// (Anthropic API + Opus 4.8+ only).
 	seenConversation := false
-	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, capModel)
+	midConvSystemSupported := caps.SupportsMidConversationSystem(
+		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
 	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
@@ -1311,24 +1313,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Convert usage information
 	if response.Usage != nil {
+		billable := billableAnthropicUsage(response.Usage)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
-			CachedReadTokens:  response.Usage.CacheReadInputTokens,
-			CachedWriteTokens: response.Usage.CacheCreationInputTokens,
+			CachedReadTokens:  billable.CacheReadInputTokens,
+			CachedWriteTokens: billable.CacheCreationInputTokens,
 		}
-		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: response.Usage.CacheCreation.Ephemeral5mInputTokens,
-				CachedWriteTokens1h: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+				CachedWriteTokens5m: billable.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: billable.CacheCreation.Ephemeral1hInputTokens,
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
 			PromptTokensDetails: promptTokensDetails,
-			CompletionTokens:    response.Usage.OutputTokens,
+			CompletionTokens:    billable.OutputTokens,
 		}
 		// Forward web search request count so server-tool use is billed.
-		if response.Usage.ServerToolUse != nil && response.Usage.ServerToolUse.WebSearchRequests > 0 {
-			n := response.Usage.ServerToolUse.WebSearchRequests
+		if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
+			n := billable.ServerToolUse.WebSearchRequests
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
@@ -1336,25 +1339,25 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
 		// ReasoningTokens <= CompletionTokens — so no folding is required here.
-		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+		if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
 			if bifrostResponse.Usage.CompletionTokensDetails == nil {
 				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
-			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = response.Usage.OutputTokensDetails.ThinkingTokens
+			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = billable.OutputTokensDetails.ThinkingTokens
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
-		if response.Usage.ServiceTier != nil {
-			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+		if billable.ServiceTier != nil {
+			mapped := MapAnthropicServiceTierToBifrost(*billable.ServiceTier)
 			bifrostResponse.ServiceTier = &mapped
 		}
 		// Forward the speed actually served (fast mode) — drives fast-mode billing.
-		if response.Usage.Speed != nil {
-			bifrostResponse.Speed = response.Usage.Speed
+		if billable.Speed != nil {
+			bifrostResponse.Speed = billable.Speed
 		}
 		// Forward the inference geography served — drives the data-residency multiplier.
-		if response.Usage.InferenceGeo != nil {
-			bifrostResponse.InferenceGeo = response.Usage.InferenceGeo
+		if billable.InferenceGeo != nil {
+			bifrostResponse.InferenceGeo = billable.InferenceGeo
 		}
 	}
 

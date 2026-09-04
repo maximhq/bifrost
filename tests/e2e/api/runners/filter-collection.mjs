@@ -151,6 +151,7 @@ const PROVIDER_KEYWORDS = {
   openrouter: ["openrouter"],
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
+  runware: ["runware", "runware/"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -289,6 +290,13 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
   if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
+  // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
+  // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
+  // exclusively to runware, so an anthropic- or gemini-filtered run does not try to reach Runware.
+  const isRunware = haystack.includes("runware");
+  if (provider === "runware") return isRunware;
+  if (isRunware) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

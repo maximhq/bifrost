@@ -63,13 +63,14 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	if encrypt.IsEnabled() {
-		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
-			if err := encryptString(&c.ClientSecret.Val); err != nil {
-				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
-			}
-			c.EncryptionStatus = EncryptionStatusEncrypted
+	// Stamp the status whenever a secret is present, not only when it was ciphered:
+	// encryptSecretVar leaves env/vault refs alone, and leaving such a row
+	// 'plain_text' makes the startup backfill re-select it forever.
+	if encrypt.IsEnabled() && c.ClientSecret.IsSet() {
+		if err := encryptSecretVar(c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 		}
+		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
 }
@@ -201,6 +202,7 @@ type TableMCPOauthToken struct {
 	VirtualKeyID     *string    `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
 	UserID           *string    `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows; populated by enterprise middleware/governance)
 	Status           string     `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_reauth' — only 'active' satisfies a runtime lookup; the others are surfaced in the UI with distinct copy
+	StatusReason     string     `gorm:"type:text" json:"status_reason,omitempty"`                 // Why Status left 'active': the provider's refresh rejection (HTTP status plus the OAuth error and description), a credential rotation, or a failed admin exchange. Empty while active; cleared whenever the row becomes active again
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                              // Encrypted access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                       // Encrypted refresh token (optional)
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`              // "Bearer"
@@ -383,9 +385,18 @@ type TableOauthUserSession struct {
 	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
 
-	// Display-only relations (no DB-level FK constraint; preloaded for sessions UI).
-	MCPClient  *TableMCPClient  `gorm:"foreignKey:MCPClientID;references:ClientID" json:"-"`
-	VirtualKey *TableVirtualKey `gorm:"foreignKey:VirtualKeyID;references:ID" json:"-"`
+	// Display-only relations. "-:migration" skips both constraint creation and
+	// ordinary column migration for these two fields, matching TableMCPOauthFlow's
+	// equivalent relations: the actual FK values live in MCPClientID/VirtualKeyID
+	// above, which are ordinary migrated columns, and these are preloaded for the
+	// sessions UI only. Before this tag was added, GORM's default association
+	// handling created a real fk_oauth_user_sessions_mcp_client /
+	// fk_oauth_user_sessions_virtual_key constraint at table-creation time
+	// (migrationAddPerUserOAuthTables's mg.CreateTable respects association tags
+	// the same as any other GORM operation) — see
+	// migrationDropLegacyOauthUserFKConstraints for why that had to be undone.
+	MCPClient  *TableMCPClient  `gorm:"-:migration;foreignKey:MCPClientID;references:ClientID" json:"-"`
+	VirtualKey *TableVirtualKey `gorm:"-:migration;foreignKey:VirtualKeyID;references:ID" json:"-"`
 
 	// User is a non-DB, enterprise-only annotation populated after fetch on
 	// user-keyed flow rows so the sessions UI can render name/email instead
@@ -460,9 +471,18 @@ type TableOauthUserToken struct {
 	CreatedAt        time.Time  `gorm:"index;not null" json:"created_at"`
 	UpdatedAt        time.Time  `gorm:"index;not null" json:"updated_at"`
 
-	// Display-only relations (no DB-level FK constraint; preloaded for sessions UI).
-	MCPClient  *TableMCPClient  `gorm:"foreignKey:MCPClientID;references:ClientID" json:"-"`
-	VirtualKey *TableVirtualKey `gorm:"foreignKey:VirtualKeyID;references:ID" json:"-"`
+	// Display-only relations. "-:migration" skips both constraint creation and
+	// ordinary column migration for these two fields, matching TableMCPOauthToken's
+	// equivalent relations (see that struct's comment for why a real FK here is
+	// wrong): the actual FK values live in MCPClientID/VirtualKeyID above, which are
+	// ordinary migrated columns, and these are preloaded for the sessions UI only.
+	// Before this tag was added, GORM's default association handling created a real
+	// fk_oauth_user_tokens_mcp_client / fk_oauth_user_tokens_virtual_key constraint
+	// at table-creation time (migrationAddPerUserOAuthTables's mg.CreateTable
+	// respects association tags the same as any other GORM operation) — see
+	// migrationDropLegacyOauthUserFKConstraints for why that had to be undone.
+	MCPClient  *TableMCPClient  `gorm:"-:migration;foreignKey:MCPClientID;references:ClientID" json:"-"`
+	VirtualKey *TableVirtualKey `gorm:"-:migration;foreignKey:VirtualKeyID;references:ID" json:"-"`
 
 	// User mirrors TableOauthUserSession.User — see OauthUserSummary above.
 	User *OauthUserSummary `gorm:"-" json:"-"`

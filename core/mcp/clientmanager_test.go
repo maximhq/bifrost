@@ -3,7 +3,12 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -105,6 +110,9 @@ func TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState(t *testing.T)
 	assert.Nil(t, state.CancelFunc)
 	assert.Nil(t, state.Conn)
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State)
+	require.NotNil(t, state.LastFailure, "needs_reauth carries its own explanation")
+	assert.Equal(t, schemas.MCPConnectionFailureStageCredential, state.LastFailure.Stage)
+	assert.Equal(t, errCredentialRotated.Error(), state.LastFailure.Message)
 }
 
 // TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback
@@ -135,7 +143,7 @@ func TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback(t *te
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true, errors.New("oauth2 token expired"))
 
 	require.Len(t, calls, 1, "the callback must fire exactly once for a genuine state transition")
 	assert.Equal(t, config.ID, calls[0].clientID)
@@ -170,7 +178,7 @@ func TestFailConnectAttempt_NoStateChange_DoesNotFireCallback(t *testing.T) {
 	m.clientMap[config.ID] = entry
 	m.mu.Unlock()
 
-	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false)
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false, errors.New("connection refused"))
 
 	assert.False(t, fired, "the callback must not fire when the transition is a no-op")
 }
@@ -274,23 +282,95 @@ func TestEnableClient_GuardLostLeavesDisabledUntouched(t *testing.T) {
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State)
 }
 
-// TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicable
-// pins the bug reported against a shared-OAuth client (auth_type='oauth')
-// running in per-call mode: needs_session_stickiness nil/false — the default
-// for a newly created or config.json-bootstrapped client that predates this
-// field — routes RequiresPerCallConnection through the same per-call branch
-// a genuine per-user client uses. UpdateClientCredentials's guard used to
-// return a bare "per-user auth clients" error for this case even though the
-// client is genuinely shared, just with no persistent connection to
-// reconnect (the fresh OAuth token is already live for the next per-call
-// dial). Callers must be able to tell this "nothing to do" case apart from a
-// real failure via the same ErrMCPReconnectNotApplicable sentinel
-// ReconnectClient/CloseAndMarkNeedsReauth already use for the analogous case.
-func TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicable(t *testing.T) {
+// TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronously
+// pins the per-call half of the reauthorize symmetry: a sticky client's
+// credential update goes through connectToMCPClient, which always re-runs
+// tool discovery, while a per-call shared client used to return the
+// not-applicable sentinel and keep serving its stale tool list until the
+// periodic checker's next tick (minutes away on a Healthy client). A
+// credential update on an already-verified per-call shared client must
+// instead refresh tools synchronously with the now-current credential.
+func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronously(t *testing.T) {
+	ts, _ := buildAdminDiscoveryHTTPServer(t)
+
 	// nil credStore: NewMCPManager defaults to a real credstore.CredStore,
 	// whose RequiresPerCallConnection actually ANDs auth type with
-	// NeedsSessionStickiness — unlike expiredOAuthCredStore (used elsewhere
-	// in this file), which hardcodes false regardless of either.
+	// NeedsSessionStickiness (unlike expiredOAuthCredStore, used elsewhere
+	// in this file, which hardcodes false regardless of either).
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:               "client-shared-percall-refresh",
+		Name:             "shared-percall-client-refresh",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer rotated-token")},
+		// NeedsSessionStickiness left nil on purpose: the default value.
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap:         make(map[string]schemas.ChatTool),
+		ToolNameMapping: make(map[string]string),
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.NoError(t, err, "a per-call shared client's credential update must succeed by refreshing tools, not report not-applicable")
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
+}
+
+// TestSetClientTools_ReplacesStaleTools pins SetClientTools' replace
+// semantics: every caller passes a complete discovery result, so a tool the
+// upstream removed between discoveries must disappear from the in-memory
+// ToolMap. The old merge behavior kept such tools alive in memory (and on
+// the hosted MCP surface, which serves from ToolMap) while the DB, persisted
+// from the passed-in set via the tools-change callback, had already dropped
+// them.
+func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{ID: "client-replace-tools", Name: "replace-tools-client"}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap: map[string]schemas.ChatTool{
+			"replace-tools-client-removed": {},
+		},
+		ToolNameMapping: map[string]string{"replace-tools-client-removed": "removed"},
+	}
+	m.mu.Unlock()
+
+	m.SetClientTools(config.ID,
+		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
+		map[string]string{"replace-tools-client-kept": "kept"},
+	)
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
+	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
+	assert.Equal(t, map[string]string{"replace-tools-client-kept": "kept"}, state.ToolNameMapping)
+}
+
+// TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate
+// pins the strict half of the same symmetry: a sticky reconnect whose
+// tools/list fails is a failed reconnect, so a per-call refresh whose
+// discovery fails must fail the update with a real error, not the
+// not-applicable sentinel; the periodic checker retries on its own cadence
+// afterwards. No OAuth provider is configured here, so resolving the shared
+// credential for discovery fails deterministically.
+func TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "client-shared-percall",
@@ -310,7 +390,67 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 
 	err := m.UpdateClientCredentials(config.ID, config)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable), "a per-call shared-oauth client must report the same not-applicable sentinel as a genuine per-user client, not an opaque failure")
+	assert.False(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable), "a failed tool refresh is a real failure, not the not-applicable no-op")
+	assert.Contains(t, err.Error(), "tool discovery")
+}
+
+// TestUpdateClientCredentials_PerCallPerUser_ReturnsReconnectNotApplicable
+// pins that per-user auth types keep the not-applicable sentinel: the
+// credentials updated through here are never the retained admin discovery
+// credential (the admin-verify paths own that flow and re-discover
+// themselves), so there is genuinely nothing to refresh.
+func TestUpdateClientCredentials_PerCallPerUser_ReturnsReconnectNotApplicable(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:             "client-per-user-creds",
+		Name:           "per-user-creds-client",
+		AuthType:       schemas.MCPAuthTypePerUserOauth,
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+}
+
+// TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh pins the
+// Disabled guard on the per-call refresh: SetClientTools forces a client
+// back to Healthy, so a disabled client must keep the sentinel (the fresh
+// credential is picked up when the client is re-enabled, which runs its own
+// discovery) rather than get resurrected by a credential update.
+func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:             "client-shared-percall-disabled",
+		Name:           "shared-percall-client-disabled",
+		AuthType:       schemas.MCPAuthTypeOauth,
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateDisabled,
+	}
+	m.mu.Unlock()
+
+	err := m.UpdateClientCredentials(config.ID, config)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a credential update must not resurrect a disabled client")
 }
 
 // TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_TransitionsToHealthy
@@ -361,10 +501,15 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 	assert.True(t, hasChecker, "must start a connection checker so tools actually get discovered")
 
 	// A second call, now that the client is already Healthy, is the plain
-	// reauthorize case: genuinely nothing left to do.
+	// reauthorize case: it must attempt a synchronous tool refresh with the
+	// updated credential rather than report not-applicable. No OAuth
+	// provider is configured here, so resolving the credential for that
+	// discovery fails, and the failure must surface as a real error (not
+	// the sentinel).
 	err = m.UpdateClientCredentials(config.ID, config)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+	assert.False(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
+	assert.Contains(t, err.Error(), "tool discovery")
 }
 
 // TestUpdateClientCredentials_PerCallSharedType_PendingVerification_DiscoversToolsSynchronously
@@ -462,4 +607,146 @@ func TestCloseAndMarkNeedsReauth_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
 	assert.NotContains(t, err.Error(), "per-user", "a genuinely shared client must not be told it's a per-user auth client")
+}
+
+// TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault proves buildTLSHTTPClient
+// always returns a non-nil client (with or without TLS configured) so callers
+// never fall back to the mcp-go library's own default HTTP client, which
+// carries no dial guard at all.
+func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
+	for _, tlsCfg := range []*schemas.MCPTLSConfig{nil, {InsecureSkipVerify: true}} {
+		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(tlsCfg)
+		require.NoError(t, err)
+		require.NotNil(t, httpClient)
+
+		transport, ok := httpClient.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, transport.DialContext)
+	}
+}
+
+// TestBuildTLSHTTPClientBlocksLinkLocal proves the dial-time guard refuses
+// link-local destinations (including the 169.254.169.254 cloud metadata
+// endpoint) - the one class of target with no legitimate MCP use case under
+// any deployment topology, authenticated or not.
+func TestBuildTLSHTTPClientBlocksLinkLocal(t *testing.T) {
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	transport := httpClient.Transport.(*http.Transport)
+
+	_, err = transport.DialContext(context.Background(), "tcp", "169.254.169.254:80")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to link-local address")
+}
+
+// TestBuildTLSHTTPClientAllowsLoopback proves loopback MCP servers keep
+// working: connecting to a local MCP tool server on the same host is the
+// documented primary HTTP-client use case
+// (docs/mcp/connecting-to-servers.mdx), so the dial-time guard here must not
+// reject it. The unauthenticated-caller case is refused earlier, at the HTTP
+// handler layer (rejectPrivateMCPTargetIfAuthBypassed), not here.
+func TestBuildTLSHTTPClientAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Errorf("failed to close test listener: %v", err)
+		}
+	})
+	// The accepted server side is handed back to the test body so both ends are closed, and
+	// their Close results checked, on the test goroutine rather than after it may have ended.
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	require.NoError(t, err)
+	transport := httpClient.Transport.(*http.Transport)
+
+	conn, err := transport.DialContext(context.Background(), "tcp", ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	select {
+	case server := <-accepted:
+		require.NoError(t, server.Close())
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener never accepted the dialed connection")
+	}
+}
+
+// TestBuildTLSHTTPClientNeverRoutesThroughProxy proves the dial-time guard
+// cannot be sidestepped by a proxy. http.DefaultTransport carries
+// http.ProxyFromEnvironment, and Clone() preserves it; when a proxy is
+// configured, http.Transport hands DialContext the proxy's address rather than
+// the MCP destination, so PrivateNetworkDialContext would validate the proxy
+// and let the proxy forward to the blocked link-local target. Every other
+// SSRF-guarded client in this repo (image/document fetch, webhook delivery,
+// skill URL sources) builds a fresh proxy-free transport; the MCP client must
+// end up with the same property despite starting from a clone.
+//
+// The proxy is injected by swapping DefaultTransport.Proxy rather than via
+// HTTP_PROXY, because ProxyFromEnvironment reads the environment once per
+// process and would not see a t.Setenv made after any earlier test used it.
+// This test therefore stays sequential (no t.Parallel) and restores the
+// original Proxy on cleanup.
+func TestBuildTLSHTTPClientNeverRoutesThroughProxy(t *testing.T) {
+	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := proxyLn.Close(); err != nil {
+			t.Errorf("failed to close proxy listener: %v", err)
+		}
+	})
+	// Any accepted connection is itself the failure; its Close result is passed back to the
+	// test body rather than reported from the goroutine, which may outlive the subtest.
+	var proxyHits atomic.Int32
+	proxyCloseErrs := make(chan error, 8)
+	go func() {
+		for {
+			conn, err := proxyLn.Accept()
+			if err != nil {
+				return
+			}
+			proxyHits.Add(1)
+			if err := conn.Close(); err != nil {
+				select {
+				case proxyCloseErrs <- err:
+				default:
+				}
+			}
+		}
+	}()
+	proxyURL, err := url.Parse("http://" + proxyLn.Addr().String())
+	require.NoError(t, err)
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+	origProxy := base.Proxy
+	base.Proxy = http.ProxyURL(proxyURL)
+	t.Cleanup(func() { base.Proxy = origProxy })
+
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+			require.NoError(t, err)
+			httpClient.Timeout = 5 * time.Second
+
+			resp, err := httpClient.Get(scheme + "://169.254.169.254/latest/meta-data/")
+			if resp != nil {
+				require.NoError(t, resp.Body.Close())
+			}
+			require.Error(t, err, "a link-local MCP target must be refused even when a proxy is configured")
+			require.Contains(t, err.Error(), "blocked connection to link-local address",
+				"the refusal must come from the dial-time guard, not from the proxy")
+			require.Zero(t, proxyHits.Load(), "the configured proxy must never be contacted for a guarded MCP request")
+			select {
+			case closeErr := <-proxyCloseErrs:
+				t.Errorf("failed to close a proxy-side connection: %v", closeErr)
+			default:
+			}
+		})
+	}
 }

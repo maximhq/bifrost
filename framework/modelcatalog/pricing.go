@@ -8,11 +8,30 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
+type BatchCostDetails = datasheet.BatchCostDetails
+
+type (
+	// VideoPricingDimensions is the request+response pricing basis for one video
+	// job. See the datasheet type for why it is captured at submission.
+	VideoPricingDimensions = datasheet.VideoPricingDimensions
+	VideoCostDetails       = datasheet.VideoCostDetails
+)
+
 // GetModelCapabilityEntryForModel returns capability metadata for a
-// (model, provider) pair. Prefers chat, then responses, then text-completion
-// entries; falls back to the lexicographically first available mode for
-// deterministic behavior.
+// (model, provider) pair. Alias lookups try the canonical model name, wire
+// model ID, and original alias key in that order. Within each model, chat,
+// responses, then text-completion entries are preferred.
 func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	if alias, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+		if alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
+			if entry := mc.datasheet.GetCapabilityEntry(*alias.Config.ModelName, provider); entry != nil {
+				return entry
+			}
+		}
+		if entry := mc.datasheet.GetCapabilityEntry(alias.Config.ModelID, provider); entry != nil {
+			return entry
+		}
+	}
 	return mc.datasheet.GetCapabilityEntry(model, provider)
 }
 
@@ -57,6 +76,13 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostBreakdown computes the per-category cost breakdown (input /
+// output / cache) for a Bifrost response. Returns nil when there is no cost to
+// record. TotalCost equals what CalculateCost returns for the same response.
+func (mc *ModelCatalog) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *PricingLookupScopes) *schemas.BifrostCost {
+	return mc.datasheet.CalculateCostBreakdown(result, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateCostForUsage computes the dollar cost from a bare usage object when
 // no full BifrostResponse is available — used to bill partial usage carried on
 // a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).
@@ -64,14 +90,34 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostBreakdownForUsage computes the per-category cost breakdown from a
+// bare usage object when no full BifrostResponse is available. TotalCost equals
+// what CalculateCostForUsage returns for the same usage.
+func (mc *ModelCatalog) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) *schemas.BifrostCost {
+	return mc.datasheet.CalculateCostBreakdownForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateRoutingCallCost prices one routing-classification call — a
+// semantic classification embed, or an llm classification completion when the
+// call carries OutputTokens.
+func (mc *ModelCatalog) CalculateRoutingCallCost(call schemas.BifrostRoutingCall, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.RoutingCallCost(call, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
-func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateGuardrailCost(metadata, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateCacheEmbeddingCost(metadata *schemas.BifrostCacheMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCacheEmbeddingCost(metadata, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateBatchCostDetailsForUsage computes batch cost and exposes the
+// explicit batch rates used for durable accounting metadata.
+func (mc *ModelCatalog) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) BatchCostDetails {
+	return mc.datasheet.CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
 // UpsertModelPricingAttributes writes additional_attributes for every row
@@ -90,4 +136,17 @@ func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TableP
 
 func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.datasheet.DeleteOverride(id)
+}
+
+// CalculateVideoCostDetails prices a video job from its merged request/response
+// dimensions, preferring a provider-reported cost over any catalog rate.
+func (mc *ModelCatalog) CalculateVideoCostDetails(dims VideoPricingDimensions, provider schemas.ModelProvider, scopes *PricingLookupScopes) VideoCostDetails {
+	return mc.datasheet.CalculateVideoCostDetails(dims, provider, (*datasheet.LookupScopes)(scopes))
+}
+
+// VideoDimensionsFromResponse reads the pricing dimensions a terminal video
+// response reports; what it omits is filled from the dimensions captured at
+// submission.
+func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) VideoPricingDimensions {
+	return datasheet.VideoDimensionsFromResponse(resp)
 }

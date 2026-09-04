@@ -84,6 +84,8 @@ export interface DBKey {
 	provider_id: string; // identifier for the provider
 	models: string[]; // List of models this key can access
 	provider: ModelProviderName; // Provider name
+	// Omitted by the API when unset, which the Go side reads as enabled.
+	enabled?: boolean;
 }
 
 export interface RedactedDBKey {
@@ -100,12 +102,18 @@ export interface VirtualKey {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
+	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
+	virtual_mcp_ids?: number[];
 	team_id?: string;
 	customer_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
+	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
+	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
+	allow_all_providers?: boolean;
 	created_at: string;
 	updated_at: string;
 	// Populated relationships
@@ -217,6 +225,7 @@ export interface CreateVirtualKeyRequest {
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 }
 
@@ -231,6 +240,7 @@ export interface UpdateVirtualKeyRequest {
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 }
@@ -419,6 +429,12 @@ export interface ModelConfig {
 	scope?: string; // "global" (default) or "virtual_key"
 	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
 	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
+	// What externally manages this config, e.g. the access profile that materialized
+	// it (read-only). source_id addresses the SOURCE, not scope_id — for an
+	// access-profile-scoped row scope_id is the user's association row.
+	source_type?: string;
+	source_id?: string;
+	source_name?: string;
 	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
@@ -486,6 +502,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
+	input_cost_per_token_ultrafast?: number;
+	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
@@ -519,6 +537,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost_ultrafast?: number;
 	cache_read_input_token_cost_flex?: number;
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
@@ -528,6 +547,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_flex?: number;
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
 	cache_read_input_token_cost_fast?: number;
@@ -543,12 +563,31 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
 	output_cost_per_image_above_1024_and_1024_pixels?: number;
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	output_cost_per_image_above_1024_and_1536_pixels?: number;
+	output_cost_per_image_above_1536_and_1024_pixels?: number;
 	output_cost_per_image_above_2048_and_2048_pixels?: number;
 	output_cost_per_image_above_4096_and_4096_pixels?: number;
+	output_cost_per_image_above_4_megapixels?: number;
+	output_cost_per_image_above_8_megapixels?: number;
+	output_cost_per_image_above_16_megapixels?: number;
+	output_cost_per_image_above_32_megapixels?: number;
+	output_cost_per_image_above_64_megapixels?: number;
 	output_cost_per_image_low_quality?: number;
 	output_cost_per_image_medium_quality?: number;
 	output_cost_per_image_high_quality?: number;
 	output_cost_per_image_auto_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_low_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_medium_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_high_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_standard_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_standard_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_standard_quality?: number;
 	// Audio/Video
 	input_cost_per_audio_token?: number;
 	input_cost_per_audio_per_second?: number;
@@ -557,8 +596,14 @@ export interface PricingOverridePatch {
 	output_cost_per_audio_token?: number;
 	output_cost_per_video_per_second?: number;
 	output_cost_per_second?: number;
+	output_cost_per_video_per_second_480p?: number;
+	output_cost_per_video_per_second_720p?: number;
+	output_cost_per_video_per_second_1024p?: number;
+	output_cost_per_video_per_second_1080p?: number;
+	output_cost_per_video_per_second_4k?: number;
 	// Other
 	search_context_cost_per_query?: number;
+	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
 	cost_per_request?: number;

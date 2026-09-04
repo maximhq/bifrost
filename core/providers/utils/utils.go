@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -200,6 +199,19 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 	return sortedAPI.Marshal(v)
 }
 
+// MarshalProviderRequest marshals a converted provider request body to wire JSON.
+// Typed provider requests implement json.Marshaler (they strip Bifrost-only fields
+// and already emit sorted, minified JSON), so we call MarshalJSON directly. Wrapping
+// that in MarshalSorted would only make sonic re-compact the whole body a second time
+// through its slow marshaler path, and SortMapKeys does not reorder a marshaler's
+// opaque output anyway. Plain structs fall back to MarshalSorted. Output is identical.
+func MarshalProviderRequest(v interface{}) ([]byte, error) {
+	if m, ok := v.(json.Marshaler); ok {
+		return m.MarshalJSON()
+	}
+	return MarshalSorted(v)
+}
+
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
@@ -209,6 +221,31 @@ func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 // Uses in-place byte manipulation for minimal allocations and preserves nested structure.
 func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
+}
+
+// setJSONStringFieldInPlaceOptions enables SJSON's owned-buffer fast path.
+// Keep this immutable because provider requests can be rewritten concurrently.
+var setJSONStringFieldInPlaceOptions = sjson.Options{
+	// Optimistic tells SJSON that the path already exists, enabling its faster
+	// direct search-and-replace path; it does not permit mutation by itself.
+	Optimistic: true,
+	// ReplaceInPlace permits SJSON to reuse and mutate caller-owned bytes when
+	// the replacement fits; otherwise SJSON returns a newly allocated buffer.
+	ReplaceInPlace: true,
+}
+
+// SetJSONStringFieldInPlace updates an existing JSON string in caller-owned bytes.
+// It is currently used only for native raw-request redaction on passthrough
+// integrations such as Claude Code/Anthropic and Gemini GenAI. Callers must use
+// the returned slice because SJSON may reuse the input or allocate a new buffer.
+// This reduces allocations and GC pressure, but each field still requires a path
+// search and may shift trailing bytes; this is not a bulk update.
+func SetJSONStringFieldInPlace(data []byte, path string, value string) ([]byte, error) {
+	encodedValue, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal JSON string field: %w", err)
+	}
+	return sjson.SetRawBytesOptions(data, path, encodedValue, &setJSONStringFieldInPlaceOptions)
 }
 
 // SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
@@ -999,12 +1036,68 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 // gateway credentials and must never be forwarded to a provider.
 const internalHeaderPrefix = "x-bf-"
 
+// supportedBufferedContentEncodings are the response codings handled by
+// CheckAndDecodeBody. Accept-Encoding passthrough is intersected with this set
+// so Bifrost never advertises an upstream response format it cannot parse.
+var supportedBufferedContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+	"deflate":  {},
+	"br":       {},
+	"zstd":     {},
+}
+
+// supportedStreamingContentEncodings are the codings handled incrementally by
+// DecompressStreamBody. Keep this separate from the buffered set: advertising
+// Brotli or zstd on an SSE request would be unsafe until the stream reader can
+// decode those formats without buffering the whole response.
+var supportedStreamingContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+}
+
+func filterSupportedAcceptEncodings(values []string, supportedEncodings map[string]struct{}) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		for item := range strings.SplitSeq(value, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+
+			coding := item
+			if separator := strings.IndexByte(coding, ';'); separator >= 0 {
+				coding = coding[:separator]
+			}
+			coding = strings.ToLower(strings.TrimSpace(coding))
+			if _, ok := supportedEncodings[coding]; ok {
+				// Preserve parameters such as q-values while normalizing the list into
+				// one header value below.
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
 // SetPassthroughHeaders applies the caller's raw request headers captured for Anthropic OAuth
 // passthrough, where the caller's token is the upstream credential. ONLY the Anthropic provider
 // may call this: every other provider authenticates with its own configured credentials, so
 // forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
 // x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
 func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedBufferedContentEncodings)
+}
+
+// SetPassthroughHeadersForStreaming applies OAuth passthrough headers while
+// advertising only response codings that Bifrost can decode incrementally.
+func SetPassthroughHeadersForStreaming(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedStreamingContentEncodings)
+}
+
+func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string, supportedEncodings map[string]struct{}) {
 	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
 	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
 	// call-site check would silently forward the caller's credential to all of them.
@@ -1020,13 +1113,25 @@ func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 		if strings.HasPrefix(lower, internalHeaderPrefix) {
 			continue
 		}
-		// Bifrost owns the body it sends, so it owns Content-Type. Dropping it here keeps a
-		// caller value from overriding the JSON content type no matter where callers invoke
-		// this relative to their own SetContentType.
+		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+			continue
+		}
+		// Bifrost owns the body it sends, so a caller cannot override its content type.
 		if lower == "content-type" {
 			continue
 		}
-		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+		if lower == "accept-encoding" {
+			// Filtering must never widen what the upstream may send: an omitted
+			// Accept-Encoding means any coding is acceptable (RFC 9110 12.5.3), so a
+			// caller list that filters down to nothing pins identity instead of
+			// dropping the header. Without this, a streaming caller asking for br
+			// alone would let the upstream answer in br, which DecompressStreamBody
+			// cannot decode, and the SSE parser would see raw compressed bytes.
+			if supported := filterSupportedAcceptEncodings(values, supportedEncodings); len(supported) > 0 {
+				req.Header.Set(k, strings.Join(supported, ", "))
+			} else {
+				req.Header.Set(k, "identity")
+			}
 			continue
 		}
 		for i, v := range values {
@@ -1346,8 +1451,18 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 
 // BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
 // or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
-// then clears Read/Write timeouts and MaxConnDuration so fasthttp does not
-// pre-empt a healthy stream. StreamResponseBody is forced on.
+// then clears Read/Write timeouts so fasthttp does not pre-empt a healthy
+// stream. StreamResponseBody is forced on.
+//
+// MaxConnDuration is deliberately preserved. It is checked once per request
+// before the request is written (fasthttp client.go:3110) and only sets
+// Connection: close on the outgoing request, so it cannot cut a live stream.
+// What it does do is force an over-age connection to be closed rather than
+// returned to HostClient.conns. That is the streaming pool's only age-based
+// eviction: the idle cleaner evicts on lastUseTime alone, so a connection that
+// keeps being handed out never goes idle and never leaves the pool. Zeroing this
+// is what turned a transient connection fault into one that persisted until the
+// process was restarted.
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
@@ -1359,7 +1474,6 @@ func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.ReadTimeout = 0
 	c.WriteTimeout = 0
-	c.MaxConnDuration = 0
 	c.StreamResponseBody = true
 	return c
 }
@@ -1426,55 +1540,238 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
-// text/event-stream. In that case, peek at the first field prefix without consuming
-// it so the downstream SSE parser sees the full stream.
-func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
+// nonSSESampleLimit bounds how much of an unusable body is retained for
+// diagnostics. Large enough to hold a provider error envelope whole, small
+// enough to sit on an error object and in a log line.
+const nonSSESampleLimit = 8 * 1024
+
+// nonSSEMessageLimit bounds how much of the sample is inlined into the error
+// message. The full sample still travels on RawResponse.
+const nonSSEMessageLimit = 512
+
+// sseProbeWindow is how many leading bytes are inspected when looking for an SSE
+// field name. Enough for a UTF-8 BOM, a little whitespace, and "retry:".
+const sseProbeWindow = 16
+
+// StreamBodyKind classifies why a 200 response could not be consumed as SSE.
+// These are genuinely different failures and were previously all reported as
+// "provider returned non-SSE response", which sent operators looking for a
+// malformed provider body when the stream had in fact timed out or been closed.
+type StreamBodyKind int
+
+const (
+	// StreamBodyNonSSE: the body was readable but is not SSE (e.g. a JSON error
+	// envelope returned with a 200).
+	StreamBodyNonSSE StreamBodyKind = iota
+	// StreamBodyEmpty: a 200 with no body at all.
+	StreamBodyEmpty
+	// StreamBodyIdleTimeout: no first byte arrived within the idle window.
+	StreamBodyIdleTimeout
+	// StreamBodyClosed: the stream was closed before the first byte arrived.
+	StreamBodyClosed
+	// StreamBodyReadError: the first read failed for some other reason.
+	StreamBodyReadError
+)
+
+func (k StreamBodyKind) String() string {
+	switch k {
+	case StreamBodyNonSSE:
+		return "non-sse"
+	case StreamBodyEmpty:
+		return "empty"
+	case StreamBodyIdleTimeout:
+		return "idle-timeout"
+	case StreamBodyClosed:
+		return "closed"
+	case StreamBodyReadError:
+		return "read-error"
+	default:
+		return "unknown"
+	}
+}
+
+// NonSSEStreamBody describes a 200 response that could not be consumed as SSE,
+// carrying the evidence needed to diagnose it: the provider Content-Type, a
+// bounded sample of what actually arrived, and the underlying read error.
+type NonSSEStreamBody struct {
+	Kind        StreamBodyKind
+	ContentType string
+	Sample      []byte
+	ReadErr     error
+}
+
+// Err renders the failure as an error. The non-SSE wording is deliberately
+// preserved verbatim so existing log searches keep matching.
+func (b *NonSSEStreamBody) Err() error {
+	switch b.Kind {
+	case StreamBodyIdleTimeout:
+		return fmt.Errorf("no data received on the stream before the idle timeout (content-type %q): %w", b.ContentType, ErrStreamIdleTimeout)
+	case StreamBodyClosed:
+		return fmt.Errorf("stream closed before the first byte arrived (content-type %q): %w", b.ContentType, ErrStreamClosed)
+	case StreamBodyEmpty:
+		return fmt.Errorf("provider returned an empty body for streaming request (content-type %q)", b.ContentType)
+	case StreamBodyReadError:
+		return fmt.Errorf("failed to read the streaming response body (content-type %q): %w", b.ContentType, b.ReadErr)
+	default:
+		excerpt := b.Sample
+		if len(excerpt) > nonSSEMessageLimit {
+			excerpt = excerpt[:nonSSEMessageLimit]
+		}
+		return fmt.Errorf("provider returned non-SSE response for streaming request (content-type %q): %s", b.ContentType, excerpt)
+	}
+}
+
+// DrainNonSSEStreamReader decides whether a 200 body can be handed to the SSE
+// parser. Some OpenAI-compatible backends return valid SSE frames without a
+// text/event-stream Content-Type, so the first field prefix is peeked without
+// consuming it and the full stream still reaches the parser.
+//
+// Returns (reader, nil) when the body is usable. Otherwise it returns
+// (nil, info): the body is drained so the connection can be released cleanly,
+// and info carries a bounded sample of it. Discarding that sample outright is
+// what previously left this failure with no raw response to inspect.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, *NonSSEStreamBody) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
+	// The provider declared SSE: hand the stream over untouched, exactly as
+	// before. Probing here would swallow a stream truncated before its first
+	// byte, which the SSE loop reports as a connection failure the retry loop
+	// can act on (see TestChatStreamTruncatedPreFirstByte). This guard only
+	// exists for bodies whose Content-Type does not say SSE, which is where the
+	// old code produced a misleading "non-SSE" verdict.
 	if strings.Contains(ct, "text/event-stream") {
-		return reader, false
+		return reader, nil
 	}
 	if reader == nil {
-		return nil, true
+		return nil, &NonSSEStreamBody{Kind: StreamBodyEmpty, ContentType: ct}
 	}
 
 	br := bufio.NewReaderSize(reader, sseInitialBufSize)
-	if hasSSEPrefix(br) {
-		return br, false
+	looksSSE, readErr := hasSSEPrefix(br)
+	if looksSSE {
+		return br, nil
 	}
 
-	_, _ = io.Copy(io.Discard, br)
-	return nil, true
-}
-
-func hasSSEPrefix(reader *bufio.Reader) bool {
-	first, err := reader.Peek(1)
-	if err != nil || len(first) == 0 {
-		return false
-	}
-	switch first[0] {
-	case ':', '\n', '\r':
-		return true
-	case 'd':
-		return peekHasPrefix(reader, []byte("data:"))
-	case 'e':
-		return peekHasPrefix(reader, []byte("event:"))
-	case 'i':
-		return peekHasPrefix(reader, []byte("id:"))
-	case 'r':
-		return peekHasPrefix(reader, []byte("retry:"))
+	info := &NonSSEStreamBody{ContentType: ct, ReadErr: readErr}
+	switch {
+	case readErr == nil:
+		info.Kind = StreamBodyNonSSE
+		info.Sample = drainWithSample(br)
+	case errors.Is(readErr, ErrStreamIdleTimeout):
+		info.Kind = StreamBodyIdleTimeout
+	case errors.Is(readErr, ErrStreamClosed):
+		info.Kind = StreamBodyClosed
+	case errors.Is(readErr, io.EOF):
+		info.Kind = StreamBodyEmpty
 	default:
-		return false
+		info.Kind = StreamBodyReadError
 	}
+	return nil, info
 }
 
-func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
-	n := min(reader.Buffered(), len(prefix))
+// drainWithSample consumes the body, keeping the first nonSSESampleLimit bytes.
+// The remainder is discarded rather than buffered: the point is to leave the
+// connection drained without letting an arbitrarily large body into memory.
+func drainWithSample(r io.Reader) []byte {
+	var sample bytes.Buffer
+	if _, err := io.Copy(&sample, io.LimitReader(r, nonSSESampleLimit)); err != nil {
+		return sample.Bytes()
+	}
+	_, _ = io.Copy(io.Discard, r)
+	return sample.Bytes()
+}
+
+// hasSSEPrefix reports whether the buffered stream opens with an SSE field name,
+// and returns the read error when the first byte could not be obtained so the
+// caller can tell a timeout apart from a genuinely non-SSE body.
+//
+// It blocks only for the first byte. Everything after that is inspected from
+// whatever has already been buffered, so a slow but valid stream still starts.
+func hasSSEPrefix(reader *bufio.Reader) (bool, error) {
+	first, err := reader.Peek(1)
+	if err != nil {
+		return false, err
+	}
+	if len(first) == 0 {
+		return false, nil
+	}
+
+	n := min(reader.Buffered(), sseProbeWindow)
+	window, err := reader.Peek(n)
+	if err != nil {
+		return false, err
+	}
+	// A UTF-8 BOM and leading horizontal whitespace are both things real
+	// upstreams emit, and neither makes the stream unreadable. Skipped by
+	// reslicing the peeked window so no byte is consumed.
+	//
+	// Either can also arrive split across reads, leaving a window that says
+	// nothing about the stream: all trimmable, or ending part-way through the
+	// BOM, which trimSSELeading cannot strip until all three bytes are here.
+	// Peek one more byte at a time rather than write a valid SSE body off as
+	// non-SSE. sseProbeWindow bounds how far this goes, and the idle-timeout
+	// reader bounds the wait, so a stalled upstream surfaces as
+	// StreamBodyIdleTimeout instead of a wrong verdict.
+	trimmed := trimSSELeading(window)
+	for inconclusiveSSELeading(trimmed) {
+		if n >= sseProbeWindow {
+			return false, nil
+		}
+		n++
+		if window, err = reader.Peek(n); err != nil {
+			return false, err
+		}
+		trimmed = trimSSELeading(window)
+	}
+	window = trimmed
+	switch window[0] {
+	case ':', '\n', '\r':
+		return true, nil
+	}
+	for _, name := range sseFieldNames {
+		if hasFoldedPrefix(window, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+var sseFieldNames = [][]byte{
+	[]byte("data:"),
+	[]byte("event:"),
+	[]byte("id:"),
+	[]byte("retry:"),
+}
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// trimSSELeading reslices b past a UTF-8 BOM and any leading spaces or tabs.
+// Newlines are left alone: they are valid SSE openings in their own right.
+func trimSSELeading(b []byte) []byte {
+	b = bytes.TrimPrefix(b, utf8BOM)
+	return bytes.TrimLeft(b, " \t")
+}
+
+// inconclusiveSSELeading reports whether b - already past trimSSELeading - still
+// says nothing about what the stream is. Two cases: nothing survived the trim,
+// or what survived is a strict prefix of the BOM, which trimSSELeading leaves
+// alone because it cannot know yet whether the remaining bytes complete a BOM or
+// begin some other content.
+func inconclusiveSSELeading(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	return len(b) < len(utf8BOM) && bytes.HasPrefix(utf8BOM, b)
+}
+
+// hasFoldedPrefix compares case-insensitively over as much of name as b holds,
+// so a short first read still identifies the field rather than being written off
+// as non-SSE.
+func hasFoldedPrefix(b, name []byte) bool {
+	n := min(len(b), len(name))
 	if n == 0 {
 		return false
 	}
-	peeked, err := reader.Peek(n)
-	return err == nil && bytes.Equal(peeked, prefix[:n])
+	return bytes.EqualFold(b[:n], name[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
@@ -1576,7 +1873,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		}
 	}
 
-	// Rebuild compact JSON, then indent for consistent formatting
+	// Rebuild compact JSON in the original key order
 	var compact bytes.Buffer
 	compact.WriteByte('{')
 	for i, kv := range pairs {
@@ -1594,12 +1891,66 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	}
 	compact.WriteByte('}')
 
-	// Re-indent to match the expected formatting
-	var indented bytes.Buffer
-	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
-		return compact.Bytes(), nil
+	return compact.Bytes(), nil
+}
+
+// startPhaseSpan opens a nil-safe internal child span marking a Bifrost overhead
+// phase (request marshalling, response parsing) so the log detail view can attribute
+// core overhead. Both returns are nil when no trace is active; EndSpan is nil-safe,
+// so callers guard only on the tracer. StartSpanID avoids a per-span context alloc.
+func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
 	}
-	return indented.Bytes(), nil
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
+// response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
+// request-side conversion so total conversion time is attributed together, instead of
+// the response half folding into provider-internal. Symmetric to the request path:
+// response-parse times the JSON decode, this times the struct->unified mapping. Wrapped
+// at the primary response call sites; secondary paths fold into provider-internal. EndSpan is nil-safe.
+func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "convertor")
+}
+
+// StartResponseParseSpan opens the "response-parse" overhead phase span for providers
+// that unmarshal the response body directly (e.g. Bedrock Converse) rather than through
+// HandleProviderResponseCtx. Nil-safe: returns a nil tracer when no trace is active.
+func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "response-parse")
+}
+
+// StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
+// so provider/auth code outside this package can carve its own work out of the overhead
+// residual. name becomes the breakdown bucket; keep it stable and descriptive
+// (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
+func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, name)
+}
+
+// StartScopedPhaseSpan opens a phase span like StartPhaseSpan and additionally installs
+// it as the ACTIVE parent on ctx, so phase spans opened afterward with the same ctx nest
+// as its children. The overhead breakdown subtracts direct children from a span's
+// self-time, so a nested span opened without this would be a sibling and its time would
+// be counted in BOTH buckets. The returned restore func MUST be called when the phase
+// ends (before EndSpan) to reinstate the prior parent. Nil-safe: returns a nil
+// tracer/handle and a no-op restore when no trace is active.
+func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tracer, schemas.SpanHandle, func()) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil, func() {}
+	}
+	prev := ctx.Value(schemas.BifrostContextKeySpanID)
+	id, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	if h == nil {
+		return nil, nil, func() {}
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
 }
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
@@ -1610,16 +1961,37 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
+		// The converting path splits into two non-overlapping overhead phases so their
+		// costs are attributed separately (and never double-counted): "convertor" for
+		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
+		// encode. The raw-body passthrough branch does neither.
+		ct, chdl := startPhaseSpan(ctx, "convertor")
 		convertedBody, err := requestConverter()
 		if err != nil {
+			if ct != nil {
+				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+			}
+			// Caller-fault refusals carry their own 400; everything else is a conversion
+			// bug on our side and keeps the 500 default.
+			if badRequest, ok := AsBifrostBadRequestError(err); ok {
+				return nil, badRequest
+			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+		}
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
 		}
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
-		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
+		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+		// Indenting is removed to reduce data on wire
+		jsonBody, err := MarshalProviderRequest(convertedBody)
 		if err != nil {
+			if mt != nil {
+				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
@@ -1630,9 +2002,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				// tool schemas and other order-sensitive JSON structures.
 				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
+					if mt != nil {
+						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+					}
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
+		}
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
 		return jsonBody, nil
 	} else {
@@ -1829,6 +2207,31 @@ func EnrichError(
 	return bifrostErr
 }
 
+// HandleProviderResponseCtx is HandleProviderResponse with a context, so the JSON
+// parse is timed as the "response-parse" overhead phase for the log detail view.
+// Used at the primary completion call sites (chat / responses / text) where parse
+// time is on the latency hot path; the ctx-less HandleProviderResponse remains for
+// the many secondary sites (files, batches, containers) whose parse time is not
+// worth a span and simply folds into provider-internal.
+func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
+		// Inspect the named bifrostErr so a failed parse ends the span as an error
+		// instead of appearing as successful overhead work.
+		defer func() {
+			if bifrostErr != nil {
+				msg := "response parse failed"
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					msg = bifrostErr.Error.Message
+				}
+				t.EndSpan(h, schemas.SpanStatusError, msg)
+				return
+			}
+			t.EndSpan(h, schemas.SpanStatusOk, "")
+		}()
+	}
+	return HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+}
+
 // HandleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
@@ -1837,8 +2240,7 @@ func EnrichError(
 // on responses that are almost certainly valid JSON.
 func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
+	if len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -1969,33 +2371,79 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 }
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
-// It returns a copy of the body to avoid race conditions when the response is released
-// back to fasthttp's buffer pool. Uses pooled gzip readers to reduce GC pressure.
+// It returns an owned body to avoid races when the response is released back to
+// fasthttp's buffer pool. Content codings are decoded in reverse application order,
+// as required by RFC 9110, using the shared pooled readers.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
-	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	if strings.Contains(contentEncoding, "gzip") {
-		body := resp.Body()
-		if len(body) == 0 {
-			return nil, nil
-		}
-
-		reader := bytes.NewReader(body)
-		gz, err := AcquireGzipReader(reader)
-		if err != nil {
-			return nil, err
-		}
-		defer ReleaseGzipReader(gz)
-
-		decompressed, err := io.ReadAll(gz)
-		if err != nil {
-			return nil, err
-		}
-		return decompressed, nil
-	}
-	// Copy the body to avoid race conditions when response is released back to pool
 	body := resp.Body()
-	result := make([]byte, len(body))
-	copy(result, body)
+	if len(body) == 0 {
+		return nil, nil
+	}
+
+	result := append([]byte(nil), body...)
+	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return result, nil
+	}
+
+	encodings := strings.Split(contentEncoding, ",")
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := strings.TrimSpace(encodings[i])
+		reader := bytes.NewReader(result)
+
+		// Release on the Acquire error paths too: zstd.NewReader's contract is to
+		// return the decoder alongside its error, so a bare return could drop one
+		// from the pool. The gzip and deflate constructors return nil there, where
+		// Release is a no-op.
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "x-gzip":
+			gz, err := AcquireGzipReader(reader)
+			if err != nil {
+				ReleaseGzipReader(gz)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(gz)
+			ReleaseGzipReader(gz)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "deflate":
+			fr, err := AcquireFlateReader(reader)
+			if err != nil {
+				ReleaseFlateReader(fr)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(fr)
+			ReleaseFlateReader(fr)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "br":
+			br := AcquireBrotliReader(reader)
+			var err error
+			result, err = io.ReadAll(br)
+			ReleaseBrotliReader(br)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "zstd":
+			dec, err := AcquireZstdDecoder(reader)
+			if err != nil {
+				ReleaseZstdDecoder(dec)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(dec)
+			ReleaseZstdDecoder(dec)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+	}
+
 	return result, nil
 }
 
@@ -2223,6 +2671,45 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 			Type:    &errorType,
 		},
 	}
+}
+
+// invalidRequestError marks a converter failure as caller input rather than an internal
+// Bifrost fault. Converters return a plain error (see the note on ResolveChatFileURLs for
+// why), and CheckContextAndGetRequestBody wraps whatever comes back as
+// ErrRequestBodyConversion, which the HTTP layer defaults to 500. That default is right for
+// a genuine conversion bug and wrong for a request that can never succeed as written: the
+// caller cannot fix a 5xx by retrying, and 5xx is what infrastructure alerting pages on.
+type invalidRequestError struct{ msg string }
+
+func (e *invalidRequestError) Error() string { return e.msg }
+
+// InvalidRequestErrorf builds the error a request converter returns when the caller's own
+// input is the problem. CheckContextAndGetRequestBody promotes it to a 400; anything the
+// converter wraps it in with %w still promotes, so intermediate context lines are free.
+func InvalidRequestErrorf(format string, args ...any) error {
+	return &invalidRequestError{msg: fmt.Sprintf(format, args...)}
+}
+
+// AsBifrostBadRequestError converts a converter error into a 400 when it (or anything it
+// wraps) was built by InvalidRequestErrorf. The BifrostError carries the converter's own
+// message rather than the wrapped chain, because the outer "failed to convert messages:"
+// prefixes describe Bifrost's call stack, not the caller's mistake.
+func AsBifrostBadRequestError(err error) (*schemas.BifrostError, bool) {
+	var invalid *invalidRequestError
+	if errors.As(err, &invalid) {
+		return NewBifrostBadRequestError(invalid.msg), true
+	}
+	return nil, false
+}
+
+// IsInvalidRequestError reports whether err, or anything it wraps, was built by
+// InvalidRequestErrorf. It answers the same question as AsBifrostBadRequestError without
+// building a BifrostError, for converters that are still deep in the conversion path and
+// want to keep returning a plain error up their own call chain. Use it to tell a caller
+// mistake apart from a transient fault at a site that otherwise tolerates failure.
+func IsInvalidRequestError(err error) bool {
+	var invalid *invalidRequestError
+	return errors.As(err, &invalid)
 }
 
 // NewBifrostUpstreamConnectionError creates a standardized error for upstream
@@ -2509,6 +2996,17 @@ func ProcessAndSendResponse(
 		}
 	}
 
+	// Final chunk: the stream has drained, so upstream is complete. Stamp the body
+	// before post-hooks persist it (completeDeferredSpan handles the trace span).
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final && response != nil {
+			response.PopulateUpstreamLatency(ctx)
+			if ef := response.GetExtraFields(); ef != nil && ef.Latency > 0 {
+				response.PopulateOverheadLatency(ctx, time.Duration(ef.Latency)*time.Millisecond)
+			}
+		}
+	}
+
 	// Run post hooks on the response (note: accumulated chunks above contain pre-hook data)
 	processedResponse, processedError := postHookRunner(ctx, response, nil)
 
@@ -2525,7 +3023,11 @@ func ProcessAndSendResponse(
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	// Time the send: a block here is the transport/client failing to drain (downstream
+	// backpressure), which the overhead breakdown attributes separately from Bifrost CPU.
+	sendStart := time.Now()
 	GateSendChunk(ctx, streamResponse, responseChan)
+	schemas.AddStreamBackpressure(ctx, time.Since(sendStart))
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -2631,58 +3133,59 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 
 	go func() {
 		defer close(closed)
+		// closeBodyStream can panic when the connection is already gone: fasthttp's
+		// CloseWithError nil-derefs in (*HostClient).CloseConn. The ownership claim
+		// below makes that ordering unlikely, but this runs in its own goroutine,
+		// so an unrecovered panic takes the whole process down instead of ending
+		// one stream (same reasoning as the idle-timeout timer path in
+		// NewIdleTimeoutReader). Log the value so an unrelated panic leaves a trace.
+		defer func() {
+			if rec := recover(); rec != nil {
+				if logger == nil {
+					logger = getLogger()
+				}
+				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
+			}
+		}()
 		select {
 		case <-ctx.Done():
-			// Atomically claim the close. Only one owner (this goroutine, the
-			// idle-timeout timer, or ReleaseStreamingResponse) may close the
-			// non-idempotent fasthttp body stream: a second CloseWithError
-			// re-runs releaseRequestStream, double-Putting the pooled
-			// requestStream so a later request aliases it concurrently and
-			// panics with a negative chunkLeft slice bound. GetAndSetValue is a
-			// single locked compare-and-swap, unlike the previous racy
-			// Value-then-SetValue check.
+			// Claim the close so only one owner (this goroutine, the idle-timeout
+			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+			// close against ReleaseStreamingResponse's drain; fasthttp itself is
+			// idempotent here (clientStreamBody.CloseWithError is guarded by a
+			// sync.Once), so a lost race is no longer destructive.
 			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 				return
 			}
-			// Context cancelled or deadline exceeded - close the body stream to unblock reads
-			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-				if err := wce.CloseWithError(ctx.Err()); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			}
+			// Closing here interrupts a read that is still in flight. That is safe
+			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+			// streaming reads before releasing pooled resources", #2353), where
+			// clientStreamBody interrupts the connection and then waits on its
+			// readLock before returning the *requestStream and the connection's
+			// *bufio.Reader to their pools.
+			//
+			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+			// underneath an active reader, so a later request acquired an aliased
+			// object and read another request's bytes. That is maximhq/bifrost#6143,
+			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+			// under -race on any fasthttp without that fix.
+			closeBodyStream(bodyStream, ctx.Err())
 		case <-done:
-			// Race between done and ctx.Done: the streaming goroutine has reached its defer
-			// chain (Read has returned), and ctx is also cancelled. The body may already be
-			// at EOF and fasthttp may have released the underlying conn to the idle pool.
-			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
-			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
-			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
-			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
+			// The streaming goroutine reached its defer chain and ctx is also
+			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+			// a body nobody wants, and so a half-read connection is closed rather
+			// than returned to the idle pool.
 			if ctx.Err() != nil {
-				// Same atomic claim as the ctx.Done branch: skip if another
-				// owner already closed/released the stream.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
-				if closer, ok := bodyStream.(io.Closer); ok {
-					if err := closer.Close(); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-					if err := wce.CloseWithError(ctx.Err()); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				}
+				closeBodyStream(bodyStream, ctx.Err())
 			}
 		}
 	}()
 	return func() {
 		close(done)
-		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+		<-closed // Wait for the close to finish before ReleaseStreamingResponse runs.
 	}
 }
 
@@ -3011,6 +3514,39 @@ func HandleStreamTimeout(
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
 }
 
+// ProcessAndSendNonSSEStreamError reports a 200 response that could not be read
+// as SSE. Unlike ProcessAndSendError it preserves the evidence: the captured
+// body sample travels on RawResponse when raw capture is enabled, and the
+// provider Content-Type is named in the message. Without this the failure
+// reached operators with no body and no raw response to look at.
+func ProcessAndSendNonSSEStreamError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	info *NonSSEStreamBody,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	err := info.Err()
+	// This is an upstream failure, not a Bifrost one: executeRequestWithRetries
+	// peeks at the first stream chunk and halts before retry classification when
+	// IsBifrostError is set, so leaving it false lets the 502 take the transient
+	// retry path and lets a rate-limit envelope in the message rotate keys.
+	bifrostError := &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: err.Error(),
+			Error:   err,
+		},
+	}
+	if len(info.Sample) > 0 && ShouldSendBackRawResponse(ctx, false) {
+		bifrostError.ExtraFields.RawResponse = string(info.Sample)
+	}
+	attachBilledUsageFromContext(ctx, bifrostError)
+	ProcessAndSendBifrostError(ctx, postHookRunner, bifrostError, responseChan, logger, postHookSpanFinalizer)
+}
+
 // ProcessAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -3180,8 +3716,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
-		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
+		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -3223,11 +3759,30 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 	}()
+	// Cancelled or timed out: abandon the connection instead of draining it.
+	// Draining here would read the rest of an upstream response nobody wants,
+	// holding the connection for the remainder of the stream. Closing with a
+	// non-nil error makes fasthttp's callback take CloseConn rather than
+	// ReleaseConn (client.go:3176), so a half-read connection is never returned
+	// to the idle pool. The response itself is left to GC for the same reason as
+	// the early return above: fasthttp.ReleaseResponse would Reset and fire the
+	// close callback a second time.
+	if ctx.Err() != nil {
+		closeBodyStream(bodyStream, ctx.Err())
+		return
+	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	//
+	// Skipped when the reader already consumed the body to EOF: there is nothing
+	// left to drain, and on a keep-alive connection io.Copy blocks in
+	// parseChunkSize waiting for a chunk the upstream will never send, which
+	// deadlocks this deferred cleanup and stops the stream channel from closing.
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
@@ -3481,20 +4036,6 @@ func HandleMultipleListModelsRequests(
 	return response, nil
 }
 
-// GetRandomString generates a random alphanumeric string of the given length.
-func GetRandomString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
-	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
-	}
-	return string(b)
-}
-
 // GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.
 // Valid values: none, low, medium, high
 func GetReasoningEffortFromBudgetTokens(
@@ -3614,6 +4155,7 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Stamp now the stream has drained; the handler returned long ago. Before the
 	// guard below so it still runs when there is no deferred span.
 	ctx.StampUpstreamLatency()
+	ctx.StampStreamOverhead()
 
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
@@ -3636,7 +4178,6 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
 	if ttftNs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)              // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk
 		tracer.SetAttribute(handle, schemas.AttrTimeToFirstChunk, float64(ttftNs)/1e9) // spec: seconds
 	}
 	if chunkCount > 0 {

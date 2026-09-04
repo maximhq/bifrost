@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ SELECT
     COALESCE(team_id, '') AS team_id,
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(project_id, '') AS project_id,
     COALESCE(alias, '') AS alias,
     COALESCE(canonical_model_name, '') AS canonical_model_name,
     COALESCE(user_agent, '') AS user_agent,
@@ -54,6 +56,10 @@ SELECT
     COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY latency), 0) AS p90_latency,
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency), 0) AS p95_latency,
     COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency), 0) AS p99_latency,
+    COALESCE(AVG(overhead_latency), 0) AS avg_overhead,
+    COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p90_overhead,
+    COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p95_overhead,
+    COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p99_overhead,
     COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
     COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
     -- Throughput measures restricted to rows with a positive measured latency,
@@ -66,6 +72,11 @@ SELECT
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost,
+    -- Per-category cost split, denormalized on the logs rows, so quota/usage can
+    -- surface input vs output vs additional (guardrail/MCP) alongside the total.
+    COALESCE(SUM(input_cost), 0) AS total_input_cost,
+    COALESCE(SUM(output_cost), 0) AS total_output_cost,
+    COALESCE(SUM(additional_cost), 0) AS total_additional_cost,
     -- Cache-hit measures precomputed from cache_debug so /api/logs/stats can
     -- serve them from the hybrid instead of a full-window raw scan. Safe to
     -- materialize: cache_debug is written with the terminal status and never
@@ -80,7 +91,7 @@ SELECT
     COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
 `
 
 // cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
@@ -98,7 +109,7 @@ const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name, user_agent, app)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, project_id, alias, canonical_model_name, user_agent, app)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -117,6 +128,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"team_id",
 	"customer_id",
 	"business_unit_id",
+	"project_id",
 	"alias",
 	"canonical_model_name",
 	"throughput_completion_tokens",
@@ -140,6 +152,13 @@ var mvLogsHourlyRequiredColumns = []string{
 	"total_tokens",
 	"total_cached_read_tokens",
 	"total_cost",
+	"total_input_cost",
+	"total_output_cost",
+	"total_additional_cost",
+	"avg_overhead",
+	"p90_overhead",
+	"p95_overhead",
+	"p99_overhead",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -335,6 +354,15 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
+		// One project per request, so a plain scalar pair like users and
+		// virtual keys; nothing to fan out.
+		name:            "mv_filter_projects",
+		selectExpr:      "project_id AS id, project_name AS name, " + scopeProjection,
+		whereExpr:       "project_id IS NOT NULL AND project_id != '' AND project_name IS NOT NULL AND project_name != ''",
+		uniqueIdx:       "id, name, " + scopeIdxColumns,
+		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
+	},
+	{
 		name:            "mv_filter_apps",
 		selectExpr:      "app, " + scopeProjection,
 		whereExpr:       "app IS NOT NULL AND app != ''",
@@ -361,6 +389,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
 	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
+	{"project_id", "project_name"}:             "mv_filter_projects",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
@@ -577,6 +606,11 @@ func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// matViewNeedsRebuild reports whether the view the name resolves to on this
+// connection's search_path is missing a required column. Resolution goes
+// through to_regclass rather than a bare relname match so a same-named view
+// in another schema of the database (another tenant's, or a test schema
+// beside production's), neither masks a missing view nor lends it columns.
 func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requiredColumns []string) (bool, error) {
 	var exists bool
 	if err := conn.QueryRowContext(ctx, `
@@ -584,7 +618,7 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 			SELECT 1
 			FROM pg_class
 			WHERE relkind = 'm'
-			  AND relname = $1
+			  AND oid = to_regclass($1)
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -595,10 +629,8 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 
 	rows, err := conn.QueryContext(ctx, `
 		SELECT a.attname
-		FROM pg_class c
-		JOIN pg_attribute a ON a.attrelid = c.oid
-		WHERE c.relkind = 'm'
-		  AND c.relname = $1
+		FROM pg_attribute a
+		WHERE a.attrelid = to_regclass($1)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -651,13 +683,17 @@ func ensureIndexes(ctx context.Context, conn *sql.Conn, defs []matviewIndexDef) 
 		if idx.unique {
 			validityExpr = "pi.indisvalid AND pi.indisunique"
 		}
+		// The view is resolved through the search_path (to_regclass), and an
+		// index lives in its table's schema, so this sees only the index on
+		// the view this connection would refresh, not a same-named one in
+		// another schema, which would otherwise count as ready and leave the
+		// real view without the unique index REFRESH CONCURRENTLY needs.
 		var indexReady bool
 		if err := conn.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT COALESCE(bool_and(%s), false)
-			FROM pg_class pc
-			JOIN pg_index pi ON pi.indrelid = pc.oid
+			FROM pg_index pi
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
-			WHERE pc.relname = $1
+			WHERE pi.indrelid = to_regclass($1)
 			  AND ic.relname = $2
 		`, validityExpr), idx.view, idx.name).Scan(&indexReady); err != nil {
 			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
@@ -938,16 +974,20 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 }
 
 // canUseMatViewFilters returns true if the given filters can be served from
-// mv_logs_hourly. Per-row filters (content search, parent request ID, metadata,
-// numeric ranges) require the raw logs table.
+// mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
+// session ID, metadata, numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
+		f.RequestID == "" &&
 		f.ParentRequestID == "" &&
+		f.SessionID == "" &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
 		len(f.StopReasons) == 0 &&
+		len(f.ComplexityTiers) == 0 &&
+		len(f.ComplexityMechanisms) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
@@ -1080,6 +1120,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.BusinessUnitIDs) > 0 {
 		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
+	}
+	if len(f.ProjectIDs) > 0 {
+		q = q.Where("project_id IN ?", f.ProjectIDs)
 	}
 	if len(f.Apps) > 0 {
 		q = q.Where("app IN ?", f.Apps)
@@ -1397,7 +1440,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 
 	// Cache hits come from the same hybrid aggregate (materialized in
 	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
-	// no more full-window raw scan. CacheDebugCount reproduces
+	// no more full-window raw scan. The cache metadata count reproduces
 	// aggregateCacheHits' nil contract: when no row in the window carried
 	// valid cache_debug JSON, the fields stay nil so they are omitted from
 	// the JSON payload, matching the raw path.
@@ -1707,6 +1750,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		P90Latency      float64 `gorm:"column:p90_lat"`
 		P95Latency      float64 `gorm:"column:p95_lat"`
 		P99Latency      float64 `gorm:"column:p99_lat"`
+		AvgOverhead     float64 `gorm:"column:avg_ovh"`
+		P90Overhead     float64 `gorm:"column:p90_ovh"`
+		P95Overhead     float64 `gorm:"column:p95_ovh"`
+		P99Overhead     float64 `gorm:"column:p99_ovh"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	// Weighted average of percentiles across hourly buckets
@@ -1718,6 +1765,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		CASE WHEN SUM(count) > 0 THEN SUM(p90_latency * count) / SUM(count) ELSE 0 END AS p90_lat,
 		CASE WHEN SUM(count) > 0 THEN SUM(p95_latency * count) / SUM(count) ELSE 0 END AS p95_lat,
 		CASE WHEN SUM(count) > 0 THEN SUM(p99_latency * count) / SUM(count) ELSE 0 END AS p99_lat,
+		CASE WHEN SUM(count) > 0 THEN SUM(avg_overhead * count) / SUM(count) ELSE 0 END AS avg_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p90_overhead * count) / SUM(count) ELSE 0 END AS p90_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p95_overhead * count) / SUM(count) ELSE 0 END AS p95_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p99_overhead * count) / SUM(count) ELSE 0 END AS p99_ovh,
 		SUM(count) AS total_requests
 	`, bucketSizeSeconds, bucketSizeSeconds)).
 		Group("bucket_timestamp").
@@ -1741,6 +1792,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 			b.P90Latency = r.P90Latency
 			b.P95Latency = r.P95Latency
 			b.P99Latency = r.P99Latency
+			b.AvgOverhead = r.AvgOverhead
+			b.P90Overhead = r.P90Overhead
+			b.P95Overhead = r.P95Overhead
+			b.P99Overhead = r.P99Overhead
 			b.TotalRequests = r.TotalRequests
 		}
 		buckets = append(buckets, b)
@@ -2064,6 +2119,9 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2123,6 +2181,9 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2199,6 +2260,9 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2261,6 +2325,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		AvgLatency         float64        `gorm:"column:avg_lat"`
 		TotalTokens        int64          `gorm:"column:total_tkns"`
 		TotalCost          float64        `gorm:"column:total_cost"`
+		InputCost          float64        `gorm:"column:total_input_cost"`
+		OutputCost         float64        `gorm:"column:total_output_cost"`
+		AdditionalCost     float64        `gorm:"column:total_additional_cost"`
 		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
@@ -2275,6 +2342,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost,
+		SUM(total_input_cost) AS total_input_cost,
+		SUM(total_output_cost) AS total_output_cost,
+		SUM(total_additional_cost) AS total_additional_cost,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
@@ -2342,15 +2412,18 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			successRate = float64(r.SuccessCount) / float64(r.Total) * 100
 		}
 		entry := ModelRankingEntry{
-			Model:         r.Model,
-			Provider:      r.Provider,
-			TotalRequests: r.Total,
-			SuccessCount:  r.SuccessCount,
-			SuccessRate:   successRate,
-			TotalTokens:   r.TotalTokens,
-			TotalCost:     r.TotalCost,
-			AvgLatency:    r.AvgLatency,
-			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
+			Model:          r.Model,
+			Provider:       r.Provider,
+			TotalRequests:  r.Total,
+			SuccessCount:   r.SuccessCount,
+			SuccessRate:    successRate,
+			TotalTokens:    r.TotalTokens,
+			TotalCost:      r.TotalCost,
+			InputCost:      r.InputCost,
+			OutputCost:     r.OutputCost,
+			AdditionalCost: r.AdditionalCost,
+			AvgLatency:     r.AvgLatency,
+			Throughput:     tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
@@ -2384,6 +2457,10 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
+	// Same ceiling as the raw path in GetUserRankings: the row scope alone does
+	// not bound which user ids a caller may be shown, and the matview stores the
+	// scalar column, so it applies here unchanged.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, "user_id")
 	q = q.Select(`
 		user_id,
 		SUM(count) AS total,
@@ -2424,6 +2501,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
+		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, "user_id")
 		if err := pq.Select(`
 			user_id,
 			SUM(count) AS total,
@@ -2480,6 +2558,10 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
+	// Same ceiling as the raw path in GetDimensionRankings. Only non-bucketed
+	// dimensions reach this reader, so the scalar column is the group key and
+	// no fan-out alias is involved.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, idCol)
 	q = q.Select(fmt.Sprintf(`
 		%s AS id,
 		SUM(count) AS total,
@@ -2537,6 +2619,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
+		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, idCol)
 		if err := pq.Select(fmt.Sprintf(`
 			%s AS id,
 			SUM(count) AS total,
@@ -2676,6 +2759,19 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 	}
 	if query != "" {
 		q = q.Where("name ILIKE ?", "%"+query+"%")
+	}
+	// The matview projects the dimension value as "id", so the ceiling is
+	// applied to that column rather than to the underlying scalar name. Same
+	// reasoning as the raw-table path in GetDistinctKeyPairs: a dropdown lists
+	// organisation names with no row beside them, and one visible row carrying
+	// two customers would otherwise offer both.
+	if scope := queryscope.DimensionFromContext(ctx); scope != nil {
+		if allowed, bounded := scope(idCol); bounded {
+			if len(allowed) == 0 {
+				return nil, true, nil
+			}
+			q = q.Where("id IN ?", allowed)
+		}
 	}
 	if err := q.
 		Select("DISTINCT id, name").

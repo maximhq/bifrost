@@ -242,6 +242,59 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 </Tab>
 </Tabs>
 
+### Provider access
+
+By default a virtual key is **deny-by-default** for providers: it can only use providers listed in `provider_configs`. An empty `provider_configs` blocks every provider.
+
+Set **`allow_all_providers`** to `true` to grant the key access to **every configured provider, including providers added later**, without listing each one.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+In the **Provider Configurations** section of the virtual key form, turn on the **Allow all providers** toggle. Every configured provider is listed as a row, so you can optionally set per-provider budgets, rate limits, or model/key restrictions on any of them. When the toggle is off, provider access is deny-by-default: only providers listed in `provider_configs` are allowed, and providers added later are denied.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "All Providers Key",
+    "allow_all_providers": true,
+    "team_id": "team-eng-001",
+    "is_active": true
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-all",
+        "name": "All Providers Key",
+        "value": "sk-bf-*",
+        "is_active": true,
+        "allow_all_providers": true
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+`allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
+
+<Note>
+`allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
+</Note>
+
 ## User Groups
 
 ### Teams
@@ -761,7 +814,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Listing models with a virtual key
 
-When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful. A key with `allow_all_providers` enabled lists and queries every configured provider.
 
 ```bash
 # Lists models across providers allowed by the virtual key

@@ -3,6 +3,8 @@ package runware
 import (
 	"strconv"
 	"strings"
+
+	"github.com/bytedance/sonic"
 )
 
 // Runware requires explicit pixel dimensions; default when the caller omits a size.
@@ -46,30 +48,57 @@ func runwareOutputType(responseFormat *string) *string {
 		out = "base64Data"
 	case "url":
 		out = "URL"
+	case "data_uri", "data-uri", "datauri":
+		out = "dataURI"
 	default:
 		return nil
 	}
 	return &out
 }
 
-// runwareOutputFormat maps a Bifrost output_format to Runware's outputFormat enum.
-// Returns nil to let Runware use its default.
+// runwareOutputFormat maps a Bifrost output_format to Runware's outputFormat enum, which is
+// uppercase and spans both image and video containers. Returns nil to let Runware use its default.
 func runwareOutputFormat(outputFormat *string) *string {
 	if outputFormat == nil {
 		return nil
 	}
 	var out string
-	switch strings.ToLower(*outputFormat) {
+	switch strings.ToLower(strings.TrimSpace(*outputFormat)) {
 	case "png":
 		out = "PNG"
 	case "jpeg", "jpg":
 		out = "JPG"
 	case "webp":
 		out = "WEBP"
+	case "tiff", "tif":
+		out = "TIFF"
+	case "svg":
+		out = "SVG"
+	case "mp4":
+		out = "MP4"
+	case "webm":
+		out = "WEBM"
+	case "mov":
+		out = "MOV"
 	default:
 		return nil
 	}
 	return &out
+}
+
+// runwareSettings coerces a "settings" extra param into Runware's nested settings object.
+// Multipart form values arrive as a JSON string; JSON callers send an object directly.
+func runwareSettings(value interface{}) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v, len(v) > 0
+	case string:
+		var settings map[string]interface{}
+		if err := sonic.Unmarshal([]byte(v), &settings); err == nil && len(settings) > 0 {
+			return settings, true
+		}
+	}
+	return nil, false
 }
 
 // contentTypeForAssetURL infers a MIME type from an artifact URL's file extension. Runware's
@@ -103,6 +132,8 @@ func contentTypeForAssetURL(url string) string {
 		return "video/mp4"
 	case "webm":
 		return "video/webm"
+	case "mov":
+		return "video/quicktime"
 	default:
 		return "application/octet-stream"
 	}

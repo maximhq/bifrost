@@ -119,24 +119,24 @@ request > 90               // Switch providers when request limit near max
 #### Complexity Routing
 
 ```cel
-complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", "COMPLEX", or "REASONING"
+complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", or "COMPLEX"
 ```
 
-Bifrost analyzes each request's prompt content and assigns a tier before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
+Bifrost embeds each request and assigns it the tier of its nearest reference phrase before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
 
 <Note>
-If complexity analysis is unavailable for a request (e.g. unparseable body), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
+If complexity classification is unavailable for a request (classifier not configured or not ready, unsupported input, or a match below the similarity floor), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
 </Note>
 
 **Examples:**
 ```cel
-complexity_tier == "REASONING"                              // Only frontier-worthy tasks
-complexity_tier in ["COMPLEX", "REASONING"]                 // Complex and above
-!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Same as above, negated form
-complexity_tier == "REASONING" && team_name == "research"   // Scoped to a team
+complexity_tier == "COMPLEX"                                // Only frontier-worthy tasks
+complexity_tier in ["MEDIUM", "COMPLEX"]                    // Medium and above
+!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Complex only, negated form
+complexity_tier == "COMPLEX" && team_name == "research"     // Scoped to a team
 ```
 
-See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the thresholds and keyword lists.
+See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the reference phrases and embedding configuration.
 
 #### How Capacity Metrics Are Resolved
 
@@ -300,9 +300,17 @@ The dashboard includes a visual query builder for CEL expressions:
 
 <Tab title="API">
 
+<Info>The `/api/routing/*` endpoints are available in **Bifrost v2.0.0 and above**. On earlier versions use the `/api/governance/*` paths.</Info>
+
+<Note>
+  These endpoints moved to `/api/routing/*` when routing became its own plugin. The previous
+  `/api/governance/*` paths still work and behave identically, so existing scripts keep
+  running, but they are deprecated and new integrations should use the paths shown here.
+</Note>
+
 ### List Routing Rules
 ```bash
-GET /api/governance/routing-rules
+GET /api/routing/rules
 
 # Optional query parameters:
 ?scope=global&scope_id=<id>&from_memory=true
@@ -337,12 +345,12 @@ GET /api/governance/routing-rules
 
 ### Get Single Rule
 ```bash
-GET /api/governance/routing-rules/{rule_id}
+GET /api/routing/rules/{rule_id}
 ```
 
 ### Create Rule
 ```bash
-POST /api/governance/routing-rules
+POST /api/routing/rules
 
 Content-Type: application/json
 ```
@@ -374,7 +382,7 @@ Content-Type: application/json
 
 ### Update Rule
 ```bash
-PUT /api/governance/routing-rules/{rule_id}
+PUT /api/routing/rules/{rule_id}
 
 Content-Type: application/json
 ```
@@ -391,7 +399,7 @@ Content-Type: application/json
 
 ### Delete Rule
 ```bash
-DELETE /api/governance/routing-rules/{rule_id}
+DELETE /api/routing/rules/{rule_id}
 ```
 
 **Response:** `200 OK`
@@ -908,7 +916,7 @@ Priority 0 → Priority 5 → Priority 10 → Priority 100 (first match wins)
 **Solutions**:
 ```bash
 # Get current routing rules in memory
-GET /api/governance/routing-rules?from_memory=true
+GET /api/routing/rules?from_memory=true
 
 # Check if your variables are present
 # Example: Is team_name actually set?
@@ -982,7 +990,7 @@ Enable debug logging to see routing rule evaluation:
 
 #### Create Capacity-Based Rule
 ```bash
-curl -X POST http://localhost:8080/api/governance/routing-rules \
+curl -X POST http://localhost:8080/api/routing/rules \
   -H "Content-Type: application/json" \
   -d '{
     "name": "High Budget Fallback",
@@ -1000,7 +1008,7 @@ curl -X POST http://localhost:8080/api/governance/routing-rules \
 
 #### Create Probabilistic Split Rule
 ```bash
-curl -X POST http://localhost:8080/api/governance/routing-rules \
+curl -X POST http://localhost:8080/api/routing/rules \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Premium Tier Split",
@@ -1016,7 +1024,7 @@ curl -X POST http://localhost:8080/api/governance/routing-rules \
 
 #### Create Rule with Pinned API Key
 ```bash
-curl -X POST http://localhost:8080/api/governance/routing-rules \
+curl -X POST http://localhost:8080/api/routing/rules \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Pin Production Key for Premium Tier",
@@ -1038,7 +1046,7 @@ curl -X POST http://localhost:8080/api/governance/routing-rules \
 
 #### List Rules by Team Scope
 ```bash
-curl http://localhost:8080/api/governance/routing-rules \
+curl http://localhost:8080/api/routing/rules \
   -H "Authorization: Bearer your-token" \
   -G \
   --data-urlencode "scope=team" \
@@ -1047,7 +1055,7 @@ curl http://localhost:8080/api/governance/routing-rules \
 
 #### Get In-Memory Rules (Debug)
 ```bash
-curl http://localhost:8080/api/governance/routing-rules?from_memory=true \
+curl http://localhost:8080/api/routing/rules?from_memory=true \
   -H "Authorization: Bearer your-token"
 ```
 

@@ -34,6 +34,7 @@ var payloadFields = []string{
 	"image_edit_input",
 	"image_variation_input",
 	"video_generation_input",
+	"video_edit_input",
 	"speech_output",
 	"transcription_output",
 	"image_generation_output",
@@ -45,6 +46,7 @@ var payloadFields = []string{
 	"video_delete_output",
 	"cache_debug",
 	"guardrail_debug",
+	"routing_metadata",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -75,6 +77,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["image_edit_input"] = l.ImageEditInput
 	m["image_variation_input"] = l.ImageVariationInput
 	m["video_generation_input"] = l.VideoGenerationInput
+	m["video_edit_input"] = l.VideoEditInput
 	m["speech_output"] = l.SpeechOutput
 	m["transcription_output"] = l.TranscriptionOutput
 	m["image_generation_output"] = l.ImageGenerationOutput
@@ -86,6 +89,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
 	m["guardrail_debug"] = l.GuardrailDebug
+	m["routing_metadata"] = l.RoutingMetadata
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -124,6 +128,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
 	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
 	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	putIfPresent(m, "project_id", l.ProjectID)
+	putIfPresent(m, "project_name", l.ProjectName)
 	if l.Cost != nil {
 		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
 	}
@@ -187,7 +193,7 @@ type BillingPayloadBackfill struct {
 //
 // Safe because pricing is the last thing that reads these: the recalc job keeps only
 // the ID, timestamp and computed cost afterwards, and the rows are never written back
-// (BulkUpdateCost takes an id → cost map).
+// (BulkUpdateCost takes an id → CostUpdate map).
 func ReleaseBillingPayloads(logs []*Log) {
 	for _, l := range logs {
 		if l != nil {
@@ -215,6 +221,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInput = ""
 	l.ImageVariationInput = ""
 	l.VideoGenerationInput = ""
+	l.VideoEditInput = ""
 	l.SpeechOutput = ""
 	l.TranscriptionOutput = ""
 	l.ImageGenerationOutput = ""
@@ -226,6 +233,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
 	l.GuardrailDebug = ""
+	l.RoutingMetadata = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -252,6 +260,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInputParsed = nil
 	l.ImageVariationInputParsed = nil
 	l.VideoGenerationInputParsed = nil
+	l.VideoEditInputParsed = nil
 	l.SpeechOutputParsed = nil
 	l.TranscriptionOutputParsed = nil
 	l.ImageGenerationOutputParsed = nil
@@ -263,6 +272,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
 	l.GuardrailDebugParsed = nil
+	l.RoutingMetadataParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -326,6 +336,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["video_generation_input"]; ok && v != "" {
 		l.VideoGenerationInput = v
 	}
+	if v, ok := m["video_edit_input"]; ok && v != "" {
+		l.VideoEditInput = v
+	}
 	if v, ok := m["speech_output"]; ok && v != "" {
 		l.SpeechOutput = v
 	}
@@ -358,6 +371,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["guardrail_debug"]; ok && v != "" {
 		l.GuardrailDebug = v
+	}
+	if v, ok := m["routing_metadata"]; ok && v != "" {
+		l.RoutingMetadata = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -526,6 +542,11 @@ func (l *Log) BuildInputContentSummary() string {
 	// Video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		return l.VideoGenerationInputParsed.Prompt
+	}
+
+	// Video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		return l.VideoEditInputParsed.Prompt
 	}
 
 	return ""
@@ -884,6 +905,9 @@ func clearPayloadField(l *Log, name string) {
 	case "video_generation_input":
 		l.VideoGenerationInput = ""
 		l.VideoGenerationInputParsed = nil
+	case "video_edit_input":
+		l.VideoEditInput = ""
+		l.VideoEditInputParsed = nil
 	case "speech_output":
 		l.SpeechOutput = ""
 		l.SpeechOutputParsed = nil
@@ -917,6 +941,9 @@ func clearPayloadField(l *Log, name string) {
 	case "guardrail_debug":
 		l.GuardrailDebug = ""
 		l.GuardrailDebugParsed = nil
+	case "routing_metadata":
+		l.RoutingMetadata = ""
+		l.RoutingMetadataParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

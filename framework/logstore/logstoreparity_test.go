@@ -110,18 +110,22 @@ type parityLogSpec struct {
 	teamIDs, teamNames         *string
 	customerIDs, customerNames *string
 	buIDs, buNames             *string
-	cost         *float64
-	latency      *float64
-	tokens       [3]int // prompt, completion, total
-	stopReason   *string
-	routing      *string
-	metadata     *string
-	cacheDebug   string
-	content      string
-	parentID     *string
-	nodeID       *string
-	budgetIDs    *string
-	rateLimitIDs *string
+	cost                       *float64
+	latency                    *float64
+	tokens                     [3]int // prompt, completion, total
+	stopReason                 *string
+	routing                    *string
+	tier                       *string
+	mechanism                  *string
+	tierScore                  *float64
+	sessionID                  *string
+	metadata                   *string
+	cacheMetadata              string
+	content                    string
+	parentID                   *string
+	nodeID                     *string
+	budgetIDs                  *string
+	rateLimitIDs               *string
 }
 
 func (s parityLogSpec) toLog(base time.Time) *Log {
@@ -155,8 +159,12 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		TotalTokens:           s.tokens[2],
 		StopReason:            s.stopReason,
 		RoutingEnginesUsedStr: s.routing,
+		ComplexityTier:        s.tier,
+		ComplexityMechanism:   s.mechanism,
+		ComplexityScore:       s.tierScore,
+		SessionID:             s.sessionID,
 		Metadata:              s.metadata,
-		CacheDebug:            s.cacheDebug,
+		CacheDebug:            s.cacheMetadata,
 		ContentSummary:        s.content,
 		ParentRequestID:       s.parentID,
 		ClusterNodeID:         s.nodeID,
@@ -173,15 +181,18 @@ func paritySpecs() []parityLogSpec {
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
 			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
-			cacheDebug: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
+			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55), sessionID: strPtrP("session-1"),
+			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u2"),
 			cost: f64PtrP(1.25), latency: f64PtrP(250), tokens: [3]int{200, 100, 300}, stopReason: strPtrP("length"),
 			routing: strPtrP("governance"), metadata: strPtrP(`{"env":"dev"}`),
-			cacheDebug: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
+			tier: strPtrP("SIMPLE"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.08), sessionID: strPtrP("session-1"),
+			cacheMetadata: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
 		{id: "p3", offsetSec: 80, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "error",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u2"),
-			latency: f64PtrP(50), content: "echo error", parentID: strPtrP("sess1")},
+			latency: f64PtrP(50), content: "echo error", parentID: strPtrP("sess1"),
+			mechanism: strPtrP("skipped")},
 		{id: "p4", offsetSec: 70, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u3"),
 			cost: f64PtrP(2.5), latency: f64PtrP(400), tokens: [3]int{400, 100, 500}, stopReason: strPtrP("tool_calls"),
@@ -197,7 +208,8 @@ func paritySpecs() []parityLogSpec {
 		{id: "p8", offsetSec: 30, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk3"), vkName: strPtrP("VK Three"), teamID: strPtrP("t3"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.75), latency: f64PtrP(120), tokens: [3]int{50, 25, 75}, stopReason: strPtrP("content_filter"),
-			routing: strPtrP("routing-rule"), metadata: strPtrP(`{"env":"prod"}`), content: "india juliet"},
+			routing: strPtrP("routing-rule"), metadata: strPtrP(`{"env":"prod"}`), content: "india juliet",
+			tier: strPtrP("MEDIUM"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.31)},
 		// Cluster-governance rows for GetNodeUsageAfter parity.
 		{id: "p9", offsetSec: 20, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			cost: f64PtrP(1.0), latency: f64PtrP(90), tokens: [3]int{40, 20, 60},
@@ -436,6 +448,8 @@ func logProjection(l *Log) map[string]any {
 		"user_id": l.UserID, "cost": l.Cost, "latency": l.Latency,
 		"prompt_tokens": l.PromptTokens, "completion_tokens": l.CompletionTokens,
 		"total_tokens": l.TotalTokens, "stop_reason": l.StopReason,
+		"complexity_tier": l.ComplexityTier, "complexity_mechanism": l.ComplexityMechanism,
+		"complexity_score": l.ComplexityScore, "session_id": l.SessionID,
 		"content_summary": l.ContentSummary,
 	}
 }
@@ -556,30 +570,39 @@ func TestLogStoreParity(t *testing.T) {
 	// --- Phase: reads ---
 
 	searchCases := map[string]SearchFilters{
-		"all":             window,
-		"providers":       {Providers: []string{"openai"}},
-		"models":          {Models: []string{"gpt-4o", "claude-3"}},
-		"status":          {Status: []string{"success"}},
-		"stop_reasons":    {StopReasons: []string{"stop"}},
-		"objects":         {Objects: []string{"embedding"}},
-		"aliases":         {Aliases: []string{"a1"}},
-		"selected_keys":   {SelectedKeyIDs: []string{"sk1"}},
-		"virtual_keys":    {VirtualKeyIDs: []string{"vk1"}},
-		"teams":           {TeamIDs: []string{"t1", "t3"}},
-		"customers":       {CustomerIDs: []string{"c1"}},
-		"users":           {UserIDs: []string{"u1"}},
-		"business_units":  {BusinessUnitIDs: []string{"b1"}},
-		"routing_engines": {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
-		"time_range":      {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
-		"latency_range":   {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
-		"token_range":     {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
-		"cost_range":      {MinCost: f64PtrP(1.0), MaxCost: f64PtrP(2.6)},
-		"missing_cost":    {MissingCostOnly: true},
-		"cache_direct":    {CacheHitTypes: []string{"direct"}},
-		"cache_semantic":  {CacheHitTypes: []string{"semantic"}},
-		"metadata":        {MetadataFilters: map[string]string{"env": "prod"}},
-		"content_search":  {ContentSearch: "charlie"},
-		"parent_request":  {ParentRequestID: "sess1"},
+		"all":                   window,
+		"providers":             {Providers: []string{"openai"}},
+		"models":                {Models: []string{"gpt-4o", "claude-3"}},
+		"status":                {Status: []string{"success"}},
+		"stop_reasons":          {StopReasons: []string{"stop"}},
+		"complexity_tiers":      {ComplexityTiers: []string{"COMPLEX", "MEDIUM"}},
+		"complexity_mechanisms": {ComplexityMechanisms: []string{"lexical"}},
+		"mechanism_skipped":     {ComplexityMechanisms: []string{"skipped"}},
+		"session":               {SessionID: "session-1"},
+		"objects":               {Objects: []string{"embedding"}},
+		"aliases":               {Aliases: []string{"a1"}},
+		"selected_keys":         {SelectedKeyIDs: []string{"sk1"}},
+		"virtual_keys":          {VirtualKeyIDs: []string{"vk1"}},
+		"teams":                 {TeamIDs: []string{"t1", "t3"}},
+		"customers":             {CustomerIDs: []string{"c1"}},
+		"users":                 {UserIDs: []string{"u1"}},
+		"business_units":        {BusinessUnitIDs: []string{"b1"}},
+		"routing_engines":       {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
+		"time_range":            {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
+		"latency_range":         {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
+		"token_range":           {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
+		"cost_range":            {MinCost: f64PtrP(1.0), MaxCost: f64PtrP(2.6)},
+		"missing_cost":          {MissingCostOnly: true},
+		"cache_direct":          {CacheHitTypes: []string{"direct"}},
+		"cache_semantic":        {CacheHitTypes: []string{"semantic"}},
+		"metadata":              {MetadataFilters: map[string]string{"env": "prod"}},
+		"content_search":        {ContentSearch: "charlie"},
+		"parent_request":        {ParentRequestID: "sess1"},
+		"request_id":            {RequestID: "p4"},
+		// An ID lookup is an exact PK match that deliberately ignores the window,
+		// so p4 must come back even though the range excludes its timestamp.
+		"request_id_outside_window": {RequestID: "p4", StartTime: timePtrP(base.Add(-10 * time.Second)), EndTime: timePtrP(base)},
+		"request_id_unknown":        {RequestID: "no-such-id"},
 	}
 	for name, filters := range searchCases {
 		t.Run("SearchLogs/"+name, func(t *testing.T) {
@@ -1016,7 +1039,7 @@ func TestLogStoreParity(t *testing.T) {
 		})
 		t.Run("bulk_update_cost", func(t *testing.T) {
 			runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
-				return s.BulkUpdateCost(ctx, map[string]float64{"p1": 0.9, "p4": 2.9})
+				return s.BulkUpdateCost(ctx, map[string]CostUpdate{"p1": {Total: 0.9, Input: 0.9}, "p4": {Total: 2.9, Input: 2.9}})
 			})
 			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
 				var costs []map[string]any
@@ -1150,14 +1173,14 @@ func TestLogStoreParity(t *testing.T) {
 
 		// Endpoint-scoped history pages newest-first on every backend.
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 10})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 10})
 			if err != nil {
 				return nil, err
 			}
 			return webhookDeliverySearchProjection(res), nil
 		})
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 1, Offset: 1})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 1, Offset: 1})
 			if err != nil {
 				return nil, err
 			}
@@ -1169,7 +1192,7 @@ func TestLogStoreParity(t *testing.T) {
 			return s.DeleteExpiredWebhookDeliveries(ctx)
 		})
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-2", PaginationOptions{Limit: 10})
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-2"}}, PaginationOptions{Limit: 10})
 			if err != nil {
 				return nil, err
 			}
@@ -1238,4 +1261,52 @@ func TestLogStoreParity(t *testing.T) {
 			return s.Close(ctx)
 		})
 	})
+}
+
+// video_debug must survive the serialize/deserialize round trip like batch_debug
+// does. It is operational detail, not request content, so it also has to outlive an
+// object-storage offload — a row whose payload was offloaded still needs to say
+// which video it settled.
+func TestLogVideoDebugRoundTrip(t *testing.T) {
+	seconds := 8
+	entry := &Log{
+		ID: "req-video-roundtrip",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{
+			VideoID: "vid_rt",
+			Status:  schemas.VideoStatusCompleted,
+			Accounting: &schemas.VideoAccountingDebug{
+				Seconds:     &seconds,
+				Size:        "1920x1080",
+				OutputCount: 2,
+			},
+		},
+	}
+
+	require.NoError(t, entry.SerializeFields())
+	require.NotEmpty(t, entry.VideoDebug, "the parsed blob must reach the column")
+
+	decoded := &Log{ID: entry.ID, VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Equal(t, "vid_rt", decoded.VideoDebugParsed.VideoID)
+	assert.Equal(t, schemas.VideoStatusCompleted, decoded.VideoDebugParsed.Status)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 8, *decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 2, decoded.VideoDebugParsed.Accounting.OutputCount)
+}
+
+// A submission row carries the video id but no accounting block; that absence is
+// what the UI keys on to tell it from the settlement.
+func TestLogVideoDebugSubmissionRowHasNoAccounting(t *testing.T) {
+	entry := &Log{
+		ID:               "req-video-submission",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{VideoID: "vid_sub", Status: schemas.VideoStatusQueued},
+	}
+	require.NoError(t, entry.SerializeFields())
+
+	decoded := &Log{VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Nil(t, decoded.VideoDebugParsed.Accounting)
 }

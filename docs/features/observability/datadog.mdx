@@ -448,7 +448,13 @@ All metrics include your configured `custom_tags` plus automatic tags for:
 - `model` - Model name
 - `method` - Type of request (chat, embedding, etc.)
 - `bifrost_node` - Per-instance identity (`BIFROST_NODE_ID` if set, otherwise `hostname-pid`)
-- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index)
+- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index, complexity tier/mechanism)
+
+When a routing rule references `complexity_tier`, two additional tags are set:
+- `complexity_tier` - The complexity tier the request was classified into: `SIMPLE`, `MEDIUM`, or `COMPLEX` (Datadog normalizes tag values to lowercase, so query as `simple`/`medium`/`complex`)
+- `complexity_mechanism` - How the tier was classified: `semantic`, or `skipped` when classification ran but produced no tier
+
+Use them to attribute cost, latency, and volume to classified complexity, e.g. `sum:bifrost.request.cost.usd{complexity_tier:complex} by {model}`. The raw complexity score is not exported as a metric tag because its cardinality is unbounded; it remains available in request logs and trace attributes.
 
 ---
 
@@ -515,6 +521,7 @@ Values captured via `request_headers` are attached to spans regardless of this f
 - Selected key ID and name
 - Team ID and name
 - Customer ID and name
+- Complexity tier and mechanism (only when a routing rule references `complexity_tier`)
 - Retry count and fallback index
 
 ---
@@ -545,7 +552,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `source_of_truth: "config.json"` makes the file authoritative.
 
 **Filter modes:**
 
@@ -559,7 +566,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected. The filter applies to APM trace spans only; it does not change DogStatsD metrics, which are never derived from plugin spans.
 
 <Note>
-  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set a higher `version` on the Datadog plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set `source_of_truth: "config.json"`. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for details.
 </Note>
 
 ---

@@ -239,12 +239,12 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	tokenUsage := dbEntry.TokenUsage
-	cacheDebug := dbEntry.CacheDebug
+	cacheMetadata := dbEntry.CacheDebug
 	tokenUsageParsed := dbEntry.TokenUsageParsed
 	cacheDebugParsed := dbEntry.CacheDebugParsed
 	restorePricingMetadata := func() {
 		dbEntry.TokenUsage = tokenUsage
-		dbEntry.CacheDebug = cacheDebug
+		dbEntry.CacheDebug = cacheMetadata
 		dbEntry.TokenUsageParsed = tokenUsageParsed
 		dbEntry.CacheDebugParsed = cacheDebugParsed
 	}
@@ -976,9 +976,10 @@ func (h *HybridLogStore) GetDimensionLatencyHistogram(ctx context.Context, filte
 	return h.inner.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
-// BulkUpdateCost delegates to the inner store and updates the cost column
-// for each (logID -> cost) pair in a single round trip.
-func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
+// BulkUpdateCost delegates to the inner store and updates the cost columns
+// (total + input/output/additional split) for each (logID -> CostUpdate) pair
+// in a single round trip.
+func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error {
 	return h.inner.BulkUpdateCost(ctx, updates)
 }
 
@@ -1565,9 +1566,9 @@ func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string)
 	return h.inner.FindWebhookDeliveryByID(ctx, id)
 }
 
-// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
-func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
-	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+// SearchWebhookDeliveries returns one page of matching delivery history.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, filters, pagination)
 }
 
 // DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.

@@ -476,7 +476,7 @@ type AnthropicMessageRequest struct {
 	Thinking          *AnthropicThinking     `json:"thinking,omitempty"`
 	OutputFormat      json.RawMessage        `json:"output_format,omitempty"` // Beta: requires header "anthropic-beta": "structured-outputs-2025-11-13" (json.RawMessage preserves key ordering)
 	OutputConfig      *AnthropicOutputConfig `json:"output_config,omitempty"` // GA: structured outputs without beta header
-	Speed             *string                `json:"speed,omitempty"`         // "fast" for fast mode (Opus 4.6 only, requires fast-mode beta header)
+	Speed             *string                `json:"speed,omitempty"`         // "fast" for fast mode (Opus 4.6 and 4.7+, requires fast-mode beta header)
 	ServiceTier       *string                `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
@@ -1821,6 +1821,14 @@ const (
 	AnthropicStopReasonCompaction                 AnthropicStopReason = "compaction"
 )
 
+// MarshalJSON preserves Anthropic's required-null response contract for stop_reason.
+func (r AnthropicStopReason) MarshalJSON() ([]byte, error) {
+	if r == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(r))
+}
+
 // AnthropicResponseContainer is the "container" object returned on responses
 // that used the code execution tool. The id can be passed back as the request
 // "container" to reuse the sandbox across turns.
@@ -1837,9 +1845,9 @@ type AnthropicMessageResponse struct {
 	Role         string                  `json:"role"`
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
-	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
+	StopReason   AnthropicStopReason     `json:"stop_reason"`
 	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // refusal detail; null for every stop_reason other than "refusal"
-	StopSequence *string                 `json:"stop_sequence,omitempty"`
+	StopSequence *string                 `json:"stop_sequence"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that
 	// used the code execution tool. Distinct from the request-side AnthropicContainer
@@ -1849,6 +1857,18 @@ type AnthropicMessageResponse struct {
 	// omitempty when absent; a present-but-null value (no divergence) is conveyed by a
 	// non-nil pointer with a nil CacheMissReason — see schemas.CacheDiagnostics.
 	Diagnostics *schemas.CacheDiagnostics `json:"diagnostics,omitempty"`
+
+	// ExtraFields carries Bifrost's own response metadata (raw_request, raw_response,
+	// routing info, latency) on this route, mirroring the extra_fields member that
+	// BifrostChatResponse and BifrostResponsesResponse serialize directly.
+	//
+	// Anthropic's Messages schema has no such member, so this is a Bifrost extension and
+	// is populated ONLY when a raw capture is actually present -- i.e. when the provider
+	// config enables send_back_raw_request/response, or a request sets
+	// x-bf-send-back-raw-request with allow_per_request_raw_override on. Without a
+	// capture it stays nil and omitempty keeps the response byte-identical to the
+	// documented Anthropic shape, so ordinary clients never see a non-conformant field.
+	ExtraFields *schemas.BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
@@ -1902,6 +1922,74 @@ type AnthropicOutputTokensDetails struct {
 // the attempt that actually served the response after a server-side fallback
 // handoff. Declining attempts appear as ordinary "message" entries.
 const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
+
+// AnthropicUsageIterationTypeCompaction marks the usage.iterations entry for the
+// compaction summarization pass when context_management compaction fires.
+const AnthropicUsageIterationTypeCompaction = "compaction"
+
+// billableAnthropicUsage returns the usage Anthropic actually charges for billing.
+// Top-level input/output/cache fields mirror the reply (message) pass only; the
+// compaction pass is listed separately under usage.iterations. When iterations
+// are present, fold compaction iteration token counts into the top-level fields.
+// Server-side fallback iterations are not added — top-level already mirrors the
+// billed serving attempt and declining attempts must not be summed. When
+// iterations are absent, top-level fields are already complete.
+func billableAnthropicUsage(u *AnthropicUsage) *AnthropicUsage {
+	if u == nil {
+		return nil
+	}
+	if len(u.Iterations) == 0 {
+		return u
+	}
+	out := *u
+	out.Type = nil
+	out.Model = nil
+	out.Iterations = nil
+	if u.OutputTokensDetails != nil {
+		details := *u.OutputTokensDetails
+		out.OutputTokensDetails = &details
+	}
+	if u.ServerToolUse != nil {
+		serverToolUse := *u.ServerToolUse
+		out.ServerToolUse = &serverToolUse
+	}
+	for i := range u.Iterations {
+		it := &u.Iterations[i]
+		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction {
+			continue
+		}
+		addAnthropicUsageTokenFields(&out, it)
+	}
+	return &out
+}
+
+func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheReadInputTokens += src.CacheReadInputTokens
+	dst.CacheCreationInputTokens += src.CacheCreationInputTokens
+	dst.CacheCreation.Ephemeral5mInputTokens += src.CacheCreation.Ephemeral5mInputTokens
+	dst.CacheCreation.Ephemeral1hInputTokens += src.CacheCreation.Ephemeral1hInputTokens
+	if src.OutputTokensDetails != nil && src.OutputTokensDetails.ThinkingTokens > 0 {
+		if dst.OutputTokensDetails == nil {
+			dst.OutputTokensDetails = &AnthropicOutputTokensDetails{}
+		}
+		if src.OutputTokensDetails.ThinkingTokens > dst.OutputTokensDetails.ThinkingTokens {
+			dst.OutputTokensDetails.ThinkingTokens = src.OutputTokensDetails.ThinkingTokens
+		}
+	}
+	if src.ServerToolUse != nil {
+		if dst.ServerToolUse == nil {
+			dst.ServerToolUse = &AnthropicServerToolUseUsage{}
+		}
+		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
+			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
+		}
+	}
+}
 
 // ServerSideFallbackModel returns the model named by the fallback_message entry in
 // usage.iterations — the attempt whose token counts the top-level usage mirrors,
@@ -2078,10 +2166,10 @@ type AnthropicFileResponse struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	Filename     string `json:"filename"`
-	MimeType     string `json:"mime_type"`
+	MimeType     string `json:"mime_type,omitempty"`
 	SizeBytes    int64  `json:"size_bytes"`
 	CreatedAt    string `json:"created_at"`
-	Downloadable bool   `json:"downloadable"`
+	Downloadable *bool  `json:"downloadable,omitempty"`
 }
 
 // AnthropicFileListResponse represents the response from listing files.
@@ -2106,6 +2194,8 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(latency time.Duratio
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
@@ -2133,6 +2223,8 @@ func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(latency time.Durat
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch,
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,

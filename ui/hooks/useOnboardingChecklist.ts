@@ -64,6 +64,13 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 
 	const authConfig = bifrostConfig?.auth_config;
 	const clientConfig = bifrostConfig?.client_config;
+	// Enterprise SSO satisfies dashboard auth on its own. An identity-provider
+	// record holds the OIDC credentials (clientId/clientSecret/tenantId), and the
+	// server installs SCIMController.Middleware() in place of the OSS
+	// AuthMiddleware whenever one is enabled, so admin_username/admin_password
+	// are never set on these deployments and would strand this step forever.
+	// Mirrors the server's own gate: SCIMConfig != nil && SCIMConfig.Enabled.
+	const ssoGatesDashboard = IS_ENTERPRISE && (scimProviders?.some((provider) => provider.enabled) ?? false);
 
 	const steps: OnboardingStep[] = useMemo(() => {
 		// Order: 1) Security, 2) Provider Setup, 3) Everything Else.
@@ -75,15 +82,16 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 				title: "Restrict CORS origins",
 				route: "/workspace/config/security",
 				section: "Security",
-				complete:
-					allowedOrigins.some((origin) => origin.trim().length > 0) && allowedOrigins.every((origin) => origin.trim() !== "*"),
+				complete: allowedOrigins.some((origin) => origin.trim().length > 0) && allowedOrigins.every((origin) => origin.trim() !== "*"),
 			},
 			{
 				id: "dashboard-auth",
 				title: "Set up dashboard auth",
 				route: "/workspace/config/security",
 				section: "Security",
-				complete: !!authConfig?.is_enabled && authValueSet(authConfig?.admin_username) && authValueSet(authConfig?.admin_password),
+				complete:
+					ssoGatesDashboard ||
+					(!!authConfig?.is_enabled && authValueSet(authConfig?.admin_username) && authValueSet(authConfig?.admin_password)),
 			},
 			{
 				id: "enforce-inference-auth",
@@ -126,7 +134,7 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 				]
 			: [];
 		return [...common, ...enterprise];
-	}, [allKeys, clientConfig, authConfig, scimProviders, modelConfigsResponse, vksResponse]);
+	}, [allKeys, clientConfig, authConfig, ssoGatesDashboard, scimProviders, modelConfigsResponse, vksResponse]);
 
 	return { bifrostConfig, steps, skippedIds, checklistReady, isDismissedForAll };
 }

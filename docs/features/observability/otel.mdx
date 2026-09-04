@@ -64,6 +64,8 @@ The plugin supports multiple trace formats to match your observability platform:
 
 ### Per-signal headers
 
+<Info>`trace_headers` and `metrics_headers` are available in **Bifrost v2.0.0 and above**.</Info>
+
 `headers` are sent to both the trace and metrics endpoints. When a collector needs a header on only one signal — for example a Databricks table name required on the metrics endpoint — use `trace_headers` or `metrics_headers`. Each is overlaid on top of `headers` for its own endpoint, and on a key collision the per-signal value wins.
 
 ```json
@@ -136,6 +138,10 @@ Because all requests in a session share one trace, very long-lived sessions prod
 </Note>
 
 To send a session ID, pass the [`x-bf-session-id`](/providers/request-options) header on each request you want grouped together.
+
+<Info>Coding-harness session header fallback is available in **Bifrost v2.0.0 and above**.</Info>
+
+Requests from a coding harness need no Bifrost-specific header: when `x-bf-session-id` is absent, Bifrost adopts the harness's own session header (Claude Code, Codex CLI, and OpenCode are recognized). That populates `session.id` on every request in the run; enable `group_traces_by_session` to collapse the run into a single trace. See [Coding Harness Headers](/providers/request-options#session-stickiness-session-id) for the full list.
 
 ---
 
@@ -1184,7 +1190,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `source_of_truth: "config.json"` makes the file authoritative.
 
 **Filter modes:**
 
@@ -1198,7 +1204,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 
 <Note>
-  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set a higher `version` on the OTEL plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set `source_of_truth: "config.json"`. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for details.
 </Note>
 
 ---

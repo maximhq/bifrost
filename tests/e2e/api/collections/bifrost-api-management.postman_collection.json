@@ -3752,14 +3752,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules",
+              "raw": "{{base_url}}/api/routing/rules",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules"
+                "routing",
+                "rules"
               ]
             }
           }
@@ -3770,14 +3770,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3815,14 +3815,14 @@
               "raw": "{\"name\":\"TestRoutingRule\",\"description\":\"E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
             },
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules",
+              "raw": "{{base_url}}/api/routing/rules",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules"
+                "routing",
+                "rules"
               ]
             }
           }
@@ -3833,14 +3833,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3861,14 +3861,14 @@
               "raw": "{\"name\":\"UpdatedRoutingRule\",\"description\":\"Updated E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
             },
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3880,14 +3880,14 @@
             "method": "DELETE",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -4162,13 +4162,13 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config"
               ]
             }
@@ -4201,13 +4201,13 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config"
               ]
             },
@@ -4256,13 +4256,13 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config/reset",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config/reset",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config",
                 "reset"
               ]
@@ -5918,6 +5918,266 @@
               ]
             }
           }
+        },
+        {
+          "name": "Create Pricing Override",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Cleared up front (not just left stale on failure): a prior run's id must never",
+                  "// leak into this run and have the teardown below delete someone else's override.",
+                  "pm.collectionVariables.unset('pricing_override_id');",
+                  "var name = 'e2e-pricing-override-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('pricing_override_name', name);",
+                  "pm.collectionVariables.set('pricing_override_model', 'gpt-4o-mini');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: name,",
+                  "  scope_kind: 'provider',",
+                  "  provider_id: 'openai',",
+                  "  match_type: 'exact',",
+                  "  pattern: pm.collectionVariables.get('pricing_override_model'),",
+                  "  request_types: ['chat_completion'],",
+                  "  patch: { input_cost_per_token: 0.123456, output_cost_per_token: 0.234567 }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Create returns the pricing override', function () {",
+                  "  pm.expect(body, 'JSON response body').to.not.equal(null);",
+                  "  pm.expect(body).to.have.property('pricing_override');",
+                  "  pm.expect(body.pricing_override).to.have.property('id');",
+                  "  pm.expect(body.pricing_override.id).to.be.a('string').and.not.empty;",
+                  "});",
+                  "// Leave pricing_override_id unset when the create failed, so the dependent requests skip.",
+                  "if (body && body.pricing_override && body.pricing_override.id) {",
+                  "  pm.collectionVariables.set('pricing_override_id', body.pricing_override.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Model Details With Pricing Override",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&query={{pricing_override_model}}&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "query",
+                  "value": "{{pricing_override_model}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('pricing_override_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = pm.response.json();",
+                  "var overrideId = pm.collectionVariables.get('pricing_override_id');",
+                  "var modelName = pm.collectionVariables.get('pricing_override_model');",
+                  "var row = (body.models || []).filter(function (m) { return m.name === modelName; })[0];",
+                  "pm.test('Target model is present in the details list', function () {",
+                  "  pm.expect(row, 'expected a row for ' + modelName + ' in ' + JSON.stringify((body.models || []).map(function (m) { return m.name; }))).to.not.equal(undefined);",
+                  "});",
+                  "if (row) {",
+                  "  pm.test('Model row carries overridden_pricing for the patched fields', function () {",
+                  "    pm.expect(row.overridden_pricing, 'overridden_pricing').to.be.an('object');",
+                  "    pm.expect(row.overridden_pricing.input_cost_per_token).to.equal(0.123456);",
+                  "    pm.expect(row.overridden_pricing.output_cost_per_token).to.equal(0.234567);",
+                  "  });",
+                  "  pm.test('Model row references the applied override id', function () {",
+                  "    pm.expect(row.applied_override_id).to.equal(overrideId);",
+                  "  });",
+                  "}",
+                  "pm.test('Top-level pricing_overrides map carries a deduplicated summary', function () {",
+                  "  pm.expect(body.pricing_overrides, 'pricing_overrides').to.be.an('object');",
+                  "  pm.expect(body.pricing_overrides).to.have.property(overrideId);",
+                  "  pm.expect(body.pricing_overrides[overrideId].pattern).to.equal(modelName);",
+                  "  pm.expect(body.pricing_overrides[overrideId].scope_kind).to.equal('provider');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Pricing Override",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/pricing-overrides/{{pricing_override_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{pricing_override_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('pricing_override_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Delete confirms removal', function () {",
+                  "  pm.expect(body, 'JSON response body').to.not.equal(null);",
+                  "  pm.expect(body.message || '').to.match(/deleted/i);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Model Details After Delete",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&query={{pricing_override_model}}&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "query",
+                  "value": "{{pricing_override_model}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('pricing_override_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = pm.response.json();",
+                  "var overrideId = pm.collectionVariables.get('pricing_override_id');",
+                  "var modelName = pm.collectionVariables.get('pricing_override_model');",
+                  "var row = (body.models || []).filter(function (m) { return m.name === modelName; })[0];",
+                  "pm.test('Deleted override no longer appears in pricing_overrides', function () {",
+                  "  pm.expect(!body.pricing_overrides || !body.pricing_overrides[overrideId], 'stale override still present').to.equal(true);",
+                  "});",
+                  "if (row) {",
+                  "  pm.test('Model row no longer carries the deleted override', function () {",
+                  "    pm.expect(row.applied_override_id, 'applied_override_id should be cleared').to.not.equal(overrideId);",
+                  "  });",
+                  "}",
+                  "pm.collectionVariables.unset('pricing_override_id');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         }
       ]
     },

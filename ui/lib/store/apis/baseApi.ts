@@ -176,6 +176,7 @@ export const baseApi = createApi({
 		"RoutingRules",
 		"PricingOverrides",
 		"MCPToolGroups",
+		"VirtualMCPs",
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",
@@ -185,6 +186,7 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"AccessProfiles",
+		"Projects",
 		"BusinessUnits",
 		"PromptDeployments",
 		"AuthType",
@@ -208,6 +210,7 @@ export const baseApi = createApi({
 		"EdgeApps",
 		"EdgeMCPServers",
 		"EdgeConfig",
+		"Notifications",
 	],
 	endpoints: () => ({}),
 });

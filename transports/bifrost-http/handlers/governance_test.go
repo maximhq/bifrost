@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,6 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,10 +57,19 @@ func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreT
 
 type mockRotateConfigStore struct {
 	configstore.ConfigStore
-	virtualKeys  map[string]*configstoreTables.TableVirtualKey
-	modelConfigs map[string]*configstoreTables.TableModelConfig
-	updates      int
-	updateErr    error
+	virtualKeys     map[string]*configstoreTables.TableVirtualKey
+	modelConfigs    map[string]*configstoreTables.TableModelConfig
+	clientConfig    *configstore.ClientConfig
+	clientConfigErr error
+	updates         int
+	updateErr       error
+}
+
+func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
+	if m.clientConfigErr != nil {
+		return nil, m.clientConfigErr
+	}
+	return m.clientConfig, nil
 }
 
 func cloneTestVirtualKey(vk *configstoreTables.TableVirtualKey) *configstoreTables.TableVirtualKey {
@@ -92,6 +101,14 @@ func (m *mockRotateConfigStore) UpdateVirtualKey(_ context.Context, virtualKey *
 	}
 	updated := cloneTestVirtualKey(existing)
 	updated.Value = virtualKey.Value
+	// Mirror RDBConfigStore.UpdateVirtualKey: rotation fields are authoritative
+	// when the caller performs a rotation (RotatedAt set), carried over otherwise.
+	if virtualKey.RotatedAt != nil {
+		updated.PreviousValue = virtualKey.PreviousValue
+		updated.PreviousValueHash = virtualKey.PreviousValueHash
+		updated.PreviousValueExpiresAt = virtualKey.PreviousValueExpiresAt
+		updated.RotatedAt = virtualKey.RotatedAt
+	}
 	m.virtualKeys[virtualKey.ID] = updated
 	m.updates++
 	return nil
@@ -158,6 +175,56 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
 }
 
 // TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
@@ -279,164 +346,6 @@ func TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget(t *testing.T) {
 	}
 	if stored.OverrideMode != "" {
 		t.Fatalf("direct mirror override changed unexpectedly: %+v", stored)
-	}
-}
-
-type mockComplexityGovernanceManager struct {
-	GovernanceManager
-	reloadedConfig *complexity.AnalyzerConfig
-	reloadCalls    int
-	reloadErr      error
-}
-
-func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
-	m.reloadCalls++
-	m.reloadedConfig = config
-	return m.reloadErr
-}
-
-func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
-	t.Helper()
-	body, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal complexity analyzer config: %v", err)
-	}
-	return string(body)
-}
-
-func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
-	SetLogger(&mockLogger{})
-	store := setupPricingOverrideHandlerStore(t)
-	handler := &GovernanceHandler{
-		configStore:       store,
-		governanceManager: &mockComplexityGovernanceManager{},
-	}
-
-	ctx := newTestRequestCtx("")
-	handler.getComplexityAnalyzerConfig(ctx)
-
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	var resp complexity.AnalyzerConfig
-	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
-		t.Fatalf("expected default boundaries, got %+v", resp.TierBoundaries)
-	}
-	if len(resp.Keywords.CodeKeywords) == 0 {
-		t.Fatalf("expected default code keywords")
-	}
-}
-
-func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
-	SetLogger(&mockLogger{})
-	store := setupPricingOverrideHandlerStore(t)
-	manager := &mockComplexityGovernanceManager{}
-	handler := &GovernanceHandler{
-		configStore:       store,
-		governanceManager: manager,
-	}
-
-	cfg := complexity.DefaultAnalyzerConfig()
-	cfg.TierBoundaries.SimpleMedium = 0.12
-	cfg.TierBoundaries.MediumComplex = 0.34
-	cfg.TierBoundaries.ComplexReasoning = 0.78
-	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
-
-	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
-	handler.updateComplexityAnalyzerConfig(ctx)
-
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if manager.reloadCalls != 1 {
-		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
-	}
-	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.ComplexReasoning != 0.78 {
-		t.Fatalf("expected reload with normalized config, got %+v", manager.reloadedConfig)
-	}
-
-	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
-	if err != nil {
-		t.Fatalf("get stored config: %v", err)
-	}
-	if stored == nil || len(stored.Keywords.CodeKeywords) != 2 || stored.Keywords.CodeKeywords[0] != "api" {
-		t.Fatalf("expected normalized stored keywords, got %+v", stored)
-	}
-}
-
-func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
-	SetLogger(&mockLogger{})
-	store := setupPricingOverrideHandlerStore(t)
-	handler := &GovernanceHandler{
-		configStore:       store,
-		governanceManager: &mockComplexityGovernanceManager{},
-	}
-
-	valid := complexity.DefaultAnalyzerConfig()
-	validBody := testComplexityAnalyzerPayload(t, valid)
-	invalidBoundaries := valid
-	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
-	emptyKeywords := valid
-	emptyKeywords.Keywords.CodeKeywords = nil
-
-	tests := []struct {
-		name string
-		body string
-		want string
-	}{
-		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "Invalid request payload"},
-		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
-		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
-		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := newTestRequestCtx(tt.body)
-			handler.updateComplexityAnalyzerConfig(ctx)
-			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
-				t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-			}
-			if !strings.Contains(string(ctx.Response.Body()), tt.want) {
-				t.Fatalf("expected response to contain %q, got %s", tt.want, string(ctx.Response.Body()))
-			}
-		})
-	}
-}
-
-func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
-	SetLogger(&mockLogger{})
-	store := setupPricingOverrideHandlerStore(t)
-	manager := &mockComplexityGovernanceManager{}
-	handler := &GovernanceHandler{
-		configStore:       store,
-		governanceManager: manager,
-	}
-
-	custom := complexity.DefaultAnalyzerConfig()
-	custom.TierBoundaries.ComplexReasoning = 0.80
-	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
-		t.Fatalf("seed custom config: %v", err)
-	}
-
-	ctx := newTestRequestCtx("")
-	handler.resetComplexityAnalyzerConfig(ctx)
-
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if manager.reloadCalls != 1 {
-		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
-	}
-	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
-	if err != nil {
-		t.Fatalf("get stored config: %v", err)
-	}
-	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
-		t.Fatalf("expected stored defaults, got %+v", stored)
 	}
 }
 
@@ -1267,6 +1176,207 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 }
 
+func TestRotateVirtualKey_CooldownStoresPreviousValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {
+				ID:    "vk-1",
+				Name:  "Production",
+				Value: *schemas.NewSecretVar("sk-bf-old"),
+			},
+		},
+		clientConfig: &configstore.ClientConfig{
+			VKRotationCooldown: schemas.Duration(5 * time.Minute),
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+	before := time.Now().UTC()
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.Value.GetValue() == "sk-bf-old" {
+		t.Fatal("expected virtual key value to rotate")
+	}
+	if updated.PreviousValue.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected previous value to hold the retired value, got %q", updated.PreviousValue.GetValue())
+	}
+	if updated.RotatedAt == nil {
+		t.Fatal("expected rotated_at to be set")
+	}
+	if updated.PreviousValueExpiresAt == nil {
+		t.Fatal("expected previous_value_expires_at to be set")
+	}
+	wantExpiry := before.Add(5 * time.Minute)
+	if updated.PreviousValueExpiresAt.Before(wantExpiry.Add(-time.Minute)) || updated.PreviousValueExpiresAt.After(wantExpiry.Add(time.Minute)) {
+		t.Fatalf("expected expiry near %v, got %v", wantExpiry, updated.PreviousValueExpiresAt)
+	}
+}
+
+func TestRotateVirtualKey_ZeroCooldownClearsPreviousValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	stale := time.Now().UTC().Add(10 * time.Minute)
+	rotatedEarlier := time.Now().UTC().Add(-time.Hour)
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {
+				ID:    "vk-1",
+				Name:  "Production",
+				Value: *schemas.NewSecretVar("sk-bf-old"),
+				// In-flight grace state from an earlier rotation performed while
+				// a cooldown was configured.
+				PreviousValue:          *schemas.NewSecretVar("sk-bf-older"),
+				PreviousValueExpiresAt: &stale,
+				RotatedAt:              &rotatedEarlier,
+			},
+		},
+		// No client config row: cooldown resolves to 0 (immediate flip).
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.PreviousValue.IsSet() {
+		t.Fatalf("expected previous value to be cleared at zero cooldown, got %q", updated.PreviousValue.GetValue())
+	}
+	if updated.PreviousValueExpiresAt != nil {
+		t.Fatal("expected previous_value_expires_at to be cleared at zero cooldown")
+	}
+	if updated.RotatedAt == nil || !updated.RotatedAt.After(rotatedEarlier) {
+		t.Fatal("expected rotated_at to advance on rotation")
+	}
+}
+
+// rotateWithDefaultCooldownStore builds a VK that already carries an in-flight
+// grace window, so each default-state test proves rotation both refuses to open
+// a new window and revokes the existing one.
+func rotateWithDefaultCooldownStore(store *mockRotateConfigStore, t *testing.T) *configstoreTables.TableVirtualKey {
+	t.Helper()
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.Value.GetValue() == "sk-bf-old" {
+		t.Fatal("expected virtual key value to rotate")
+	}
+	if updated.PreviousValue.IsSet() {
+		t.Fatalf("expected no grace value when the cooldown is unset, got %q", updated.PreviousValue.GetValue())
+	}
+	if updated.PreviousValueHash != "" {
+		t.Fatalf("expected the retired hash to be cleared, got %q", updated.PreviousValueHash)
+	}
+	if updated.PreviousValueExpiresAt != nil {
+		t.Fatalf("expected no grace window when the cooldown is unset, got %v", updated.PreviousValueExpiresAt)
+	}
+	return updated
+}
+
+func staleGraceVirtualKeys() map[string]*configstoreTables.TableVirtualKey {
+	stale := time.Now().UTC().Add(10 * time.Minute)
+	rotatedEarlier := time.Now().UTC().Add(-time.Hour)
+	return map[string]*configstoreTables.TableVirtualKey{
+		"vk-1": {
+			ID:                     "vk-1",
+			Name:                   "Production",
+			Value:                  *schemas.NewSecretVar("sk-bf-old"),
+			PreviousValue:          *schemas.NewSecretVar("sk-bf-older"),
+			PreviousValueHash:      "stale-hash",
+			PreviousValueExpiresAt: &stale,
+			RotatedAt:              &rotatedEarlier,
+		},
+	}
+}
+
+// TestRotateVirtualKey_DefaultUnsetCooldownRevokesImmediately covers the state
+// every install starts in: a client config exists but vk_rotation_cooldown was
+// never configured. Rotation must take effect immediately - no grace window for
+// the value being retired, and any window left over from an earlier rotation is
+// revoked on the spot.
+func TestRotateVirtualKey_DefaultUnsetCooldownRevokesImmediately(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: staleGraceVirtualKeys(),
+		// A real config row with other settings populated, but the cooldown
+		// left at its zero value - the shape of a config saved by any UI page
+		// that does not touch the rotation setting.
+		clientConfig: &configstore.ClientConfig{LogRetentionDays: 30},
+	}
+	rotateWithDefaultCooldownStore(store, t)
+}
+
+// TestRotateVirtualKey_NoClientConfigRevokesImmediately covers a brand-new
+// install with no persisted client config at all.
+func TestRotateVirtualKey_NoClientConfigRevokesImmediately(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{virtualKeys: staleGraceVirtualKeys()}
+	rotateWithDefaultCooldownStore(store, t)
+}
+
+// TestRotateVirtualKey_ClientConfigErrorRevokesImmediately pins the fail-closed
+// direction: if the cooldown cannot be read, rotation still happens and the old
+// value dies immediately rather than being granted an unbounded grace window.
+func TestRotateVirtualKey_ClientConfigErrorRevokesImmediately(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys:     staleGraceVirtualKeys(),
+		clientConfigErr: errors.New("config store unavailable"),
+	}
+	rotateWithDefaultCooldownStore(store, t)
+}
+
+// TestRotateVirtualKeys_BulkDefaultCooldownRevokesImmediately covers the bulk
+// endpoint on the same default state.
+func TestRotateVirtualKeys_BulkDefaultCooldownRevokesImmediately(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys:  staleGraceVirtualKeys(),
+		clientConfig: &configstore.ClientConfig{LogRetentionDays: 30},
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody([]byte(`{"ids":["vk-1"]}`))
+	h.rotateVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.PreviousValue.IsSet() || updated.PreviousValueExpiresAt != nil {
+		t.Fatalf("expected bulk rotation at the default cooldown to revoke immediately, got %#v", updated)
+	}
+}
+
 func TestRotateVirtualKey_NotFound(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -1571,6 +1681,7 @@ type quotaResponse struct {
 	IsActive        bool                                              `json:"is_active"`
 	Budgets         []quotaBudget                                     `json:"budgets"`
 	RateLimit       *configstoreTables.TableRateLimit                 `json:"rate_limit"`
+	RateLimits      []SourcedRateLimit                                `json:"rate_limits"`
 	ProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig `json:"provider_configs"`
 	Models          []quotaModelUsage                                 `json:"model_configs"`
 }
@@ -1775,8 +1886,8 @@ func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *
 			}
 			return &ExternalQuotaBudgetResult{
 				// The access-profile budget that holds the real ongoing usage.
-				Budgets: []configstoreTables.TableBudget{
-					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
+				Budgets: []SourcedBudget{
+					{TableBudget: configstoreTables.TableBudget{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart}},
 				},
 				Managed:     true,
 				UsageUserID: "user-1",
@@ -2026,6 +2137,15 @@ func TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty(t *testing.T) {
 	}
 	if len(resp.ProviderConfigs) != 1 || len(resp.ProviderConfigs[0].Budgets) != 0 {
 		t.Fatalf("expected provider config with no budgets, got %#v", resp.ProviderConfigs)
+	}
+	if resp.RateLimits == nil {
+		t.Fatalf("expected rate_limits to serialize as [], got a nil slice (renders as null)")
+	}
+	if len(resp.RateLimits) != 0 {
+		t.Fatalf("expected no rate limits, got %#v", resp.RateLimits)
+	}
+	if !bytes.Contains(ctx.Response.Body(), []byte(`"rate_limits":[]`)) {
+		t.Fatalf("expected raw response to contain \"rate_limits\":[], got %s", string(ctx.Response.Body()))
 	}
 }
 
@@ -2294,6 +2414,177 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	}
 	if call.EndTime == nil || call.EndTime.Before(cycleStart) {
 		t.Fatalf("expected EndTime >= StartTime, got %v", call.EndTime)
+	}
+}
+
+// newQuotaGraceTestStore creates a real SQLite-backed store holding one VK whose
+// value was rotated from sk-bf-grace-old to sk-bf-grace-new with the given
+// grace-window expiry.
+func newQuotaGraceTestStore(t *testing.T, expiresAt time.Time) configstore.ConfigStore {
+	t.Helper()
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "quota_grace.db")},
+	}, &mockLogger{})
+	if err != nil {
+		t.Fatalf("failed to create config store: %v", err)
+	}
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       "vk-grace",
+		Name:     "GraceProd",
+		Value:    *schemas.NewSecretVar("sk-bf-grace-old"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("failed to create VK: %v", err)
+	}
+
+	now := time.Now().UTC()
+	vk.Value = *schemas.NewSecretVar("sk-bf-grace-new")
+	vk.PreviousValue = *schemas.NewSecretVar("sk-bf-grace-old")
+	vk.PreviousValueExpiresAt = &expiresAt
+	vk.RotatedAt = &now
+	if err := store.UpdateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("failed to rotate VK: %v", err)
+	}
+	return store
+}
+
+// TestGetVirtualKeyQuota_GraceValueWithRealStore verifies the quota endpoint
+// honors a rotated-out value that is still inside its rotation grace window,
+// matching the in-memory governance store's grace-period authentication.
+func TestGetVirtualKeyQuota_GraceValueWithRealStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newQuotaGraceTestStore(t, time.Now().UTC().Add(5*time.Minute))
+	h := &GovernanceHandler{configStore: store}
+
+	var req fasthttp.Request
+	req.Header.Set("x-bf-vk", "sk-bf-grace-old")
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getVirtualKeyQuota(reqCtx)
+
+	if reqCtx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200 for in-window grace value, got %d: %s", reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(reqCtx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.VirtualKeyName != "GraceProd" || !resp.IsActive {
+		t.Fatalf("unexpected identity fields: name=%q active=%v", resp.VirtualKeyName, resp.IsActive)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExpiredGraceValueUnauthorized verifies the quota
+// endpoint rejects a rotated-out value once its grace window has closed.
+func TestGetVirtualKeyQuota_ExpiredGraceValueUnauthorized(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newQuotaGraceTestStore(t, time.Now().UTC().Add(-time.Minute))
+	h := &GovernanceHandler{configStore: store}
+
+	var req fasthttp.Request
+	req.Header.Set("x-bf-vk", "sk-bf-grace-old")
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getVirtualKeyQuota(reqCtx)
+
+	if reqCtx.Response.StatusCode() != 401 {
+		t.Fatalf("expected status 401 for expired grace value, got %d: %s", reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	}
+}
+
+// TestGetVirtualKeyQuota_ExpiredVirtualKeyRejected verifies the quota endpoint
+// refuses a virtual key past its expires_at. The VK value is the only credential
+// on this route, so an expired key must stop reading its own governance data the
+// same way it stops being able to make inference requests.
+func TestGetVirtualKeyQuota_ExpiredVirtualKeyRejected(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	expired := time.Now().UTC().Add(-time.Hour)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:        "vk-expired",
+			Name:      "Expired",
+			IsActive:  &active,
+			ExpiresAt: &expired,
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-expired")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 403 {
+		t.Fatalf("expected status 403 for an expired VK, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "Virtual key has expired") {
+		t.Fatalf("expected the expiry reason in the body, got %s", string(ctx.Response.Body()))
+	}
+}
+
+// TestGetVirtualKeyQuota_UnexpiredVirtualKeyAllowed guards the boundary: a VK
+// whose expiry is still in the future keeps working.
+func TestGetVirtualKeyQuota_UnexpiredVirtualKeyAllowed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	future := time.Now().UTC().Add(time.Hour)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:        "vk-unexpired",
+			Name:      "Unexpired",
+			IsActive:  &active,
+			ExpiresAt: &future,
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-unexpired")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200 for an unexpired VK, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+// TestGetVirtualKeyQuota_InactiveVirtualKeyStillReadsQuota pins the deliberate
+// asymmetry with expiry: an inactive key still gets its quota, because the
+// response carries is_active so a dashboard can explain the state. Expiry is
+// rejected instead because there is nothing left to act on.
+func TestGetVirtualKeyQuota_InactiveVirtualKeyStillReadsQuota(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	inactive := false
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-inactive",
+			Name:     "Inactive",
+			IsActive: &inactive,
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-inactive")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200 for an inactive VK, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.IsActive {
+		t.Fatalf("expected is_active false, got %#v", resp)
 	}
 }
 
