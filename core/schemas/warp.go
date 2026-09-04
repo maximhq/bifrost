@@ -168,6 +168,8 @@ const (
 	// WarpUnavailableNoLogStore means the deployment persists no logs. The
 	// dashboard hides Warp.
 	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
+	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
+	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
 )
 
 // WarpUnavailableResponse is the 503 body for both reasons above.
