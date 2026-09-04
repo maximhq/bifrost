@@ -1083,6 +1083,14 @@ func (m *MockConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKe
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	return nil
 }

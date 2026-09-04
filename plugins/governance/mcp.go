@@ -1,0 +1,175 @@
+package governance
+
+import (
+	"sort"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
+)
+
+// mcpClientTools is one client's accumulated grant: every tool, or a named subset.
+type mcpClientTools struct {
+	everyTool bool
+	named     []string
+	seen      map[string]bool
+	// name is the client's display name if a source carried one; else resolved at emit time.
+	name string
+	// explicit marks a client named by an MCP config: emitted even with no tools, and blocks the
+	// allowed-by-default fallback.
+	explicit bool
+}
+
+// mcpToolAccumulator gathers per-client tool grants from a key's MCP configs and Virtual MCPs,
+// applying the whole-client, per-client union, and wildcard-collapse rules in one place.
+type mcpToolAccumulator struct {
+	byClient map[string]*mcpClientTools
+	order    []string
+}
+
+func newMCPToolAccumulator(capacity int) *mcpToolAccumulator {
+	return &mcpToolAccumulator{byClient: make(map[string]*mcpClientTools, capacity)}
+}
+
+// client returns a client's entry, registering it on first sight.
+func (acc *mcpToolAccumulator) client(clientID string) *mcpClientTools {
+	entry, ok := acc.byClient[clientID]
+	if !ok {
+		entry = &mcpClientTools{seen: make(map[string]bool)}
+		acc.byClient[clientID] = entry
+		acc.order = append(acc.order, clientID)
+	}
+	return entry
+}
+
+// grantWholeClient grants every tool a client has.
+func (acc *mcpToolAccumulator) grantWholeClient(clientID string) {
+	if clientID != "" {
+		acc.client(clientID).everyTool = true
+	}
+}
+
+// grantTool grants one tool, or every tool on the wildcard.
+func (acc *mcpToolAccumulator) grantTool(clientID, tool string) {
+	if clientID == "" || tool == "" {
+		return
+	}
+	entry := acc.client(clientID)
+	if tool == grant.Wildcard {
+		entry.everyTool = true
+		return
+	}
+	if !entry.seen[tool] {
+		entry.seen[tool] = true
+		entry.named = append(entry.named, tool)
+	}
+}
+
+// addMCPConfig folds in a key's own config: the client is registered even with no tools, and carries
+// its own name.
+func (acc *mcpToolAccumulator) addMCPConfig(cfg *configstoreTables.TableVirtualKeyMCPConfig) {
+	clientID := cfg.MCPClient.ClientID
+	if clientID == "" {
+		return
+	}
+	entry := acc.client(clientID)
+	entry.explicit = true
+	if cfg.MCPClient.Name != "" {
+		entry.name = cfg.MCPClient.Name
+	}
+	for _, tool := range cfg.ToolsToExecute {
+		acc.grantTool(clientID, tool)
+	}
+}
+
+// addVirtualMCP folds in an enabled Virtual MCP; a spec with no tool names means the whole client.
+func (acc *mcpToolAccumulator) addVirtualMCP(vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil || !vmcp.Enabled {
+		return
+	}
+	for _, spec := range vmcp.ParsedTools {
+		if spec.MCPClientID == "" {
+			continue
+		}
+		if len(spec.ToolNames) == 0 {
+			acc.grantWholeClient(spec.MCPClientID)
+			continue
+		}
+		for _, tool := range spec.ToolNames {
+			acc.grantTool(spec.MCPClientID, tool)
+		}
+	}
+}
+
+// configuredClients is the set of clients named, whatever they granted; the allowed-by-default
+// fallback must not reopen them.
+func (acc *mcpToolAccumulator) configuredClients() map[string]struct{} {
+	configured := make(map[string]struct{}, len(acc.byClient))
+	for clientID := range acc.byClient {
+		configured[clientID] = struct{}{}
+	}
+	return configured
+}
+
+// mcpPermitsFromAccumulator emits one permit per client, resolving unnamed clients against the
+// configured set. A client granting no tool is dropped unless named explicitly; one with no
+// resolvable name is dropped. holderName names the holder in the warning.
+func (gs *LocalGovernanceStore) mcpPermitsFromAccumulator(acc *mcpToolAccumulator, holderName string) []schemas.MCPPermit {
+	// Sorted for a stable permit across nodes and rebuilds.
+	sort.Strings(acc.order)
+	var clientNames map[string]string
+	if gs.inMemoryStore != nil {
+		clientNames = gs.inMemoryStore.GetMCPClientNames()
+	}
+	result := make([]schemas.MCPPermit, 0, len(acc.order))
+	for _, clientID := range acc.order {
+		entry := acc.byClient[clientID]
+		tools := entry.named
+		if entry.everyTool {
+			tools = []string{grant.Wildcard}
+		}
+		if len(tools) == 0 && !entry.explicit {
+			continue
+		}
+		clientName := entry.name
+		if clientName == "" {
+			clientName = clientNames[clientID]
+		}
+		if clientName == "" {
+			gs.logger.Warn("governance: virtual key %q grants tools of MCP client %q, which has no configured name; those tools are not reachable until the client is configured", holderName, clientID)
+			continue
+		}
+		result = append(result, schemas.MCPPermit{
+			Client:     clientID,
+			ClientName: clientName,
+			Tools:      tools,
+		})
+	}
+	return result
+}
+
+// AppendMCPPermitsAllowedByDefault adds a wildcard permit for every allowed-by-default client the
+// holder did not configure itself; a configured client is left as-is, even if it grants nothing.
+// Appended in id order for a stable permit. Every holder appends the same way, so this is one shared
+// function.
+func AppendMCPPermitsAllowedByDefault(mcpPermits []schemas.MCPPermit, configured map[string]struct{}, allowedByDefault map[string]string) []schemas.MCPPermit {
+	if len(allowedByDefault) == 0 {
+		return mcpPermits
+	}
+	clientIDs := make([]string, 0, len(allowedByDefault))
+	for clientID := range allowedByDefault {
+		if _, ok := configured[clientID]; ok {
+			continue
+		}
+		clientIDs = append(clientIDs, clientID)
+	}
+	sort.Strings(clientIDs)
+	for _, clientID := range clientIDs {
+		mcpPermits = append(mcpPermits, schemas.MCPPermit{
+			Client:     clientID,
+			ClientName: allowedByDefault[clientID],
+			Tools:      []string{grant.Wildcard},
+		})
+	}
+	return mcpPermits
+}

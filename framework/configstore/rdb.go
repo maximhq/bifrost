@@ -4477,6 +4477,29 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Contex
 	return configs, nil
 }
 
+// GetVirtualMCPs returns every definition (enabled and disabled); AfterFind decodes each row's
+// ParsedTools.
+func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error) {
+	var defs []tables.TableVirtualMCP
+	if err := s.DB().WithContext(ctx).Find(&defs).Error; err != nil {
+		return nil, err
+	}
+	return defs, nil
+}
+
+// GetVirtualMCPAssignments returns each VK's assigned Virtual MCP IDs, keyed by VK row ID.
+func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
+	var assignments []tables.TableVirtualKeyVirtualMCP
+	if err := s.DB().WithContext(ctx).Find(&assignments).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string][]uint, len(assignments))
+	for _, a := range assignments {
+		out[a.VirtualKeyID] = append(out[a.VirtualKeyID], a.VirtualMCPID)
+	}
+	return out, nil
+}
+
 // GetVirtualKeyMCPConfigsByMCPClientIDs retrieves all VK MCP configs for a set of MCP client IDs in one query.
 func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
 	if len(mcpClientIDs) == 0 {

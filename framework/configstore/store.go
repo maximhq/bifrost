@@ -349,6 +349,12 @@ type ConfigStore interface {
 	UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
+	// GetVirtualMCPs returns every Virtual MCP definition (enabled and disabled), tools decoded, for
+	// the governance cache. GetVirtualMCPAssignments returns each VK's assigned definition IDs, keyed
+	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
+	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
+	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
+
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)

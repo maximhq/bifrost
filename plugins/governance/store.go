@@ -46,6 +46,10 @@ type LocalGovernanceStore struct {
 	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
 	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	// Keying definitions by ID (not by VK) makes an edit one Store that every assigned VK reads at once.
+	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
+	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
+	virtualMCPAssignMu sync.Mutex // serializes the assignment-slice read-modify-write in attach/detach
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -1425,52 +1429,131 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		})
 	}
 
-	// The key's own MCP configs come first, so they own their clients.
-	mcpPermits := make([]schemas.MCPPermit, 0, len(vk.MCPConfigs)+len(allowedByDefaultClients))
-	configured := make(map[string]struct{}, len(vk.MCPConfigs))
-	for _, mcpConfig := range vk.MCPConfigs {
-		configured[mcpConfig.MCPClient.ClientID] = struct{}{}
-		mcpPermits = append(mcpPermits, schemas.MCPPermit{
-			Client:     mcpConfig.MCPClient.ClientID,
-			ClientName: mcpConfig.MCPClient.Name,
-			Tools:      mcpConfig.ToolsToExecute,
-		})
+	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
+	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
+	vmcpIDs := gs.assignedVirtualMCPIDs(vk.ID)
+	acc := newMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
+	for i := range vk.MCPConfigs {
+		acc.addMCPConfig(&vk.MCPConfigs[i])
 	}
-
-	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, configured, allowedByDefaultClients)
+	for _, id := range vmcpIDs {
+		if def := gs.virtualMCPByID(id); def != nil && def.Enabled {
+			acc.addVirtualMCP(def)
+		}
+	}
+	mcpPermits := gs.mcpPermitsFromAccumulator(acc, vk.Name)
+	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.configuredClients(), allowedByDefaultClients)
 
 	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
 }
 
-// AppendMCPPermitsAllowedByDefault adds a permit for every client allowed by default that the holder
-// has not configured itself: all of the client's tools, under the client's name. A client in
-// configured is left alone whatever it was configured with, since an explicit assignment decides for
-// its holder even when it grants nothing.
-//
-// One function because every kind of holder appends the same way: a holder that has built its own
-// list hands over the clients it named and gets the list back with the defaults added. Appended in
-// id order, so the permit, and everything derived from it, is stable regardless of map iteration
-// order.
-func AppendMCPPermitsAllowedByDefault(mcpPermits []schemas.MCPPermit, configured map[string]struct{}, allowedByDefault map[string]string) []schemas.MCPPermit {
-	if len(allowedByDefault) == 0 {
-		return mcpPermits
+// virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
+func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.TableVirtualMCP {
+	if v, ok := gs.virtualMCPs.Load(id); ok {
+		return v.(*configstoreTables.TableVirtualMCP)
 	}
-	clientIDs := make([]string, 0, len(allowedByDefault))
-	for clientID := range allowedByDefault {
-		if _, ok := configured[clientID]; ok {
-			continue
+	return nil
+}
+
+// assignedVirtualMCPIDs returns a VK's assigned Virtual MCP IDs, or nil if none.
+func (gs *LocalGovernanceStore) assignedVirtualMCPIDs(vkID string) []uint {
+	if v, ok := gs.virtualMCPIDsByVK.Load(vkID); ok {
+		return v.([]uint)
+	}
+	return nil
+}
+
+// loadVirtualMCPs fills both caches from the store at startup; surgical updates keep them current
+// after. On error the caches are left as-is, not cleared.
+func (gs *LocalGovernanceStore) loadVirtualMCPs(ctx context.Context) error {
+	if gs.configStore == nil {
+		return nil
+	}
+	defs, err := gs.configStore.GetVirtualMCPs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP definitions: %w", err)
+	}
+	for i := range defs {
+		def := defs[i]
+		gs.virtualMCPs.Store(def.ID, &def)
+	}
+	assignments, err := gs.configStore.GetVirtualMCPAssignments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP assignments: %w", err)
+	}
+	for vkID, ids := range assignments {
+		// Sorted so resolution processes a VK's vMCPs in a stable order, keeping the permit's per-client
+		// tool union deterministic across nodes and rebuilds.
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		gs.virtualMCPIDsByVK.Store(vkID, ids)
+	}
+	return nil
+}
+
+// CreateVirtualMCPInMemory stores one definition by ID. Definitions are shared, so this one Store is
+// the whole ripple across every VK the definition is assigned to.
+func (gs *LocalGovernanceStore) CreateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil {
+		return
+	}
+	clone := *vmcp
+	// Deep-copy the tool slices so the cached definition is independent of the caller's struct (a plain
+	// struct copy shares the ParsedTools and ToolNames backing arrays). Matches the *InMemory siblings.
+	clone.ParsedTools = make([]configstoreTables.MCPToolSpec, len(vmcp.ParsedTools))
+	for i, spec := range vmcp.ParsedTools {
+		spec.ToolNames = append([]string(nil), spec.ToolNames...)
+		clone.ParsedTools[i] = spec
+	}
+	gs.virtualMCPs.Store(clone.ID, &clone)
+}
+
+// UpdateVirtualMCPInMemory replaces a cached definition.
+func (gs *LocalGovernanceStore) UpdateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	gs.CreateVirtualMCPInMemory(vmcp)
+}
+
+// DeleteVirtualMCPInMemory drops a definition; resolution skips assignment IDs whose definition is
+// gone, so VK slices need no prune.
+func (gs *LocalGovernanceStore) DeleteVirtualMCPInMemory(vmcpID uint) {
+	gs.virtualMCPs.Delete(vmcpID)
+}
+
+// AttachVirtualMCPInMemory adds an assignment; DetachVirtualMCPInMemory removes one. Both rewrite the
+// VK's ID slice under virtualMCPAssignMu so concurrent same-VK writes don't lose an update.
+func (gs *LocalGovernanceStore) AttachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	for _, id := range ids {
+		if id == vmcpID {
+			return
 		}
-		clientIDs = append(clientIDs, clientID)
 	}
-	sort.Strings(clientIDs)
-	for _, clientID := range clientIDs {
-		mcpPermits = append(mcpPermits, schemas.MCPPermit{
-			Client:     clientID,
-			ClientName: allowedByDefault[clientID],
-			Tools:      []string{grant.Wildcard},
-		})
+	next := make([]uint, len(ids)+1)
+	copy(next, ids)
+	next[len(ids)] = vmcpID
+	sort.Slice(next, func(i, j int) bool { return next[i] < next[j] })
+	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	if len(ids) == 0 {
+		return
 	}
-	return mcpPermits
+	next := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id != vmcpID {
+			next = append(next, id)
+		}
+	}
+	if len(next) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	gs.virtualMCPIDsByVK.Store(vkID, next)
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store
@@ -2923,6 +3006,13 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	rebuildStart := time.Now()
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 	gs.logger.Info("[startup-timing] loadFromDatabase rebuildInMemoryStructures took %v", time.Since(rebuildStart))
+
+	// Load the Virtual MCP caches (DB-only: vMCPs have no config-memory form, and the config-memory
+	// init path carries no config store). A failure is logged, not fatal: it withholds Virtual MCP
+	// tools, never denies a key what it already has.
+	if err := gs.loadVirtualMCPs(ctx); err != nil {
+		gs.logger.Warn("failed to load virtual MCP assignments: %v", err)
+	}
 
 	return nil
 }
