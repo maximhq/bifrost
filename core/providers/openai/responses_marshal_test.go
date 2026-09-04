@@ -179,6 +179,8 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
 		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
 		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
+		{"glm-5.3-flash keeps max", "glm-5.3-flash", "max", "max"},
+		{"namespaced glm-5.3-flash keeps max", "vllm/zai-org/GLM-5.3-Flash", "max", "max"},
 		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
 		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
 		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
