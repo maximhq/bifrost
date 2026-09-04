@@ -1091,13 +1091,12 @@ func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, result)
 }
 
-// calculateBucketSize determines appropriate bucket size based on time range.
-//
-// Lives in logstore so Warp's tools, which are in the framework module and
-// cannot import this package, pick their buckets by exactly the same rule.
-// Two copies of a threshold table drift, and the symptom is two charts of the
-// same range disagreeing about their own resolution.
+// calculateBucketSize determines appropriate bucket size based on time range
 func calculateBucketSize(start, end *time.Time) int64 {
+	// Lives in logstore so Warp's tools, which are in the framework module and
+	// cannot import this package, pick their buckets by exactly the same rule.
+	// Two copies of a threshold table drift, and the symptom is two charts of the
+	// same range disagreeing about their own resolution.
 	return logstore.DefaultBucketSize(start, end)
 }
 

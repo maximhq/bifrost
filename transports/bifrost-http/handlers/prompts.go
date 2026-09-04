@@ -137,28 +137,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
-	Variables     tables.PromptVariables  `json:"variables,omitempty"`
+	Variables     tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                  `json:"name"`
-	VersionID   *uint                   `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	VersionID   *uint                  `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage `json:"messages,omitempty"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                  `json:"name"`
-	Messages    []tables.PromptMessage  `json:"messages"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	Messages    []tables.PromptMessage `json:"messages"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session

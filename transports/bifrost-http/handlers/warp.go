@@ -7,6 +7,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -22,9 +23,10 @@ type WarpHandler struct {
 
 // NewWarpHandler builds the handler and the service behind it. A nil logManager
 // is a supported deployment (logging disabled): Warp then serves only its
-// configuration routes, because its tools would have nothing to read.
-func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *WarpHandler {
-	opts := []warp.Option{warp.WithLogger(logger)}
+// configuration routes, because its tools would have nothing to read. A nil
+// catalog is likewise supported and simply leaves Warp's own spend unpriced.
+func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog)}
 	if logManager != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
 	}
