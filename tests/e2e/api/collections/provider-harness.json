@@ -140504,6 +140504,172 @@
           ]
         }
       ]
+    },
+    {
+      "name": "69. GLM-5.3-Flash max effort survives vLLM conversion",
+      "description": "Regression for GLM-5.3-Flash max being downgraded to high in the shared OpenAI converter. Requires a vllm key serving zai-org/GLM-5.3-Flash and client.allow_per_request_raw_override=true in the isolated harness gateway. Assert outbound raw_request, never infer effort from generated text or token counts. HF model card: https://huggingface.co/zai-org/GLM-5.3-Flash#note. Related: #6162 and #6054.",
+      "item": [
+        {
+          "name": "vllm/zai-org/GLM-5.3-Flash max effort chat completion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vllm/zai-org/GLM-5.3-Flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 7 + 5? Answer with the number only.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_tokens\": 100,\n  \"temperature\": 0,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var txt = pm.response.text();",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, txt).to.be.below(400); });",
+                  "var chunks = [];",
+                  "chunks.push(pm.response.json());",
+                  "var rr;",
+                  "chunks.forEach(function (chunk) { var raw = (chunk.extra_fields || {}).raw_request; if (raw) { rr = typeof raw === 'string' ? JSON.parse(raw) : raw; } });",
+                  "pm.test('outbound reasoning effort is preserved', function () {",
+                  "  pm.expect(rr, 'raw_request missing; enable allow_per_request_raw_override in the harness gateway').to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort).to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vllm/zai-org/GLM-5.3-Flash max effort streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vllm/zai-org/GLM-5.3-Flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 7 + 5? Answer with the number only.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_tokens\": 100,\n  \"temperature\": 0,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var txt = pm.response.text();",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, txt).to.be.below(400); });",
+                  "var chunks = [];",
+                  "txt.split('\\n').forEach(function (line) { if (line.indexOf('data:') !== 0) { return; } var data = line.slice(5).trim(); if (data && data !== '[DONE]') { chunks.push(JSON.parse(data)); } });",
+                  "var rr;",
+                  "chunks.forEach(function (chunk) { var raw = (chunk.extra_fields || {}).raw_request; if (raw) { rr = typeof raw === 'string' ? JSON.parse(raw) : raw; } });",
+                  "pm.test('outbound reasoning effort is preserved', function () {",
+                  "  pm.expect(rr, 'raw_request missing; enable allow_per_request_raw_override in the harness gateway').to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort).to.eql('max');",
+                  "});",
+                  "pm.test('stream terminates', function () { pm.expect(txt).to.include('data: [DONE]'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vllm/zai-org/GLM-5.3-Flash low effort chat completion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vllm/zai-org/GLM-5.3-Flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 7 + 5? Answer with the number only.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_tokens\": 100,\n  \"temperature\": 0,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var txt = pm.response.text();",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, txt).to.be.below(400); });",
+                  "var chunks = [];",
+                  "chunks.push(pm.response.json());",
+                  "var rr;",
+                  "chunks.forEach(function (chunk) { var raw = (chunk.extra_fields || {}).raw_request; if (raw) { rr = typeof raw === 'string' ? JSON.parse(raw) : raw; } });",
+                  "pm.test('outbound reasoning effort is preserved', function () {",
+                  "  pm.expect(rr, 'raw_request missing; enable allow_per_request_raw_override in the harness gateway').to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
