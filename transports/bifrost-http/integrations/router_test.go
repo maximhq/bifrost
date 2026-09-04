@@ -42,7 +42,7 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r := router.New()
-	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
 	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			ctx.SetStatusCode(fasthttp.StatusNoContent)
@@ -60,7 +60,7 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
-	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
+	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
 	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			ctx.SetStatusCode(fasthttp.StatusNoContent)
@@ -487,7 +487,7 @@ func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
@@ -528,7 +528,7 @@ func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}}`)
@@ -562,7 +562,7 @@ func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}x`)
@@ -598,7 +598,7 @@ func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
 			return err
 		},
 	}
-	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
 	server := &fasthttp.Server{
 		Handler: router.createHandler(route),
 	}

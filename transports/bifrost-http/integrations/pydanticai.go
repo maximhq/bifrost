@@ -18,7 +18,7 @@ type PydanticAIRouter struct {
 }
 
 // NewPydanticAIRouter creates a new PydanticAIRouter with the given bifrost client.
-func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PydanticAIRouter {
+func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PydanticAIRouter {
 	routes := []RouteConfig{}
 	// Add OpenAI routes to Pydantic AI for OpenAI API compatibility
 	// Supports: chat completions, embeddings, speech, transcriptions, responses
@@ -36,7 +36,7 @@ func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore,
 	// Supports: converse, converse-stream, invoke, invoke-with-response-stream
 	routes = append(routes, CreateBedrockRouteConfigs("/pydanticai", handlerStore)...)
 	return &PydanticAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

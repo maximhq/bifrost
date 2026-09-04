@@ -40,11 +40,29 @@ type mockModelsManager struct {
 	// key presented, or a deployment without governance.
 	access       schemas.Access
 	resolveCalls int
+	narrowCalls  int
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
 	m.resolveCalls++
 	return m.access, nil
+}
+
+// NarrowListModelsProviders stands in for the server, which is what resolves access and narrows
+// the fan-out in production. Kept observable so a caller can assert it was asked; the rule itself
+// is the server's, and is exercised there and against a live deployment.
+func (m *mockModelsManager) NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext) {
+	m.narrowCalls++
+	access, err := m.ResolveAccess(bifrostCtx)
+	if err != nil || access == nil {
+		return
+	}
+	granted := access.GrantedProvidersForModel("")
+	providers := make([]schemas.ModelProvider, 0, len(granted))
+	for _, provider := range granted {
+		providers = append(providers, schemas.ModelProvider(provider))
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
 }
 
 func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {

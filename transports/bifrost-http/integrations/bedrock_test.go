@@ -93,7 +93,7 @@ func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T)
 	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
 	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
-	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil)
+	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil, nil)
 	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/deprecated-model"},
 		{ID: "openai/current-model"},
@@ -529,7 +529,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 	}
 	close(stream)
 
-	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	cancelCalled := false
 	router.handleStreaming(ctx, nil, RouteConfig{
