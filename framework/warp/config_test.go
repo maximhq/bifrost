@@ -592,3 +592,29 @@ func TestWarpSaveConfigRejectsReusingALegacyDefaultNamespace(t *testing.T) {
 		require.ErrorContains(t, err, "log_vector_store_namespace", name)
 	}
 }
+
+// Warp must still answer questions on a deployment with no vector store.
+//
+// Config is what NewTurn calls on every chat request, so returning
+// ErrNoVectorStore there failed the whole feature - the handler maps it to 503
+// - rather than just the semantic tool. Semantic search is one of several
+// tools: buildToolsFor already adds semantic_search_logs only when a searcher
+// exists, so the loop degrades to the other tools by construction.
+func TestWarpConfigDoesNotRequireAVectorStoreToAnswer(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
+	require.Nil(t, service.vectorStore, "precondition: no vector store on this deployment")
+
+	config, err := service.Config(context.Background())
+	require.NoError(t, err, "chat must not be refused for want of a vector store")
+	require.NotNil(t, config)
+	require.Equal(t, "gpt-4o", config.Model)
+}
+
+// Enabling Warp without a vector store is still refused: that is a save the
+// operator can fix, and accepting it would promise semantic search the
+// deployment cannot provide.
+func TestWarpSaveConfigStillRequiresAVectorStoreToEnable(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{}))
+	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
+	require.ErrorIs(t, err, ErrNoVectorStore)
+}

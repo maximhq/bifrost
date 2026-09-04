@@ -73,9 +73,22 @@ When you cannot answer:
 // cannot remove the instructions above - which matters because those are what
 // keep it from inventing numbers, and a deployment-level setting is not the
 // place to switch that off by accident.
-func systemInstructions(config *schemas.WarpConfig) string {
+// SemanticSearchGuidance is appended only when semantic_search_logs is actually
+// registered.
+//
+// buildToolsFor omits the tool on a deployment with no embedding executor, and
+// telling the model to use a tool it has not been given costs it a step to
+// discover otherwise - on every single attempt, since nothing about the prompt
+// changes between them.
+const SemanticSearchGuidance = "\n- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. " +
+	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends."
+
+func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool) string {
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
+	if semanticAvailable {
+		builder.WriteString(SemanticSearchGuidance)
+	}
 	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC).", Now().Format("2006-01-02 15:04:05")))
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {

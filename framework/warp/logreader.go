@@ -51,6 +51,18 @@ type LogReader interface {
 	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 }
 
+// SemanticHydrator reads whole log rows for a set of ids.
+//
+// Kept out of LogReader deliberately. LogReader is exported and accepted by
+// exported APIs - WithLogReader, NewAgent - so adding a method to it breaks
+// every reader outside this repo at compile time, including ones that never
+// touch semantic search. Semantic search asks for this separately and is
+// enabled only when the supplied reader satisfies it, so an older reader keeps
+// working with the rest of Warp's tools.
+type SemanticHydrator interface {
+	GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error)
+}
+
 // KeyPair is an id paired with the name it is known by.
 type KeyPair struct {
 	ID   string `json:"id"`

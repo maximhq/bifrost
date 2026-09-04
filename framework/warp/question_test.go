@@ -121,7 +121,7 @@ func TestWarpAgentTreatsInvalidQuestionAsAToolError(t *testing.T) {
 }
 
 func TestWarpPromptCarriesQuestionRules(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{})
+	content := systemInstructions(&schemas.WarpConfig{}, true)
 
 	require.Contains(t, content, AskUserTool)
 	require.Contains(t, content, "Ask about one thing at a time")
