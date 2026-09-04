@@ -54,4 +54,4 @@ export interface WarpConfigInput {
  * its settings, while a deployment with no log store has nothing to read and no
  * in-panel remedy.
  */
-export type WarpUnavailableReason = "not_configured" | "no_log_store";
+export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";

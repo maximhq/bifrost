@@ -118873,6 +118873,11 @@
             "minimum": 1,
             "maximum": 25,
             "default": 10
+          },
+          "vector_store_connected": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Whether the shared runtime vector store is connected."
           }
         },
         "required": [
@@ -118888,7 +118893,8 @@
           "embedding_dimension",
           "log_vector_store_namespace",
           "semantic_search_threshold",
-          "semantic_search_limit"
+          "semantic_search_limit",
+          "vector_store_connected"
         ]
       },
       "WarpConfigInput": {
@@ -119016,13 +119022,14 @@
       },
       "WarpUnavailable": {
         "type": "object",
-        "description": "The 503 body. `reason` exists because the two causes need opposite\ntreatment in the dashboard: an unconfigured Warp is fixable by the operator\nand must stay visible with a link to its settings, while a deployment with\nno log store has nothing for Warp to read and no in-panel remedy. Without a\nmachine-readable field the client would have to pattern-match the message,\nwhich breaks silently the first time it is reworded.\n",
+        "description": "The 503 body. `reason` exists because the causes need different treatment in\nthe dashboard, and a client would otherwise have to pattern-match the\nmessage, which breaks silently the first time it is reworded.\n\n- `not_configured`: fixable by the operator. Stay visible and link to Warp's\n  settings page.\n- `no_log_store`: the deployment persists no logs, so Warp has nothing to\n  read and there is no in-panel remedy. Hide the launcher.\n- `no_vector_store`: logs exist but no vector store is connected, so\n  semantic search specifically is unavailable. Everything else Warp does\n  still works, so this is a degraded state rather than an absent one - do\n  not hide the launcher for it.\n",
         "properties": {
           "reason": {
             "type": "string",
             "enum": [
               "not_configured",
-              "no_log_store"
+              "no_log_store",
+              "no_vector_store"
             ]
           },
           "message": {
