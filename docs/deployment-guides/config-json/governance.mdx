@@ -87,7 +87,8 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | `customer_id` | No | Associate with a customer |
 | `rate_limit_id` | No | Attach a rate limit |
 | `calendar_aligned` | No | Snap budget resets to day/week/month/year boundaries |
-| `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all) |
+| `allow_all_providers` | No | Default `false`. When `true`, the key can use every provider, including ones added later. Listed `provider_configs` retain their per-provider model/key/budget/rate-limit rules. Providers without an entry get all models, all keys, and no per-provider limits |
+| `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all, unless `allow_all_providers` is `true`) |
 
 ### Provider Config Fields
 
