@@ -5027,6 +5027,49 @@
             {
               "name": "8.2.B Native /v1/responses streaming × all providers",
               "description": "Streaming Responses-API via native endpoint.",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Regression (fix/responses-stream-item-null): Responses SSE must omit item on",
+                      "// non-output events while preserving a non-null item object on output_item events.",
+                      "if (pm.response.code >= 400) { return; }",
+                      "var types = {};",
+                      "var nonOutputItemFields = 0;",
+                      "var outputItemEvents = 0;",
+                      "var outputItemObjects = 0;",
+                      "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                      "  if (l.indexOf('data: ') !== 0) { return; }",
+                      "  var p = l.slice(6).trim();",
+                      "  if (p === '[DONE]') { return; }",
+                      "  try {",
+                      "    var j = JSON.parse(p);",
+                      "    if (j.type) { types[j.type] = (types[j.type] || 0) + 1; }",
+                      "    if (j.type === 'response.output_item.added' || j.type === 'response.output_item.done') {",
+                      "      outputItemEvents++;",
+                      "      if (j.item && typeof j.item === 'object' && !Array.isArray(j.item)) { outputItemObjects++; }",
+                      "      return;",
+                      "    }",
+                      "    if ('item' in j) { nonOutputItemFields++; }",
+                      "  } catch (e) {}",
+                      "});",
+                      "pm.test('Responses stream emits response.created and response.completed', function () {",
+                      "  pm.expect(types['response.created'], 'expected response.created').to.not.be.undefined;",
+                      "  pm.expect(types['response.completed'], 'expected response.completed').to.not.be.undefined;",
+                      "});",
+                      "pm.test('Regression: non-output events omit item entirely', function () {",
+                      "  pm.expect(nonOutputItemFields, 'found ' + nonOutputItemFields + ' non-output events carrying item').to.equal(0);",
+                      "});",
+                      "pm.test('Regression: output_item events keep non-null item objects', function () {",
+                      "  pm.expect(outputItemEvents, 'expected at least one output_item event').to.be.above(0);",
+                      "  pm.expect(outputItemObjects, 'every output_item event must carry a non-null item object').to.equal(outputItemEvents);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
               "item": [
                 {
                   "name": "openai/gpt-4o-mini",
