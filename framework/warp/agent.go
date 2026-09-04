@@ -114,12 +114,16 @@ type Agent struct {
 // scope comes from the caller because it must be lifted off the request context
 // before the agent's goroutine starts. queryscope treats a missing scope as no
 // restriction, so reading it late returns the whole deployment to whoever asked.
-func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig) *Agent {
+func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig, semantic ...*SemanticSearcher) *Agent {
+	var searcher *SemanticSearcher
+	if len(semantic) > 0 {
+		searcher = semantic[0]
+	}
 	return &Agent{
 		chat:          chat,
 		cost:          cost,
 		tools:         buildTools(),
-		deps:          &ToolDeps{logManager: logs, scope: scope},
+		deps:          &ToolDeps{logManager: logs, semantic: searcher, scope: scope},
 		config:        config,
 		maxIterations: config.EffectiveMaxIterations(),
 	}

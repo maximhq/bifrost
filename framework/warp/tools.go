@@ -69,6 +69,7 @@ var Now = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Warp can see something new.
 type ToolDeps struct {
 	logManager LogReader
+	semantic   *SemanticSearcher
 	// scope is the caller's default slice of traffic. It narrows a question that
 	// named no scope of its own; it is not an access control, which queryscope
 	// already applies inside the store.
@@ -449,6 +450,7 @@ func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
 // tools from callers who may not read log bodies.
 func buildTools() []Tool {
 	return []Tool{
+		semanticSearchLogsTool(),
 		queryLogsTool(),
 		countLogsTool(),
 		getLogDetailTool(),

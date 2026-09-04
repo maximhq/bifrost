@@ -105,7 +105,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.logs, ScopeFromContext(runCtx), turn.config)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.logs, ScopeFromContext(runCtx), turn.config, s.semantic)
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)
 
