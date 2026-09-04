@@ -113,6 +113,10 @@ WarpConfig:
       minimum: 1
       maximum: 25
       default: 10
+    vector_store_connected:
+      type: boolean
+      readOnly: true
+      description: Whether the shared runtime vector store is connected.
   required:
     - configured
     - enabled
@@ -127,6 +131,7 @@ WarpConfig:
     - log_vector_store_namespace
     - semantic_search_threshold
     - semantic_search_limit
+    - vector_store_connected
 
 WarpConfigInput:
   type: object
@@ -269,18 +274,25 @@ WarpConfigInput:
 WarpUnavailable:
   type: object
   description: |
-    The 503 body. `reason` exists because the two causes need opposite
-    treatment in the dashboard: an unconfigured Warp is fixable by the operator
-    and must stay visible with a link to its settings, while a deployment with
-    no log store has nothing for Warp to read and no in-panel remedy. Without a
-    machine-readable field the client would have to pattern-match the message,
-    which breaks silently the first time it is reworded.
+    The 503 body. `reason` exists because the causes need different treatment in
+    the dashboard, and a client would otherwise have to pattern-match the
+    message, which breaks silently the first time it is reworded.
+
+    - `not_configured`: fixable by the operator. Stay visible and link to Warp's
+      settings page.
+    - `no_log_store`: the deployment persists no logs, so Warp has nothing to
+      read and there is no in-panel remedy. Hide the launcher.
+    - `no_vector_store`: logs exist but no vector store is connected, so
+      semantic search specifically is unavailable. Everything else Warp does
+      still works, so this is a degraded state rather than an absent one - do
+      not hide the launcher for it.
   properties:
     reason:
       type: string
       enum:
         - not_configured
         - no_log_store
+        - no_vector_store
     message:
       type: string
   required:

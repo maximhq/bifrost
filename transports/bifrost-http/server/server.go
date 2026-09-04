@@ -2449,14 +2449,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	//
 	// A nil log manager here is a supported deployment (logging disabled), not a
 	// failure - Warp then serves only its config routes.
-	var warpLogManager logging.LogManager
-	if loggerPlugin != nil {
-		warpLogManager = loggerPlugin.GetPluginLogManager()
-	}
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, warpLogManager, s.Config.LogsStore, s.Config.ModelCatalog, logger)
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.Config.ModelCatalog, logger)
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2760,7 +2756,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Bootstrap runs before plugins load and before the log store is opened, so
 	// Warp gets its config routes here and its chat and history routes later in
 	// RegisterAPIRoutes once both are known.
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, nil, s.Config.ModelCatalog, logger)
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, s.Client, nil, s.Config.VectorStore, s.Config.ModelCatalog, logger)
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -3177,14 +3173,18 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			// Warp first. Its indexer workers call s.Client.EmbeddingRequest, and
+			// LogIndexer.Close waits for them - so shutting the client down first
+			// cancelled its context underneath work that was still being waited on,
+			// and pending indexing failed during an orderly shutdown.
+			if s.WarpHandler != nil {
+				logger.Info("shutting down warp...")
+				s.WarpHandler.Shutdown()
+				logger.Info("warp shutdown completed")
+			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
-			// Warp holds a second, dedicated Bifrost instance with its own worker
-			// pool, so it needs its own shutdown.
-			if s.WarpHandler != nil {
-				s.WarpHandler.Shutdown()
-			}
 			logger.Info("cleaning up storage engines...")
 			// Cleanup server-specific components
 			if s.LogsCleaner != nil {

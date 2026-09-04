@@ -5,10 +5,12 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -19,7 +21,8 @@ import (
 // service errors to status codes and writes responses; everything Warp actually
 // does lives in framework/warp.
 type WarpHandler struct {
-	service *warp.Service
+	service         *warp.Service
+	unsubscribeLogs func()
 }
 
 // NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
@@ -33,32 +36,42 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 
 // NewWarpHandler builds the handler and the service behind it.
 //
-// A nil logManager is a supported deployment (logging disabled): Warp then
+// A nil loggerPlugin is a supported deployment (logging disabled): Warp then
 // serves only its configuration routes, because its tools would have nothing to
 // read. A nil catalog is likewise supported and simply leaves Warp's own spend
-// unpriced. logsStore is separate from logManager because the two answer
-// different questions - the manager is what Warp researches through, the store
+// unpriced. logsStore is separate from loggerPlugin because the two answer
+// different questions - the plugin is what Warp researches through, the store
 // is where it files what was said - and a deployment can have the store without
 // the plugin.
-func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logsStore logstore.LogStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
-	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog)}
-	if logManager != nil {
-		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
+	if client != nil {
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
+	}
+	if loggerPlugin != nil {
+		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
 	}
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	service := warp.NewService(store, opts...)
+	handler := &WarpHandler{service: warp.NewService(store, opts...)}
+	if loggerPlugin != nil {
+		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
+	}
 	// Retention runs on a timer rather than on write: what expires is age, so a
 	// deployment nobody has chatted on for a month is exactly where a
 	// write-triggered sweep would never fire. It is a no-op without a history
 	// store, and Shutdown stops it.
-	service.StartHistoryCleanup()
-	return &WarpHandler{service: service}
+	handler.service.StartHistoryCleanup()
+	return handler
 }
 
 // Shutdown releases the service's model client.
 func (h *WarpHandler) Shutdown() {
+	if h.unsubscribeLogs != nil {
+		h.unsubscribeLogs()
+		h.unsubscribeLogs = nil
+	}
 	h.service.Shutdown()
 }
 
@@ -131,6 +144,9 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 	switch {
 	case errors.Is(err, warp.ErrUnavailable):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		return
+	case errors.Is(err, warp.ErrNoVectorStore):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, err.Error())
 		return
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
