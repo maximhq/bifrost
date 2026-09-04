@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,9 +15,7 @@ import (
 // usable configuration, which is the shape both transports run against.
 func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
 	return NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(fake),
 		WithChatFunc(model.respond),
 	)
@@ -118,9 +115,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
 	service := NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(blocking),
 	)
@@ -182,7 +177,7 @@ func TestWarpCanChatRequiresLogReader(t *testing.T) {
 // observe a stale nil client and return ErrNoModelClient after CanChat()
 // already reported true.
 func TestWarpServiceClientAccessIsRaceFree(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o"}}))
+	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
 	config := &schemas.WarpConfig{Provider: "openai", Model: "gpt-4o"}
 
 	var wg sync.WaitGroup
@@ -219,9 +214,7 @@ func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
 	service := NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(model.respond),
 		WithConversationStore(store),
@@ -254,9 +247,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
 	}
 	service := NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithConversationStore(store),
 		WithChatFunc(failing))
 

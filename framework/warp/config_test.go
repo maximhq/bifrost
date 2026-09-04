@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"github.com/bytedance/sonic"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -28,12 +29,28 @@ func newTestService(store *recordingStore) *Service {
 	return NewService(nil, WithConfigStore(store))
 }
 
+func validWarpConfigRow() *tables.TableWarpConfig {
+	return &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}
+}
+
+func validWarpConfigInput() *ConfigInput {
+	return &ConfigInput{
+		Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}
+}
+
 // A key reference round-trips like any other field: there is no secret here, so
 // no redaction step and no presence flag.
 func TestWarpConfigViewReturnsKeyReference(t *testing.T) {
-	service := newTestService(&recordingStore{row: &tables.TableWarpConfig{
-		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
-	}})
+	row := validWarpConfigRow()
+	row.APIKeyID = "key-abc"
+	service := newTestService(&recordingStore{row: row})
 	view, err := service.ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "key-abc", view.APIKeyID)
@@ -60,12 +77,13 @@ func TestWarpConfigViewWithoutStoreIsUnavailable(t *testing.T) {
 // The reference is a plain field, so clearing it is just sending an empty
 // value - none of the omitted-versus-empty ambiguity a write-only secret forces.
 func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
-	store := &recordingStore{row: &tables.TableWarpConfig{
-		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
-	}}
-	view, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o-mini", APIKeyID: "key-xyz",
-	})
+	row := validWarpConfigRow()
+	row.APIKeyID = "key-abc"
+	store := &recordingStore{row: row}
+	input := validWarpConfigInput()
+	input.Model = "gpt-4o-mini"
+	input.APIKeyID = "key-xyz"
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Equal(t, "key-xyz", store.upserted[0].APIKeyID)
@@ -77,9 +95,7 @@ func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
 // key at all - so an empty reference must be accepted, not rejected.
 func TestWarpSaveConfigAcceptsEmptyKeyReference(t *testing.T) {
 	store := &recordingStore{}
-	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o",
-	})
+	_, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Empty(t, store.upserted[0].APIKeyID)
@@ -95,13 +111,18 @@ func TestWarpSaveConfigAllowsIncompleteDraftWhenDisabled(t *testing.T) {
 }
 
 func TestWarpValidateConfigInputRejectsIncompleteWhenEnabled(t *testing.T) {
-	for name, input := range map[string]*ConfigInput{
-		"no provider": {Enabled: true, Model: "gpt-4o"},
-		"no model":    {Enabled: true, Provider: "openai"},
+	for name, mutate := range map[string]func(*ConfigInput){
+		"no provider": func(input *ConfigInput) { input.Provider = "" },
+		"no model":    func(input *ConfigInput) { input.Model = "" },
 		// Stored unchecked, this reported the deployment as configured and then
 		// failed at provider construction on the first question.
-		"unknown provider": {Enabled: true, Provider: "not-a-provider", Model: "gpt-4o"},
+		"unknown provider":       func(input *ConfigInput) { input.Provider = "not-a-provider" },
+		"no embedding provider":  func(input *ConfigInput) { input.EmbeddingProvider = "" },
+		"no embedding model":     func(input *ConfigInput) { input.EmbeddingModel = "" },
+		"no embedding dimension": func(input *ConfigInput) { input.EmbeddingDimension = 0 },
 	} {
+		input := validWarpConfigInput()
+		mutate(input)
 		store := &recordingStore{}
 		_, err := newTestService(store).SaveConfig(context.Background(), input)
 		require.ErrorIs(t, err, ErrInvalidConfig, name)
@@ -110,7 +131,9 @@ func TestWarpValidateConfigInputRejectsIncompleteWhenEnabled(t *testing.T) {
 }
 
 func TestWarpValidateConfigInputRejectsIterationsAboveCeiling(t *testing.T) {
-	err := ValidateConfigInput(&ConfigInput{Enabled: true, Provider: "openai", Model: "gpt-4o", MaxIterations: 50})
+	input := validWarpConfigInput()
+	input.MaxIterations = 50
+	err := ValidateConfigInput(input)
 	require.ErrorIs(t, err, ErrInvalidConfig)
 }
 
@@ -119,7 +142,7 @@ func TestWarpValidateConfigInputRejectsIterationsAboveCeiling(t *testing.T) {
 func TestWarpConfigRejectsUnusableConfigs(t *testing.T) {
 	for name, row := range map[string]*tables.TableWarpConfig{
 		"missing":  nil,
-		"disabled": {Enabled: false, Provider: "openai", Model: "gpt-4o"},
+		"disabled": {Enabled: false, Provider: "openai", Model: "gpt-4o", EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 3},
 		"no model": {Enabled: true, Provider: "openai"},
 	} {
 		_, err := newTestService(&recordingStore{row: row}).Config(context.Background())
@@ -143,6 +166,10 @@ func TestWarpValidateConfigInputRejectsNilInput(t *testing.T) {
 // client's ProviderConfig verbatim, so a value that is not an absolute http(s)
 // URL is otherwise only discovered on the first outbound call - long after the
 // operator has left the settings page.
+//
+// Built from validWarpConfigInput so the only thing under test is the URL: a
+// bare literal would now fail on the required embedding fields instead, and
+// pass for the wrong reason.
 func TestWarpValidateConfigInputRejectsMalformedBaseURL(t *testing.T) {
 	for name, baseURL := range map[string]string{
 		"not a url":     "notaurl",
@@ -156,10 +183,9 @@ func TestWarpValidateConfigInputRejectsMalformedBaseURL(t *testing.T) {
 		"password in url": "https://user:hunter2@models.example.com",
 		"user in url":     "https://token@models.example.com",
 	} {
-		err := ValidateConfigInput(&ConfigInput{
-			Enabled: true, Provider: "openai", Model: "gpt-4o", BaseURL: baseURL,
-		})
-		require.ErrorIs(t, err, ErrInvalidConfig, name)
+		input := validWarpConfigInput()
+		input.BaseURL = baseURL
+		require.ErrorIs(t, ValidateConfigInput(input), ErrInvalidConfig, name)
 	}
 
 	// Empty stays valid: it means "use the provider's own default endpoint",
@@ -170,10 +196,9 @@ func TestWarpValidateConfigInputRejectsMalformedBaseURL(t *testing.T) {
 		"http with port": "http://localhost:11434",
 		"with path":      "https://gateway.example.com/openai/v1",
 	} {
-		err := ValidateConfigInput(&ConfigInput{
-			Enabled: true, Provider: "openai", Model: "gpt-4o", BaseURL: baseURL,
-		})
-		require.NoError(t, err, name)
+		input := validWarpConfigInput()
+		input.BaseURL = baseURL
+		require.NoError(t, ValidateConfigInput(input), name)
 	}
 }
 
@@ -206,18 +231,16 @@ func TestWarpConfigViewResolvesHistoryRetentionDefault(t *testing.T) {
 
 	// Stored zero means "never set", which resolves to the same default: a row
 	// written before this setting existed must not read as "expire immediately".
-	view, err = newTestService(&recordingStore{row: &tables.TableWarpConfig{
-		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-	}}).ConfigView(context.Background())
+	view, err = newTestService(&recordingStore{row: validWarpConfigRow()}).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultHistoryRetentionDays, view.HistoryRetentionDays)
 }
 
 func TestWarpSaveConfigRoundTripsHistoryRetention(t *testing.T) {
-	store := &recordingStore{}
-	view, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o", HistoryRetentionDays: 7,
-	})
+	store := &recordingStore{row: validWarpConfigRow()}
+	input := validWarpConfigInput()
+	input.HistoryRetentionDays = 7
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Equal(t, 7, store.upserted[0].HistoryRetentionDays)
@@ -228,8 +251,246 @@ func TestWarpSaveConfigRoundTripsHistoryRetention(t *testing.T) {
 // sign silently changes its meaning is how an operator ends up with a retention
 // policy they did not choose.
 func TestWarpValidateConfigInputRejectsNegativeHistoryRetention(t *testing.T) {
-	err := ValidateConfigInput(&ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o", HistoryRetentionDays: -1,
-	})
+	input := validWarpConfigInput()
+	input.HistoryRetentionDays = -1
+	err := ValidateConfigInput(input)
 	require.ErrorIs(t, err, ErrInvalidConfig)
+	// Named explicitly: every validation failure wraps ErrInvalidConfig, so
+	// asserting the sentinel alone would pass on somebody else's rejection.
+	require.ErrorContains(t, err, "history_retention_days")
+}
+
+func TestWarpSaveConfigRequiresNewNamespaceForEmbeddingSpace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	input := validWarpConfigInput()
+	input.EmbeddingModel = "text-embedding-3-large"
+	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+
+	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, "BifrostWarpLogsV2", view.LogVectorStoreNamespace)
+	require.Equal(t, []string{schemas.WarpDefaultLogVectorStoreNamespace}, retiredNamespaces(store.row))
+}
+
+// A disabled save is a draft: validation deliberately accepts missing embedding
+// fields so a form can be filled in over more than one sitting. Comparing those
+// zeros against a complete stored embedding space then reads as "the space
+// changed" - which either rejects the save for not renaming a namespace nobody
+// touched, or retires the live namespace while writing zeros over the config.
+func TestWarpEmbeddingSpaceUnchangedByIncompleteInput(t *testing.T) {
+	stored := &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: "BifrostWarpLogs",
+	}
+
+	for name, input := range map[string]*ConfigInput{
+		"all embedding fields omitted": {Enabled: false, Provider: "openai", Model: "gpt-4o"},
+		"provider only":                {Enabled: false, EmbeddingProvider: "openai"},
+		"missing dimension":            {Enabled: false, EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small"},
+		"zero dimension":               {Enabled: false, EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 0},
+	} {
+		require.False(t, embeddingSpaceChanged(stored, input), name)
+	}
+
+	// A complete input that genuinely names a different space still counts.
+	changed := &ConfigInput{
+		Enabled: true, EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-large", EmbeddingDimension: 3072,
+	}
+	require.True(t, embeddingSpaceChanged(stored, changed))
+
+	// And a complete input naming the same space does not.
+	same := &ConfigInput{
+		Enabled: true, EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+	}
+	require.False(t, embeddingSpaceChanged(stored, same))
+}
+
+// A disabled draft that omits embedding fields must save without retiring the
+// namespace the live config is still indexing under.
+func TestWarpSaveDraftDoesNotRetireLiveNamespace(t *testing.T) {
+	store := &recordingStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: "BifrostWarpLogs",
+	}}
+	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
+		Enabled: false, Provider: "openai", Model: "gpt-4o",
+	})
+	require.NoError(t, err, "a draft must not be rejected for a namespace it never changed")
+	require.Len(t, store.upserted, 1)
+	require.Empty(t, retiredNamespaces(&store.upserted[0]),
+		"the live namespace must not be retired by a draft that named no embedding space")
+}
+
+// A disabled draft must not wipe the embedding settings it never mentioned.
+//
+// UpsertWarpConfig writes the whole row with UpdateAll, so copying an omitted
+// field through as its zero value is a delete. Validation deliberately accepts
+// an incomplete draft when enabled is false - that is the point of a draft - so
+// the two together silently cleared the stored embedding space, and the next
+// attempt to enable Warp failed validation for fields the operator had already
+// supplied and never touched.
+func TestWarpSaveDraftPreservesStoredEmbeddingSettings(t *testing.T) {
+	store := &recordingStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingAPIKeyID: "key-embed", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: "BifrostWarpLogs",
+		SemanticSearchThreshold: 0.8, SemanticSearchLimit: 10,
+	}}
+
+	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
+		Enabled: false, Provider: "openai", Model: "gpt-4o",
+	})
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+
+	saved := store.upserted[0]
+	require.Equal(t, "openai", saved.EmbeddingProvider, "the embedding provider must survive a draft that never named one")
+	require.Equal(t, "text-embedding-3-small", saved.EmbeddingModel)
+	require.Equal(t, "key-embed", saved.EmbeddingAPIKeyID)
+	require.Equal(t, 1536, saved.EmbeddingDimension)
+	require.Equal(t, "BifrostWarpLogs", saved.LogVectorStoreNamespace)
+	require.False(t, saved.Enabled, "the one field the draft did set must still be written")
+}
+
+// Clearing has to stay possible: a complete input that names a different space
+// replaces the stored one rather than merging into it.
+func TestWarpSaveConfigStillReplacesANamedEmbeddingSpace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	input := validWarpConfigInput()
+	input.EmbeddingModel = "text-embedding-3-large"
+	input.EmbeddingDimension = 3072
+	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
+
+	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, "text-embedding-3-large", store.upserted[0].EmbeddingModel)
+	require.Equal(t, 3072, store.upserted[0].EmbeddingDimension)
+}
+
+// A stored custom namespace must survive a save that never mentions it.
+//
+// ValidateConfigInput replaces an omitted namespace with the default before
+// SaveConfig loads the stored row, so by merge time the field is never empty
+// and the merge cannot tell "not supplied" from "explicitly the default". A
+// deployment on a custom namespace was therefore moved back to the default by
+// any save that did not restate it - and because the namespace is part of the
+// embedding space, that silently orphaned every vector already indexed.
+func TestWarpSaveConfigKeepsStoredCustomEmbeddingSettings(t *testing.T) {
+	store := &recordingStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: "CustomWarpLogs",
+		SemanticSearchThreshold: 0.6, SemanticSearchLimit: 20,
+	}}
+
+	_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+		"enabled": true, "provider": "openai", "model": "gpt-4o-mini"
+	}`))
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+
+	saved := store.upserted[0]
+	require.Equal(t, "CustomWarpLogs", saved.LogVectorStoreNamespace, "a custom namespace must not be reset to the default")
+	require.InDelta(t, 0.6, saved.SemanticSearchThreshold, 1e-9)
+	require.Equal(t, 20, saved.SemanticSearchLimit)
+	require.Equal(t, "gpt-4o-mini", saved.Model, "the field that was supplied still changes")
+}
+
+// A partial embedding change must still count as a change.
+//
+// embeddingSpaceChanged ran on the incomplete input and returned false, then
+// the merge combined the new model with the stored provider and dimension - so
+// a different embedding space was persisted without the namespace rule applying
+// and without the old namespace being retired. Detection has to run on the
+// effective configuration, after the merge.
+func TestWarpSaveConfigDetectsPartialEmbeddingSpaceChange(t *testing.T) {
+	store := &recordingStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: "BifrostWarpLogs",
+	}}
+
+	// Only the model moves, and the namespace is not renamed: refused.
+	_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+		"enabled": false, "embedding_model": "text-embedding-3-large"
+	}`))
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.ErrorContains(t, err, "log_vector_store_namespace")
+	require.Empty(t, store.upserted, "a rejected save must not reach the store")
+
+	// With a new namespace it is accepted, and the old one is retired.
+	_, err = newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+		"enabled": false, "embedding_model": "text-embedding-3-large",
+		"log_vector_store_namespace": "BifrostWarpLogsV2"
+	}`))
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+	require.Equal(t, []string{"BifrostWarpLogs"}, retiredNamespaces(&store.upserted[0]))
+}
+
+// An explicitly empty key reference must clear, not restore.
+func TestWarpSaveConfigDistinguishesOmittedFromExplicitlyEmpty(t *testing.T) {
+	row := func() *tables.TableWarpConfig {
+		return &tables.TableWarpConfig{
+			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+			EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+			EmbeddingAPIKeyID: "key-embed", EmbeddingDimension: 1536,
+			LogVectorStoreNamespace: "BifrostWarpLogs",
+		}
+	}
+
+	omitted := &recordingStore{row: row()}
+	_, err := newTestService(omitted).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false}`))
+	require.NoError(t, err)
+	require.Equal(t, "key-embed", omitted.upserted[0].EmbeddingAPIKeyID, "an omitted field keeps the stored value")
+
+	cleared := &recordingStore{row: row()}
+	_, err = newTestService(cleared).SaveConfig(context.Background(), inputFromJSON(t, `{
+		"enabled": false, "embedding_api_key_id": ""
+	}`))
+	require.NoError(t, err)
+	require.Empty(t, cleared.upserted[0].EmbeddingAPIKeyID, "an explicit empty value clears the reference")
+}
+
+// inputFromJSON decodes a write the way the HTTP handler does, so presence is
+// recorded. Constructing a ConfigInput literal cannot express "absent".
+func inputFromJSON(t *testing.T, body string) *ConfigInput {
+	t.Helper()
+	var input ConfigInput
+	require.NoError(t, sonic.Unmarshal([]byte(body), &input))
+	return &input
+}
+
+// A blank stored namespace means the default, not "no namespace". Comparing the
+// raw values read "" and BifrostWarpLogs as two different places, so the model
+// could change without a rename and new vectors of one shape landed in the same
+// namespace as incompatible old ones.
+func TestWarpSaveConfigResolvesNamespaceBeforeComparing(t *testing.T) {
+	stored := validWarpConfigRow()
+	stored.LogVectorStoreNamespace = ""
+	input := validWarpConfigInput()
+	// A different embedding model, and the namespace spelled as the default the
+	// blank stored value already resolves to.
+	input.EmbeddingModel = "text-embedding-3-large"
+	input.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
+
+	store := &recordingStore{row: stored}
+	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.ErrorIs(t, err, ErrInvalidConfig, "the namespace did not actually change")
+	require.Empty(t, store.upserted)
+
+	// A genuinely new namespace is accepted, and the retired list records what
+	// was in use - the default, not the empty string, which names nothing.
+	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
+	store = &recordingStore{row: stored}
+	_, err = newTestService(store).SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+	require.NotNil(t, store.upserted[0].RetiredLogVectorStoreNamespaces)
+	require.Contains(t, *store.upserted[0].RetiredLogVectorStoreNamespaces, schemas.WarpDefaultLogVectorStoreNamespace)
 }
