@@ -193,7 +193,9 @@ func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMe
 func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
 	return nil, nil
 }
-func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
 func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
 	return nil
 }

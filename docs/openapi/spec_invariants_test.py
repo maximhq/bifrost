@@ -428,8 +428,8 @@ def test_warp_chat_response_contract_is_current():
     """WarpChatResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
     object, and error.code is the closed set the agent actually emits. The chat route is
     always registered and reports its unavailability as a 503 carrying a machine-readable
-    reason, so that and the 413 for oversized conversations are the contract a generated
-    client has to handle - and a 404 must not reappear."""
+    reason, so that and the 413 for oversized conversations are the part of the contract a
+    generated client has to handle - and a 404 must not reappear."""
     import json
 
     schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
@@ -506,6 +506,26 @@ def test_warp_chat_response_contract_is_current():
         problems.append("warp-chat 503 must return WarpUnavailable so the reason is machine-readable")
     if "413" in chat_responses and "content" not in chat_responses["413"]:
         problems.append("warp-chat 413 returns a JSON error body but documents no schema")
+    # The route is registered unconditionally now, so a deployment that cannot
+    # answer says so in a 503 body the dashboard branches on. A documented 404
+    # would send a generated client looking for a route that always exists.
+    if "404" in chat_responses:
+        problems.append(
+            "warp-chat documents a 404, but the route is always registered; "
+            "an unusable deployment answers 503 with a WarpUnavailable reason"
+        )
+    # Checked structurally, not by searching the serialized response. A substring
+    # match passes when some other schema merely mentions WarpUnavailable in a
+    # description or example, which is exactly when the machine-readable `reason`
+    # would have gone missing without the invariant noticing.
+    unavailable = chat_responses.get("503") or {}
+    json_body = ((unavailable.get("content") or {}).get("application/json") or {})
+    ref = (json_body.get("schema") or {}).get("$ref") or ""
+    if not ref.endswith("#/WarpUnavailable"):
+        problems.append(
+            "warp-chat 503 application/json must $ref WarpUnavailable directly "
+            f"so the reason stays machine-readable (found {ref!r})"
+        )
 
     assert not problems, "Warp chat response contract drift:\n    " + "\n    ".join(problems)
 
