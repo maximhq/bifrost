@@ -1493,6 +1493,7 @@ storage:
     #   sslMode: require    # disable, allow, prefer, require, verify-ca, verify-full
     #   connMaxLifetime: 10m
     #   # Command executed by Bifrost to produce the password on stdout (e.g. RDS IAM auth).
+    #   # Mutually exclusive with `password` and `existingSecret` - both must stay empty when set.
     #   passwordCommand:
     #     command: aws
     #     args:
@@ -1572,6 +1573,8 @@ postgresql:
     password: ""
     # Command that prints the PostgreSQL password on stdout, for dynamic credentials (e.g. AWS RDS
     # IAM auth tokens). Result is cached for cache_ttl (default 60s); keep it below the token's validity.
+    # Mutually exclusive with `password` and `existingSecret` above -- both must stay empty when set.
+    # The command runs inside the Bifrost container, so its binary (e.g. `aws`) must exist in the image.
     # passwordCommand:
     #   command: aws
     #   args:
