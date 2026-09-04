@@ -193,6 +193,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Runware,
 		schemas.Fireworks,
 		schemas.Sarvam,
+		schemas.SaladCloud,
 		schemas.Wafer,
 		schemas.Databricks,
 		schemas.GithubCopilot,
@@ -438,6 +439,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Value:          *schemas.NewSecretVar("env.PARASAIL_API_KEY"),
 				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.SaladCloud:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.SALAD_CLOUD_API_KEY"),
+				Models:         []string{"qwen3.6-35b-a3b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -843,6 +853,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10, // Parasail can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.SaladCloud:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     3,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
