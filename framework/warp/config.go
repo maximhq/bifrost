@@ -215,21 +215,30 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	// write can undo its own work without touching anybody else's.
 	createdNamespace := ""
 	retired := retiredNamespaces(previous)
-	// Compared as they resolve, not as they are stored. A blank namespace on
-	// either side means WarpDefaultLogVectorStoreNamespace, so a raw comparison
-	// read "" and "BifrostWarpLogs" as two different namespaces and let the model
-	// or dimension change without a rename - after which new vectors of one shape
-	// were written into the same namespace as incompatible old ones.
-	// Inside the guard, which already returns false for a nil row - there is no
-	// previous namespace to resolve before the first save.
-	if embeddingSpaceChanged(previous, input) {
-		previousNamespace := effectiveNamespace(previous.LogVectorStoreNamespace)
-		if previousNamespace == effectiveNamespace(input.LogVectorStoreNamespace) {
-			return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when embedding provider, model, or dimension changes", ErrInvalidConfig)
+	// Compared as effective namespaces, not raw strings. A legacy row storing ""
+	// or a padded value resolves to the same namespace the request does, so a
+	// raw comparison saw "different" and let an embedding-space change reuse the
+	// namespace it was already indexed under - mixing vectors from two
+	// configurations in one place, which is exactly what this rule prevents.
+	if embeddingSpaceChanged(previous, input) &&
+		normalizedNamespace(previous.LogVectorStoreNamespace) == normalizedNamespace(input.LogVectorStoreNamespace) {
+		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when the embedding provider, model or dimension changes", ErrInvalidConfig)
+	}
+	if embeddingSpaceChanged(previous, input) && s.backfillJobs != nil {
+		active, activeErr := s.backfillJobs.GetInFlightSidekiqJobByKind(ctx, BackfillJobKind)
+		if activeErr != nil {
+			return ConfigView{}, activeErr
 		}
-		// Retire what was actually in use, which for a blank stored value is the
-		// default rather than the empty string - retiring "" names nothing.
-		retired = appendUnique(retired, previousNamespace)
+		if active != nil {
+			return ConfigView{}, ErrBackfillInProgress
+		}
+	}
+	// Retire what was actually in use. A blank stored value means the default
+	// namespace, not "no namespace", so the raw check skipped retiring the very
+	// namespace a legacy row had been indexed under - and retiring "" would
+	// have named nothing anyway.
+	if embeddingSpaceChanged(previous, input) {
+		retired = appendUnique(retired, normalizedNamespace(previous.LogVectorStoreNamespace))
 	}
 	if input.Enabled {
 		// Still ahead of the write: a namespace that cannot be created is a save
@@ -508,17 +517,25 @@ func embeddingSpaceChanged(row *tables.TableWarpConfig, input *ConfigInput) bool
 	if input == nil || input.EmbeddingProvider == "" || input.EmbeddingModel == "" || input.EmbeddingDimension <= 0 {
 		return false
 	}
+	// The namespace is part of the space, not a label on it. A running backfill
+	// freezes a signature that includes the effective namespace, so a
+	// namespace-only rename slipped past the active-job guard, was persisted,
+	// and then made the job abort on its next signature check - which is not the
+	// job continuing safely, it is the job failing.
+	if normalizedNamespace(row.LogVectorStoreNamespace) != normalizedNamespace(input.LogVectorStoreNamespace) {
+		return true
+	}
 	return row.EmbeddingProvider != string(input.EmbeddingProvider) || row.EmbeddingModel != input.EmbeddingModel || row.EmbeddingDimension != input.EmbeddingDimension
 }
 
-// effectiveNamespace resolves a stored or submitted namespace the way the rest
-// of Warp reads it, so comparisons and retirement agree with what is actually
-// queried. Mirrors WarpConfig.EffectiveLogVectorStoreNamespace.
-func effectiveNamespace(namespace string) string {
-	if strings.TrimSpace(namespace) == "" {
+// normalizedNamespace matches what EffectiveLogVectorStoreNamespace resolves to,
+// so whitespace alone never reads as a different space.
+func normalizedNamespace(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
 		return schemas.WarpDefaultLogVectorStoreNamespace
 	}
-	return strings.TrimSpace(namespace)
+	return trimmed
 }
 
 func retiredNamespaces(row *tables.TableWarpConfig) []string {

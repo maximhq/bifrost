@@ -65,10 +65,11 @@ type Service struct {
 	stopCleanup     chan struct{}
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog     *modelcatalog.ModelCatalog
-	vectorStore vectorstore.VectorStore
-	embed       EmbeddingExecutor
-	indexer     *LogIndexer
+	catalog      *modelcatalog.ModelCatalog
+	vectorStore  vectorstore.VectorStore
+	embed        EmbeddingExecutor
+	indexer      *LogIndexer
+	backfillJobs BackfillJobStore
 }
 
 // Option configures a Service.
@@ -103,6 +104,11 @@ func WithEmbeddingExecutor(executor EmbeddingExecutor) Option {
 	return func(s *Service) { s.embed = executor }
 }
 
+// WithBackfillJobStore overrides durable job lookup in tests.
+func WithBackfillJobStore(store BackfillJobStore) Option {
+	return func(s *Service) { s.backfillJobs = store }
+}
+
 // WithChatFunc replaces the real inference path. Test seam only: the agent loop
 // can then be driven by a scripted model with no provider behind it.
 func WithChatFunc(chat ChatFunc) Option {
@@ -133,6 +139,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	service := &Service{}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
+		service.backfillJobs, _ = store.(BackfillJobStore)
 	}
 	for _, opt := range opts {
 		opt(service)

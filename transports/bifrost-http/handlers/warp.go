@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -23,6 +24,7 @@ import (
 type WarpHandler struct {
 	service         *warp.Service
 	unsubscribeLogs func()
+	sidekiqRunner   *sidekiq.Runner
 }
 
 // NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
@@ -43,7 +45,7 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 // different questions - the plugin is what Warp researches through, the store
 // is where it files what was said - and a deployment can have the store without
 // the plugin.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
@@ -54,7 +56,8 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...)}
+	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner}
+	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
 		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
 	}
@@ -150,6 +153,9 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 		return
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, warp.ErrBackfillInProgress):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
 	case err != nil:
 		// Log the cause. The client gets a generic message because a raw driver
