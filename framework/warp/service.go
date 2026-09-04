@@ -10,7 +10,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 var (
@@ -21,6 +23,8 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrNoVectorStore means Warp's required semantic index has no backend.
+	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
 
 // Service is the in-process face of Warp. It is built once at bootstrap, before
@@ -46,7 +50,10 @@ type Service struct {
 	chatOverride ChatFunc
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog *modelcatalog.ModelCatalog
+	catalog     *modelcatalog.ModelCatalog
+	vectorStore vectorstore.VectorStore
+	embed       EmbeddingExecutor
+	indexer     *LogIndexer
 }
 
 // Option configures a Service.
@@ -69,6 +76,16 @@ func WithLogReader(logs LogReader) Option {
 // invisible to the gateway's budgets and has to be visible in the panel instead.
 func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
 	return func(s *Service) { s.catalog = catalog }
+}
+
+// WithVectorStore connects Warp to the deployment-wide vector store.
+func WithVectorStore(store vectorstore.VectorStore) Option {
+	return func(s *Service) { s.vectorStore = store }
+}
+
+// WithEmbeddingExecutor supplies the main gateway embedding path.
+func WithEmbeddingExecutor(executor EmbeddingExecutor) Option {
+	return func(s *Service) { s.embed = executor }
 }
 
 // WithChatFunc replaces the real inference path. Test seam only: the agent loop
@@ -103,6 +120,9 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	}
 	if service.logs != nil {
 		service.client = NewClient(service.logger)
+	}
+	if service.store != nil && service.vectorStore != nil && service.embed != nil {
+		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
 	}
 	return service
 }
@@ -151,8 +171,19 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 // Shutdown releases Warp's model client. Safe to call on a service that never
 // built one.
 func (s *Service) Shutdown() {
+	if s.indexer != nil {
+		s.indexer.Close()
+	}
 	if s.client != nil {
 		s.client.Shutdown()
+	}
+}
+
+// IndexLog accepts a post-persistence logging notification. It copies and
+// queues bounded data; provider and vector-store I/O happen in worker goroutines.
+func (s *Service) IndexLog(ctx context.Context, entry *logstore.Log) {
+	if s.indexer != nil {
+		s.indexer.Enqueue(ctx, entry)
 	}
 }
 

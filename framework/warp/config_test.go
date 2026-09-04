@@ -25,7 +25,7 @@ func (s *recordingStore) UpsertWarpConfig(_ context.Context, config *tables.Tabl
 }
 
 func newTestService(store *recordingStore) *Service {
-	return NewService(nil, WithConfigStore(store))
+	return NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()))
 }
 
 func validWarpConfigRow() *tables.TableWarpConfig {
@@ -66,6 +66,13 @@ func TestWarpConfigViewUnconfiguredReturnsDefaults(t *testing.T) {
 	require.False(t, view.Configured)
 	require.Empty(t, view.APIKeyID)
 	require.Equal(t, schemas.WarpDefaultMaxIterations, view.MaxIterations)
+	require.True(t, view.VectorStoreConnected)
+}
+
+func TestWarpSaveConfigRequiresConnectedVectorStore(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{}))
+	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
+	require.ErrorIs(t, err, ErrNoVectorStore)
 }
 
 func TestWarpConfigViewWithoutStoreIsUnavailable(t *testing.T) {

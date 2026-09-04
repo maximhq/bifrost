@@ -89,6 +89,10 @@ WarpConfig:
       minimum: 1
       maximum: 25
       default: 10
+    vector_store_connected:
+      type: boolean
+      readOnly: true
+      description: Whether the shared runtime vector store is connected.
   required:
     - configured
     - enabled
@@ -102,6 +106,7 @@ WarpConfig:
     - log_vector_store_namespace
     - semantic_search_threshold
     - semantic_search_limit
+    - vector_store_connected
 
 WarpConfigInput:
   type: object
@@ -183,6 +188,7 @@ WarpUnavailable:
       enum:
         - not_configured
         - no_log_store
+        - no_vector_store
     message:
       type: string
   required:

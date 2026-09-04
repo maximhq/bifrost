@@ -509,6 +509,23 @@ func TestEmitAggregateLogRunsCallback(t *testing.T) {
 	}
 }
 
+func TestLogSubscribersComposeAndUnsubscribe(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}}
+	primary, first, second := 0, 0, 0
+	plugin.SetLogCallback(func(context.Context, *logstore.Log) { primary++ })
+	unsubscribeFirst := plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { first++ })
+	plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { second++ })
+
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "one"})
+	unsubscribeFirst()
+	unsubscribeFirst()
+	plugin.notifyLogCallbacks(context.Background(), &logstore.Log{ID: "two"})
+
+	if primary != 2 || first != 1 || second != 2 {
+		t.Fatalf("callback counts = primary:%d first:%d second:%d", primary, first, second)
+	}
+}
+
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
