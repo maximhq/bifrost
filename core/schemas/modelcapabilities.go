@@ -264,6 +264,13 @@ type ModelCapabilities struct {
 	// outright (a bare id 400s on bedrock-runtime, a cross-region or ARN id 404s
 	// on bedrock-mantle). Callers must resolve identifier form first.
 	BedrockAPIs []BedrockAPI `json:"bedrock_apis,omitempty"`
+
+	// Wire shape this model uses for reasoning content on Bedrock Converse.
+	// Scoped to Converse specifically: the same model reasons in a different
+	// shape on the mantle chat-completions surface.
+	//
+	// Absent or unrecognised falls back to the caller's family detection.
+	BedrockReasoningShape BedrockReasoningShape `json:"bedrock_reasoning_shape,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it
@@ -297,6 +304,31 @@ var BedrockAPIValues = []BedrockAPI{
 // skip them.
 func (a BedrockAPI) IsValid() bool {
 	return slices.Contains(BedrockAPIValues, a)
+}
+
+// BedrockReasoningShape names the reasoning content variant a model uses on
+// Bedrock Converse. The two are mutually exclusive and not interchangeable:
+// replaying the wrong one is rejected (400 on Anthropic, an opaque 500 on
+// OpenAI and xAI).
+type BedrockReasoningShape string
+
+const (
+	// reasoningContent.reasoningText{text,signature} — Anthropic, DeepSeek.
+	BedrockReasoningShapeText BedrockReasoningShape = "reasoning_text"
+
+	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI.
+	BedrockReasoningShapeRedacted BedrockReasoningShape = "redacted_content"
+)
+
+// BedrockReasoningShapeValues lists every recognised BedrockReasoningShape.
+var BedrockReasoningShapeValues = []BedrockReasoningShape{
+	BedrockReasoningShapeText,
+	BedrockReasoningShapeRedacted,
+}
+
+// IsValid reports whether s is a shape this binary knows how to emit.
+func (s BedrockReasoningShape) IsValid() bool {
+	return slices.Contains(BedrockReasoningShapeValues, s)
 }
 
 // ModelParameterDescriptor is one entry of the datasheet's model_parameters

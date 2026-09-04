@@ -1069,7 +1069,20 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 
 	// Add reasoning content first
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
+		shape := converseReasoningShape(model)
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
+			if shape == schemas.BedrockReasoningShapeRedacted {
+				// These models reject reasoningText in every form -- with a
+				// signature, without one, empty or not -- with an opaque 500. The
+				// encrypted blob is the only replayable detail, and dropping the
+				// rest beats sending a shape that cannot be accepted.
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
+					})
+				}
+				continue
+			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
 				// Text must never reach Bedrock as nil. It is
 				// `*string json:"text,omitempty"`, so a nil pointer drops the key
@@ -1880,6 +1893,26 @@ func converseReasoningEffortLevels(ctx *schemas.BifrostContext, caps schemas.Mod
 		return bedrockConverseOpenAIEffortLevels, true
 	}
 	return nil, false
+}
+
+// converseReasoningShape reports which reasoning content variant the model uses
+// on Converse, preferring the datasheet and falling back to family detection.
+//
+// Verified against bedrock-runtime: gpt-5.6 and Grok return
+// reasoningContent.redactedContent, an opaque blob; Anthropic (through 4.8
+// adaptive thinking) and DeepSeek R1 return reasoningContent.reasoningText.
+// Replaying the wrong variant is rejected either way — 400 on Anthropic, an
+// opaque 500 on OpenAI and xAI.
+//
+// Takes the canonical model id rather than ModelCaps because the message
+// converters that need it hold exactly that and no BifrostContext; they resolve
+// caps inline the same way convertToolConfig does.
+func converseReasoningShape(model string) schemas.BedrockReasoningShape {
+	fallback := schemas.BedrockReasoningShapeText
+	if schemas.IsGrokModel(model) || schemas.IsOpenAIModel(model) {
+		fallback = schemas.BedrockReasoningShapeRedacted
+	}
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockReasoningShape(fallback)
 }
 
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping

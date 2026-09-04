@@ -577,6 +577,17 @@ func (c ModelCaps) MinOutputTokens(fallback int) int {
 	return fallback
 }
 
+// BedrockReasoningShape returns the reasoning wire shape the datasheet says this
+// (provider, model) pair uses on Converse, falling back to the caller's
+// name-based answer when the row says nothing or publishes a value this binary
+// does not recognise.
+func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) BedrockReasoningShape {
+	if c.record != nil && c.record.BedrockReasoningShape.IsValid() {
+		return c.record.BedrockReasoningShape
+	}
+	return fallback
+}
+
 // SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
 // includes the Responses API.
 func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {
