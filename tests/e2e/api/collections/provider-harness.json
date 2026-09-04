@@ -139823,6 +139823,306 @@
           }
         }
       ]
+    },
+    {
+      "name": "67. Bedrock Converse redacted reasoning round-trip (converse-redacted-reasoning)",
+      "description": "OpenAI (gpt-5.6-*) and xAI (grok-4.6) on bedrock-runtime Converse return reasoning as\nreasoningContent.redactedContent - one opaque blob - while Anthropic and DeepSeek return\nreasoningContent.reasoningText{text,signature}. The two are mutually exclusive and replaying the\nwrong one is rejected either way: 400 on Anthropic, and on OpenAI/xAI an opaque\n\n  500 \"The system encountered an unexpected error during processing. Try your request again.\"\n\nBifrost modelled only reasoningText, so it dropped the blob on ingress, left the client holding an\nempty unsigned thinking block, and re-emitted that as reasoningContent.reasoningText.text=\"\" on the\nnext turn - earning the 500. Only reachable on turn 2, so every row here is a capture/replay pair.\n\nProduction path: POST /v1/chat/completions (and /v1/responses) -> bedrock provider ->\nconverseReasoningShape() picks the wire shape from the bedrock_reasoning_shape datasheet key,\nfalling back to family detection -> reasoningContent.redactedContent.\n\nThe \"us.\" prefix on each model id is load-bearing: a bare id routes to bedrock-mantle, and only a\ncross-region identifier reaches bedrock-runtime, where Converse lives. The blob is minted and\nvalidated by the model, so it cannot be fixtured - hence capture-then-replay through a collection\nvariable, which runners/lib/chained-vars.mjs detects so sharding keeps each pair together.\n\nThe reasoningText half of the same invariant is already covered for Anthropic-on-Bedrock by\nfolder 46 and is not duplicated here.",
+      "item": [
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":512,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Converse redacted reasoning reaches the client', function () {",
+                  "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array').to.be.an('array').that.is.not.empty;",
+                  "  var details = (j.choices[0].message && j.choices[0].message.reasoning_details) || [];",
+                  "  var enc = details.filter(function (d) { return d && d.type === 'reasoning.encrypted' && d.data; });",
+                  "  pm.expect(enc.length, 'no encrypted reasoning detail came back - the redactedContent blob was dropped on ingress, which is the first half of the defect and leaves the replay row nothing to carry').to.be.above(0);",
+                  "});",
+                  "// Echo the assistant turn back verbatim: echoing is the point, it is what",
+                  "// carries the redacted blob out to Bedrock again on the next turn.",
+                  "try {",
+                  "  var captured = pm.response.json();",
+                  "  var msg = captured.choices && captured.choices[0] && captured.choices[0].message;",
+                  "  if (msg) {",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseRedactedChatMessages',",
+                  "      JSON.stringify([",
+                  "        { role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" },",
+                  "        msg,",
+                  "        { role: \"user\", content: \"Now restate the meeting time in one sentence.\" }",
+                  "      ])",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":256,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{bedrockConverseRedactedChatMessages}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays",
+                  "// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Converse redacted reasoning is accepted', function () {",
+                  "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+                  "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+                  "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+                  "// extra_fields.raw_response, so a bare substring check on the response body can",
+                  "// never distinguish success from failure here - assert on what Bifrost SENT.",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('replay raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sent = JSON.stringify(rr);",
+                  "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+                  "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+                  "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":2048}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Converse redacted reasoning reaches the client as a reasoning item', function () {",
+                  "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning.length, 'no reasoning item came back, so the replay row would silently skip having tested nothing').to.be.above(0);",
+                  "  var carried = reasoning.filter(function (o) { return o.encrypted_content; });",
+                  "  pm.expect(carried.length, 'the reasoning item carries no encrypted_content - the redactedContent blob was dropped on ingress').to.be.above(0);",
+                  "});",
+                  "try {",
+                  "  var captured = pm.response.json();",
+                  "  if (captured.output && captured.output.length) {",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseRedactedResponsesInput',",
+                  "      JSON.stringify(",
+                  "        [{ type: \"message\", role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" }]",
+                  "          .concat(captured.output)",
+                  "          .concat([{ type: \"message\", role: \"user\", content: \"Now restate the meeting time in one sentence.\" }])",
+                  "      )",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":{{bedrockConverseRedactedResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":512}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays",
+                  "// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Converse redacted reasoning is accepted on the Responses path', function () {",
+                  "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+                  "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+                  "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+                  "// extra_fields.raw_response, so a bare substring check on the response body can",
+                  "// never distinguish success from failure here - assert on what Bifrost SENT.",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('replay raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sent = JSON.stringify(rr);",
+                  "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+                  "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+                  "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

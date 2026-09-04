@@ -1026,9 +1026,13 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					},
 				}
 
-				// Preserve signature if present
+				// Preserve the replay token if present. Anthropic sends a signature,
+				// OpenAI and xAI send an opaque redactedContent blob; both ride on
+				// EncryptedContent and the shape decides how it is emitted back.
 				if reasoningDelta.Signature != nil {
 					item.ResponsesReasoning.EncryptedContent = reasoningDelta.Signature
+				} else if reasoningDelta.RedactedContent != nil {
+					item.ResponsesReasoning.EncryptedContent = reasoningDelta.RedactedContent
 				}
 
 				// Track that this content index is a reasoning block
@@ -3797,7 +3801,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 
 			// Handle reasoning as content in next assistant message
 			// For now, just add to pending content blocks
-			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg)
+			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model))
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 			}
@@ -4212,6 +4216,7 @@ func createTextMessage(
 func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var outputMessages []schemas.ResponsesMessage
 	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
+	var reasoningRedactedContent *string
 
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
@@ -4326,6 +4331,10 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					Text:      block.ReasoningContent.ReasoningText.Text,
 					Signature: block.ReasoningContent.ReasoningText.Signature,
 				})
+			} else if block.ReasoningContent.RedactedContent != nil {
+				// Opaque blob: carried on the reasoning message rather than as a
+				// content block, since there is no prose for one to hold.
+				reasoningRedactedContent = block.ReasoningContent.RedactedContent
 			}
 		} else if block.ToolUse != nil {
 			// Tool use content
@@ -4683,12 +4692,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	}
 
 	// Handle reasoning blocks - prepend reasoning message if we collected any
-	if len(reasoningContentBlocks) > 0 {
+	if len(reasoningContentBlocks) > 0 || reasoningRedactedContent != nil {
 		reasoningMessage := schemas.ResponsesMessage{
 			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: reasoningRedactedContent,
 			},
 			Content: &schemas.ResponsesMessageContent{
 				ContentBlocks: reasoningContentBlocks,
@@ -4713,7 +4723,23 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 //
 // once per replayed assistant turn. See reasoning_replay_test.go, which pins the
 // invariant at both the struct and the serialised-wire level.
-func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
+func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape) []BedrockContentBlock {
+	if shape == schemas.BedrockReasoningShapeRedacted {
+		// These models reject reasoningText in every form -- with a signature,
+		// without one, empty or not -- with an opaque 500. Only the blob carried
+		// on EncryptedContent is replayable; emitting nothing beats emitting a
+		// shape the model cannot accept.
+		if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil ||
+			*msg.ResponsesReasoning.EncryptedContent == "" {
+			return nil
+		}
+		return []BedrockContentBlock{{
+			ReasoningContent: &BedrockReasoningContent{
+				RedactedContent: msg.ResponsesReasoning.EncryptedContent,
+			},
+		}}
+	}
+
 	var reasoningBlocks []BedrockContentBlock
 
 	// Track whether the content blocks actually produced reasoning rather than
@@ -4819,6 +4845,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					bedrockBlock.Image = imageSource
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
+				// Redacted-shape models carry their blob on the reasoning message,
+				// never on a content block, so there is nothing here to replay.
+				if converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted {
+					continue
+				}
 				if block.Text != nil {
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
