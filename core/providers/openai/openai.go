@@ -19,6 +19,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1637,6 +1638,20 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	)
 }
 
+// rawResponsesCacheCountersKnown preserves one fact that
+// BifrostResponsesResponse.WithDefaults otherwise destroys: whether the raw
+// provider response actually contained an input-token detail object. Only the
+// closed boolean is retained in request context; raw content never
+// leaves this parser boundary.
+func rawResponsesCacheCountersKnown(body []byte, streaming bool) bool {
+	path := "usage.input_tokens_details"
+	if streaming {
+		path = "response.usage.input_tokens_details"
+	}
+	detail := gjson.GetBytes(body, path)
+	return detail.Exists() && detail.IsObject()
+}
+
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
 func HandleOpenAIResponsesRequest(
 	ctx *schemas.BifrostContext,
@@ -1683,6 +1698,12 @@ func HandleOpenAIResponsesRequest(
 			return nil, lpErr
 		}
 		if len(lpResult.ResponseBody) > 0 {
+			// The large-request passthrough returns before the normal response parser
+			// below. Preserve the same raw presence fact at this boundary before the
+			// returned typed response can reach WithDefaults in the caller.
+			ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
+				rawResponsesCacheCountersKnown(lpResult.ResponseBody, false))
+
 			response := &schemas.BifrostResponsesResponse{}
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
@@ -1750,6 +1771,11 @@ func HandleOpenAIResponsesRequest(
 			ExtraFields: schemas.BifrostResponseExtraFields{Latency: lpResult.Latency},
 		}, nil
 	}
+
+	// Preserve raw field presence before HandleProviderResponse / WithDefaults
+	// can materialize an empty InputTokensDetails object.
+	ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
+		rawResponsesCacheCountersKnown(body, false))
 
 	response := &schemas.BifrostResponsesResponse{}
 
@@ -2098,6 +2124,11 @@ func HandleOpenAIResponsesStreaming(
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// The terminal event is the sole authoritative usage object. Preserve
+				// only raw presence before WithDefaults reaches plugin post hooks.
+				ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
+					rawResponsesCacheCountersKnown([]byte(jsonData), true))
+
 				// Set raw request if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
