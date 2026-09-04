@@ -839,6 +839,15 @@ func classifyInstallationTokenError(status int, body []byte, cfg *copilotConfig)
 			"The App is not installed on that account, or installation_id belongs to a different App.",
 			cfg.installationID, cfg.appID), status)
 	case http.StatusUnprocessableEntity:
+		// GitHub uses 422 for two unrelated faults, and its message tells them apart. Naming
+		// the repository for a permission failure sends the operator to the wrong setting.
+		if strings.Contains(strings.ToLower(detail), errPermissionsNotGranted) {
+			return blockingError(fmt.Sprintf("github copilot: installation %s does not hold the "+
+				"copilot_requests: write permission (422). Set the App's Copilot Requests repository "+
+				"permission to Read & write; if the App was installed before that permission was "+
+				"added, an organization owner must approve the updated permissions on the "+
+				"installation. GitHub said: %s", cfg.installationID, detail), status)
+		}
 		return blockingError(fmt.Sprintf("github copilot: GitHub rejected the installation token request "+
 			"(422). repository_id %d is most likely not one this installation can access. GitHub said: %s",
 			cfg.repositoryID, detail), status)

@@ -679,6 +679,29 @@ func TestFailureBackoff(t *testing.T) {
 	})
 }
 
+// TestClassifyInstallationToken422 pins that GitHub's two 422 causes get different guidance.
+// Blaming the repository for a permission failure sends the operator to re-check a
+// repository ID that was never the problem.
+func TestClassifyInstallationToken422(t *testing.T) {
+	cfg := &copilotConfig{installationID: "12345", repositoryID: 745048854}
+
+	t.Run("permission not granted names the permission, not the repository", func(t *testing.T) {
+		body := []byte(`{"message":"The permissions requested are not granted to this installation."}`)
+		bErr := classifyInstallationTokenError(http.StatusUnprocessableEntity, body, cfg)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "copilot_requests: write")
+		assert.Contains(t, bErr.Error.Message, "Copilot Requests")
+		assert.NotContains(t, bErr.Error.Message, "745048854")
+	})
+
+	t.Run("other 422s still point at the repository", func(t *testing.T) {
+		body := []byte(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`)
+		bErr := classifyInstallationTokenError(http.StatusUnprocessableEntity, body, cfg)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "745048854")
+	})
+}
+
 func TestEnterpriseNeverFallsBackToPublic(t *testing.T) {
 	fake := newFakeGithub(t)
 	// GitHub advertises a host outside the enterprise allowlist.
