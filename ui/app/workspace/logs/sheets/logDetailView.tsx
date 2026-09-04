@@ -1139,6 +1139,10 @@ export function LogDetailView({
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
+	// Set on both the submission row and the aggregate cost row a settlement writes;
+	// only the latter carries accounting, which is what tells the two apart.
+	const videoDebug = log.video_debug;
+	const videoAccounting = videoDebug?.accounting;
 	const batchRawRequest = useMemo(() => {
 		if (!isBatch || !log.raw_request) return null;
 		try {
@@ -1482,6 +1486,17 @@ export function LogDetailView({
 									)}
 								>
 									{batchDebug.status.replace(/_/g, " ")}
+								</Badge>
+							)}
+							{videoDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[videoDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{videoDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
 						</div>
@@ -2153,6 +2168,16 @@ export function LogDetailView({
 											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
 										/>
 									)}
+									{/* An async job settles onto a child row, so the request that started it
+									    has no cost of its own. Without this the detail view of a video
+									    generation reads as free while the list beside it shows the spend. */}
+									{log.cost == null && (log.children_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Settled Cost"
+											value={formatCostPrecise(log.children_cost)}
+										/>
+									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
@@ -2369,6 +2394,43 @@ export function LogDetailView({
 													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
 												)}
 											</div>
+										)}
+									</div>
+								</>
+							)}
+
+							{videoDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Video Details" />
+										{videoDebug.video_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Video ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{videoDebug.video_id}</code>
+														<CopyInlineButton text={videoDebug.video_id} testId="logdetails-copy-video-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{videoAccounting && (
+											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+												{videoAccounting.seconds != null && (
+													<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
+												)}
+												{videoAccounting.size && <LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />}
+												{videoAccounting.output_count != null && (
+													<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
+												)}
+											</div>
+										)}
+										{videoAccounting?.incomplete && (
+											<p className="text-muted-foreground text-xs">
+												Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
+											</p>
 										)}
 									</div>
 								</>

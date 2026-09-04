@@ -1623,7 +1623,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 // recovered, as distinct from one that merely priced to zero. The recalc job
 // reports the two separately so operators can tell "nothing to charge" from
 // "could not compute a charge".
-var errPricingInputsUnavailable = errors.New("pricing inputs unavailable")
+var errPricingInputsUnavailable = jobaccounting.ErrPricingInputsUnavailable
 
 // billingOutcome is the per-row result of pricing a batch: the computed cost, or the
 // reason the row was left alone.
@@ -1637,16 +1637,39 @@ type billingOutcome struct {
 	// is derived from the cache metadata compatibility field and ReleaseBillingPayloads clears that. Callers
 	// run after the release, so they cannot re-derive it.
 	knownZeroCost bool
-	// batchDebugUpdate is the serialized batch_debug JSON to persist alongside cost,
-	// set only for a batch aggregate row repriced via calculateBatchAggregateCost.
-	// BulkUpdateCost cannot write batch_debug, so without this the row's
-	// model_breakdowns would stay stuck showing the pre-recalculation (unpriced)
-	// state even after cost is fixed.
-	batchDebugUpdate string
-	// batchDebugOnly marks a repriced batch echo row: batch_debug is refreshed so
-	// the displayed price is current, but the cost column is left NULL. Writing a
-	// cost there would bill the batch once per /results fetch.
-	batchDebugOnly bool
+	// debugUpdate is a job kind's re-serialized debug blob to persist alongside the
+	// cost, and debugColumn is which column it belongs in. BulkUpdateCost writes
+	// neither, so without this a repriced aggregate's detail would stay stuck
+	// showing its pre-recalculation state while the cost moved.
+	debugUpdate string
+	debugColumn string
+	// displayOnly marks a row that reprices for display but must leave its cost
+	// column NULL — a batch /results echo row would otherwise bill once per fetch.
+	displayOnly bool
+	// settledZero marks a row a job kind priced at a real, final zero — a failed
+	// video is not billed, and that is an answer about the money, not the absence
+	// of one. Without it the row is skipped as "resolved cost is zero", never marked
+	// priced, and matches MissingCostOnly (cost <= 0) on every subsequent pass.
+	settledZero bool
+	// kindOwned marks an outcome produced by a job kind rather than the generic
+	// pricing path. The two carry their cost differently — see costUpdate.
+	kindOwned bool
+}
+
+// costUpdate resolves what this outcome writes to the row's cost columns.
+//
+// The two pricing paths express a cost differently and must not be confused: the
+// generic path fills in a per-category breakdown, while a job kind reprices an
+// aggregate to a single scalar total and leaves breakdown nil. Reading the nil
+// breakdown for a kind-owned outcome yielded CostUpdate{} — zeros — which
+// overwrote real provider-reported costs and still reported the row as priced.
+//
+// Both persistence branches go through here so they can never disagree again.
+func (o billingOutcome) costUpdate() logstore.CostUpdate {
+	if o.kindOwned {
+		return logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: o.cost})
+	}
+	return logstore.CostUpdateFromBreakdown(o.breakdown)
 }
 
 // recalcTally is what persisting one page of billing outcomes did.
@@ -1683,49 +1706,44 @@ func (p *LoggerPlugin) persistRecalcOutcomes(ctx context.Context, batch []logsto
 			p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
 			continue
 		}
-		if cost <= 0 {
-			if outcomes[i].knownZeroCost {
-				costUpdates[logEntry.ID] = logstore.CostUpdate{}
-			} else {
-				tally.skipped++
-				p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
-			}
+		// Four reasons to write: a real cost, a cache hit resolved to zero, a job
+		// kind that settled at zero, or a refreshed debug blob. None of them and
+		// there is nothing to record, so leave the row for a later pass.
+		if cost <= 0 && !outcomes[i].knownZeroCost && !outcomes[i].settledZero && outcomes[i].debugUpdate == "" {
+			tally.skipped++
+			p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
 			continue
 		}
-		if outcomes[i].batchDebugUpdate != "" && outcomes[i].batchDebugOnly {
-			// Echo row: refresh only what it displays. Its cost stays NULL, so it
-			// contributes to no total and priced stays false for the cursor.
-			if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-				"batch_debug": outcomes[i].batchDebugUpdate,
-			}); err != nil {
-				return recalcTally{}, fmt.Errorf("failed to update batch display cost for log %s: %w", logEntry.ID, err)
+		if outcomes[i].debugUpdate != "" {
+			// The cost and the kind's debug blob go in one write so a row's detail
+			// can never disagree with what it was billed — including at zero, where
+			// skipping the blob left stale model breakdowns behind. A display-only
+			// row refreshes its detail alone and keeps a NULL cost.
+			update := map[string]any{outcomes[i].debugColumn: outcomes[i].debugUpdate}
+			if !outcomes[i].displayOnly {
+				split := outcomes[i].costUpdate()
+				update["cost"] = split.Total
+				update["input_cost"] = split.Input
+				update["output_cost"] = split.Output
+				update["additional_cost"] = split.Additional
+			}
+			if err := p.store.Update(ctx, logEntry.ID, update); err != nil {
+				return recalcTally{}, fmt.Errorf("failed to update settled cost for log %s: %w", logEntry.ID, err)
 			}
 			tally.updated++
-			continue
+		} else {
+			costUpdates[logEntry.ID] = outcomes[i].costUpdate()
 		}
-		if outcomes[i].batchDebugUpdate != "" {
-			// A repriced batch aggregate row needs cost and batch_debug written
-			// together so model_breakdowns never disagrees with the row's own
-			// cost, and batch_debug can only be written through a dedicated update
-			// (BulkUpdateCost writes cost and the split columns, but not
-			// batch_debug). This row carries a scalar total only, so derive the
-			// split columns from it the same way CostUpdateFromBreakdown does.
-			update := logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: cost})
-			if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-				"cost":            update.Total,
-				"input_cost":      update.Input,
-				"output_cost":     update.Output,
-				"additional_cost": update.Additional,
-				"batch_debug":     outcomes[i].batchDebugUpdate,
-			}); err != nil {
-				return recalcTally{}, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
-			}
-			tally.updated++
+
+		// priced means the row now carries a POSITIVE cost and will therefore drop
+		// out of a MissingCostOnly scan. A zero — settled or cached — still matches
+		// cost <= 0 and reappears at the head of the next page, so marking it priced
+		// would stop the caller advancing its offset past it and the page would
+		// repeat forever. Draining those rows needs the scan to exclude them, not
+		// this flag to lie about them.
+		if cost > 0 && !outcomes[i].displayOnly {
 			tally.priced[i] = true
-			continue
 		}
-		costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
-		tally.priced[i] = true
 	}
 
 	if len(costUpdates) > 0 {
@@ -1794,14 +1812,22 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 				outcomes[i].err = fmt.Errorf("%w: log %s", errPricingInputsUnavailable, batch[i].ID)
 				continue
 			}
-			if role := batchRowRoleOf(&batch[i]); role != batchRowRoleNone {
-				// Batch aggregate rows reprice per model and carry only a scalar
-				// total (no input/output split), persisted via the batchDebugUpdate
-				// path below. An echo row reprices identically, but only to refresh
-				// what it displays; the bill stays on the aggregate row alone.
-				isEcho := role == batchRowRoleEcho
-				outcomes[i].batchDebugOnly = isEcho
-				outcomes[i].cost, outcomes[i].batchDebugUpdate, outcomes[i].err = p.calculateBatchAggregateCost(&batch[i], isEcho)
+			// An aggregate row is synthesized at settlement, not logged from a
+			// provider response: no payload, no usage, and an Object naming the read
+			// that produced it rather than the request that was priced. The generic
+			// path below would reprice every one of them to nothing, so each kind
+			// reprices its own from the debug blob it wrote.
+			if repriced, err := jobaccounting.RepriceLog(&batch[i], p.pricingManager); err != nil || repriced != nil {
+				outcomes[i].err = err
+				if repriced != nil {
+					outcomes[i].cost = repriced.Cost
+					outcomes[i].debugUpdate = repriced.DebugJSON
+					outcomes[i].debugColumn = repriced.DebugColumn
+					outcomes[i].displayOnly = repriced.DisplayOnly
+					outcomes[i].kindOwned = true
+					// The kind answered, so a zero here is settled, not unresolved.
+					outcomes[i].settledZero = repriced.Cost <= 0 && !repriced.DisplayOnly
+				}
 			} else {
 				outcomes[i].breakdown, outcomes[i].err = p.calculateCostBreakdownForLog(&batch[i])
 				if outcomes[i].breakdown != nil {
@@ -1834,132 +1860,6 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 	}
 
 	return outcomes, nil
-}
-
-// batchRowRole distinguishes the two kinds of row that carry batch accounting.
-type batchRowRole int
-
-const (
-	// batchRowRoleNone is any row that is not a batch accounting row.
-	batchRowRoleNone batchRowRole = iota
-	// batchRowRoleAggregate is the single settlement row that owns the batch's bill.
-	batchRowRoleAggregate
-	// batchRowRoleEcho is a /results HTTP call's own log row, which carries a
-	// read-only copy of the aggregate row's price for display.
-	batchRowRoleEcho
-)
-
-// batchRowRoleOf classifies a row that carries per-model batch usage.
-//
-// A repeated /results fetch gets its own row stamped with the settled breakdowns,
-// and its object is "batch_results" just like the settlement row's — so repricing
-// both as owners billed the batch once per fetch. Only the aggregate row's id is
-// derived from (provider, batch id), which separates them exactly.
-func batchRowRoleOf(logEntry *logstore.Log) batchRowRole {
-	if logEntry.BatchDebugParsed == nil && logEntry.BatchDebug != "" {
-		if err := logEntry.DeserializeFields(); err != nil {
-			return batchRowRoleNone
-		}
-	}
-	if logEntry.Object != string(schemas.BatchResultsRequest) ||
-		logEntry.BatchDebugParsed == nil ||
-		logEntry.BatchDebugParsed.Accounting == nil ||
-		len(logEntry.BatchDebugParsed.Accounting.ModelBreakdowns) == 0 {
-		return batchRowRoleNone
-	}
-	if logEntry.BatchDebugParsed.Accounting.Echo {
-		return batchRowRoleEcho
-	}
-	// Rows written before the echo marker existed are classified by id. Without a
-	// batch id there is nothing to derive the aggregate id from, so keep the
-	// pre-split behaviour of treating the row as the owner.
-	batchID := logEntry.BatchDebugParsed.BatchID
-	if batchID == "" {
-		return batchRowRoleAggregate
-	}
-	if logEntry.ID == jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.ModelProvider(logEntry.Provider), batchID) {
-		return batchRowRoleAggregate
-	}
-	return batchRowRoleEcho
-}
-
-// calculateBatchAggregateCost reprices a batch aggregate row from its per-model
-// breakdowns rather than the row's single blended token_usage. A batch can span
-// multiple models, and the row's own Model field is "mixed" in that case —
-// pricing that literal string against the catalog never finds an entry, so the
-// row prices at zero forever through the generic calculateCostForLog path.
-// Repricing per model, the same way settlement (jobaccounting.summarizeResults)
-// originally priced each result item, is the only way a mixed-model batch — or a
-// single-model batch whose rate only arrived after settlement — can recover a
-// cost here.
-//
-// Mutates logEntry.BatchDebugParsed.Accounting.ModelBreakdowns in place (each
-// entry's Cost refreshed, nil if that model still has no rate) and returns the
-// row's total cost — the sum of every model that priced this time — plus the
-// batch_debug JSON to persist alongside it, since BulkUpdateCost only ever
-// writes the cost column and would otherwise leave model_breakdowns stuck
-// showing the pre-recalculation state.
-//
-// refreshSnapshotCost updates Accounting.Cost, which is where an echo row's
-// displayed price lives; the aggregate row keeps it nil and bills via its cost
-// column.
-func (p *LoggerPlugin) calculateBatchAggregateCost(logEntry *logstore.Log, refreshSnapshotCost bool) (float64, string, error) {
-	accounting := logEntry.BatchDebugParsed.Accounting
-	scopes := pricingScopesForLog(logEntry)
-	// The row's Object is always "batch_results", which normalizes to "chat" — so
-	// repricing by it alone charged every batch at chat rates and could never find
-	// an embedding model's catalog entry at all. Settlement now records the batch's
-	// endpoint, so use the same endpoint→request-type mapping it priced with. Rows
-	// written before that field existed have no endpoint; they keep the old behavior
-	// rather than being guessed at.
-	requestType := schemas.RequestType(logEntry.Object)
-	if endpoint := logEntry.BatchDebugParsed.Endpoint; endpoint != "" {
-		requestType = jobaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
-	}
-
-	var total float64
-	priced := 0
-	for model, breakdown := range accounting.ModelBreakdowns {
-		usage := breakdown.Usage
-		details := p.pricingManager.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(logEntry.Provider), model, requestType, &scopes)
-		if details.Priced {
-			cost := details.Cost
-			breakdown.Cost = &cost
-			total += cost
-			priced++
-		} else {
-			breakdown.Cost = nil
-		}
-		accounting.ModelBreakdowns[model] = breakdown
-	}
-	if priced == 0 {
-		return 0, "", fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
-	}
-	// Recovering some of the cost is worth persisting — refusing to write anything
-	// would leave the operator with nothing — but the total must not present itself
-	// as whole while models are still rateless. Settlement uses the same flag for
-	// the same reason, so the two agree on what the number means.
-	//
-	// Only ever set, never cleared: the flag can also stand for usage that is not in
-	// ModelBreakdowns at all (rows whose model the provider never named, rows lost to
-	// parse errors), and repricing the breakdowns that did land says nothing about
-	// those. Clearing it here would close a gap this pass cannot see.
-	if priced < len(accounting.ModelBreakdowns) {
-		accounting.Incomplete = true
-	}
-	if refreshSnapshotCost {
-		refreshed := total
-		accounting.Cost = &refreshed
-		// Stamp the marker while the row is being rewritten anyway, so a row written
-		// before it existed stops relying on the id comparison to be classified.
-		accounting.Echo = true
-	}
-
-	batchDebugJSON, err := sonic.Marshal(logEntry.BatchDebugParsed)
-	if err != nil {
-		return 0, "", fmt.Errorf("failed to serialize batch_debug for log %s: %w", logEntry.ID, err)
-	}
-	return total, string(batchDebugJSON), nil
 }
 
 func isKnownZeroCostLog(logEntry *logstore.Log) bool {

@@ -1618,7 +1618,10 @@ func TestAccountBatchResults_PrefersBatchJobAttributionOverFetcher(t *testing.T)
 	assert.Nil(t, logged.TeamID)
 	// The triggering request is still recorded as provenance.
 	require.NotNil(t, logged.ParentRequestID)
-	assert.Equal(t, "results-request", *logged.ParentRequestID)
+	// This job carries no SourceLogID — it was first seen at settlement — so the
+	// triggering request is the only anchor there is, and the fallback uses it.
+	assert.Equal(t, "results-request", *logged.ParentRequestID,
+		"with no creating request recorded, settlement nests under whoever triggered it")
 
 	require.Len(t, reporter.reports, 1)
 	assert.Equal(t, []string{"budget-creator"}, reporter.reports[0].BudgetIDs)
@@ -1741,7 +1744,8 @@ func TestAccountBatchResults_SharedVirtualKeyKeepsUsersApart(t *testing.T) {
 	require.NotNil(t, logged.UserName)
 	assert.Equal(t, "Alice", *logged.UserName)
 	require.NotNil(t, logged.ParentRequestID)
-	assert.Equal(t, "results-request", *logged.ParentRequestID)
+	assert.Equal(t, "create-request", *logged.ParentRequestID,
+		"settlement nests under the creating request, not the fetch that triggered it")
 
 	require.Len(t, reporter.reports, 1)
 	assert.Equal(t, "user-alice", reporter.reports[0].UserID)
@@ -1800,7 +1804,11 @@ func TestAccountBatchResults_SweeperPathKeepsUserAttribution(t *testing.T) {
 	assert.Equal(t, "Alice", *logged.UserName)
 	require.NotNil(t, logged.TeamID)
 	assert.Equal(t, "team-1", *logged.TeamID)
-	assert.Nil(t, logged.ParentRequestID, "nothing triggered this settlement")
+	// The sweeper has no triggering request, which used to leave the settlement
+	// parentless and floating as its own root. It nests under the creating request
+	// like every other path, so both settle to the same place.
+	require.NotNil(t, logged.ParentRequestID, "a sweeper-settled job must still nest under its creator")
+	assert.Equal(t, "create-request", *logged.ParentRequestID)
 
 	require.Len(t, reporter.reports, 1)
 	assert.Equal(t, "user-alice", reporter.reports[0].UserID, "the user must be billable without a request context")
@@ -2141,6 +2149,9 @@ func (p *paramsRecordingSettler) Kind() ProviderJobKind                       { 
 func (p *paramsRecordingSettler) SupportsProvider(schemas.ModelProvider) bool { return true }
 func (p *paramsRecordingSettler) Backoff(int, time.Duration) time.Duration    { return time.Minute }
 func (p *paramsRecordingSettler) HydrateFromLog(*logstore.Log, *Outcome)      {}
+func (p *paramsRecordingSettler) RepriceFromLog(*logstore.Log, PricingManager) (*RepricedCost, error) {
+	return nil, nil
+}
 func (p *paramsRecordingSettler) Poll(context.Context, *cstables.TableProviderJob) (*PollResult, error) {
 	return nil, errors.New("not polled in this test")
 }

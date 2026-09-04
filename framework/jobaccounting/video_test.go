@@ -106,7 +106,10 @@ func TestVideoSettle_PricesFromCapturedParamsWhenResponseIsSilent(t *testing.T) 
 	assert.True(t, settlement.Complete)
 	assert.InDelta(t, 8*0.70, settlement.Cost, 1e-12,
 		"the submitted request is the only place the duration and size still exist")
-	assert.Equal(t, schemas.VideoGenerationRequest, settlement.Object)
+	// The settlement is named for the read that produced it, mirroring batch_results:
+	// two rows both reading video_generation read as two generations. The creating
+	// request type moves to the debug blob, which is what repricing reads.
+	assert.Equal(t, schemas.VideoRetrieveRequest, settlement.Object)
 }
 
 func TestVideoSettle_ResponseOverridesCapturedParams(t *testing.T) {
@@ -304,7 +307,11 @@ func TestVideoSweeper_SettlesCompletedJobOnce(t *testing.T) {
 	require.NotNil(t, entry, "the aggregate cost row must be keyed by the video namespace")
 	require.NotNil(t, entry.Cost)
 	assert.InDelta(t, 8*0.70, *entry.Cost, 1e-12)
-	assert.Equal(t, string(schemas.VideoGenerationRequest), entry.Object)
+	assert.Equal(t, string(schemas.VideoRetrieveRequest), entry.Object)
+	require.NotNil(t, entry.VideoDebugParsed)
+	require.NotNil(t, entry.VideoDebugParsed.Accounting)
+	assert.Equal(t, schemas.VideoGenerationRequest, entry.VideoDebugParsed.Accounting.RequestType,
+		"Object no longer names the rates this priced at, so repricing reads the creating type from here")
 	require.Len(t, reporter.reports, 1)
 	assert.Equal(t, logID, reporter.reports[0].RequestID)
 
