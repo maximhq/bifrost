@@ -116,6 +116,69 @@ case schemas.VLLM:
 
 ---
 
+## Anthropic-Compatible Endpoints (optional)
+
+vLLM can serve an Anthropic-compatible Messages endpoint (`/v1/messages`) alongside its OpenAI-compatible API. Setting `use_anthropic_endpoints` routes **Chat Completions** and the **Responses API** through that endpoint on the same server URL, streaming included. Text Completions and Embeddings are unaffected. Both modes authenticate with the same `Authorization: Bearer <key>` header. Make sure the vLLM server you point at actually exposes `/v1/messages` before turning this on.
+
+The setting can be configured per key, and overridden per alias:
+
+- **Key-level** - sets the default endpoint mode for every request made with that key.
+- **Alias-level** - overrides the key-level default for a single alias, so one key can serve some aliases through the OpenAI-compatible endpoints and others through the Anthropic-compatible one.
+
+If neither is set, requests use the OpenAI-compatible endpoints.
+
+<Tabs>
+<Tab title="Web UI">
+
+On the key form, toggle **Use Anthropic Endpoints** (off by default). To override it for a single alias, expand that alias's row in the **Deployments** table and set **Use Anthropic endpoints** under **vLLM overrides** to On or Off. Leaving it on **Use key setting** inherits the key-level toggle.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vllm": {
+      "keys": [
+        {
+          "name": "vllm-key-1",
+          "models": ["*"],
+          "weight": 1.0,
+          "use_anthropic_endpoints": true,
+          "vllm_key_config": {
+            "url": "env.VLLM_URL",
+            "model_name": "meta-llama/Llama-3.2-1B-Instruct"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+To override it for one alias, set `use_anthropic_endpoints` alongside the alias's `model_id`:
+
+```json
+{
+  "aliases": {
+    "fast-model": {
+      "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+      "use_anthropic_endpoints": false
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+The `use_anthropic_endpoints` boolean is part of the key payload used by [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider), and can also be set on any entry of that key's `aliases` map.
+</Tab>
+</Tabs>
+
+See [Aliasing Models](/providers/aliasing-models) for the full alias schema.
+
+---
+
 # 1. Chat Completions
 
 vLLM supports standard OpenAI chat completion parameters. For full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions). Message types, tools, and streaming follow the same behavior.
