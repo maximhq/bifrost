@@ -257,20 +257,36 @@ Use this pattern when you want enterprise access-profile configuration to be see
     {
       "name": "platform-default",
       "description": "Default profile for enterprise access-profile testing",
-      "is_active": true,
       "tags": ["platform", "test"],
+      "calendar_aligned": true,
+      "budgets": [
+        { "id": "platform-monthly", "max_limit": 500, "reset_duration": "1M" }
+      ],
       "provider_configs": [
         {
           "provider_name": "OpenAi",
           "all_models_allowed": false,
-          "allowed_models": ["gpt-4o-mini"]
+          "allowed_models": ["gpt-4o-mini"],
+          "blacklisted_models": ["gpt-4o-realtime-preview"],
+          "weight": 1,
+          "key_ids": ["*"],
+          "model_budgets": [
+            {
+              "model_name": "gpt-4o-mini",
+              "budgets": [
+                { "id": "gpt-4o-mini-monthly", "max_limit": 50, "reset_duration": "1M" }
+              ]
+            }
+          ]
         }
+      ],
+      "mcp_tool_groups": [
+        { "tool_group_id": 1 }
       ]
     },
     {
       "name": "platform-readonly-mcp",
       "description": "Profile for validating MCP include/exclude behavior",
-      "is_active": true,
       "tags": ["mcp", "test"],
       "mcp_servers": [
         {

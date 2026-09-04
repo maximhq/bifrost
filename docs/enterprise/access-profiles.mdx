@@ -97,7 +97,7 @@ The table shows **Name**, **Description**, **Providers**, **Budgets**, **Rate Li
 
 ### Configure provider access
 
-In the **Allowed Providers** accordion, add providers from the multi-select. For each provider:
+Add a provider from the **Allowed Providers** dropdown. Each provider becomes a collapsible card with three sub-sections:
 
 <Frame>
   <img
@@ -106,14 +106,38 @@ In the **Allowed Providers** accordion, add providers from the multi-select. For
   />
 </Frame>
 
-- **Allowed Models** - Toggle **All Models** to allow every model, or pick specific models from the search-filtered list. An empty selection denies every model from that provider.
-- **Provider Budget** - Add one or more budget lines. Each line has a **max limit** and a **reset duration** (`1h`, `1d`, `1w`, `1M`, `1Q`, `1Y`). You can stack multiple lines with different durations (for example, a hard hourly cap plus a softer monthly cap). A quarterly line can also carry a fiscal quarter start - see [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters).
-- **Maximum Tokens** - Per-provider token rate limit.
-- **Maximum Requests** - Per-provider request rate limit.
+**Provider budget**
+
+- **Maximum Spend (USD)** + **Reset Period** - Add one or more budget lines. Stack lines for a hard short-window cap plus a softer long-window one; quarterly lines can carry a fiscal quarter start - see [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters).
+
+**Model budgets** - optional; skip it and models share the provider budget freely.
+
+- **Maximum Spend (USD)** + **Reset Period** - Spend cap for that model.
+- **Maximum Tokens** - Per-model token rate limit, with its own **Reset Period**.
+- **Maximum Requests** - Per-model request rate limit, with its own **Reset Period**.
+
+**Access & rate limits**
+
+- **Provider keys** - Restrict to specific provider key IDs, or select **Allow All Keys**.
+- **Allowed models** - Defaults to **All Models**; pick specific models to restrict access.
+- **Blocked models** - Denylist that wins over **Allowed models**, even when set to all models.
+- **Weight** - Optional load-balancer seed weight; no fixed range is enforced. Leaving it empty opts out of the weight override for this provider - it does not exclude the provider from routing.
+- **Maximum Tokens** - Per-provider token rate limit, with its own **Reset Period**.
+- **Maximum Requests** - Per-provider request rate limit, with its own **Reset Period**.
 
 ### Configure global budget and rate limits
 
-Below the provider section, add **Global Budget Configuration** lines (these apply across all providers). Then set global rate limits for tokens and requests using the same number-plus-duration pattern.
+<Frame>
+  <img
+    src="/media/access-profiles/access-profile-spend-cap.png"
+    alt="Access Profile Spend Cap and Rate Limits sections in the create sheet"
+  />
+</Frame>
+
+Below the providers, **Access Profile Spend Cap** adds budget lines that apply across all providers. **Rate Limits** ("Limit token and request usage across all providers") sets:
+
+- **Maximum Tokens** - Global token rate limit, with its own **Reset Period**.
+- **Maximum Requests** - Global request rate limit, with its own **Reset Period**.
 
 ### Toggle calendar alignment
 
@@ -222,8 +246,8 @@ For programmatic configuration (every endpoint, body shape, and error code), see
 
 A profile carries the following pieces of policy. Use the UI walkthrough above for guidance and see the [API Reference](/api-reference) for exact field shapes.
 
-- **Provider access** - For each LLM provider: an allow-all toggle or an explicit model allowlist, plus optional per-provider budgets and rate limits.
-- **Global budgets** - Workspace-wide spend caps with reset durations of `1h`, `1d`, `1w`, `1M`, or `1Y`. Multiple budget lines can stack so you can combine a hard short-window cap with a softer long-window cap.
+- **Provider access** - For each LLM provider: an allow-all toggle or an explicit model allowlist, an optional model denylist that wins over the allowlist, an optional load-balancer weight, an optional restriction to specific provider key IDs, plus optional per-provider and per-model budgets and rate limits.
+- **Global budgets** - Workspace-wide spend caps with reset durations of `1h`, `1d`, `1w`, `1M`, `1Q`, or `1Y`. Multiple budget lines can stack so you can combine a hard short-window cap with a softer long-window cap. Quarterly (`1Q`) lines can carry a fiscal quarter start via `reset_config.quarter_start_month`.
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
 - **MCP tool access** - Reference [MCP Tool Groups](/enterprise/mcp-tool-groups), grant entire MCP servers, or override individual tools with include/exclude actions.
