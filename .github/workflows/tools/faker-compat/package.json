@@ -1,0 +1,11 @@
+{
+  "name": "faker-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Presents @faker-js/faker 10.x through the v5 API surface that postman-collection (via newman) still requires",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "faker10": "npm:@faker-js/faker@10.6.0"
+  }
+}
