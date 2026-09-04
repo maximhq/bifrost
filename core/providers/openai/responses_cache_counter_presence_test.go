@@ -39,6 +39,73 @@ func TestRawResponsesCacheCountersKnown(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamCacheCounterKnownnessBoundary verifies that only a
+// terminal Responses event publishes cache-counter evidence to post hooks.
+func TestResponsesStreamCacheCounterKnownnessBoundary(t *testing.T) {
+	tests := []struct {
+		name        string
+		serve       func(*testing.T) *httptest.Server
+		wantPresent bool
+		wantKnown   bool
+	}{
+		{
+			name: "completed with details publishes known",
+			serve: func(t *testing.T) *httptest.Server {
+				return completeSSEServer(t, `data: {"type":"response.completed","sequence_number":1,"response":{"id":"r1","object":"response","created_at":1,"model":"repro-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0}}}}`+"\n\n")
+			},
+			wantPresent: true,
+			wantKnown:   true,
+		},
+		{
+			name: "incomplete without details publishes unknown",
+			serve: func(t *testing.T) *httptest.Server {
+				return completeSSEServer(t, `data: {"type":"response.incomplete","sequence_number":1,"response":{"id":"r2","object":"response","created_at":1,"model":"repro-model","status":"incomplete","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+			},
+			wantPresent: true,
+			wantKnown:   false,
+		},
+		{
+			name: "truncated before terminal publishes nothing",
+			serve: func(t *testing.T) *httptest.Server {
+				return truncatingSSEServer(t, `data: {"type":"response.output_text.delta","sequence_number":1,"delta":"partial"}`+"\n\n")
+			},
+			wantPresent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := tt.serve(t)
+			defer server.Close()
+
+			ctx := newStreamTestContext()
+			provider := newStreamTestProvider(server.URL)
+			request := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "repro-model",
+				Input: []schemas.ResponsesMessage{{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+			}
+			stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), request)
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			collectChunks(t, stream)
+
+			known, present := ctx.Value(schemas.BifrostContextKeyRawResponsesCacheCountersKnown).(bool)
+			if present != tt.wantPresent {
+				t.Fatalf("raw cache-counter knownness present = %t, want %t", present, tt.wantPresent)
+			}
+			if present && known != tt.wantKnown {
+				t.Fatalf("raw cache-counter knownness = %t, want %t", known, tt.wantKnown)
+			}
+		})
+	}
+}
+
 // TestLargeRequestPassthroughPreservesRawCacheCounterPresence exercises the
 // early-return boundary that bypasses the ordinary Responses parser.
 func TestLargeRequestPassthroughPreservesRawCacheCounterPresence(t *testing.T) {
