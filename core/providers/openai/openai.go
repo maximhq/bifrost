@@ -86,10 +86,26 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL, isDefaultPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}
+
+	// When DisableDefaultVersionPath is set on the custom provider config, strip
+	// the /v1 prefix from default paths for providers whose base URL already has
+	// a non-root path segment. This avoids duplicate version prefixes like
+	// /v2/ai/openai/v1/chat/completions for providers such as Telnyx.
+	// The strip only applies to the true default path (not context overrides or
+	// RequestPathOverrides), preserving explicit path control.
+	if provider.customProviderConfig != nil &&
+		provider.customProviderConfig.DisableDefaultVersionPath &&
+		isDefaultPath &&
+		strings.HasPrefix(path, "/v1/") {
+		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
+			path = strings.TrimPrefix(path, "/v1")
+		}
+	}
+
 	return provider.networkConfig.BaseURL + path
 }
 
