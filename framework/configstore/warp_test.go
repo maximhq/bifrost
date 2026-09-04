@@ -24,11 +24,18 @@ func TestWarpConfigStoreLifecycle(t *testing.T) {
 	require.Nil(t, config)
 
 	require.NoError(t, store.UpsertWarpConfig(ctx, &tables.TableWarpConfig{
-		Enabled:       true,
-		Provider:      "openai",
-		Model:         "gpt-4o",
-		APIKeyID:      "key-abc",
-		MaxIterations: 6,
+		Enabled:                 true,
+		Provider:                "openai",
+		Model:                   "gpt-4o",
+		APIKeyID:                "key-abc",
+		MaxIterations:           6,
+		EmbeddingProvider:       "openai",
+		EmbeddingModel:          "text-embedding-3-small",
+		EmbeddingAPIKeyID:       "key-embed",
+		EmbeddingDimension:      1536,
+		LogVectorStoreNamespace: "BifrostWarpLogs",
+		SemanticSearchThreshold: 0.8,
+		SemanticSearchLimit:     10,
 	}))
 
 	config, err = store.GetWarpConfig(ctx)
@@ -39,6 +46,8 @@ func TestWarpConfigStoreLifecycle(t *testing.T) {
 	require.Equal(t, "gpt-4o", config.Model)
 	require.Equal(t, 6, config.MaxIterations)
 	require.Equal(t, "key-abc", config.APIKeyID)
+	require.Equal(t, "text-embedding-3-small", config.EmbeddingModel)
+	require.Equal(t, 1536, config.EmbeddingDimension)
 
 	// The table is a singleton by contract. A second write must overwrite rather
 	// than insert: an autoincremented second row would be invisible to
@@ -59,6 +68,33 @@ func TestWarpConfigStoreLifecycle(t *testing.T) {
 	require.NotNil(t, config)
 	require.False(t, config.Enabled)
 	require.Equal(t, "anthropic", config.Provider)
+}
+
+func TestWarpConfigMigrationAddsLogEmbeddingColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, db.Exec(`CREATE TABLE warp_config (
+		id integer PRIMARY KEY,
+		enabled numeric DEFAULT false,
+		provider text,
+		model text,
+		base_url text,
+		api_key_id text,
+		max_iterations integer DEFAULT 0,
+		request_timeout_seconds integer DEFAULT 0,
+		system_prompt_suffix text,
+		created_at datetime NOT NULL,
+		updated_at datetime NOT NULL
+	)`).Error)
+
+	require.NoError(t, migrationAddWarpLogEmbeddingColumns(ctx, db, testMigrationLogger))
+	for _, column := range []string{
+		"embedding_provider", "embedding_model", "embedding_api_key_id", "embedding_dimension",
+		"log_vector_store_namespace", "semantic_search_threshold", "semantic_search_limit", "retired_log_vector_store_namespaces",
+	} {
+		require.Truef(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, column), "missing %s", column)
+	}
 }
 
 // A caller that leaves ID unset must still land on the singleton row rather

@@ -28,12 +28,28 @@ func newTestService(store *recordingStore) *Service {
 	return NewService(nil, WithConfigStore(store))
 }
 
+func validWarpConfigRow() *tables.TableWarpConfig {
+	return &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}
+}
+
+func validWarpConfigInput() *ConfigInput {
+	return &ConfigInput{
+		Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
+		EmbeddingDimension: 1536, LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}
+}
+
 // A key reference round-trips like any other field: there is no secret here, so
 // no redaction step and no presence flag.
 func TestWarpConfigViewReturnsKeyReference(t *testing.T) {
-	service := newTestService(&recordingStore{row: &tables.TableWarpConfig{
-		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
-	}})
+	row := validWarpConfigRow()
+	row.APIKeyID = "key-abc"
+	service := newTestService(&recordingStore{row: row})
 	view, err := service.ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "key-abc", view.APIKeyID)
@@ -60,12 +76,13 @@ func TestWarpConfigViewWithoutStoreIsUnavailable(t *testing.T) {
 // The reference is a plain field, so clearing it is just sending an empty
 // value - none of the omitted-versus-empty ambiguity a write-only secret forces.
 func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
-	store := &recordingStore{row: &tables.TableWarpConfig{
-		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
-	}}
-	view, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o-mini", APIKeyID: "key-xyz",
-	})
+	row := validWarpConfigRow()
+	row.APIKeyID = "key-abc"
+	store := &recordingStore{row: row}
+	input := validWarpConfigInput()
+	input.Model = "gpt-4o-mini"
+	input.APIKeyID = "key-xyz"
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Equal(t, "key-xyz", store.upserted[0].APIKeyID)
@@ -77,9 +94,7 @@ func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
 // key at all - so an empty reference must be accepted, not rejected.
 func TestWarpSaveConfigAcceptsEmptyKeyReference(t *testing.T) {
 	store := &recordingStore{}
-	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
-		Enabled: true, Provider: "openai", Model: "gpt-4o",
-	})
+	_, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Empty(t, store.upserted[0].APIKeyID)
@@ -95,10 +110,15 @@ func TestWarpSaveConfigAllowsIncompleteDraftWhenDisabled(t *testing.T) {
 }
 
 func TestWarpValidateConfigInputRejectsIncompleteWhenEnabled(t *testing.T) {
-	for name, input := range map[string]*ConfigInput{
-		"no provider": {Enabled: true, Model: "gpt-4o"},
-		"no model":    {Enabled: true, Provider: "openai"},
+	for name, mutate := range map[string]func(*ConfigInput){
+		"no provider":            func(input *ConfigInput) { input.Provider = "" },
+		"no model":               func(input *ConfigInput) { input.Model = "" },
+		"no embedding provider":  func(input *ConfigInput) { input.EmbeddingProvider = "" },
+		"no embedding model":     func(input *ConfigInput) { input.EmbeddingModel = "" },
+		"no embedding dimension": func(input *ConfigInput) { input.EmbeddingDimension = 0 },
 	} {
+		input := validWarpConfigInput()
+		mutate(input)
 		store := &recordingStore{}
 		_, err := newTestService(store).SaveConfig(context.Background(), input)
 		require.ErrorIs(t, err, ErrInvalidConfig, name)
@@ -107,7 +127,9 @@ func TestWarpValidateConfigInputRejectsIncompleteWhenEnabled(t *testing.T) {
 }
 
 func TestWarpValidateConfigInputRejectsIterationsAboveCeiling(t *testing.T) {
-	err := ValidateConfigInput(&ConfigInput{Enabled: true, Provider: "openai", Model: "gpt-4o", MaxIterations: 50})
+	input := validWarpConfigInput()
+	input.MaxIterations = 50
+	err := ValidateConfigInput(input)
 	require.ErrorIs(t, err, ErrInvalidConfig)
 }
 
@@ -116,10 +138,24 @@ func TestWarpValidateConfigInputRejectsIterationsAboveCeiling(t *testing.T) {
 func TestWarpConfigRejectsUnusableConfigs(t *testing.T) {
 	for name, row := range map[string]*tables.TableWarpConfig{
 		"missing":  nil,
-		"disabled": {Enabled: false, Provider: "openai", Model: "gpt-4o"},
+		"disabled": {Enabled: false, Provider: "openai", Model: "gpt-4o", EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 3},
 		"no model": {Enabled: true, Provider: "openai"},
 	} {
 		_, err := newTestService(&recordingStore{row: row}).Config(context.Background())
 		require.ErrorIs(t, err, ErrUnavailable, name)
 	}
+}
+
+func TestWarpSaveConfigRequiresNewNamespaceForEmbeddingSpace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	input := validWarpConfigInput()
+	input.EmbeddingModel = "text-embedding-3-large"
+	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+
+	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, "BifrostWarpLogsV2", view.LogVectorStoreNamespace)
+	require.Equal(t, []string{schemas.WarpDefaultLogVectorStoreNamespace}, retiredNamespaces(store.row))
 }
