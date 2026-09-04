@@ -1,3 +1,4 @@
+- [fix]: preserve raw OpenAI Responses cache-counter presence [@valentinyanakiev](https://github.com/valentinyanakiev)
 - [fix]: report truncated Content-Length response streams and discard incomplete connections
 - [fix]: a tool_result flagged is_error on the Anthropic surface keeps its status "incomplete" marker on the OpenAI Responses wire, so a failed tool call is no longer indistinguishable from a successful one (#8195) [@shreyanshj10](https://github.com/shreyanshj10)
 - [fix]: Responses to chat conversion maps output_text to text on multi-part assistant turns, so replayed assistant history with more than one content part is no longer rejected as an unknown content variant (#8196) [@shreyanshj10](https://github.com/shreyanshj10)
