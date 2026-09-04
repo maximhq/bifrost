@@ -1,5 +1,6 @@
 import NotificationCenter from "@/components/notificationCenter";
 import { ThemeToggle } from "@/components/themeToggle";
+import WarpLauncher from "@/components/warp/warpLauncher";
 import { deriveTitleFromPathname } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
@@ -261,6 +262,10 @@ export default function Topbar() {
 					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
+
+			{/* Rightmost control. Same size-8 box as its neighbours so the row keeps
+			    its rhythm; it renders nothing outside an WarpProvider. */}
+			<WarpLauncher />
 		</header>
 	);
 }
