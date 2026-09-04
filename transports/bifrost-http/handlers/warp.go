@@ -1,13 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"errors"
+	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -17,6 +22,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+type warpBackfillJobStore interface {
+	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
+	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+}
+
 // WarpHandler is the HTTP face of the Warp service. It parses requests, maps
 // service errors to status codes and writes responses; everything Warp actually
 // does lives in framework/warp.
@@ -24,6 +34,7 @@ type WarpHandler struct {
 	service         *warp.Service
 	unsubscribeLogs func()
 	sidekiqRunner   *sidekiq.Runner
+	backfillStore   warpBackfillJobStore
 }
 
 // NewWarpHandler builds the handler and the service behind it. A nil logManager
@@ -39,6 +50,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
 	}
 	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner}
+	handler.backfillStore, _ = store.(warpBackfillJobStore)
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
 		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
@@ -67,6 +79,9 @@ func (h *WarpHandler) Service() *warp.Service {
 func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/warp/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/warp/config", lib.ChainMiddlewares(h.putConfig, middlewares...))
+	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.startBackfill, middlewares...))
+	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.backfillStatus, middlewares...))
+	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.cancelBackfill, middlewares...))
 
 	// The chat route exists only where Warp has data to read and a way to reach
 	// a model; see Service.CanChat for why absent beats always-failing.
@@ -83,6 +98,172 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 		r.GET("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.getConversation, middlewares...))
 		r.DELETE("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.deleteConversation, middlewares...))
 	}
+}
+
+type warpBackfillRequest struct {
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+}
+
+type warpBackfillCancelRequest struct {
+	ID string `json:"id,omitempty"`
+}
+
+type warpBackfillStatus struct {
+	ID          string     `json:"id,omitempty"`
+	Status      string     `json:"status"`
+	StartTime   time.Time  `json:"start_time,omitempty"`
+	EndTime     time.Time  `json:"end_time,omitempty"`
+	Total       int64      `json:"total"`
+	Scanned     int        `json:"scanned"`
+	Indexed     int        `json:"indexed"`
+	Skipped     int        `json:"skipped"`
+	Failed      int        `json:"failed"`
+	LastError   string     `json:"last_error,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	CreatedAt   time.Time  `json:"created_at,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
+	if !warpLocalAdmin(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can backfill Warp embeddings")
+		return
+	}
+	if h.sidekiqRunner == nil || h.backfillStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+	var request warpBackfillRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &request); err != nil || request.StartTime.IsZero() || request.EndTime.IsZero() {
+		SendError(ctx, fasthttp.StatusBadRequest, "start_time and end_time must be RFC3339 timestamps")
+		return
+	}
+	if existing, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to check running jobs")
+		return
+	} else if existing != nil {
+		ctx.SetStatusCode(fasthttp.StatusConflict)
+		SendJSON(ctx, warpBackfillStatusFromRow(existing))
+		return
+	}
+	metadata, err := h.service.BuildBackfillJobMeta(ctx, request.StartTime, request.EndTime)
+	switch {
+	case errors.Is(err, warp.ErrInvalidConfig):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		return
+	case err != nil:
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to prepare Warp backfill")
+		return
+	}
+	id := uuid.NewString()
+	createdBy, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	if err := h.sidekiqRunner.EnqueuePartitioned(ctx, id, warp.BackfillJobKind, "warp_log_embeddings", metadata, createdBy); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start Warp backfill")
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusAccepted)
+	if job, err := h.backfillStore.GetSidekiqJob(ctx, id); err == nil && job != nil {
+		SendJSON(ctx, warpBackfillStatusFromRow(job))
+		return
+	}
+	SendJSON(ctx, warpBackfillStatus{ID: id, Status: tables.SidekiqStatusPending})
+}
+
+func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
+	if !warpLocalAdmin(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp backfills")
+		return
+	}
+	if h.backfillStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+	id := strings.TrimSpace(string(ctx.QueryArgs().Peek("id")))
+	var job *tables.TableSidekiqJob
+	var err error
+	if id != "" {
+		job, err = h.backfillStore.GetSidekiqJob(ctx, id)
+	} else {
+		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	}
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill status")
+		return
+	}
+	if job == nil {
+		if id != "" {
+			SendError(ctx, fasthttp.StatusNotFound, "Job not found")
+			return
+		}
+		SendJSON(ctx, warpBackfillStatus{Status: "idle"})
+		return
+	}
+	SendJSON(ctx, warpBackfillStatusFromRow(job))
+}
+
+func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
+	if !warpLocalAdmin(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp backfills")
+		return
+	}
+	if h.sidekiqRunner == nil || h.backfillStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+	var request warpBackfillCancelRequest
+	if len(ctx.PostBody()) > 0 {
+		if err := sonic.Unmarshal(ctx.PostBody(), &request); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+			return
+		}
+	}
+	var job *tables.TableSidekiqJob
+	var err error
+	if strings.TrimSpace(request.ID) != "" {
+		job, err = h.backfillStore.GetSidekiqJob(ctx, strings.TrimSpace(request.ID))
+	} else {
+		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	}
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill")
+		return
+	}
+	if job == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "Job not found")
+		return
+	}
+	if _, err := h.sidekiqRunner.Cancel(ctx, job.ID); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel Warp backfill")
+		return
+	}
+	if refreshed, err := h.backfillStore.GetSidekiqJob(ctx, job.ID); err == nil && refreshed != nil {
+		job = refreshed
+	}
+	SendJSON(ctx, warpBackfillStatusFromRow(job))
+}
+
+func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
+	status := warpBackfillStatus{ID: job.ID, Status: job.Status, LastError: job.LastError, CreatedAt: job.CreatedAt, StartedAt: job.StartedAt, CompletedAt: job.CompletedAt}
+	var meta warp.BackfillJobMeta
+	if sonic.Unmarshal([]byte(job.Metadata), &meta) == nil {
+		status.StartTime, status.EndTime, status.Total = meta.StartTime, meta.EndTime, meta.Total
+		status.Scanned, status.Indexed, status.Skipped, status.Failed = meta.Scanned, meta.Indexed, meta.Skipped, meta.Failed
+		status.Message = meta.Message
+		if status.LastError == "" {
+			status.LastError = meta.LastError
+		}
+	}
+	return status
+}
+
+func warpLocalAdmin(ctx *fasthttp.RequestCtx) bool {
+	admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+	return admin
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller

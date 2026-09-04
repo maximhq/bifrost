@@ -8,7 +8,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -18,6 +21,62 @@ import (
 type recordingWarpStore struct {
 	row      *tables.TableWarpConfig
 	upserted []tables.TableWarpConfig
+}
+
+type handlerBackfillReader struct{ warp.LogReader }
+
+func (handlerBackfillReader) Search(_ context.Context, _ *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return &logstore.SearchResult{Pagination: *pagination}, nil
+}
+
+func (handlerBackfillReader) GetLog(context.Context, string) (*logstore.Log, error) { return nil, nil }
+
+type handlerVectorStore struct{}
+
+func (handlerVectorStore) Ping(context.Context) error { return nil }
+func (handlerVectorStore) CreateNamespace(context.Context, string, int, map[string]vectorstore.VectorStoreProperties) error {
+	return nil
+}
+func (handlerVectorStore) DeleteNamespace(context.Context, string) error { return nil }
+func (handlerVectorStore) ListNamespaces(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (handlerVectorStore) GetChunk(context.Context, string, string) (vectorstore.SearchResult, error) {
+	return vectorstore.SearchResult{}, nil
+}
+func (handlerVectorStore) GetChunks(context.Context, string, []string) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
+	return nil, nil, nil
+}
+func (handlerVectorStore) GetNearest(context.Context, string, []float32, []vectorstore.Query, []string, float64, int64) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) RequiresVectors() bool { return true }
+func (handlerVectorStore) Add(context.Context, string, string, []float32, map[string]interface{}) error {
+	return nil
+}
+func (handlerVectorStore) Delete(context.Context, string, string) error { return nil }
+func (handlerVectorStore) DeleteAll(context.Context, string, []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	return nil, nil
+}
+func (handlerVectorStore) Close(context.Context, string) error { return nil }
+
+func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func()) {
+	t.Helper()
+	config := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 2, LogVectorStoreNamespace: "WarpLogs",
+	}}
+	jobs := newFakeSidekiqStore()
+	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
+	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
+	}))
+	service.RegisterBackfill(runner)
+	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
+	return handler, jobs, func() { runner.Shutdown(); service.Shutdown() }
 }
 
 func (s *recordingWarpStore) GetWarpConfig(context.Context) (*tables.TableWarpConfig, error) {
@@ -113,6 +172,55 @@ func TestWarpConfigGetBodyShape(t *testing.T) {
 	require.Equal(t, "text-embedding-3-small", body["embedding_model"])
 	require.Equal(t, float64(schemas.WarpDefaultMaxIterations), body["max_iterations"])
 	require.NotContains(t, body, "api_key")
+}
+
+func TestWarpBackfillAPIsRequireAdmin(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	for _, call := range []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill} {
+		ctx := &fasthttp.RequestCtx{}
+		call(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	}
+}
+
+func TestWarpStartBackfillEnqueuesDurableJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "admin-1")
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusAccepted, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, 1, jobs.createdCount())
+}
+
+func TestWarpStartBackfillReturnsConflictForActiveJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode())
+	require.Zero(t, jobs.createdCount())
+}
+
+func TestWarpBackfillStatusAndCancel(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":4,"indexed":3,"skipped":1}`}
+	jobs.jobs[job.ID] = job
+	jobs.inFlight = job
+
+	statusCtx := adminCtx("")
+	statusCtx.QueryArgs().Set("id", job.ID)
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"indexed":3`)
+
+	cancelCtx := adminCtx(`{"id":"job-1"}`)
+	handler.cancelBackfill(cancelCtx)
+	require.Equal(t, fasthttp.StatusOK, cancelCtx.Response.StatusCode())
+	require.Contains(t, string(cancelCtx.Response.Body()), tables.SidekiqStatusCancelled)
 }
 
 // The agent runs after the handler returns and fasthttp has recycled the

@@ -195,6 +195,38 @@ WarpUnavailable:
     - reason
     - message
 
+WarpBackfillRequest:
+  type: object
+  properties:
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+  required: [start_time, end_time]
+
+WarpBackfillStatus:
+  type: object
+  properties:
+    id: { type: string }
+    status:
+      type: string
+      enum: [idle, pending, running, completed, failed, cancelled]
+    start_time: { type: string, format: date-time }
+    end_time: { type: string, format: date-time }
+    total: { type: integer, format: int64 }
+    scanned: { type: integer }
+    indexed: { type: integer }
+    skipped: { type: integer }
+    failed: { type: integer }
+    last_error: { type: string }
+    message: { type: string }
+    created_at: { type: string, format: date-time }
+    started_at: { type: string, format: date-time }
+    completed_at: { type: string, format: date-time }
+  required: [status, total, scanned, indexed, skipped, failed]
+
 WarpChatRequest:
   type: object
   properties:
