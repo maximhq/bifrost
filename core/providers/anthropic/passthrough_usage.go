@@ -101,6 +101,12 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 type AnthropicPassthroughStreamUsage struct {
 	combined AnthropicUsage
 	seen     bool
+
+	// Authoritative vs loose input_tokens, tracked separately so the merge is
+	// order-independent. See usageEventHasCacheCounters for why this is needed.
+	looseInput int
+	authInput  int
+	authSeen   bool
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -125,8 +131,18 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 
 	a.seen = true
 	c := &a.combined
-	if u.InputTokens > c.InputTokens {
-		c.InputTokens = u.InputTokens
+	if usageEventHasCacheCounters(u) {
+		a.authSeen = true
+		if u.InputTokens > a.authInput {
+			a.authInput = u.InputTokens
+		}
+	} else if u.InputTokens > a.looseInput {
+		a.looseInput = u.InputTokens
+	}
+	if a.authSeen {
+		c.InputTokens = a.authInput
+	} else {
+		c.InputTokens = a.looseInput
 	}
 	if u.OutputTokens > c.OutputTokens {
 		c.OutputTokens = u.OutputTokens
