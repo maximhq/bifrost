@@ -31,6 +31,20 @@ const (
 
 	// WarpDefaultRequestTimeoutSeconds bounds a single upstream call.
 	WarpDefaultRequestTimeoutSeconds = 120
+
+	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
+	// semantic log search when an operator has not supplied one.
+	WarpDefaultSemanticSearchThreshold = 0.80
+
+	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
+	WarpDefaultSemanticSearchLimit = 10
+
+	// WarpMaxSemanticSearchLimit bounds tool output and scoped rehydration work.
+	WarpMaxSemanticSearchLimit = 25
+
+	// WarpDefaultLogVectorStoreNamespace is deliberately Warp-specific: sharing
+	// an embedding namespace with another feature mixes incompatible metadata.
+	WarpDefaultLogVectorStoreNamespace = "BifrostWarpLogs"
 )
 
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
@@ -66,6 +80,19 @@ type WarpConfig struct {
 	// the built-in prompt establishes.
 	SystemPromptSuffix string `json:"system_prompt_suffix,omitempty"`
 
+	// EmbeddingProvider, EmbeddingModel and EmbeddingAPIKeyID identify the
+	// separately configured model used to index and search gateway logs.
+	EmbeddingProvider       ModelProvider `json:"embedding_provider"`
+	EmbeddingModel          string        `json:"embedding_model"`
+	EmbeddingAPIKeyID       string        `json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension      int           `json:"embedding_dimension"`
+	LogVectorStoreNamespace string        `json:"log_vector_store_namespace"`
+	SemanticSearchThreshold float64       `json:"semantic_search_threshold"`
+	SemanticSearchLimit     int           `json:"semantic_search_limit"`
+	// RetiredLogVectorStoreNamespaces is internal lifecycle state. It is stored
+	// so source-log deletion can clean embedding spaces that are no longer read.
+	RetiredLogVectorStoreNamespaces []string `json:"-"`
+
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
@@ -89,6 +116,27 @@ func (c *WarpConfig) EffectiveRequestTimeoutSeconds() int {
 	return c.RequestTimeoutSeconds
 }
 
+func (c *WarpConfig) EffectiveSemanticSearchThreshold() float64 {
+	if c == nil || c.SemanticSearchThreshold <= 0 {
+		return WarpDefaultSemanticSearchThreshold
+	}
+	return c.SemanticSearchThreshold
+}
+
+func (c *WarpConfig) EffectiveSemanticSearchLimit() int {
+	if c == nil || c.SemanticSearchLimit <= 0 {
+		return WarpDefaultSemanticSearchLimit
+	}
+	return min(c.SemanticSearchLimit, WarpMaxSemanticSearchLimit)
+}
+
+func (c *WarpConfig) EffectiveLogVectorStoreNamespace() string {
+	if c == nil || strings.TrimSpace(c.LogVectorStoreNamespace) == "" {
+		return WarpDefaultLogVectorStoreNamespace
+	}
+	return c.LogVectorStoreNamespace
+}
+
 // IsConfigured reports whether Warp has enough settings to answer a question.
 // A row can exist and still be unusable — the settings page writes as the
 // operator fills it in — so callers must check this rather than the row's
@@ -97,7 +145,9 @@ func (c *WarpConfig) EffectiveRequestTimeoutSeconds() int {
 // The key reference is deliberately not part of the test: a provider on a
 // trusted network, or one using ambient credentials, needs none.
 func (c *WarpConfig) IsConfigured() bool {
-	return c != nil && c.Enabled && c.Provider != "" && c.Model != ""
+	return c != nil && c.Enabled && c.Provider != "" && c.Model != "" &&
+		c.EmbeddingProvider != "" && c.EmbeddingModel != "" &&
+		c.EmbeddingDimension > 0 && strings.TrimSpace(c.EffectiveLogVectorStoreNamespace()) != ""
 }
 
 // WarpUnavailableReason tells the dashboard *why* Warp cannot answer, because

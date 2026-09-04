@@ -34,6 +34,8 @@ func newTestWarpHandler(store *recordingWarpStore) *WarpHandler {
 	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store))}
 }
 
+const validWarpConfigJSON = `{"enabled":true,"provider":"openai","model":"gpt-4o","embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`
+
 // adminCtx builds a request context that passes the local-admin gate.
 func adminCtx(body string) *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
@@ -45,7 +47,7 @@ func adminCtx(body string) *fasthttp.RequestCtx {
 func TestWarpConfigPutRequiresLocalAdmin(t *testing.T) {
 	handler := newTestWarpHandler(&recordingWarpStore{})
 	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o"}`)
+	ctx.Request.SetBodyString(validWarpConfigJSON)
 	handler.putConfig(ctx)
 
 	require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
@@ -89,6 +91,8 @@ func TestWarpConfigWithoutStoreIs503(t *testing.T) {
 func TestWarpConfigGetBodyShape(t *testing.T) {
 	handler := newTestWarpHandler(&recordingWarpStore{row: &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
 	}})
 	ctx := &fasthttp.RequestCtx{}
 	handler.getConfig(ctx)
@@ -98,6 +102,7 @@ func TestWarpConfigGetBodyShape(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
 	require.Equal(t, true, body["configured"])
 	require.Equal(t, "key-abc", body["api_key_id"])
+	require.Equal(t, "text-embedding-3-small", body["embedding_model"])
 	require.Equal(t, float64(schemas.WarpDefaultMaxIterations), body["max_iterations"])
 	require.NotContains(t, body, "api_key")
 }
