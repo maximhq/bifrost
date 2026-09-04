@@ -415,6 +415,17 @@ func TestClearCtxForFallback(t *testing.T) {
 	}
 }
 
+// TestCanProviderKeyValueBeEmptyGithubCopilot pins that a GitHub Copilot key may carry an
+// empty value. The GitHub App bundle in github_copilot_key_config is a complete credential
+// on its own, and the HTTP key handlers consult this allowlist before their provider-specific
+// checks, so dropping the entry rejects every App-authenticated key at creation with a
+// misleading "value must not be empty" error.
+func TestCanProviderKeyValueBeEmptyGithubCopilot(t *testing.T) {
+	if !CanProviderKeyValueBeEmpty(schemas.GithubCopilot) {
+		t.Fatal("GitHub Copilot keys authenticated through a GitHub App have no value; the allowlist must include the provider")
+	}
+}
+
 // TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
 // provider would reject at request time. Accepting a whitespace-only field here defers the
 // failure to the first inference call, where it reads like a runtime fault rather than a
