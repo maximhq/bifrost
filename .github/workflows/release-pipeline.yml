@@ -333,6 +333,7 @@ jobs:
             api.enterprise.githubcopilot.com:443
             api.individual.githubcopilot.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -438,6 +439,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -549,6 +551,7 @@ jobs:
             api.enterprise.githubcopilot.com:443
             api.individual.githubcopilot.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -665,6 +668,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -927,6 +931,7 @@ jobs:
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -1017,6 +1022,7 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1159,6 +1165,7 @@ jobs:
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -1232,6 +1239,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -1276,6 +1284,7 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -1359,6 +1368,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -1409,6 +1419,7 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -1521,6 +1532,7 @@ jobs:
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -1630,6 +1642,7 @@ jobs:
             api.enterprise.githubcopilot.com:443
             api.individual.githubcopilot.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -1730,6 +1743,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1798,6 +1812,7 @@ jobs:
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -1895,6 +1910,7 @@ jobs:
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -2001,6 +2017,7 @@ jobs:
             api.enterprise.githubcopilot.com:443
             api.individual.githubcopilot.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -2081,6 +2098,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2151,6 +2169,7 @@ jobs:
             api.enterprise.githubcopilot.com:443
             api.individual.githubcopilot.com:443
             api.groq.com:443
+            api.llmgateway.io:443
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
@@ -2231,6 +2250,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2356,6 +2376,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2476,6 +2497,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2612,6 +2634,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          LLMGATEWAY_API_KEY: ${{ secrets.LLMGATEWAY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}

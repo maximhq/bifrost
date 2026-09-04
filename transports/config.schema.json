@@ -463,6 +463,9 @@
         "huggingface": {
           "$ref": "#/$defs/provider"
         },
+        "llmgateway": {
+          "$ref": "#/$defs/provider"
+        },
         "fireworks": {
           "$ref": "#/$defs/provider_with_fireworks_config"
         },
@@ -8400,6 +8403,7 @@
             "openrouter",
             "elevenlabs",
             "huggingface",
+            "llmgateway",
             "nebius",
             "xai",
             "replicate",

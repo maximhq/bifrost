@@ -25,6 +25,7 @@ ModelProvider:
     - openrouter
     - elevenlabs
     - huggingface
+    - llmgateway
     - nebius
     - xai
     - replicate
