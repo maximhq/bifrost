@@ -291,6 +291,22 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 `allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
 
+#### How access is resolved
+
+Access depends on the `allow_all_providers` value and whether the provider has a `provider_configs` entry:
+
+| Flag value | Listed in `provider_configs` | Not listed |
+| --- | --- | --- |
+| `false` (default) | Allowed, subject to that entry's models, keys, budgets, and rate limits | **Denied** |
+| `true` | Allowed, subject to that entry's models, keys, budgets, and rate limits | Allowed with all models, all keys, and no per-provider limits |
+
+When `allow_all_providers` is `true`:
+
+- A listed provider's `allowed_models` and `blacklisted_models` still apply. Allow-all never widens an allowlist: a model outside a listed provider's `allowed_models` stays denied, and a model in its `blacklisted_models` stays denied.
+- A listed provider's budgets, rate limits, and `key_ids` selection still apply. Allow-all does not lift per-provider limits on providers you have configured.
+- Only providers with no `provider_configs` entry get the open treatment (all models, all keys, no limits).
+- Providers added to Bifrost after the key was created are treated as unlisted, so they are allowed automatically without editing the key.
+
 <Note>
 `allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
 </Note>
