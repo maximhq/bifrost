@@ -30,6 +30,7 @@ type ConfigView struct {
 	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64               `json:"semantic_search_threshold"`
 	SemanticSearchLimit     int                   `json:"semantic_search_limit"`
+	VectorStoreConnected    bool                  `json:"vector_store_connected"`
 }
 
 // ConfigInput is a configuration write.
@@ -75,9 +76,10 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 			LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
 			SemanticSearchThreshold: schemas.WarpDefaultSemanticSearchThreshold,
 			SemanticSearchLimit:     schemas.WarpDefaultSemanticSearchLimit,
+			VectorStoreConnected:    s.vectorStore != nil,
 		}, nil
 	}
-	return configViewFromRow(row), nil
+	return s.configViewFromRow(row), nil
 }
 
 // SaveConfig validates and stores a configuration, returning the view a caller
@@ -89,6 +91,14 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	}
 	if err := ValidateConfigInput(input); err != nil {
 		return ConfigView{}, err
+	}
+	if input.Enabled && s.vectorStore == nil {
+		return ConfigView{}, ErrNoVectorStore
+	}
+	if input.Enabled {
+		if err := ensureWarpNamespace(ctx, s.vectorStore, input.LogVectorStoreNamespace, input.EmbeddingDimension); err != nil {
+			return ConfigView{}, fmt.Errorf("ensure warp vector namespace: %w", err)
+		}
 	}
 	previous, err := s.store.GetWarpConfig(ctx)
 	if err != nil {
@@ -131,7 +141,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if err := s.store.UpsertWarpConfig(ctx, row); err != nil {
 		return ConfigView{}, err
 	}
-	return configViewFromRow(row), nil
+	return s.configViewFromRow(row), nil
 }
 
 // ValidateConfigInput normalizes and checks a write in place.
@@ -212,7 +222,7 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 
 // configViewFromRow renders a stored row for display, resolving defaults so the
 // form never has to show a zero where a default applies.
-func configViewFromRow(row *tables.TableWarpConfig) ConfigView {
+func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 	config := configFromRow(row)
 	return ConfigView{
 		Configured:              config.IsConfigured(),
@@ -231,6 +241,7 @@ func configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		LogVectorStoreNamespace: config.EffectiveLogVectorStoreNamespace(),
 		SemanticSearchThreshold: config.EffectiveSemanticSearchThreshold(),
 		SemanticSearchLimit:     config.EffectiveSemanticSearchLimit(),
+		VectorStoreConnected:    s.vectorStore != nil,
 	}
 }
 

@@ -5,9 +5,11 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -18,23 +20,35 @@ import (
 // service errors to status codes and writes responses; everything Warp actually
 // does lives in framework/warp.
 type WarpHandler struct {
-	service *warp.Service
+	service         *warp.Service
+	unsubscribeLogs func()
 }
 
 // NewWarpHandler builds the handler and the service behind it. A nil logManager
 // is a supported deployment (logging disabled): Warp then serves only its
 // configuration routes, because its tools would have nothing to read. A nil
 // catalog is likewise supported and simply leaves Warp's own spend unpriced.
-func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
-	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog)}
-	if logManager != nil {
-		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, vectors vectorstore.VectorStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
+	if client != nil {
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
 	}
-	return &WarpHandler{service: warp.NewService(store, opts...)}
+	if loggerPlugin != nil {
+		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
+	}
+	handler := &WarpHandler{service: warp.NewService(store, opts...)}
+	if loggerPlugin != nil {
+		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
+	}
+	return handler
 }
 
 // Shutdown releases the service's model client.
 func (h *WarpHandler) Shutdown() {
+	if h.unsubscribeLogs != nil {
+		h.unsubscribeLogs()
+		h.unsubscribeLogs = nil
+	}
 	h.service.Shutdown()
 }
 
@@ -103,6 +117,9 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 	switch {
 	case errors.Is(err, warp.ErrUnavailable):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		return
+	case errors.Is(err, warp.ErrNoVectorStore):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, err.Error())
 		return
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
