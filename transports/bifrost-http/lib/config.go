@@ -3496,12 +3496,80 @@ func mergeComplexityAnalyzerConfigFromFile(current, fileConfig *configstore.Comp
 	return configstore.MergeComplexityAnalyzerConfigByHashes(base, fileConfig)
 }
 
+// VirtualKeyPruneGuard reports which of the candidate virtual keys must survive
+// config.json reconciliation even though the file no longer lists them. Enterprise
+// registers one so keys attached to a user who holds an access profile are never
+// pruned - those keys are materialised from the access profile, not authored in
+// config.json, and deleting them revokes live access. It takes the store because it
+// runs inside LoadConfig, before any wrapper around the store exists. Nil in OSS
+// (nothing to guard).
+type VirtualKeyPruneGuard func(ctx context.Context, store configstore.ConfigStore, virtualKeyIDs []string) (map[string]bool, error)
+
+var (
+	virtualKeyPruneGuardMu sync.RWMutex
+	virtualKeyPruneGuard   VirtualKeyPruneGuard
+)
+
+// RegisterVirtualKeyPruneGuard installs the guard consulted by
+// pruneGovernanceConfigToFile before deleting virtual keys. Must be called before
+// LoadConfig.
+func RegisterVirtualKeyPruneGuard(fn VirtualKeyPruneGuard) {
+	virtualKeyPruneGuardMu.Lock()
+	virtualKeyPruneGuard = fn
+	virtualKeyPruneGuardMu.Unlock()
+}
+
+// resolveProtectedVirtualKeys asks the registered guard which of the virtual keys
+// missing from config.json must be kept. Resolved before the prune transaction
+// opens, since the guard reads through the store's own connection. A guard error
+// protects every candidate: deleting keys we cannot classify is unrecoverable,
+// while keeping a stale key is fixed by the next reload.
+func resolveProtectedVirtualKeys(ctx context.Context, store configstore.ConfigStore, candidates []string) map[string]bool {
+	virtualKeyPruneGuardMu.RLock()
+	guard := virtualKeyPruneGuard
+	virtualKeyPruneGuardMu.RUnlock()
+	if guard == nil || len(candidates) == 0 {
+		return nil
+	}
+	protected, err := guard(ctx, store, candidates)
+	if err != nil {
+		logger.Error("failed to resolve protected virtual keys, skipping virtual key pruning: %v", err)
+		protected = make(map[string]bool, len(candidates))
+		for _, vkID := range candidates {
+			protected[vkID] = true
+		}
+	}
+	return protected
+}
+
+// virtualKeyPruneCandidates lists the in-memory virtual keys config.json no longer
+// declares - the rows the prune would delete before the guard has its say. Nil when
+// the file declares no virtual_keys section at all, since nothing is pruned then.
+func virtualKeyPruneCandidates(existing []configstoreTables.TableVirtualKey, configData *ConfigData) []string {
+	if !configData.governanceSectionPresent("virtual_keys") {
+		return nil
+	}
+	keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
+	for _, vk := range configData.Governance.VirtualKeys {
+		keep[vk.ID] = true
+	}
+	candidates := make([]string, 0, len(existing))
+	for _, vk := range existing {
+		if vk.ID != "" && !keep[vk.ID] {
+			candidates = append(candidates, vk.ID)
+		}
+	}
+	return candidates
+}
+
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
 func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
 		return
 	}
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
+	protected := resolveProtectedVirtualKeys(ctx, config.ConfigStore,
+		virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData))
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
@@ -3517,14 +3585,24 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
 				}
 			}
-			for _, existing := range config.GovernanceConfig.VirtualKeys {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteVirtualKey(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete virtual key %s: %w", existing.ID, err)
-					}
+			for _, vkID := range virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData) {
+				if protected[vkID] {
+					logger.Debug("keeping virtual key %s absent from config.json: protected by prune guard", vkID)
+					continue
+				}
+				if err := config.ConfigStore.DeleteVirtualKey(ctx, vkID, tx); err != nil {
+					return fmt.Errorf("failed to delete virtual key %s: %w", vkID, err)
 				}
 			}
-			config.GovernanceConfig.VirtualKeys = configData.Governance.VirtualKeys
+			// Guarded keys survive in the DB, so they must survive in memory too -
+			// the governance store is seeded from this slice.
+			nextVKs := append([]configstoreTables.TableVirtualKey(nil), configData.Governance.VirtualKeys...)
+			for _, existing := range config.GovernanceConfig.VirtualKeys {
+				if protected[existing.ID] && !keep[existing.ID] {
+					nextVKs = append(nextVKs, existing)
+				}
+			}
+			config.GovernanceConfig.VirtualKeys = nextVKs
 		}
 		if configData.governanceSectionPresent("routing_rules") {
 			keep := make(map[string]bool, len(configData.Governance.RoutingRules))
@@ -5122,22 +5200,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                     configID,
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-			ConfigHash:             persistedHash,
-		}, &modelcatalog.Config{
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		}, needsDBUpdate
+		ID:                     configID,
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		ConfigHash:             persistedHash,
+	}, &modelcatalog.Config{
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+	}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
