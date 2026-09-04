@@ -85,7 +85,7 @@ export const governanceApi = baseApi.injectEndpoints({
 			providesTags: ["VirtualKeys"],
 		}),
 
-		getVirtualKey: builder.query<{ virtual_key: VirtualKey }, string>({
+		getVirtualKey: builder.query<{ virtual_key: VirtualKey; virtual_mcp_ids: number[] }, string>({
 			query: (vkId) => `/governance/virtual-keys/${vkId}`,
 			providesTags: (result, error, vkId) => [{ type: "VirtualKeys", id: vkId }],
 		}),

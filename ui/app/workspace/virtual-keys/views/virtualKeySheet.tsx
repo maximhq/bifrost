@@ -39,15 +39,20 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
+	useAttachVirtualMCPVirtualKeyMutation,
 	useCreateVirtualKeyMutation,
+	useDetachVirtualMCPVirtualKeyMutation,
 	useGetAllKeysQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
+	useGetVirtualKeyQuery,
 	useRemoveVirtualKeyBudgetOverrideMutation,
 	useRotateVirtualKeyMutation,
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
+import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { KnownProvider } from "@/lib/types/config";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
@@ -344,7 +349,60 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [detachVirtualKeyUser, { isLoading: isDetachingUser }] = useDetachVirtualKeyUserMutation();
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
-	const isLoading = isCreating || isUpdating || isRotating || isAttachingUser || isDetachingUser;
+	const [attachVirtualMCPVirtualKey] = useAttachVirtualMCPVirtualKeyMutation();
+	const [detachVirtualMCPVirtualKey] = useDetachVirtualMCPVirtualKeyMutation();
+	// Tracks the whole attach/detach reconciliation, which spans several sequential requests whose
+	// own loading states go idle between them; without it Save could re-enable mid-reconcile.
+	const [isReconcilingVmcps, setIsReconcilingVmcps] = useState(false);
+	const isLoading = isCreating || isUpdating || isRotating || isAttachingUser || isDetachingUser || isReconcilingVmcps;
+
+	// Virtual MCPs this key is assigned to. The list VK carries none, so fetch the single VK (which
+	// includes virtual_mcp_ids); stage edits locally and reconcile attach/detach on Save.
+	const {
+		data: vkDetail,
+		isLoading: isVkDetailLoading,
+		isError: isVkDetailError,
+		refetch: refetchVkDetail,
+	} = useGetVirtualKeyQuery(virtualKey?.id ?? "", { skip: !isEditing || !virtualKey?.id });
+	const originalVmcpIds = vkDetail?.virtual_mcp_ids ?? [];
+	const [assignedVmcpIds, setAssignedVmcpIds] = useState<number[]>([]);
+	const vmcpsInitialized = useRef(false);
+	useEffect(() => {
+		if (isEditing && vkDetail && !vmcpsInitialized.current) {
+			setAssignedVmcpIds(vkDetail.virtual_mcp_ids ?? []);
+			vmcpsInitialized.current = true;
+		}
+	}, [isEditing, vkDetail]);
+	// For an existing key the baseline isn't trustworthy until the detail query lands, so the editor
+	// stays disabled and dirty stays false while it loads or errors (see gating on the editor below).
+	const vmcpDetailReady = !isEditing || (!!vkDetail && !isVkDetailLoading && !isVkDetailError);
+	const vmcpDirty = vmcpDetailReady && vmcpAssignmentsDirty(originalVmcpIds, assignedVmcpIds);
+
+	// Attach the newly-assigned Virtual MCPs and detach the removed ones for this key. On any failure,
+	// resync local state from the server so a later Save reconciles against what actually persisted.
+	const reconcileVmcpAssignments = async (vkId: string) => {
+		const { toAttach, toDetach } = diffVmcpAssignments(originalVmcpIds, assignedVmcpIds);
+		if (toAttach.length === 0 && toDetach.length === 0) return;
+		setIsReconcilingVmcps(true);
+		try {
+			for (const id of toAttach) {
+				await attachVirtualMCPVirtualKey({ id, vkId }).unwrap();
+			}
+			for (const id of toDetach) {
+				await detachVirtualMCPVirtualKey({ id, vkId }).unwrap();
+			}
+		} catch (error) {
+			try {
+				const refreshed = await refetchVkDetail().unwrap();
+				setAssignedVmcpIds(refreshed.virtual_mcp_ids ?? []);
+			} catch {
+				// Leave staged state as-is if the resync itself fails; the outer handler surfaces the error.
+			}
+			throw error;
+		} finally {
+			setIsReconcilingVmcps(false);
+		}
+	};
 	const persistedOverrideBudgets = [
 		...(virtualKey?.budgets ?? []).map((budget) => ({
 			budget,
@@ -929,6 +987,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						}).unwrap();
 					}
 				}
+				await reconcileVmcpAssignments(virtualKey.id);
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
@@ -983,6 +1042,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						onSave();
 						return;
 					}
+				}
+				try {
+					await reconcileVmcpAssignments(created.virtual_key.id);
+				} catch (error) {
+					toast.error("Virtual key created, but assigning Virtual MCPs failed", { description: getErrorMessage(error) });
+					onSave();
+					return;
 				}
 				toast.success("Virtual key created successfully");
 			}
@@ -1292,6 +1358,29 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
 										showDefaultsNote
 									/>
+									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save).
+									    For an existing key the editor stays gated until its detail (the assignment baseline)
+									    loads, so an early edit can't be discarded and a failed load can't hide assignments. */}
+									{isEditing && isVkDetailLoading ? (
+										<div className="mt-6 space-y-2">
+											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
+											<div className="text-muted-foreground text-sm">Loading assigned Virtual MCPs...</div>
+										</div>
+									) : isEditing && isVkDetailError ? (
+										<div className="mt-6 space-y-2">
+											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
+											<Alert variant="destructive">
+												<AlertDescription className="flex items-center justify-between gap-2">
+													<span>Could not load assigned Virtual MCPs.</span>
+													<Button type="button" variant="outline" size="sm" onClick={() => refetchVkDetail()}>
+														Retry
+													</Button>
+												</AlertDescription>
+											</Alert>
+										</div>
+									) : (
+										<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
+									)}
 									<DottedSeparator className="mt-6 mb-5" />
 									{/* Budget Configuration */}
 									<div className="space-y-4">
@@ -1736,19 +1825,23 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<span className="inline-block">
-													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
+													<Button
+														type="submit"
+														disabled={isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit}
+														data-testid="vk-save-btn"
+													>
 														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 													</Button>
 												</span>
 											</TooltipTrigger>
-											{(isLoading || !form.formState.isDirty || !canSubmit) && (
+											{(isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit) && (
 												<TooltipContent>
 													<p>
 														{!canSubmit
 															? "You don't have permission to perform this action"
 															: isLoading
 																? "Saving..."
-																: !form.formState.isDirty
+																: !(form.formState.isDirty || vmcpDirty)
 																	? "No changes made"
 																	: ""}
 													</p>

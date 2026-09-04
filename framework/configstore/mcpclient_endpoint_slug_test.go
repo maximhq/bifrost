@@ -34,6 +34,34 @@ func TestCreateMCPClientConfig_RejectsUnderivableSlug(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMCPEndpointSlugInvalid)
 }
 
+// TestGetVirtualMCPIDsForVirtualKey pins the reverse assignment lookup: the Virtual MCPs a key is
+// attached to, so the VK detail view can list and edit them.
+func TestGetVirtualMCPIDsForVirtualKey(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	alpha := &tables.TableVirtualMCP{Name: "Alpha", EndpointSlug: "alpha", Enabled: true}
+	beta := &tables.TableVirtualMCP{Name: "Beta", EndpointSlug: "beta", Enabled: true}
+	require.NoError(t, s.CreateVirtualMCP(ctx, alpha))
+	require.NoError(t, s.CreateVirtualMCP(ctx, beta))
+
+	require.NoError(t, s.AttachVirtualMCPToVirtualKey(ctx, alpha.ID, "vk-1"))
+	require.NoError(t, s.AttachVirtualMCPToVirtualKey(ctx, beta.ID, "vk-1"))
+	require.NoError(t, s.AttachVirtualMCPToVirtualKey(ctx, alpha.ID, "vk-2"))
+
+	got, err := s.GetVirtualMCPIDsForVirtualKey(ctx, "vk-1")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uint{alpha.ID, beta.ID}, got)
+
+	only, err := s.GetVirtualMCPIDsForVirtualKey(ctx, "vk-2")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uint{alpha.ID}, only)
+
+	none, err := s.GetVirtualMCPIDsForVirtualKey(ctx, "vk-none")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
+
 // TestCreateVirtualMCP_RejectsUnderivableSlug pins the same typed-error contract on the Virtual MCP
 // side: a name slugifying to empty (with no endpoint_slug) returns ErrMCPEndpointSlugInvalid so
 // handlers can map it to a 400.

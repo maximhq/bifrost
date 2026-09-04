@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useGetMCPClientsQuery } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
-import { ChevronDownIcon, Info, Trash2 } from "lucide-react";
+import { Info, Trash2 } from "lucide-react";
 import { ReactNode, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -154,22 +154,10 @@ export function MCPClientConfigsEditor({
 			{/* Add MCP Server dropdown. */}
 			<MCPClientSelector
 				mode="add"
+				fullWidth
+				placeholder="Select an MCP server to add"
 				onSelect={handleAddMCPClient}
 				excludeIds={excludeIds}
-				className="w-full"
-				contentClassName="w-(--radix-popover-trigger-width)"
-				trigger={
-					<Button
-						type="button"
-						variant="outline"
-						role="combobox"
-						className="text-muted-foreground h-8 w-full justify-between !bg-transparent font-normal active:scale-none"
-						data-testid="mcp-server-add-select"
-					>
-						<span className="truncate">Select an MCP server to add</span>
-						<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
-					</Button>
-				}
 			/>
 
 			{value.length === 0 && emptyState}

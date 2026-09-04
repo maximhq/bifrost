@@ -1889,8 +1889,16 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
 
+	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
+	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
 	SendJSON(ctx, map[string]interface{}{
-		"virtual_key": vk,
+		"virtual_key":     vk,
+		"virtual_mcp_ids": vmcpIDs,
 	})
 }
 

@@ -98,6 +98,8 @@ export interface EntitySelectorCommonProps {
 	 * Single/add only — multi mode renders its chips inside the control.
 	 */
 	trigger?: ReactNode;
+	/** Add mode only: render the trigger full-width instead of the compact inline default. */
+	fullWidth?: boolean;
 }
 
 interface EntitySelectorSingleProps {
@@ -189,6 +191,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		contentClassName,
 		excludeIds,
 		trigger,
+		fullWidth = false,
 	} = props;
 
 	const isAdd = props.mode === "add";
@@ -364,34 +367,36 @@ export function EntitySelector(props: EntitySelectorProps) {
 
 	const triggerLabel = selectedIds.length > 0 ? labelFor(selectedIds[0]) : "";
 
-	// Add mode has no value to display, so it defaults to a compact action
-	// button rather than the full-width combobox.
-	const defaultTrigger = isAdd ? (
-		<Button type="button" variant="outline" size="sm" disabled={disabled} className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium">
-			<PlusIcon className="size-4" />
-			{placeholder ?? `Add ${entityLabel}`}
-		</Button>
-	) : (
-		<Button
-			type="button"
-			variant="outline"
-			role="combobox"
-			disabled={disabled}
-			className={cn(
-				"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
-				!triggerLabel && "text-muted-foreground",
-				triggerClassName,
-			)}
-		>
-			<span className="truncate">{triggerLabel || resolvedPlaceholder}</span>
-			<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
-		</Button>
-	);
+	// Add mode has no value to display, so it defaults to a compact action button rather than the
+	// full-width combobox — unless fullWidth is set, which uses the combobox trigger (showing the
+	// placeholder) for surfaces that want the picker to span the row.
+	const defaultTrigger =
+		isAdd && !fullWidth ? (
+			<Button type="button" variant="outline" size="sm" disabled={disabled} className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium">
+				<PlusIcon className="size-4" />
+				{placeholder ?? `Add ${entityLabel}`}
+			</Button>
+		) : (
+			<Button
+				type="button"
+				variant="outline"
+				role="combobox"
+				disabled={disabled}
+				className={cn(
+					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
+					!triggerLabel && "text-muted-foreground",
+					triggerClassName,
+				)}
+			>
+				<span className="truncate">{triggerLabel || resolvedPlaceholder}</span>
+				<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
+			</Button>
+		);
 
 	return (
 		// Single wrapping element, so no vertical spacing utility here — it only
 		// ever holds the trigger and the (invisible) label resolvers.
-		<div className={cn(isAdd ? "inline-flex" : "w-full", className)}>
+		<div className={cn(isAdd && !fullWidth ? "inline-flex" : "w-full", className)}>
 			{labelResolvers}
 			<SearchSelect
 				async
@@ -425,9 +430,9 @@ export function EntitySelector(props: EntitySelectorProps) {
 				// A compact trigger shouldn't dictate the popover width, so add
 				// mode keeps SearchSelect's own fixed width. Either default gives
 				// way to an explicit contentClassName.
-				align={isAdd ? "end" : "start"}
-				className={isAdd ? undefined : "w-full"}
-				contentClassName={contentClassName ?? (isAdd ? undefined : "w-(--radix-popover-trigger-width)")}
+				align={isAdd && !fullWidth ? "end" : "start"}
+				className={isAdd && !fullWidth ? undefined : "w-full"}
+				contentClassName={contentClassName ?? (isAdd && !fullWidth ? undefined : "w-(--radix-popover-trigger-width)")}
 				noPortal={noPortal}
 			/>
 		</div>

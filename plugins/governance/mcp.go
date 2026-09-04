@@ -62,6 +62,23 @@ func (acc *MCPToolAccumulator) GrantTool(clientID, tool string) {
 	}
 }
 
+// GrantClientTools registers a client — so it counts as configured and the allowed-by-default
+// fallback can't reopen it — names it when a name is known, and grants each tool: "*" grants the
+// whole client, and an empty list registers the client with no tools. The exported entry point for
+// holders (access profiles, projects) that hold a per-client allowlist plus a resolvable name.
+func (acc *MCPToolAccumulator) GrantClientTools(clientID, clientName string, tools []string) {
+	if clientID == "" {
+		return
+	}
+	entry := acc.client(clientID)
+	if clientName != "" {
+		entry.name = clientName
+	}
+	for _, tool := range tools {
+		acc.GrantTool(clientID, tool)
+	}
+}
+
 // addMCPConfig folds in a key's own config: the client is registered even with no tools, and carries
 // its own name.
 func (acc *MCPToolAccumulator) addMCPConfig(cfg *configstoreTables.TableVirtualKeyMCPConfig) {
