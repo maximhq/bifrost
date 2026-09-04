@@ -991,15 +991,19 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 	var orderClause string
 	switch pagination.SortBy {
 	case "timestamp":
-		orderClause = "timestamp " + direction
+		// id breaks ties. Timestamps collide readily under load, and callers that
+		// page by (timestamp, offset) - Warp's backfill cursor among them - skip or
+		// repeat rows whenever equal-timestamp rows come back in a different order
+		// between calls. The session query below already orders this way.
+		orderClause = "timestamp " + direction + ", id " + direction
 	case "latency":
-		orderClause = "latency " + direction
+		orderClause = "latency " + direction + ", id " + direction
 	case "tokens":
-		orderClause = "total_tokens " + direction
+		orderClause = "total_tokens " + direction + ", id " + direction
 	case "cost":
-		orderClause = "cost " + direction
+		orderClause = "cost " + direction + ", id " + direction
 	default:
-		orderClause = "timestamp " + direction
+		orderClause = "timestamp " + direction + ", id " + direction
 	}
 
 	limit := pagination.Limit
