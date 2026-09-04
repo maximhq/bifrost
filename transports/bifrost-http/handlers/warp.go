@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -22,13 +23,14 @@ import (
 type WarpHandler struct {
 	service         *warp.Service
 	unsubscribeLogs func()
+	sidekiqRunner   *sidekiq.Runner
 }
 
 // NewWarpHandler builds the handler and the service behind it. A nil logManager
 // is a supported deployment (logging disabled): Warp then serves only its
 // configuration routes, because its tools would have nothing to read. A nil
 // catalog is likewise supported and simply leaves Warp's own spend unpriced.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, vectors vectorstore.VectorStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
@@ -36,7 +38,8 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...)}
+	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner}
+	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
 		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.service.IndexLog)
 	}
@@ -123,6 +126,9 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 		return
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, warp.ErrBackfillInProgress):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
 	case err != nil:
 		// Log the cause. The client gets a generic message because a raw driver
