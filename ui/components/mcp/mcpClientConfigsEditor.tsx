@@ -28,7 +28,7 @@ function entryKey(entry: MCPClientConfigEntry): string {
 interface MCPClientConfigsEditorProps {
 	value: MCPClientConfigEntry[];
 	onChange: (next: MCPClientConfigEntry[]) => void;
-	// VK-only "available by default" note.
+	// Show the "allowed by default" note listing allow-by-default MCP servers (VK, project, AP sheets).
 	showDefaultsNote?: boolean;
 	label?: string;
 	tooltip?: ReactNode;
@@ -142,9 +142,10 @@ export function MCPClientConfigsEditor({
 							<div className="flex items-start gap-1.5">
 								<Info className="mt-0.5 h-3 w-3 shrink-0" />
 								<span>
-									The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
+									The following MCP servers are allowed by default, with all tools enabled, on any virtual key that doesn't configure them
+									explicitly:{" "}
 									<span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>. Adding an
-									explicit config for any of them below will override the all-tools default for this key.
+									explicit config for one below overrides that all-tools default.
 								</span>
 							</div>
 						</div>
