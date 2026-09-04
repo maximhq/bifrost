@@ -183,6 +183,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/connections",
+              "mcp/virtual-mcps",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -305,7 +306,7 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              "enterprise/mcp-tool-groups",
+              "enterprise/virtual-mcps",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -2111,6 +2112,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/enterprise/mcp-tool-groups",
+      "destination": "/enterprise/virtual-mcps"
+    },
     {
       "source": "/migration-guides/governance-api-namespace",
       "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
