@@ -449,6 +449,14 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 	if !config.IsConfigured() {
 		return nil, ErrUnavailable
 	}
+	// Deliberately no vector-store check. This is the read NewTurn makes on every
+	// chat request, so refusing here failed the whole feature rather than the one
+	// tool that needs a vector store - the handler maps the error to 503, so a
+	// deployment without one could not ask Warp anything at all. Semantic search
+	// is gated where it belongs: buildToolsFor only offers semantic_search_logs
+	// when a searcher exists, so the loop simply runs with the other tools.
+	// Enabling Warp without a vector store is still refused in SaveConfig, which
+	// is a misconfiguration the operator can act on.
 	return config, nil
 }
 

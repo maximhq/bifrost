@@ -438,13 +438,17 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	if text == "" {
 		return logIndexItem{}, false
 	}
+	// The scalar filter fields are stored lowered, because the store-side
+	// prefilter compares exactly while the post-filter compares with EqualFold
+	// - appendScalarQuery lowers the filter values to meet these. Hydration
+	// reads the full row from the logstore, so nothing rendered loses casing.
 	metadata := map[string]interface{}{
 		"log_id": entry.ID, "timestamp": entry.Timestamp.Unix(), "object": entry.Object,
-		"provider": entry.Provider, "model": entry.Model, "status": entry.Status, "warp_log": true,
+		"provider": strings.ToLower(entry.Provider), "model": strings.ToLower(entry.Model), "status": strings.ToLower(entry.Status), "warp_log": true,
 		"latency_ms": roundedMetric(entry.Latency, 1), "cost_micro_usd": roundedMetric(entry.Cost, 1_000_000),
 		"prompt_tokens": entry.PromptTokens, "completion_tokens": entry.CompletionTokens, "total_tokens": entry.TotalTokens,
-		"parent_request_id": stringValue(entry.ParentRequestID), "app": stringValue(entry.App),
-		"virtual_key_id": stringValue(entry.VirtualKeyID), "user_id": stringValue(entry.UserID),
+		"parent_request_id": stringValue(entry.ParentRequestID), "app": strings.ToLower(stringValue(entry.App)),
+		"virtual_key_id": strings.ToLower(stringValue(entry.VirtualKeyID)), "user_id": strings.ToLower(stringValue(entry.UserID)),
 		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
 		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
 	}
