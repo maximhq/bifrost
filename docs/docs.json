@@ -201,7 +201,6 @@
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway",
               "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
@@ -2194,11 +2193,15 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/mcp/gateway",
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/oauth",
