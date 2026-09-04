@@ -14,6 +14,11 @@ var ErrAlreadyExists = errors.New("already exists")
 // the table's own unique index and surfaces as a generic unique-constraint error.)
 var ErrVirtualMCPEndpointExists = errors.New("a virtual MCP with this endpoint already exists")
 
+// ErrVirtualKeyAccessProfileManaged is returned by AttachVirtualMCPToVirtualKey (enterprise) when the
+// target virtual key is managed by an access profile: its MCP access is governed by the profile, so it
+// cannot be assigned a Virtual MCP directly. OSS never returns it (no access profiles).
+var ErrVirtualKeyAccessProfileManaged = errors.New("access-profile-managed virtual keys cannot be assigned a virtual MCP directly")
+
 // ErrConfigUnreadable marks a stored configuration value that could not be
 // decoded or that failed validation — the value is present but this version
 // cannot make sense of it.

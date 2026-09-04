@@ -4620,6 +4620,25 @@ func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcp
 	return ids, err
 }
 
+// GetVirtualKeyIDsForVirtualMCPs returns assigned virtual-key IDs for a set of Virtual MCPs in one
+// query, grouped by Virtual MCP ID.
+func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error) {
+	result := make(map[uint][]string, len(vmcpIDs))
+	if len(vmcpIDs) == 0 {
+		return result, nil
+	}
+	var rows []tables.TableVirtualKeyVirtualMCP
+	if err := s.DB().WithContext(ctx).
+		Where("tool_group_id IN ?", vmcpIDs).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.VirtualMCPID] = append(result[row.VirtualMCPID], row.VirtualKeyID)
+	}
+	return result, nil
+}
+
 // GetVirtualKeyMCPConfigsByMCPClientIDs retrieves all VK MCP configs for a set of MCP client IDs in one query.
 func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
 	if len(mcpClientIDs) == 0 {
