@@ -665,7 +665,137 @@ func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
 	}
 }
 
-// sessionIDFromContext is a helper for the harness-fallback tests below.
+// opencodeSessionFromContext converts ctx and returns the resolved opencode
+// affinity session plus the shared extra-headers map (used to assert the
+// session value never leaks into provider-generic forwarding).
+func opencodeSessionFromContext(t *testing.T, ctx *fasthttp.RequestCtx) (string, map[string][]string) {
+	t.Helper()
+	return opencodeSessionFromContextWithStore(t, ctx, testHandlerStore{})
+}
+
+func opencodeSessionFromContextWithStore(t *testing.T, ctx *fasthttp.RequestCtx, store HandlerStore) (string, map[string][]string) {
+	t.Helper()
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, store)
+	defer cancel()
+	session, _ := bifrostCtx.Value(schemas.BifrostContextKeyOpencodeSession).(string)
+	extra, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	return session, extra
+}
+
+func TestConvertToBifrostContext_OpencodeSessionRespectsHeaderFilter(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("x-opencode-session", "conv-1")
+		ctx.Request.Header.Set("x-bf-eh-x-opencode-session", "eh-1")
+		ctx.Request.Header.Set("x-bf-session-id", "sess-1")
+		return ctx
+	}
+
+	t.Run("denylist blocks all capture paths including synthesis", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Denylist: []string{"x-opencode-session"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "" {
+			t.Fatalf("denied opencode session = %q, want absent", got)
+		}
+	})
+
+	t.Run("allowlist miss blocks capture", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Allowlist: []string{"anthropic-beta"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "" {
+			t.Fatalf("non-allowlisted opencode session = %q, want absent", got)
+		}
+	})
+
+	t.Run("allowlist hit captures normally", func(t *testing.T) {
+		store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+			Allowlist: []string{"x-opencode-session"},
+		})}
+		if got, _ := opencodeSessionFromContextWithStore(t, newCtx(), store); got != "conv-1" {
+			t.Fatalf("allowlisted opencode session = %q, want conv-1", got)
+		}
+	})
+}
+
+func TestConvertToBifrostContext_OpencodeSessionCapture(t *testing.T) {
+	tests := []struct {
+		name      string
+		headers   map[string]string
+		want      string
+		wantSynth bool
+	}{
+		{
+			name:    "explicit header captured verbatim",
+			headers: map[string]string{"x-opencode-session": "conv-1"},
+			want:    "conv-1",
+		},
+		{
+			name:    "explicit beats x-bf-session-id",
+			headers: map[string]string{"x-opencode-session": "conv-2", "x-bf-session-id": "sess-9"},
+			want:    "conv-2",
+		},
+		{
+			name:    "falls back to x-bf-session-id",
+			headers: map[string]string{"x-bf-session-id": "sess-1"},
+			want:    "sess-1",
+		},
+		{
+			name:    "falls back to harness header",
+			headers: map[string]string{"x-session-affinity": "oc-1"},
+			want:    "oc-1",
+		},
+		{
+			name:    "invalid explicit falls back to session",
+			headers: map[string]string{"x-opencode-session": "a\nb", "x-bf-session-id": "sess-2"},
+			want:    "sess-2",
+		},
+		{
+			name:    "eh-prefixed form consumed without leaking to extra headers",
+			headers: map[string]string{"x-bf-eh-x-opencode-session": "eh-1"},
+			want:    "eh-1",
+		},
+		{
+			name:    "oversized explicit falls back to session, not harness",
+			headers: map[string]string{"x-opencode-session": strings.Repeat("a", schemas.MaxSessionIDLength+1), "x-bf-session-id": "sess-3"},
+			want:    "sess-3",
+		},
+		{
+			name:      "oversized x-bf-session-id poisons to synth, not harness",
+			headers:   map[string]string{"x-bf-session-id": strings.Repeat("b", schemas.MaxSessionIDLength+1), "x-session-affinity": "oc-9"},
+			wantSynth: true,
+		},
+		{
+			name:      "no signal synthesizes a valid session",
+			headers:   map[string]string{"user-agent": "test-client/1.0"},
+			wantSynth: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tt.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			got, extra := opencodeSessionFromContext(t, ctx)
+			if tt.wantSynth {
+				if _, ok := schemas.ValidateOpencodeSessionID(got); !ok {
+					t.Fatalf("synthesized session %q fails ValidateOpencodeSessionID", got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("opencode session = %q, want %q", got, tt.want)
+			}
+			if _, leaked := extra["x-opencode-session"]; leaked {
+				t.Fatalf("x-opencode-session leaked into shared extra headers")
+			}
+		})
+	}
+}
+
 func sessionIDFromContext(t *testing.T, ctx *fasthttp.RequestCtx) string {
 	t.Helper()
 	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})

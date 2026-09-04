@@ -65,6 +65,29 @@ func NormalizeSessionID(value string) (string, bool) {
 	return value, true
 }
 
+// opencodeSessionIDCharset restricts caller-asserted x-opencode-session values to
+// header-safe characters. Unlike NormalizeSessionID (trim + length cap only), this
+// rejects CR/LF, controls, spaces, and non-ASCII so a caller-controlled value can
+// be placed verbatim on an outbound upstream request without response-splitting
+// or 400 risk.
+const opencodeSessionIDCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~=-"
+
+// ValidateOpencodeSessionID trims a caller-asserted x-opencode-session value and
+// reports whether it is safe to forward: non-empty, no longer than
+// MaxSessionIDLength runes, and restricted to opencodeSessionIDCharset.
+func ValidateOpencodeSessionID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || utf8.RuneCountInString(value) > MaxSessionIDLength {
+		return "", false
+	}
+	for i := 0; i < len(value); i++ {
+		if !strings.ContainsRune(opencodeSessionIDCharset, rune(value[i])) {
+			return "", false
+		}
+	}
+	return value, true
+}
+
 // HarnessSessionHeaders lists the headers coding harnesses use to carry their
 // own session identifier, in priority order. Bifrost falls back to these when
 // x-bf-session-id is absent, so harness traffic gets provider key stickiness and
