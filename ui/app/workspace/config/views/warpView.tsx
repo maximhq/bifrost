@@ -9,12 +9,20 @@ import { Switch } from "@/components/ui/switch";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import { useGetWarpConfigQuery, useUpdateWarpConfigMutation } from "@/lib/store/apis/warpApi";
+import {
+	useCancelWarpBackfillMutation,
+	useGetWarpBackfillStatusQuery,
+	useGetWarpConfigQuery,
+	useStartWarpBackfillMutation,
+	useUpdateWarpConfigMutation,
+} from "@/lib/store/apis/warpApi";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import type { WarpConfigInput } from "@/lib/types/warp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { AlertTriangle, CheckCircle2, Database, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { embeddingSpaceChanged, supportsWarpEmbedding, validateWarpEmbedding, type WarpEmbeddingFields } from "./warpConfig.utils";
 
 /**
  * Warp talks to Bifrost itself by default.
@@ -41,6 +49,15 @@ const WARP_ANY_KEY = "__any__";
 
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_TIMEOUT_SECONDS = 120;
+const DEFAULT_EMBEDDING_DIMENSION = 1536;
+const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
+const DEFAULT_SEARCH_THRESHOLD = 0.8;
+const DEFAULT_SEARCH_LIMIT = 10;
+
+const localDateTimeValue = (date: Date) => {
+	const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+	return local.toISOString().slice(0, 16);
+};
 
 /** Everything the form edits, in one place. */
 interface WarpFormState {
@@ -52,6 +69,13 @@ interface WarpFormState {
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	systemPromptSuffix: string;
+	embeddingProvider: string;
+	embeddingModel: string;
+	embeddingAPIKeyID: string;
+	embeddingDimension: number;
+	namespace: string;
+	threshold: number;
+	searchLimit: number;
 }
 
 const EMPTY_FORM: WarpFormState = {
@@ -63,6 +87,13 @@ const EMPTY_FORM: WarpFormState = {
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	systemPromptSuffix: "",
+	embeddingProvider: "",
+	embeddingModel: "",
+	embeddingAPIKeyID: "",
+	embeddingDimension: DEFAULT_EMBEDDING_DIMENSION,
+	namespace: DEFAULT_VECTOR_NAMESPACE,
+	threshold: DEFAULT_SEARCH_THRESHOLD,
+	searchLimit: DEFAULT_SEARCH_LIMIT,
 };
 
 /**
@@ -83,14 +114,28 @@ export default function WarpView() {
 	const { data: config, isLoading: isLoadingConfig } = useGetWarpConfigQuery();
 	const { data: providersData } = useGetProvidersQuery();
 	const [updateWarpConfig, { isLoading: isSaving }] = useUpdateWarpConfigMutation();
+	const [startWarpBackfill, { isLoading: isStartingBackfill }] = useStartWarpBackfillMutation();
+	const [cancelWarpBackfill, { isLoading: isCancellingBackfill }] = useCancelWarpBackfillMutation();
 
 	const [form, setForm] = useState<WarpFormState>(EMPTY_FORM);
+	const [activeBackfillID, setActiveBackfillID] = useState<string | null>(null);
+	const [backfillStart, setBackfillStart] = useState(() => localDateTimeValue(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)));
+	const [backfillEnd, setBackfillEnd] = useState(() => localDateTimeValue(new Date()));
 
 	const providers = providersData ?? [];
+	const embeddingProviders = providers.filter(supportsWarpEmbedding);
 	// Keys are provider-scoped, so the query waits for a provider rather than
 	// firing a request for "".
 	const { data: providerKeysData } = useGetProviderKeysQuery(form.provider, { skip: !form.provider });
 	const providerKeys = providerKeysData ?? [];
+	const { data: embeddingProviderKeysData } = useGetProviderKeysQuery(form.embeddingProvider, { skip: !form.embeddingProvider });
+	const embeddingProviderKeys = embeddingProviderKeysData ?? [];
+	const { data: backfillStatus } = useGetWarpBackfillStatusQuery(activeBackfillID ? { id: activeBackfillID } : undefined, {
+		skip: !hasSettingsUpdateAccess || !config?.configured,
+		pollingInterval: activeBackfillID ? 2000 : 10000,
+	});
+	const isBackfillActive =
+		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
 
 	// One hydration point. Everything the form shows comes from here.
 	useEffect(() => {
@@ -104,6 +149,13 @@ export default function WarpView() {
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			systemPromptSuffix: config.system_prompt_suffix ?? "",
+			embeddingProvider: config.embedding_provider ?? "",
+			embeddingModel: config.embedding_model ?? "",
+			embeddingAPIKeyID: config.embedding_api_key_id ?? "",
+			embeddingDimension: config.embedding_dimension || DEFAULT_EMBEDDING_DIMENSION,
+			namespace: config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE,
+			threshold: config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD,
+			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
 		});
 	}, [config]);
 
@@ -118,14 +170,35 @@ export default function WarpView() {
 			form.baseURL !== (config.base_url || defaultBaseUrl()) ||
 			form.maxIterations !== config.max_iterations ||
 			form.requestTimeoutSeconds !== config.request_timeout_seconds ||
-			form.systemPromptSuffix !== (config.system_prompt_suffix ?? ""));
+			form.systemPromptSuffix !== (config.system_prompt_suffix ?? "") ||
+			form.embeddingProvider !== (config.embedding_provider ?? "") ||
+			form.embeddingModel !== (config.embedding_model ?? "") ||
+			form.embeddingAPIKeyID !== (config.embedding_api_key_id ?? "") ||
+			form.embeddingDimension !== config.embedding_dimension ||
+			form.namespace !== config.log_vector_store_namespace ||
+			form.threshold !== config.semantic_search_threshold ||
+			form.searchLimit !== config.semantic_search_limit);
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const missingRequired = form.enabled && (!form.provider || !form.model);
 	const baseURLInvalid = form.baseURL !== "" && !/^https?:\/\//.test(form.baseURL);
 	const iterationsInvalid = form.maxIterations < 1 || form.maxIterations > 20;
 	const timeoutInvalid = form.requestTimeoutSeconds < 1;
-	const invalid = missingRequired || baseURLInvalid || iterationsInvalid || timeoutInvalid;
+	const embeddingFields: WarpEmbeddingFields = form;
+	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, config?.vector_store_connected ?? false);
+	const savedEmbeddingFields: WarpEmbeddingFields = {
+		embeddingProvider: config?.embedding_provider ?? "",
+		embeddingModel: config?.embedding_model ?? "",
+		embeddingDimension: config?.embedding_dimension ?? 0,
+		namespace: config?.log_vector_store_namespace ?? DEFAULT_VECTOR_NAMESPACE,
+		threshold: config?.semantic_search_threshold ?? DEFAULT_SEARCH_THRESHOLD,
+		searchLimit: config?.semantic_search_limit ?? DEFAULT_SEARCH_LIMIT,
+	};
+	const needsNewNamespace =
+		!!config?.configured &&
+		embeddingSpaceChanged(embeddingFields, savedEmbeddingFields) &&
+		form.namespace === savedEmbeddingFields.namespace;
+	const invalid = missingRequired || baseURLInvalid || iterationsInvalid || timeoutInvalid || !!embeddingValidation || needsNewNamespace;
 
 	const onSubmit = async (event: React.FormEvent) => {
 		event.preventDefault();
@@ -140,10 +213,43 @@ export default function WarpView() {
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			system_prompt_suffix: form.systemPromptSuffix,
+			embedding_provider: form.embeddingProvider.trim(),
+			embedding_model: form.embeddingModel.trim(),
+			embedding_api_key_id: form.embeddingAPIKeyID,
+			embedding_dimension: form.embeddingDimension,
+			log_vector_store_namespace: form.namespace.trim(),
+			semantic_search_threshold: form.threshold,
+			semantic_search_limit: form.searchLimit,
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
 			toast.success("Warp configuration saved.");
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const onStartBackfill = async () => {
+		if (!backfillStart || !backfillEnd || new Date(backfillStart) >= new Date(backfillEnd)) {
+			toast.error("Choose a valid backfill time range.");
+			return;
+		}
+		try {
+			const status = await startWarpBackfill({
+				start_time: new Date(backfillStart).toISOString(),
+				end_time: new Date(backfillEnd).toISOString(),
+			}).unwrap();
+			setActiveBackfillID(status.id ?? null);
+			toast.success("Warp embedding backfill started.");
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const onCancelBackfill = async () => {
+		try {
+			await cancelWarpBackfill(activeBackfillID ? { id: activeBackfillID } : undefined).unwrap();
+			toast.success("Backfill cancellation requested.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -183,7 +289,7 @@ export default function WarpView() {
 									size="md"
 									data-testid="warp-enabled-switch"
 									checked={form.enabled}
-									disabled={!hasSettingsUpdateAccess}
+									disabled={!hasSettingsUpdateAccess || (!config?.vector_store_connected && !form.enabled)}
 									onCheckedChange={(checked) => update("enabled", checked)}
 								/>
 							</div>
@@ -193,6 +299,11 @@ export default function WarpView() {
 							{!form.enabled && !!form.provider && !!form.model && (
 								<p className="text-muted-foreground text-xs" data-testid="warp-disabled-hint">
 									Everything below is filled in, but Warp stays hidden until this is on.
+								</p>
+							)}
+							{!config?.vector_store_connected && (
+								<p className="text-destructive flex items-center gap-1.5 text-xs" data-testid="warp-vector-store-required">
+									<AlertTriangle className="h-3.5 w-3.5" /> Connect a vector store in Settings before enabling Warp.
 								</p>
 							)}
 						</div>
@@ -318,6 +429,162 @@ export default function WarpView() {
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
+							<div className="flex items-start justify-between gap-4">
+								<div className="space-y-0.5">
+									<Label>Conversation search</Label>
+									<p className="text-muted-foreground text-sm">
+										Warp embeds completed conversations and stores those vectors in your connected vector store, then uses them to find logs
+										by meaning.
+									</p>
+								</div>
+								<Badge variant={config?.vector_store_connected ? "secondary" : "destructive"} data-testid="warp-vector-store-status">
+									{config?.vector_store_connected ? (
+										<CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+									) : (
+										<Database className="mr-1 h-3.5 w-3.5" />
+									)}
+									{config?.vector_store_connected ? "Vector store connected" : "Vector store disconnected"}
+								</Badge>
+							</div>
+
+							<div className="grid gap-4 pt-2 md:grid-cols-2">
+								<div className="space-y-2">
+									<Label htmlFor="warp-embedding-provider">Embedding Provider</Label>
+									<Select
+										value={form.embeddingProvider}
+										onValueChange={(value) => {
+											if (!value) return;
+											setForm((current) => ({ ...current, embeddingProvider: value, embeddingModel: "", embeddingAPIKeyID: "" }));
+										}}
+										disabled={!hasSettingsUpdateAccess}
+									>
+										<SelectTrigger id="warp-embedding-provider" data-testid="warp-embedding-provider-select">
+											<SelectValue placeholder="Select embedding provider" />
+										</SelectTrigger>
+										<SelectContent>
+											{form.embeddingProvider && !embeddingProviders.some((provider) => provider.name === form.embeddingProvider) && (
+												<SelectItem value={form.embeddingProvider}>{getProviderLabel(form.embeddingProvider)}</SelectItem>
+											)}
+											{embeddingProviders.map((provider) => (
+												<SelectItem key={provider.name} value={provider.name}>
+													<div className="flex items-center gap-2">
+														<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
+														<span>{getProviderLabel(provider.name)}</span>
+													</div>
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								</div>
+
+								<div className="space-y-2">
+									<Label htmlFor="warp-embedding-model">Embedding Model</Label>
+									<ModelMultiselect
+										inputId="warp-embedding-model"
+										data-testid="warp-embedding-model-select"
+										isSingleSelect
+										provider={form.embeddingProvider || undefined}
+										value={form.embeddingModel}
+										onChange={(model) => update("embeddingModel", model)}
+										placeholder={form.embeddingProvider ? "Search or type an embedding model..." : "Select a provider first"}
+										disabled={!form.embeddingProvider || !hasSettingsUpdateAccess}
+									/>
+								</div>
+
+								<div className="space-y-2">
+									<Label htmlFor="warp-embedding-api-key">Embedding API Key</Label>
+									<Select
+										value={form.embeddingAPIKeyID || WARP_ANY_KEY}
+										onValueChange={(value) => value && update("embeddingAPIKeyID", value === WARP_ANY_KEY ? "" : value)}
+										disabled={!form.embeddingProvider || !hasSettingsUpdateAccess}
+									>
+										<SelectTrigger id="warp-embedding-api-key" data-testid="warp-embedding-api-key-select">
+											<SelectValue placeholder="Any key" />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value={WARP_ANY_KEY}>Any key</SelectItem>
+											{form.embeddingAPIKeyID && !embeddingProviderKeys.some((key) => key.id === form.embeddingAPIKeyID) && (
+												<SelectItem value={form.embeddingAPIKeyID}>{form.embeddingAPIKeyID}</SelectItem>
+											)}
+											{embeddingProviderKeys.map((key) => (
+												<SelectItem key={key.id} value={key.id}>
+													{key.name || key.id}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								</div>
+
+								<div className="space-y-2">
+									<Label htmlFor="warp-embedding-dimension">Embedding Dimension</Label>
+									<Input
+										id="warp-embedding-dimension"
+										type="number"
+										min={1}
+										data-testid="warp-embedding-dimension-input"
+										value={form.embeddingDimension}
+										onChange={(event) => update("embeddingDimension", Number(event.target.value))}
+										disabled={!hasSettingsUpdateAccess}
+									/>
+								</div>
+
+								<div className="space-y-2 md:col-span-2">
+									<Label htmlFor="warp-vector-namespace">Log embedding namespace</Label>
+									<Input
+										id="warp-vector-namespace"
+										data-testid="warp-vector-namespace-input"
+										value={form.namespace}
+										onChange={(event) => update("namespace", event.target.value)}
+										disabled={!hasSettingsUpdateAccess}
+									/>
+									<p className="text-muted-foreground text-xs">
+										Only vector embeddings and operational metadata are stored here; plaintext conversation content stays in the log store.
+									</p>
+								</div>
+
+								<div className="space-y-2">
+									<Label htmlFor="warp-search-threshold">Similarity Threshold</Label>
+									<Input
+										id="warp-search-threshold"
+										type="number"
+										min={0.01}
+										max={1}
+										step={0.01}
+										data-testid="warp-search-threshold-input"
+										value={form.threshold}
+										onChange={(event) => update("threshold", Number(event.target.value))}
+										disabled={!hasSettingsUpdateAccess}
+									/>
+								</div>
+								<div className="space-y-2">
+									<Label htmlFor="warp-search-limit">Maximum Matches</Label>
+									<Input
+										id="warp-search-limit"
+										type="number"
+										min={1}
+										max={25}
+										data-testid="warp-search-limit-input"
+										value={form.searchLimit}
+										onChange={(event) => update("searchLimit", Number(event.target.value))}
+										disabled={!hasSettingsUpdateAccess}
+									/>
+								</div>
+							</div>
+
+							{needsNewNamespace && (
+								<p className="text-destructive flex items-center gap-1.5 text-sm" data-testid="warp-namespace-change-warning">
+									<AlertTriangle className="h-4 w-4" /> Provider, model, or dimension changed. Choose a new namespace so incompatible
+									vectors cannot mix.
+								</p>
+							)}
+							{embeddingValidation && (
+								<p className="text-destructive text-sm" data-testid="warp-embedding-validation">
+									{embeddingValidation}
+								</p>
+							)}
+						</div>
+
+						<div className="space-y-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<Label htmlFor="warp-base-url">Base URL</Label>
 								<p className="text-muted-foreground text-sm">
@@ -394,6 +661,91 @@ export default function WarpView() {
 								onChange={(event) => update("systemPromptSuffix", event.target.value)}
 								disabled={!hasSettingsUpdateAccess}
 							/>
+						</div>
+
+						<div className="space-y-4 rounded-sm border p-4" data-testid="warp-backfill-section">
+							<div className="space-y-0.5">
+								<Label>Backfill conversation embeddings</Label>
+								<p className="text-muted-foreground text-sm">
+									Index completed conversations from an existing log window. This runs in Sidekiq, can be cancelled, and safely resumes
+									through batches.
+								</p>
+							</div>
+							<div className="grid gap-4 md:grid-cols-2">
+								<div className="space-y-2">
+									<Label htmlFor="warp-backfill-start">Start</Label>
+									<Input
+										id="warp-backfill-start"
+										type="datetime-local"
+										data-testid="warp-backfill-start-input"
+										value={backfillStart}
+										onChange={(event) => setBackfillStart(event.target.value)}
+										disabled={isBackfillActive || !hasSettingsUpdateAccess}
+									/>
+								</div>
+								<div className="space-y-2">
+									<Label htmlFor="warp-backfill-end">End</Label>
+									<Input
+										id="warp-backfill-end"
+										type="datetime-local"
+										data-testid="warp-backfill-end-input"
+										value={backfillEnd}
+										onChange={(event) => setBackfillEnd(event.target.value)}
+										disabled={isBackfillActive || !hasSettingsUpdateAccess}
+									/>
+								</div>
+							</div>
+
+							{backfillStatus?.id && (
+								<div className="bg-muted/40 space-y-2 rounded-sm p-3 text-sm" data-testid="warp-backfill-status">
+									<div className="flex items-center justify-between gap-3">
+										<span className="font-medium capitalize">{backfillStatus.status}</span>
+										<span className="text-muted-foreground">
+											{backfillStatus.scanned} / {backfillStatus.total} scanned
+										</span>
+									</div>
+									<div className="bg-border h-2 overflow-hidden rounded-full">
+										<div
+											className="bg-primary h-full transition-all"
+											style={{
+												width: `${backfillStatus.total > 0 ? Math.min(100, (backfillStatus.scanned / backfillStatus.total) * 100) : 0}%`,
+											}}
+										/>
+									</div>
+									<p className="text-muted-foreground text-xs">
+										{backfillStatus.indexed} indexed · {backfillStatus.skipped} skipped · {backfillStatus.failed} failed
+									</p>
+									{backfillStatus.last_error && <p className="text-destructive text-xs">Latest error: {backfillStatus.last_error}</p>}
+								</div>
+							)}
+
+							<div className="flex justify-end">
+								{isBackfillActive ? (
+									<Button
+										type="button"
+										variant="outline"
+										onClick={onCancelBackfill}
+										disabled={isCancellingBackfill || !hasSettingsUpdateAccess}
+										data-testid="warp-backfill-cancel-btn"
+									>
+										{isCancellingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Cancel backfill
+									</Button>
+								) : (
+									<Button
+										type="button"
+										onClick={onStartBackfill}
+										disabled={
+											isStartingBackfill || !config?.configured || !config.vector_store_connected || !hasSettingsUpdateAccess || hasChanges
+										}
+										data-testid="warp-backfill-start-btn"
+									>
+										{isStartingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Start backfill
+									</Button>
+								)}
+							</div>
+							{hasChanges && (
+								<p className="text-muted-foreground text-right text-xs">Save configuration changes before starting a backfill.</p>
+							)}
 						</div>
 					</div>
 				)}
