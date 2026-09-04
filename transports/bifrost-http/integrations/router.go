@@ -104,6 +104,9 @@ type BatchRequest struct {
 // FileRequest wraps a Bifrost file request with its type information.
 type FileRequest struct {
 	Type            schemas.RequestType
+	Handled         bool
+	HandledHeaders  map[string]string
+	onError         func(err *schemas.BifrostError)
 	UploadRequest   *schemas.BifrostFileUploadRequest
 	ListRequest     *schemas.BifrostFileListRequest
 	RetrieveRequest *schemas.BifrostFileRetrieveRequest
@@ -838,11 +841,21 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if config.FileRequestConverter != nil {
 			fileReq, err := config.FileRequestConverter(bifrostCtx, req)
 			if err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert file request"))
+				bifrostErr := newBifrostError(err, "failed to convert file request")
+				if statusCode, ok := statusCodeFromError(err); ok {
+					bifrostErr.StatusCode = &statusCode
+				}
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 				return
 			}
 			if fileReq == nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid file request"))
+				return
+			}
+			if fileReq.Handled {
+				for key, value := range fileReq.HandledHeaders {
+					ctx.Response.Header.Set(key, value)
+				}
 				return
 			}
 			g.handleFileRequest(ctx, config, req, fileReq, bifrostCtx)
@@ -2076,6 +2089,9 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 		}
 		fileResponse, bifrostErr := g.client.FileUploadRequest(bifrostCtx, fileReq.UploadRequest)
 		if bifrostErr != nil {
+			if fileReq.onError != nil {
+				fileReq.onError(bifrostErr)
+			}
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
 		}

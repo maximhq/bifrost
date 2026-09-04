@@ -32,6 +32,7 @@ func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { re
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
+func (s testHandlerStore) GetMaxRequestBodySizeMB() int                     { return lib.DefaultMaxRequestBodySizeMB }
 
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
 	var ctx fasthttp.RequestCtx

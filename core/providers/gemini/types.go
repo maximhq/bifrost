@@ -3361,6 +3361,9 @@ type GeminiResumableUploadSession struct {
 	MimeType    string
 	Provider    schemas.ModelProvider
 	VirtualKey  string
+	Chunks      map[int64][]byte
+	NextOffset  int64
+	Finalizing  bool
 }
 
 // GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.
@@ -3398,6 +3401,9 @@ type GeminiFileUploadHandlerReq struct {
 	MimeType string                `json:"-"` // from X-Goog-Upload-Header-Content-Type
 
 	// Step 2 fields — populated when upload_id is present in query
-	UploadID string `json:"-"`
-	FileData []byte `json:"-"`
+	UploadID        string `json:"-"`
+	FileData        []byte `json:"-"`
+	UploadCommand   string `json:"-"`
+	UploadOffset    int64  `json:"-"`
+	HasUploadOffset bool   `json:"-"`
 }

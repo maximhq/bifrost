@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -9,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -17,7 +17,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/grant"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -325,7 +324,27 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 }
 
 // CreateGenAIFileRouteConfigs creates route configurations for Gemini Files API endpoints.
-func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore, loggers ...schemas.Logger) []RouteConfig {
+	return createGenAIFileRouteConfigs(pathPrefix, handlerStore, 0, loggers...)
+}
+
+func createGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore, maxUploadSizeBytes int64, loggers ...schemas.Logger) []RouteConfig {
+	// maxBodySizeBytes limits the size of an individual request.
+	maxBodySizeBytes := int64(handlerStore.GetMaxRequestBodySizeMB()) * 1024 * 1024
+
+	// maxResumableUploadSize limits the cumulative size of a resumable upload session.
+	maxResumableUploadSize := int64(handlerStore.GetMaxResumableUploadSizeMB()) * 1024 * 1024
+
+	if maxUploadSizeBytes > 0 {
+		maxResumableUploadSize = maxUploadSizeBytes
+	}
+	uploadSessionTTL := handlerStore.GetUploadSessionTTL()
+
+	var logger schemas.Logger = bifrost.NewNoOpLogger()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
+
 	var routes []RouteConfig
 
 	// Upload file endpoint - POST /upload/v1beta/files
@@ -344,10 +363,29 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
 			r := req.(*gemini.GeminiFileUploadHandlerReq)
 			uploadID := string(ctx.QueryArgs().Peek("upload_id"))
+
 			if uploadID != "" {
 				// Step 2: body is raw binary — do not JSON-decode.
+				body := ctx.Request.Body()
+				uploadCommand := parseUploadCommand(string(ctx.Request.Header.Peek("X-Goog-Upload-Command")))
+
+				if int64(len(body)) > maxBodySizeBytes {
+					return fmt.Errorf("upload exceeds maximum request body size of %d MB", maxBodySizeBytes/1024/1024)
+				}
+
 				r.UploadID = uploadID
-				r.FileData = ctx.Request.Body()
+				r.FileData = append([]byte(nil), body...)
+
+				r.UploadCommand = uploadCommand
+				if offset := ctx.Request.Header.Peek("X-Goog-Upload-Offset"); len(offset) > 0 {
+					parsedOffset, err := strconv.ParseInt(string(offset), 10, 64)
+					if err != nil {
+						return fmt.Errorf("invalid X-Goog-Upload-Offset: %w", err)
+					}
+
+					r.UploadOffset = parsedOffset
+					r.HasUploadOffset = true
+				}
 				return nil
 			}
 			// Step 1: body is JSON metadata.
@@ -365,11 +403,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return false, nil
 			}
 
-			uploadID, err := generateUploadID()
-			if err != nil {
-				return true, fmt.Errorf("failed to generate upload ID: %w", err)
-			}
-
 			kvStore := handlerStore.GetKVStore()
 			if kvStore == nil {
 				return true, errors.New("kvstore not initialized")
@@ -380,10 +413,19 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				MimeType:    r.MimeType,
 				Provider:    r.Provider,
 			}
-			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
-				session.VirtualKey = vk
+
+			vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+			if !ok || vk == "" {
+				return true, errors.New("virtual key is required for resumable upload")
 			}
-			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
+
+			uploadID, err := generateUploadID()
+			if err != nil {
+				return true, fmt.Errorf("failed to generate upload ID: %w", err)
+			}
+
+			session.VirtualKey = vk
+			if err := kvStore.SetWithTTL(uploadID, session, uploadSessionTTL); err != nil {
 				return true, fmt.Errorf("failed to store upload session: %w", err)
 			}
 
@@ -407,8 +449,29 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			if !ok {
 				return nil, errors.New("invalid file upload request type")
 			}
+
 			if r.UploadID == "" {
 				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
+			}
+
+			// Validate resumable upload headers.
+			if r.UploadCommand == "" {
+				return nil, errors.New("missing X-Goog-Upload-Command header")
+			}
+
+			normalizedCmd := r.UploadCommand
+			if normalizedCmd != "upload" && normalizedCmd != "upload,finalize" {
+				return nil, fmt.Errorf("unsupported X-Goog-Upload-Command: %q", r.UploadCommand)
+			}
+
+			if !r.HasUploadOffset {
+				return nil, errors.New("missing X-Goog-Upload-Offset header")
+			}
+
+			// Each request is capped independently from the cumulative session-size check below.
+			newChunkSize := int64(len(r.FileData))
+			if newChunkSize > maxBodySizeBytes {
+				return nil, fmt.Errorf("upload exceeds maximum request body size of %d MB", maxBodySizeBytes/1024/1024)
 			}
 
 			kvStore := handlerStore.GetKVStore()
@@ -416,37 +479,171 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("kvstore not initialized")
 			}
 
-			val, err := kvStore.GetAndDelete(r.UploadID)
-			if err != nil {
-				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
-			}
+			var session *gemini.GeminiResumableUploadSession
 
-			session, ok := val.(*gemini.GeminiResumableUploadSession)
-			if !ok {
-				return nil, errors.New("invalid upload session type in kvstore")
-			}
-
-			// Chunk requests carry no auth headers (resumable-upload protocol:
-			// the upload_id is the credential), so restore the virtual key that
-			// initiated the upload. Headers presented on the chunk request win.
-			if session.VirtualKey != "" {
-				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
-					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
-					lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, session.VirtualKey))
+			// CAS loop makes session validation, chunk storage, and offset
+			// advancement atomic and retry-safe.
+			for {
+				val, err := kvStore.Get(r.UploadID)
+				if err != nil {
+					return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
 				}
+
+				currentSession, ok := val.(*gemini.GeminiResumableUploadSession)
+				if !ok {
+					return nil, errors.New("invalid upload session type in kvstore")
+				}
+
+				// Step 2 must provide the same virtual-key credential that
+				// created the upload session. Do this validation before
+				// modifying or restoring any session state.
+				if currentSession.VirtualKey == "" {
+					return nil, errors.New("virtual key is required for resumable upload")
+				}
+
+				vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+				if !ok || vk == "" {
+					return nil, errors.New("virtual key is required for resumable upload")
+				}
+
+				if vk != currentSession.VirtualKey {
+					return nil, errors.New("virtual key does not match the upload session")
+				}
+
+				// For finalize requests, prevent concurrent uploads from reaching the provider.
+				if normalizedCmd == "upload,finalize" && currentSession.Finalizing {
+					return nil, newErrorWithStatus(errors.New("upload already being finalized"), fasthttp.StatusConflict)
+				}
+
+				newSession := &gemini.GeminiResumableUploadSession{
+					DisplayName: currentSession.DisplayName,
+					MimeType:    currentSession.MimeType,
+					Provider:    currentSession.Provider,
+					VirtualKey:  currentSession.VirtualKey,
+					NextOffset:  currentSession.NextOffset,
+					Chunks:      make(map[int64][]byte, len(currentSession.Chunks)),
+					Finalizing:  currentSession.Finalizing,
+				}
+
+				for offset, chunk := range currentSession.Chunks {
+					newSession.Chunks[offset] = append([]byte(nil), chunk...)
+				}
+
+				// If the offset already exists, this is a retry.
+				// Only allow the retry when the chunk data is identical.
+				if existingChunk, exists := newSession.Chunks[r.UploadOffset]; exists {
+					if !bytes.Equal(existingChunk, r.FileData) {
+						return nil, fmt.Errorf("chunk at offset %d already exists with different data", r.UploadOffset)
+					}
+				} else {
+					// New chunk must start exactly at the next expected offset.
+					if r.UploadOffset < 0 || r.UploadOffset != newSession.NextOffset {
+						return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, newSession.NextOffset)
+					}
+
+					// Check the cumulative upload size before persisting the chunk.
+					if newSession.NextOffset+newChunkSize > maxResumableUploadSize {
+						return nil, fmt.Errorf("resumable upload exceeds maximum size of %d MB", maxResumableUploadSize/1024/1024)
+					}
+
+					// Copy the chunk before storing it in the session.
+					newSession.Chunks[r.UploadOffset] = append([]byte(nil), r.FileData...)
+					newSession.NextOffset += newChunkSize
+				}
+
+				// Mark session as finalizing if this is a finalize request.
+				// This prevents concurrent finalize attempts from reaching the provider.
+				if normalizedCmd == "upload,finalize" {
+					newSession.Finalizing = true
+				}
+
+				success, err := kvStore.CompareAndSwap(r.UploadID, val, newSession, uploadSessionTTL)
+				if err != nil {
+					return nil, fmt.Errorf("failed to persist upload chunk: %w", err)
+				}
+
+				if !success {
+					// Session changed concurrently. Read the latest session
+					// and retry the entire operation.
+					continue
+				}
+
+				session = newSession
+				break
+			}
+
+			// Upload without finalize: keep the session and acknowledge progress.
+			if normalizedCmd == "upload" {
+				// Return without proceeding to provider — PostCallback will run only for finalize.
+				return &FileRequest{
+					Handled: true,
+					HandledHeaders: map[string]string{
+						"X-Goog-Upload-Status": "active",
+					},
+				}, nil
+			}
+
+			// Finalize: assemble all chunks in offset order.
+			offsets := make([]int64, 0, len(session.Chunks))
+			for offset := range session.Chunks {
+				offsets = append(offsets, offset)
+			}
+
+			slices.Sort(offsets)
+
+			assembledFile := make([]byte, 0, session.NextOffset)
+			for _, offset := range offsets {
+				assembledFile = append(assembledFile, session.Chunks[offset]...)
 			}
 
 			filename := session.DisplayName
 			if filename == "" {
 				filename = "upload"
 			}
+
 			contentType := session.MimeType
 
 			return &FileRequest{
 				Type: schemas.FileUploadRequest,
+				onError: func(_ *schemas.BifrostError) {
+					kvStore := handlerStore.GetKVStore()
+					if kvStore == nil {
+						return
+					}
+					for {
+						value, err := kvStore.Get(r.UploadID)
+						if err != nil {
+							logger.Warn("failed to load upload session after provider failure: %v", err)
+							return
+						}
+						session, ok := value.(*gemini.GeminiResumableUploadSession)
+						if !ok || !session.Finalizing {
+							return
+						}
+						resetSession := &gemini.GeminiResumableUploadSession{
+							DisplayName: session.DisplayName,
+							MimeType:    session.MimeType,
+							Provider:    session.Provider,
+							VirtualKey:  session.VirtualKey,
+							NextOffset:  session.NextOffset,
+							Chunks:      make(map[int64][]byte, len(session.Chunks)),
+						}
+						for offset, chunk := range session.Chunks {
+							resetSession.Chunks[offset] = append([]byte(nil), chunk...)
+						}
+						success, err := kvStore.CompareAndSwap(r.UploadID, value, resetSession, uploadSessionTTL)
+						if err != nil {
+							logger.Warn("failed to reset upload session after provider failure: %v", err)
+							return
+						}
+						if success {
+							return
+						}
+					}
+				},
 				UploadRequest: &schemas.BifrostFileUploadRequest{
 					Provider:    session.Provider,
-					File:        r.FileData,
+					File:        assembledFile,
 					Filename:    filename,
 					ContentType: &contentType,
 					Purpose:     schemas.FilePurposeBatch,
@@ -464,7 +661,31 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		PreCallback: extractGeminiFileUploadParams,
 		PostCallback: func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error {
+			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
+			if !ok {
+				return nil
+			}
+
+			if r.UploadID == "" {
+				// Normal file uploads do not use a resumable upload session.
+				return nil
+			}
+
+			// PostCallback only runs after a successful provider response.
+			// FileRequestConverter short-circuits with Handled: true for non-finalize commands,
+			// so this callback only executes for finalize (or provider-delegated) requests.
 			ctx.Response.Header.Set("X-Goog-Upload-Status", "final")
+			kvStore := handlerStore.GetKVStore()
+			if kvStore == nil {
+				return nil
+			}
+
+			// Delete the session after successful finalization.
+			_, err := kvStore.Delete(r.UploadID)
+			if err != nil {
+				return nil
+			}
+
 			return nil
 		},
 	})
@@ -1027,9 +1248,25 @@ func extractGeminiFileUploadParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 	if r, ok := req.(*gemini.GeminiFileUploadHandlerReq); ok {
 		r.Provider = provider
 		r.MimeType = string(ctx.Request.Header.Peek("x-goog-upload-header-content-type"))
+		r.UploadCommand = parseUploadCommand(string(ctx.Request.Header.Peek("x-goog-upload-command")))
+		offsetHeader := string(ctx.Request.Header.Peek("x-goog-upload-offset"))
+		if offsetHeader != "" {
+			offset, err := strconv.ParseInt(offsetHeader, 10, 64)
+			if err != nil || offset < 0 {
+				return errors.New("x-goog-upload-offset must be a non-negative integer")
+			}
+			r.UploadOffset = offset
+		}
 	}
 
 	return nil
+}
+
+// parseUploadCommand normalizes an X-Goog-Upload-Command header value.
+// Handles comma-separated values, extra whitespace, and case variations.
+// Returns lowercase, single-value string ("upload" or "upload,finalize" normalized to "upload,finalize").
+func parseUploadCommand(header string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(header), " ", ""))
 }
 
 // createGenAIRerankRouteConfig creates a route configuration for the GenAI/Vertex Rerank API endpoint
@@ -1368,7 +1605,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
 func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
-	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore, logger)...)
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateVertexBatchRouteConfigs("/genai")...)
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
