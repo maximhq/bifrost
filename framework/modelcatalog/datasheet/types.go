@@ -397,6 +397,10 @@ func normalizeProvider(p string) string {
 		return string(schemas.Runway)
 	case strings.Contains(p, "fireworks_ai"):
 		return string(schemas.Fireworks)
+	case p == "wandb":
+		// The datasheet lists W&B Inference rows under "wandb"; Bifrost calls
+		// that provider coreweave.
+		return string(schemas.CoreWeave)
 	default:
 		return p
 	}
