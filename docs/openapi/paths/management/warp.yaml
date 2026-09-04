@@ -66,3 +66,69 @@ warp-config:
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
+
+warp-chat:
+  post:
+    operationId: warpChat
+    summary: Ask Warp a question
+    description: |
+      Runs Warp's agent loop over the deployment's telemetry and returns an
+      answer.
+
+      **This route exists only where Warp can work.** It is not registered when
+      the deployment has no logging plugin, because Warp's tools would have
+      nothing to read. A `404` therefore means "this deployment has no log
+      store", not "wrong URL" - a route that registered and always failed would
+      tell the dashboard the feature was present and only reveal otherwise after
+      a user typed a question.
+
+      Conversation history is client-sent and no session is stored: the dashboard
+      already holds the thread, so a server-side session would need TTLs, cleanup
+      and cross-node coordination for no user-visible gain.
+
+      **Data visibility equals the caller's own.** Every tool query runs against
+      the caller's row-level scope, so Warp can never surface data the caller
+      could not already retrieve from the logs API directly.
+
+      With `stream: true` (the default) the response is `text/event-stream`. Both
+      modes run the identical loop; only the sink differs.
+    tags:
+      - Warp
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpChatRequest'
+    responses:
+      '200':
+        description: |
+          The answer. `text/event-stream` when streaming, otherwise a single JSON
+          body.
+
+          SSE frames are `event: <type>` with a JSON payload. Types are `start`,
+          `delta` (an answer fragment), `tool_call_start`, `tool_call_end`,
+          `error` and `done`.
+
+          **`error` is terminal and is never followed by `done`.** A client that
+          treats `done` as the only completion signal will read a failed request
+          as a successful one, so both must end the stream.
+        content:
+          text/event-stream:
+            schema:
+              type: string
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpChatResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '413':
+        description: Conversation exceeds the server's history limit
+      '503':
+        description: Warp is not configured or has no model client
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpUnavailable'
+    security:
+      - ManagementBearerAuth: []

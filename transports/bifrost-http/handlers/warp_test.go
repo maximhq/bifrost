@@ -3,13 +3,16 @@ package handlers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type recordingWarpStore struct {
@@ -97,4 +100,23 @@ func TestWarpConfigGetBodyShape(t *testing.T) {
 	require.Equal(t, "key-abc", body["api_key_id"])
 	require.Equal(t, float64(schemas.WarpDefaultMaxIterations), body["max_iterations"])
 	require.NotContains(t, body, "api_key")
+}
+
+// The agent runs after the handler returns and fasthttp has recycled the
+// request. A snapshot that drops the query scope silently widens every tool to
+// the whole deployment, so the copy is asserted rather than assumed.
+func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	applied := false
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB { applied = true; return db })
+	ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, scope)
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+
+	snapshot, cancel := snapshotWarpContext(ctx, time.Second)
+	defer cancel()
+	carried := queryscope.FromContext(snapshot)
+	require.NotNil(t, carried)
+	carried(nil)
+	require.True(t, applied, "the snapshot must carry the request's own scope, not a fresh one")
+	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
 }

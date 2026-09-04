@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -19,9 +20,20 @@ type WarpHandler struct {
 	service *warp.Service
 }
 
-// NewWarpHandler builds the handler and the service behind it.
-func NewWarpHandler(store configstore.ConfigStore, logger schemas.Logger) *WarpHandler {
-	return &WarpHandler{service: warp.NewService(store, warp.WithLogger(logger))}
+// NewWarpHandler builds the handler and the service behind it. A nil logManager
+// is a supported deployment (logging disabled): Warp then serves only its
+// configuration routes, because its tools would have nothing to read.
+func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger)}
+	if logManager != nil {
+		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
+	}
+	return &WarpHandler{service: warp.NewService(store, opts...)}
+}
+
+// Shutdown releases the service's model client.
+func (h *WarpHandler) Shutdown() {
+	h.service.Shutdown()
 }
 
 // Service exposes the underlying service to in-process callers.
@@ -36,6 +48,12 @@ func (h *WarpHandler) Service() *warp.Service {
 func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/warp/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/warp/config", lib.ChainMiddlewares(h.putConfig, middlewares...))
+
+	// The chat route exists only where Warp has data to read and a way to reach
+	// a model; see Service.CanChat for why absent beats always-failing.
+	if h.service.CanChat() {
+		r.POST("/api/warp/chat", lib.ChainMiddlewares(h.chat, middlewares...))
+	}
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller
