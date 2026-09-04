@@ -3681,10 +3681,18 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
 	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
-		// Paginated path
+		// Paginated path. `scope` accepts a comma-separated list so one UI filter
+		// option can cover several scope values; scope values are identifiers and
+		// never contain commas, so splitting is unambiguous.
+		var scopes []string
+		for _, s := range strings.Split(scope, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				scopes = append(scopes, s)
+			}
+		}
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
-			Scope:    scope,
+			Scopes:   scopes,
 			ScopeID:  scopeID,
 			Provider: provider,
 		}

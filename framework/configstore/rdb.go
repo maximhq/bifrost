@@ -5942,8 +5942,12 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
 	}
-	if params.Scope != "" {
-		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	// Scope (deprecated, single) and Scopes are OR-ed together, so a caller still
+	// setting only Scope filters exactly as it always did.
+	if scopes := params.effectiveScopes(); len(scopes) == 1 {
+		baseQuery = baseQuery.Where("scope = ?", scopes[0])
+	} else if len(scopes) > 1 {
+		baseQuery = baseQuery.Where("scope IN ?", scopes)
 	}
 	if params.ScopeID != "" {
 		baseQuery = baseQuery.Where("scope_id = ?", params.ScopeID)
