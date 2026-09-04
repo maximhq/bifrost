@@ -5662,7 +5662,8 @@ func (c *Config) GetMCPClientBySlug(slug string) (clientID, clientName string, o
 		return "", "", false
 	}
 	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.EndpointSlug == slug {
+		// Skip disabled clients so a disabled client's /mcp/<slug> endpoint is not served (admit 403).
+		if client != nil && client.EndpointSlug == slug && !client.Disabled {
 			return client.ID, client.Name, true
 		}
 	}

@@ -1459,6 +1459,13 @@ func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.Table
 	return nil
 }
 
+// GetVirtualMCPFromCache returns the live cached Virtual MCP definition for id, or nil. Enterprise
+// access-profile / project resolution uses this so it serves the current definition (Enabled and
+// tool specs) rather than a snapshot captured at propagate time, which goes stale on a vMCP edit.
+func (gs *LocalGovernanceStore) GetVirtualMCPFromCache(id uint) *configstoreTables.TableVirtualMCP {
+	return gs.virtualMCPByID(id)
+}
+
 // assignedVirtualMCPIDs returns a VK's assigned Virtual MCP IDs, or nil if none.
 func (gs *LocalGovernanceStore) assignedVirtualMCPIDs(vkID string) []uint {
 	if v, ok := gs.virtualMCPIDsByVK.Load(vkID); ok {
