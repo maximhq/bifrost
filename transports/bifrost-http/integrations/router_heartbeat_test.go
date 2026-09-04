@@ -31,7 +31,7 @@ import (
 func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		stream := make(chan *schemas.BifrostStreamChunk)
-		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 		ctx := &fasthttp.RequestCtx{}
 		router.handleStreaming(ctx, nil, RouteConfig{}, stream, func() {})
 
@@ -66,7 +66,7 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 func Test_handleStreamingGenAIDelimitsHeartbeatComment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		stream := make(chan *schemas.BifrostStreamChunk)
-		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 		ctx := &fasthttp.RequestCtx{}
 		var streamRoute *RouteConfig
 		routes := CreateGenAIRouteConfigs("/genai")

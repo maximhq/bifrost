@@ -1342,7 +1342,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 }
 
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
-func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
+func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *AnthropicRouter {
 	routes := CreateAnthropicRouteConfigs("/anthropic", logger)
 	routes = append(routes, CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
@@ -1350,6 +1350,6 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }

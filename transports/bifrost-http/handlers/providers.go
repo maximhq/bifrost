@@ -46,6 +46,9 @@ type ModelsManager interface {
 	// than waiting for a hook to. Nil means nothing was resolved: no key was presented, or the
 	// deployment has no governance at all. An error is a request nothing settled who it is.
 	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
+	// The models listing narrows its provider fan-out to what the request may reach, by the same
+	// rule the integration routes use.
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
 }
 
 // ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
