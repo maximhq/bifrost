@@ -1217,10 +1217,16 @@ func buildVKModelBudgetsIndex(mcs []*configstoreTables.TableModelConfig) map[str
 // hydrateVKGovernance reverse-maps a single VK's governance (top-level, per-provider, and
 // per-model budgets) from its VK-scoped model configs in one bulk load.
 func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
+	hydrateVKGovernanceFromStore(ctx, h.configStore, vk)
+}
+
+// hydrateVKGovernanceFromStore is the store-only form of hydrateVKGovernance so
+// producers without a handler (the VirtualKeyRotator) can hydrate a row too.
+func hydrateVKGovernanceFromStore(ctx context.Context, configStore configstore.ConfigStore, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return
 	}
-	mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
+	mcs, err := configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
 	if err != nil {
 		logger.Error("failed to load model configs for VK governance hydration: %v", err)
 		return
@@ -2510,49 +2516,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// vkRotationCooldown reads the effective rotation grace period from the stored
-// client config. Errors degrade to 0 (immediate flip), never block a rotation.
-func (h *GovernanceHandler) vkRotationCooldown(ctx context.Context) time.Duration {
-	clientConfig, err := h.configStore.GetClientConfig(ctx)
-	if err != nil || clientConfig == nil {
-		return 0
-	}
-	return clientConfig.VKRotationCooldown.D()
-}
-
+// rotateVirtualKeyByID rotates one virtual key through the shared
+// VirtualKeyRotator so the endpoints and background producers stay identical.
 func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
-	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
-	if err != nil {
-		return nil, err
-	}
-	oldValue := vk.Value.GetValue()
-	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
-	if vk.Value.GetValue() == oldValue {
-		return nil, fmt.Errorf("generated virtual key matched existing value")
-	}
-	// RotatedAt marks this update as a rotation, making the grace-period fields
-	// authoritative in UpdateVirtualKey (a plain update carries them over
-	// instead). With a cooldown the retired value keeps authenticating until
-	// the expiry; repeated rotation overwrites the previous value, so only one
-	// grace value exists at a time and the second-oldest dies immediately.
-	now := time.Now().UTC()
-	vk.RotatedAt = &now
-	if cooldown := h.vkRotationCooldown(ctx); cooldown > 0 {
-		vk.PreviousValue = *schemas.NewSecretVar(oldValue)
-		expiresAt := now.Add(cooldown)
-		vk.PreviousValueExpiresAt = &expiresAt
-	} else {
-		vk.ClearPreviousValue()
-	}
-	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
-		return nil, err
-	}
-	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
-	if err != nil {
-		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
-	}
-	h.hydrateVKGovernance(ctx, preloadedVk)
-	return preloadedVk, nil
+	return NewVirtualKeyRotator(h.configStore, h.governanceManager).RotateVirtualKey(ctx, vkID)
 }
 
 // rotateVirtualKey handles POST /api/governance/virtual-keys/{vk_id}/rotate - Rotate only the virtual key value

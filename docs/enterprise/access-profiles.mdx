@@ -77,6 +77,25 @@ A few things to know:
 - **Create-time only.** Turning the toggle on does not sweep up keys a member already created. To bring an existing key under the profile, assign it to the user from the key's edit sheet — it is adopted into their profile on assignment.
 - **One profile per key.** If a member belongs to more than one profile with the toggle on, the earliest-assigned profile governs the key; policies from multiple profiles are not merged.
 
+### Automatic virtual key rotation
+
+A profile can rotate the virtual keys it manages on a schedule, so credentials expire without anyone remembering to call the rotate endpoint. Set an **interval** (for example `30d`) and, optionally, a **first rotation** time; after each run the next one is scheduled at run time + interval.
+
+When a run comes due, Bifrost enqueues a background job that rotates every managed key in batches of 25. A key counts as managed when it is assigned to a user who holds this profile, which is the same rule that locks managed keys from direct edits. Each key gets a brand-new value exactly as if you had rotated it by hand:
+
+- If `vk_rotation_cooldown` is configured (Config → Security), the previous value keeps authenticating until the cooldown expires, so callers have time to pick up the new key.
+- Without a cooldown the previous value stops working immediately.
+
+Two dashboard notifications track each run: one when the job starts (profile name, how many keys will rotate, and until when the old values stay valid) and one when it finishes (how many keys rotated, failed, or were skipped).
+
+Safety rules worth knowing:
+
+- **A key is never rotated twice for one scheduled run.** Rotating again would push the previous value out and end the cooldown early. Retries, resumed jobs, catch-up runs after downtime, and keys rotated manually after the schedule fired are all skipped for that run.
+- **Manual rotation still works.** The manual endpoints stay available on managed keys; a key rotated manually inside the window is simply skipped by the scheduled run.
+- **Cluster-safe.** Every node checks the schedule, but only one job is created per profile and due time, and rotated keys are gossiped to all nodes.
+- **Missed runs collapse into one.** If the gateway was down past a due time, the next start performs a single catch-up rotation rather than one per missed period.
+- **Deactivated profiles pause.** A deactivated profile is never rotated; reactivating it re-anchors an overdue schedule to now + interval so it does not fire immediately.
+
 ---
 
 ## Configuration (Web UI)
@@ -136,6 +155,14 @@ Flip **Align to calendar cycle** to reset budgets and rate limits at the start o
 ### Toggle member-key governance
 
 Flip **Govern virtual keys created by members** so any virtual key a member of this profile creates is automatically placed under the profile — same providers, model whitelist, budgets, rate limits, and MCP access, attached to the creator, and locked from direct edits. Leave it off (default) to let members create standalone keys freely. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members) for the full behavior and its limits.
+
+### Schedule automatic key rotation
+
+Under **Automatic key rotation**, pick **Every 7 / 30 / 90 days** or **Custom** and enter a whole number of days or hours (`14d`, `12h`; minimum `1h`, maximum `365d`). Optionally set **First rotation** to control when the first run happens; leave it empty to start one interval from now. Choose **Off** to stop scheduling. The table and detail sheet show the schedule and the next run. See [Automatic virtual key rotation](#automatic-virtual-key-rotation) for what a run does and its safety rules.
+
+<Frame>
+  <img src="/media/enterprise/access-profiles/auto-rotation.png" alt="Automatic key rotation settings in the access profile form" />
+</Frame>
 
 ### Configure MCP tool access
 
@@ -245,6 +272,7 @@ A profile carries the following pieces of policy. Use the UI walkthrough above f
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
 - **Govern created keys** - When on, every virtual key a member creates is adopted into the profile (same policy, attached to the user, profile-managed). Off by default. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members).
+- **Automatic key rotation** - An interval (`1h` to `365d`, typically `30d`) and optional first-run time. When due, a background job rotates every managed key, honouring `vk_rotation_cooldown`, and posts start/finish notifications. Off by default. See [Automatic virtual key rotation](#automatic-virtual-key-rotation).
 - **MCP tool access** - Reference [MCP Tool Groups](/enterprise/mcp-tool-groups), grant entire MCP servers, or override individual tools with include/exclude actions.
 - **Tags** - Up to 50 free-form tags for filtering and grouping in the UI.
 - **Active flag** - Activate or deactivate without deleting; deactivated profiles are hidden from selection but user copies stay intact.
@@ -268,6 +296,26 @@ Prerequisite: the Engineering profile is already assigned to the Engineer role (
 1. Edit the Engineering profile and turn on **Govern virtual keys created by members**. Save.
 2. From now on, whenever an Engineer (signed in via SSO) creates a virtual key, it is placed under the Engineering profile automatically — same providers, model whitelist, budgets, rate limits, and MCP access — attached to them and locked from direct edits.
 3. To bring keys they created earlier under the policy too, open each key and assign it to the user; it is adopted into their profile on assignment.
+
+### Rotate every Engineering key monthly
+
+1. Under **Config → Security**, set **Cooldown After Virtual Key Rotation** to something like `1h` so callers have time to switch keys.
+2. Edit the Engineering profile, set **Automatic key rotation** to **Every 30 days**, and optionally pick a **First rotation** such as the next maintenance window. Save.
+3. When the run starts, a notification lists how many keys are rotating and until when the old values keep working; a second notification confirms how many rotated. The profile's **Next Rotation** moves 30 days past the run.
+
+The same schedule can be declared in `config.json`:
+
+```json
+{
+  "access_profiles": [
+    {
+      "name": "Engineering",
+      "auto_rotation_interval": "30d",
+      "provider_configs": [{ "provider_name": "openai", "allow_all_models": true }]
+    }
+  ]
+}
+```
 
 ### Raise the monthly budget without resetting accumulated usage
 
