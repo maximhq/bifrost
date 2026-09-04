@@ -140123,6 +140123,387 @@
           ]
         }
       ]
+    },
+    {
+      "name": "68. Replayed thinking must stay in its own assistant turn (PR #6854)",
+      "description": "Two defects in the Anthropic -> Bifrost Responses -> Bedrock Converse replay path, both\nsurfacing as the same client-visible 400:\n\n  messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant\n  message cannot be modified. These blocks must remain as they were in the original response.\n\nMeasured against Bedrock Converse with real signed blocks, that refusal fires on exactly one\nmutation: an EXTRA thinking block appearing in an assistant turn that is a tool continuation.\nRemoving a block, reordering blocks, and fusing turns are all accepted; duplication is not.\n\n1. Reasoning migration (core/providers/bedrock/responses.go). pendingReasoningContentBlocks\n   was consumed by an assistant message or a tool-call flush and by nothing else, so reasoning\n   left buffered when a user turn arrived was prepended to the NEXT assistant message. That\n   happens whenever an assistant turn ends on a thinking block - adaptive thinking, a\n   max_tokens truncation, or a trailing block the ingress dropped - and it shifts every later\n   turn one turn forward. The three chained cases replay a turn whose last block is the\n   thinking block; turn 3 is the one that 400s without the fix.\n\n2. Encrypted-reasoning fail-soft (core/encryptedreasoning.go). When an upstream refuses a\n   replayed signature the strip retries once. It used to blank the signature and keep the\n   thinking prose, which is legal on OpenAI but refused by Anthropic on every turn -\n   \"Invalid `signature` in `thinking` block\" - so the retry turned a request the API would\n   have accepted into one it refused. The two bogus-signature cases carry a signature no\n   model minted and assert the retry heals to a 2xx instead of forwarding a second 400.\n\nThe last case covers Anthropic direct on the typed chat shape: the removal is gated on the\nmodel family rather than the provider, and stripChatUnverifiableReasoning is a separate\ncode path from the Responses one, so Bedrock coverage alone would not pin it.\n\nFolder 46 replays thinking in model order (thinking first) and folder 51 covers the raw\nAnthropic passthrough; neither exercises the Bedrock typed path with a trailing thinking\nblock, and `Invalid `signature`` appeared nowhere in the collection before this folder.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 1: signed thinking + tool_use captured - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo right now? Think it through, then use the get_weather tool.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('turn 1 returns a signed thinking block and a tool_use to build the replay on', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+                  "  var kinds = j.content.map(function (b) { return b.type; });",
+                  "  pm.expect(kinds, 'no tool_use came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('tool_use');",
+                  "  var thinking = j.content.filter(function (b) { return b.type === 'thinking'; });",
+                  "  // Without a captured thinking block there is nothing to move to the end of the turn,",
+                  "  // so turns 2 and 3 would replay an ordinary history and pass having tested nothing.",
+                  "  pm.expect(thinking, 'no thinking block came back, so the migration path is never exercised').to.not.be.empty;",
+                  "  thinking.forEach(function (b) {",
+                  "    pm.expect(b.signature, 'a thinking block came back unsigned, so the replay below would prove nothing').to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn2_6854');",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn3_6854');",
+                  "var trailingThinking6854 = function (content) {",
+                  "  var blocks = content || [];",
+                  "  var think = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  var rest = blocks.filter(function (b) { return b.type !== 'thinking' && b.type !== 'redacted_thinking'; });",
+                  "  return rest.concat(think);",
+                  "};",
+                  "var stub6854 = \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+                  "  var thought = (body.content || []).some(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  if (uses.length && thought) {",
+                  "    var messages = [",
+                  "      { role: 'user', content: [{ type: 'text', text: 'What is the weather in Tokyo right now? Think it through, then use the get_weather tool.' }] },",
+                  "      { role: 'assistant', content: trailingThinking6854(body.content) },",
+                  "      { role: 'user', content: uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stub6854 }; })",
+                  "        .concat([{ type: 'text', text: 'Now check the weather in Osaka with the same tool.' }]) }",
+                  "    ];",
+                  "    pm.collectionVariables.set('bedrockTrailingThinkingTurn2_6854', JSON.stringify(messages));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 2: trailing thinking block replayed across a tool result - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bedrockTrailingThinkingTurn2_6854}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('turn 2 accepts an assistant turn whose last block is the thinking block', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock refused the replayed thinking block').to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'turn 2 failed - a relocated or dropped thinking block is the usual cause: ' + body).to.be.below(400);",
+                  "});",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn3_6854');",
+                  "var trailingThinking6854 = function (content) {",
+                  "  var blocks = content || [];",
+                  "  var think = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  var rest = blocks.filter(function (b) { return b.type !== 'thinking' && b.type !== 'redacted_thinking'; });",
+                  "  return rest.concat(think);",
+                  "};",
+                  "var stub6854 = \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+                  "try {",
+                  "  var prior = JSON.parse(pm.collectionVariables.get('bedrockTrailingThinkingTurn2_6854') || '[]');",
+                  "  var body = pm.response.json();",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+                  "  var followUp = uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stub6854 }; });",
+                  "  followUp.push({ type: 'text', text: 'Summarize both cities in one sentence.' });",
+                  "  var next = prior.concat([{ role: 'assistant', content: trailingThinking6854(body.content) }, { role: 'user', content: followUp }]);",
+                  "  pm.collectionVariables.set('bedrockTrailingThinkingTurn3_6854', JSON.stringify(next));",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 3: earlier turn thinking must not migrate into the latest turn - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bedrockTrailingThinkingTurn3_6854}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('the first turn thinking block stays in the first turn', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  // Before PR #6854 the buffered reasoning of turn 1 survived the user turn and was",
+                  "  // prepended to turn 2, giving that message a thinking block the model never produced",
+                  "  // for it. Bedrock answers exactly this:",
+                  "  //   messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest",
+                  "  //   assistant message cannot be modified.",
+                  "  pm.expect(body, 'an earlier turn thinking block was relocated into the latest assistant message: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+                  "});",
+                  "pm.test('turn 3 really replayed two assistant turns with trailing thinking', function () {",
+                  "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+                  "  var msgs = JSON.parse(raw).messages || [];",
+                  "  var assistants = msgs.filter(function (m) { return m.role === 'assistant'; });",
+                  "  pm.expect(assistants.length, 'expected two assistant turns in the replayed history').to.be.at.least(2);",
+                  "  var trailing = assistants.filter(function (m) {",
+                  "    var c = m.content || []; var last = c[c.length - 1];",
+                  "    return last && (last.type === 'thinking' || last.type === 'redacted_thinking');",
+                  "  });",
+                  "  pm.expect(trailing.length, 'no assistant turn ended on a thinking block, so the migration path was never exercised').to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages unverifiable thinking signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo? Use the get_weather tool.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the weather in Tokyo, so I should call get_weather with city Tokyo.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"},{\"type\":\"tool_use\",\"id\":\"toolu_01harness6854weather\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01harness6854weather\",\"content\":\"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unverifiable thinking signature is healed by the fail-soft, not forwarded', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip blanked the signature and kept the thinking prose. Bedrock refuses",
+                  "  // that as readily as the original payload, so the retry spent an upstream call and",
+                  "  // handed the client the same 400. Removing the block whole is the only rewrite it",
+                  "  // accepts.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less thinking block instead of removing it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(lower, 'the retry dropped the signature field rather than the block: ' + body).to.not.include('thinking.signature');",
+                  "  pm.expect(pm.response.code, 'the fail-soft failed to heal the replay: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages streaming unverifiable thinking signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo? Use the get_weather tool.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the weather in Tokyo, so I should call get_weather with city Tokyo.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"},{\"type\":\"tool_use\",\"id\":\"toolu_01harness6854weather\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01harness6854weather\",\"content\":\"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('the streamed turn heals the same way the non-streaming one does', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip blanked the signature and kept the thinking prose. Bedrock refuses",
+                  "  // that as readily as the original payload, so the retry spent an upstream call and",
+                  "  // handed the client the same 400. Removing the block whole is the only rewrite it",
+                  "  // accepts.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less thinking block instead of removing it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(lower, 'the retry dropped the signature field rather than the block: ' + body).to.not.include('thinking.signature');",
+                  "  pm.expect(pm.response.code, 'the streamed fail-soft failed to heal the replay: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'expected an Anthropic SSE stream, got: ' + body.slice(0, 400)).to.include('message_start');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/chat/completions unverifiable reasoning signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"max_tokens\":2048,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"What is 8473 * 2917? Think it through before answering.\"},{\"role\":\"assistant\",\"content\":\"Let me work through that multiplication.\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"Multiply 8473 by 2917 using long multiplication, then verify.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"}]},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unverifiable reasoning signature is healed on the chat shape too', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip cleared reasoning_details[].signature and kept the text, which the",
+                  "  // Anthropic egress forwards as a thinking block with an empty signature. Anthropic",
+                  "  // refuses that on any turn, so the one retry was spent earning the same class of 400.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less reasoning detail instead of dropping it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'the fail-soft failed to heal the chat-shaped replay: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
