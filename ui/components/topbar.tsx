@@ -15,7 +15,8 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useDescriptionSlotRef, useMobileFilterSlotRef, useTopbarTitle } from "@/lib/contexts/topbarContext";
 import type { TopbarTitleValue } from "@/lib/contexts/topbarContext.utils";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
+import { useAppDispatch, useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
+import { baseApi } from "@/lib/store/apis/baseApi";
 import { cn } from "@/lib/utils";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -132,6 +133,7 @@ export default function Topbar() {
 	const setMobileFilterSlot = useMobileFilterSlotRef();
 	const navigate = useNavigate();
 	const [logout] = useLogoutMutation();
+	const dispatch = useAppDispatch();
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	// Shares the sidebar's RTK Query cache entry, so this costs no extra request.
 	const { data: version } = useGetVersionQuery();
@@ -158,11 +160,14 @@ export default function Topbar() {
 	const handleLogout = async () => {
 		try {
 			await logout().unwrap();
-		} finally {
-			// Redirect regardless — a failed server-side logout still means the
-			// user intended to end the session locally.
-			navigate({ to: "/login" });
+		} catch {
+			// Fall through: a failed server-side logout still means the user
+			// intended to end the session locally.
 		}
+		// Navigate first so the dashboard's polled queries unmount, then drop
+		// the cache. Resetting while they are mounted refetches all of them.
+		await navigate({ to: "/login" });
+		dispatch(baseApi.util.resetApiState());
 	};
 
 	return (
