@@ -65,12 +65,7 @@ type CohereRerankRequest struct {
 	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
 	Priority        *int                   `json:"priority,omitempty"`
 	ReturnDocuments *bool                  `json:"return_documents,omitempty"`
-	ExtraParams     map[string]interface{} `json:"-"`
-}
-
-// GetExtraParams returns extra parameters for the rerank request.
-func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	providerUtils.ExtraParamsMixin
 }
 
 // CohereRerankResult represents a single result from Cohere rerank.
