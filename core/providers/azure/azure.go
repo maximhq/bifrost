@@ -918,10 +918,16 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 						continue
 					}
 
-					// Azure sends JSON-wrapped responses for speech streaming
-					// Parse the JSON to extract the response type and audio data
+					// Azure sends JSON-wrapped responses for speech streaming.
+					// Parse the JSON to extract the response type and audio data.
+					// Timed as the "response-parse" stream phase (per-event JSON decode);
+					// the unmarshal maps straight into the Bifrost type, so there is no
+					// distinct convert step to time here.
 					var response schemas.BifrostSpeechStreamResponse
-					if err := sonic.Unmarshal(audioData, &response); err != nil {
+					parseStart := time.Now()
+					err := sonic.Unmarshal(audioData, &response)
+					schemas.AddStreamParse(ctx, time.Since(parseStart))
+					if err != nil {
 						// If JSON parsing fails, check if this might be an error response
 						// Quick check for error field (allocation-free using sonic.Get)
 						if errorNode, _ := sonic.Get(audioData, "error"); errorNode.Exists() {

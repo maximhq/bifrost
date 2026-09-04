@@ -158,7 +158,7 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	response := &schemas.BifrostResponsesResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	_, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, err := providerUtils.HandleProviderResponseCtx(ctx, bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -307,7 +307,11 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			jsonData := string(data)
 
 			var response schemas.BifrostResponsesStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
+			// Time the retrieve-stream decode as the response-parse phase.
+			parseStart := time.Now()
+			err := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if err != nil {
 				provider.logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}

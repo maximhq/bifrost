@@ -225,14 +225,31 @@ func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var sarvamResp SarvamSpeechResponse
-	if err := sonic.Unmarshal(body, &sarvamResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(body, &sarvamResp)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", umErr), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if len(sarvamResp.Audios) == 0 || sarvamResp.Audios[0] == "" {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Sarvam text-to-speech response contained no audio", nil), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -415,14 +432,33 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 // Transcription performs a speech-to-text request to Sarvam's API using multipart/form-data.
 func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	// Time the request conversion as the convertor phase.
+	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToSarvamTranscriptionRequest(request)
+	if ct != nil {
+		if reqBody == nil || len(reqBody.File) == 0 {
+			ct.EndSpan(ch, schemas.SpanStatusError, "transcription file is required")
+		} else {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
+		}
+	}
 	if reqBody == nil || len(reqBody.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("transcription file is required", nil)
 	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if bifrostErr := writeSarvamTranscriptionMultipart(writer, reqBody); bifrostErr != nil {
+	// Time the multipart build as the request-marshal phase.
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
+	bifrostErr := writeSarvamTranscriptionMultipart(writer, reqBody)
+	if mt != nil {
+		if bifrostErr != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, bifrostErr.Error.Message)
+		} else {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+	}
+	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	contentType := writer.FormDataContentType()
@@ -457,14 +493,31 @@ func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var sarvamResp SarvamTranscriptionResponse
-	if err := sonic.Unmarshal(responseBody, &sarvamResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", err), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(responseBody, &sarvamResp)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", umErr), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := ToBifrostTranscriptionResponse(&sarvamResp)

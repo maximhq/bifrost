@@ -301,8 +301,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
+		ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, convErr.Error())
+			}
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
 					ctx,
@@ -316,7 +320,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, "request body is not provided")
+			}
 			return nil, newErr("request body is not provided", nil, jsonBody)
+		}
+		if ct != nil {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
 		}
 
 		if cfg.Model != "" {
@@ -343,7 +353,15 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
+		if mt != nil {
+			if err != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+			} else {
+				mt.EndSpan(mh, schemas.SpanStatusOk, "")
+			}
+		}
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -562,8 +580,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 	} else {
+		ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
 		if convErr != nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, convErr.Error())
+			}
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
 					ctx,
@@ -577,7 +599,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, "request body is not provided")
+			}
 			return nil, newErr("request body is not provided", nil, jsonBody)
+		}
+		if ct != nil {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
 		}
 
 		if cfg.Model != "" {
@@ -603,7 +631,15 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
+		if mt != nil {
+			if err != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+			} else {
+				mt.EndSpan(mh, schemas.SpanStatusOk, "")
+			}
+		}
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}

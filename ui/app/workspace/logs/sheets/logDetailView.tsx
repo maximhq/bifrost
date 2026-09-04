@@ -566,6 +566,7 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	"worker-handoff": "Worker handoff",
 	"queue-wait": "Queue wait",
 	"attribute-population": "Attribute population",
+	miscellaneous: "Miscellaneous",
 	// Networking (client<->gateway<->provider handling)
 	"provider-internal": "Provider I/O",
 	"transport-context": "Request context building",
@@ -593,6 +594,7 @@ const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
 	"worker-handoff": "processing",
 	"queue-wait": "processing",
 	"attribute-population": "processing",
+	miscellaneous: "processing",
 	"provider-internal": "networking",
 	"transport-context": "networking",
 	"transport-response-headers": "networking",

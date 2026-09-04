@@ -5229,7 +5229,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 	// "handle-setup" overhead phase: model-catalog publish + the pre-request hook
 	// pipeline glue. Per-plugin work nests as its own spans; this bucket is the
-	// remaining core-side setup so it stops folding into "core".
+	// remaining core-side setup.
 	setupSpan := bifrost.startCoreSpan(ctx, "handle-setup")
 
 	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
@@ -5243,16 +5243,21 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
 	bifrost.endCoreSpan(setupSpan)
+	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
+	// span. Closed before tryRequest so pipeline-pre stays a separate bucket.
+	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider/model after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
-	if err := validateRequestAfterPreRequestHooks(req); err != nil {
+	validateErr := validateRequestAfterPreRequestHooks(req)
+	bifrost.endCoreSpan(preDispatchSpan)
+	if validateErr != nil {
 		// Returning before tryRequest skips the downstream log drain, so flush
 		// any PreRequestHook-emitted plugin logs here.
 		flushPluginLogs(ctx)
-		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, err
+		validateErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, validateErr
 	}
 
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
@@ -5380,16 +5385,21 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
+	// span. Mirrors handleRequest so streaming classifies this cost too.
+	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
-	if err := validateRequestAfterPreRequestHooks(req); err != nil {
+	validateErr := validateRequestAfterPreRequestHooks(req)
+	bifrost.endCoreSpan(preDispatchSpan)
+	if validateErr != nil {
 		// Returning before tryStreamRequest skips the downstream log drain, so
 		// flush any PreRequestHook-emitted plugin logs here.
 		flushPluginLogs(ctx)
-		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, err
+		validateErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, validateErr
 	}
 
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
@@ -5505,9 +5515,12 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return nil, bifrostErr
 	}
 
-	// Add MCP tools to request if MCP is configured and requested
+	// Add MCP tools to request if MCP is configured and requested.
+	// Timed as "miscellaneous": the tool-definition merge sits on no other span.
 	if bifrost.MCPManager != nil {
+		mcpSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 		req = bifrost.MCPManager.AddToolsToRequest(ctx, req)
+		bifrost.endCoreSpan(mcpSpan)
 	}
 
 	tracer := bifrost.getTracer()
@@ -5524,7 +5537,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
 
 	// "pipeline-pre" overhead phase: the LLM pre-hook pipeline glue (loop + pool
-	// around the per-plugin spans that nest inside it), previously part of "core".
+	// around the per-plugin spans that nest inside it), previously part of the residual.
 	prePipeSpan := bifrost.startCoreSpan(ctx, "pipeline-pre")
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
@@ -5575,10 +5588,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return nil, bifrostErr
 	}
 
+	// "miscellaneous" phase: field re-read + channel-message setup before enqueue.
+	preEnqueueSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	provider, model, _ = preReq.GetRequestFields()
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+	bifrost.endCoreSpan(preEnqueueSpan)
 
 	// Open the queue-wait span; the worker closes it when it dequeues the message.
 	startQueueWaitSpan(ctx, tracer, msg)
@@ -5657,7 +5673,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	select {
 	case result = <-msg.Response:
 		// Worker->caller goroutine-hop latency: measure the instant we receive so the
-		// breakdown carves this scheduling gap out of "core" into "worker-handoff".
+		// breakdown carves this scheduling gap out of the residual into "worker-handoff".
 		if !msg.sentAt.IsZero() {
 			msg.Context.StampWorkerHandoff(time.Since(msg.sentAt))
 		}
@@ -5768,9 +5784,12 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
-	// Add MCP tools to request if MCP is configured and requested
+	// Add MCP tools to request if MCP is configured and requested.
+	// Timed as "miscellaneous": the tool-definition merge sits on no other span.
 	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.MCPManager != nil {
+		mcpSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 		req = bifrost.MCPManager.AddToolsToRequest(ctx, req)
+		bifrost.endCoreSpan(mcpSpan)
 	}
 
 	tracer := bifrost.getTracer()
@@ -5807,10 +5826,14 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 	}()
 
+	// "pipeline-pre" overhead phase: the LLM pre-hook pipeline glue (loop + pool
+	// around the per-plugin spans that nest inside it), mirroring tryRequest.
+	prePipeSpan := bifrost.startCoreSpan(ctx, "pipeline-pre")
 	// RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed are always
 	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
+	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
@@ -5940,10 +5963,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
+	// "miscellaneous" phase: field re-read + channel-message setup before enqueue.
+	preEnqueueSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	provider, model, _ = preReq.GetRequestFields()
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+	bifrost.endCoreSpan(preEnqueueSpan)
 
 	// Open the queue-wait span; the worker closes it when it dequeues the message.
 	startQueueWaitSpan(ctx, tracer, msg)
@@ -6382,7 +6408,7 @@ func executeRequestWithRetries[T any](
 
 		// Populate LLM request attributes (messages, parameters, etc.). Timed as an
 		// "attribute-population" span: writing a large prompt's messages onto the span
-		// is real, payload-scaled work that otherwise hides in the core bucket.
+		// is real, payload-scaled work.
 		if req != nil {
 			_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
 			tracer.PopulateLLMRequestAttributes(handle, req)
@@ -6816,13 +6842,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 		}
 
-		_, model, _ := req.BifrostRequest.GetRequestFields()
-
-		// "worker-setup" overhead phase: per-attempt base-provider resolution and the
-		// raw-capture flag computation (~a dozen ctx writes) the worker does between
-		// dequeue and key acquisition. No early exits in this block, so a single span
-		// pair is safe; closed just before key acquisition below.
+		// "worker-setup" overhead phase: the dequeue field re-read, per-attempt
+		// base-provider resolution, and raw-capture flag computation (~a dozen ctx writes)
+		// the worker does between dequeue and key acquisition. No early exits in this
+		// block, so a single span pair is safe; closed just before key acquisition below.
 		workerSetupSpan := bifrost.startCoreSpan(req.Context, "worker-setup")
+		_, model, _ := req.BifrostRequest.GetRequestFields()
 
 		var result *schemas.BifrostResponse
 		var stream chan *schemas.BifrostStreamChunk
@@ -6927,8 +6952,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// executeRequestWithRetries via keyProvider so that each retry attempt can use
 					// a different key (on rate-limit errors) without re-running the full filtering.
 					// "key-pool" overhead phase: building the candidate key pool (filtering,
-					// governance/alias resolution) is worker-side work that otherwise folds
-					// into "core"; the per-attempt pick is the separate "key.selection" span.
+					// governance/alias resolution) is worker-side work; the per-attempt pick
+					// is the separate "key.selection" span.
 					keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
 					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 					bifrost.endCoreSpan(keyPoolSpan)
@@ -7197,14 +7222,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 		}
 
-		// Stamp the pre-send time so tryRequest can measure the worker->caller
-		// goroutine-hop latency ("worker-handoff") on receipt, regardless of which
-		// branch (error/stream/response) does the send below.
-		req.sentAt = time.Now()
-
 		if bifrostError != nil {
+			// Time the field population as "miscellaneous", then stamp sentAt just before
+			// the send so "worker-handoff" measures only the goroutine hop, not this work.
+			miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
+			bifrost.endCoreSpan(miscSpan)
+			req.sentAt = time.Now()
 
 			// Send error with context awareness to prevent deadlock
 			deliveryTimer.Reset(5 * time.Second)
@@ -7224,10 +7249,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 			deliveryTimer.Stop()
 		} else {
+			// Time the field population as "miscellaneous", then stamp sentAt just before
+			// the send so "worker-handoff" measures only the goroutine hop, not this work.
+			miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 				result.PopulateRoutingInfo(attemptRoutingInfo)
 			}
+			bifrost.endCoreSpan(miscSpan)
+			req.sentAt = time.Now()
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
 				deliveryTimer.Reset(5 * time.Second)
@@ -8433,8 +8463,8 @@ type coreSpan struct {
 }
 
 // startCoreSpan opens an internal overhead phase span for a core-pipeline segment
-// (setup, key-pool build, pre/post processing) that sits on no other span and would
-// otherwise fold into the residual "core" bucket. It installs the new span as the
+// (setup, key-pool build, pre/post processing) that sits on no other span. It
+// installs the new span as the
 // ACTIVE parent on ctx so any spans opened during the phase (plugin hooks, provider
 // phases) nest as its children — computeOverheadBreakdown subtracts direct children, so
 // without this the nested work would be counted in both this phase's self-time and its
@@ -8468,7 +8498,7 @@ func (bifrost *Bifrost) endCoreSpan(cs coreSpan) {
 // the message sits in the provider queue before a worker dequeues it. The handle is
 // stored on the message; endQueueWaitSpan closes it on dequeue, and
 // releaseChannelMessage closes it if the send never reached a worker. When no trace
-// is active StartSpanID returns a nil handle, so the phase simply folds into core.
+// is active StartSpanID returns a nil handle, so the phase simply folds into the residual.
 func startQueueWaitSpan(ctx *schemas.BifrostContext, tracer schemas.Tracer, msg *ChannelMessage) {
 	if tracer == nil {
 		return
