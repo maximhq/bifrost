@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -671,6 +672,58 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	assert.Len(t, result, 2)
 	assert.Len(t, result["openai"].Keys, 2)
 	assert.Len(t, result["anthropic"].Keys, 1)
+}
+
+// TestUpdateProvidersConfig_BrokenBaseURLReferenceDoesNotDropOtherProviders
+// is an end-to-end regression test for a real bug found while implementing
+// network_config.base_url's env./vault. reference support (#6435): GORM
+// invokes NetworkConfig.UnmarshalJSON per-row inside TableProvider's
+// AfterFind hook when GetProvidersConfig loads all providers via a single
+// Find(), and an AfterFind error on any one row surfaces as the aggregate
+// query error -- which GetProvidersConfig treats as total failure, and which
+// loadProviders (transports/bifrost-http/lib/config.go) in turn treats as
+// "no providers in the store," silently dropping every DB-configured
+// provider on the next config load, not just the broken one. This is why
+// NetworkConfig.UnmarshalJSON must never return an error for base_url no
+// matter how malformed the reference is -- see the comment there. This test
+// exercises the real GORM round-trip (BeforeSave -> NetworkConfigJSON column
+// -> AfterFind) rather than calling UnmarshalJSON directly, so it would have
+// caught the bug even if every core/schemas-level test still passed.
+func TestUpdateProvidersConfig_BrokenBaseURLReferenceDoesNotDropOtherProviders(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// TEST_RDB_BROKEN_BASE_URL_REF must be unset for this test. os.Setenv has
+	// no unset counterpart, so guarantee-unset-and-restore by hand: only
+	// touch/clean up the var if it actually had a prior value, same pattern
+	// as core/schemas/serialization_test.go's BaseURL tests.
+	if prev, ok := os.LookupEnv("TEST_RDB_BROKEN_BASE_URL_REF"); ok {
+		require.NoError(t, os.Unsetenv("TEST_RDB_BROKEN_BASE_URL_REF"))
+		t.Cleanup(func() {
+			require.NoError(t, os.Setenv("TEST_RDB_BROKEN_BASE_URL_REF", prev))
+		})
+	}
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys:          []schemas.Key{{ID: "key-1", Name: "openai-primary", Value: *schemas.NewSecretVar("sk-key-1"), Weight: 1.0}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "env.TEST_RDB_BROKEN_BASE_URL_REF"},
+		},
+		"anthropic": {
+			Keys:          []schemas.Key{{ID: "key-2", Name: "anthropic-main", Value: *schemas.NewSecretVar("sk-key-2"), Weight: 1.0}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+		},
+	}
+
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err, "a provider with an unresolvable base_url reference must not fail the whole batch load")
+	assert.Len(t, result, 2, "both providers must still come back, not just the one with a valid base_url")
+	assert.Equal(t, "https://api.anthropic.com", result["anthropic"].NetworkConfig.BaseURL)
+	assert.Equal(t, "env.TEST_RDB_BROKEN_BASE_URL_REF", result["openai"].NetworkConfig.BaseURL,
+		"the broken provider keeps the unresolved reference (fails loudly on its own requests) rather than \"\" or the whole row vanishing")
 }
 
 func TestProviderKeyCRUD(t *testing.T) {
