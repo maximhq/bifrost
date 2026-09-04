@@ -44,7 +44,6 @@ converse:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 converse-stream:
@@ -89,6 +88,5 @@ converse-stream:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

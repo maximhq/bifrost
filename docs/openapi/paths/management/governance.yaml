@@ -77,6 +77,7 @@ virtual-keys:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -103,6 +104,7 @@ virtual-keys:
             $ref: '../../schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key created successfully
@@ -123,20 +125,27 @@ virtual-keys-quota:
       Returns the overall budget and rate limit quota for the authenticated virtual key,
       as well as per-provider and per-model budgets and rate limits (with current usage).
       Each budget also carries the actual per-model usage for its current cycle.
-      This is a self-service endpoint - no admin authentication required.
-      The virtual key value itself (provided via header) is the credential.
+      This is a self-service endpoint - no admin authentication required. The virtual key
+      value itself is the credential, sent as `x-bf-vk` (any value) or, with the `sk-bf-`
+      prefix required, as `Authorization: Bearer`, `x-api-key`, `x-goog-api-key` or `api-key`.
+      Admin/session tokens and management API keys do not authenticate here.
       During an active rotation grace window (client vk_rotation_cooldown), the
       previous key value also authenticates until previous_value_expires_at.
       An expired virtual key is rejected with 403; an inactive one still returns
       its quota with is_active false.
     tags:
       - Governance
-    # Self-service: the virtual key value is the credential, accepted via the
-    # x-bf-vk / Authorization: Bearer / x-api-key headers. Not admin-protected.
+    # Self-service: the virtual key value is the credential. Registered without the
+    # admin middleware chain, so admin/session tokens and management API keys do NOT
+    # authenticate here - only a virtual key does. x-bf-vk is taken verbatim; the four
+    # fallback headers each require the sk-bf- prefix (see
+    # plugins/governance/utils.go ParseVirtualKeyFromFastHTTPRequest).
     security:
       - VirtualKeyAuth: []
-      - BearerAuth: []
-      - ApiKeyAuth: []
+      - VirtualKeyBearerAuth: []
+      - VirtualKeyApiKeyAuth: []
+      - VirtualKeyGoogleAuth: []
+      - VirtualKeyAzureAuth: []
     responses:
       '200':
         description: Successful response
@@ -187,6 +196,7 @@ virtual-keys-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -229,6 +239,7 @@ virtual-keys-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key updated successfully
@@ -262,6 +273,7 @@ virtual-keys-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key deleted successfully
@@ -314,6 +326,7 @@ virtual-keys-budget-override:
             $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override applied successfully
@@ -356,6 +369,7 @@ virtual-keys-budget-override:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override removed successfully
@@ -511,6 +525,7 @@ teams:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -535,6 +550,7 @@ teams:
             $ref: '../../schemas/management/governance.yaml#/CreateTeamRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Team created successfully
@@ -569,6 +585,7 @@ teams-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -609,6 +626,7 @@ teams-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateTeamRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Team updated successfully
@@ -642,6 +660,7 @@ teams-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Team deleted successfully
@@ -676,6 +695,7 @@ customers:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -700,6 +720,7 @@ customers:
             $ref: '../../schemas/management/governance.yaml#/CreateCustomerRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer created successfully
@@ -734,6 +755,7 @@ customers-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -774,6 +796,7 @@ customers-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateCustomerRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer updated successfully
@@ -807,6 +830,7 @@ customers-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer deleted successfully
@@ -841,6 +865,7 @@ budgets:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -867,6 +892,7 @@ rate-limits:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -888,6 +914,7 @@ model-configs:
       - Governance
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     parameters:
       - name: limit
         in: query
@@ -947,6 +974,7 @@ model-configs:
             $ref: '../../schemas/management/governance.yaml#/CreateModelConfigRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Model config created successfully
@@ -975,6 +1003,7 @@ model-configs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1015,6 +1044,7 @@ model-configs-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateModelConfigRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Model config updated successfully
@@ -1048,6 +1078,7 @@ model-configs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Model config deleted successfully
@@ -1075,6 +1106,7 @@ provider-governance:
       - Governance
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1107,6 +1139,7 @@ provider-governance-by-name:
             $ref: '../../schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Provider governance updated successfully
@@ -1140,6 +1173,7 @@ provider-governance-by-name:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Provider governance deleted successfully
@@ -1209,6 +1243,7 @@ pricing-overrides:
           minimum: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1233,6 +1268,7 @@ pricing-overrides:
             $ref: '../../schemas/management/governance.yaml#/CreatePricingOverrideRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Pricing override created successfully
@@ -1267,6 +1303,7 @@ pricing-overrides-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Pricing override updated successfully
@@ -1300,6 +1337,7 @@ pricing-overrides-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Pricing override deleted successfully

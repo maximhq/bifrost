@@ -70,7 +70,6 @@ cached-contents:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   get:
@@ -110,7 +109,6 @@ cached-contents:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -147,7 +145,6 @@ cached-contents-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   patch:
@@ -198,7 +195,6 @@ cached-contents-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -233,6 +229,5 @@ cached-contents-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

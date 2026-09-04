@@ -8,11 +8,30 @@ websocket:
       Upgrades to a WebSocket connection for real-time updates.
       Server pushes log events, MCP log events, and store update notifications.
       Heartbeat pings are sent every 30 seconds.
+
+      Browsers cannot set an `Authorization` header on a WebSocket handshake, so this
+      endpoint additionally accepts a single-use `ticket` query parameter obtained from
+      `POST /api/session/ws-ticket`, or the HTTPOnly `token` session cookie.
     tags:
       - Infrastructure
+    parameters:
+      - name: ticket
+        in: query
+        required: false
+        description: |
+          Single-use WebSocket ticket from `POST /api/session/ws-ticket`. Use this when an
+          `Authorization` header cannot be set (browser WebSocket clients).
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+      - SessionCookieAuth: []
     responses:
       '101':
         description: WebSocket upgrade successful
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
 
 mcp-server:
   post:
@@ -68,7 +87,6 @@ mcp-server:
                     - type: integer
     security:
       - BearerAuth: []
-      - BasicAuth: []
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
   get:
@@ -88,7 +106,6 @@ mcp-server:
               type: string
     security:
       - BearerAuth: []
-      - BasicAuth: []
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
 
@@ -96,9 +113,15 @@ metrics:
   get:
     operationId: getMetrics
     summary: Prometheus metrics
-    description: Returns Prometheus-formatted metrics for monitoring.
+    description: |
+      Returns Prometheus-formatted metrics for monitoring.
+      Registered behind the management auth middleware chain, so a scraper must present
+      management credentials (or the route must be added to `client_config.whitelisted_routes`).
     tags:
       - Infrastructure
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Prometheus metrics

@@ -73,6 +73,7 @@ oauth-config-status:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: OAuth config status retrieved successfully
@@ -110,6 +111,7 @@ oauth-config-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: OAuth token revoked successfully
@@ -150,6 +152,7 @@ per-user-oauth-flow-detail:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Flow detail
@@ -189,6 +192,7 @@ per-user-oauth-flow-start:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Authorize URL

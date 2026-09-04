@@ -44,7 +44,6 @@ generate-content:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 stream-generate-content:
@@ -91,7 +90,6 @@ stream-generate-content:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 embed-content:
@@ -137,7 +135,6 @@ embed-content:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 count-tokens:
@@ -183,7 +180,6 @@ count-tokens:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 image-generation:
@@ -236,6 +232,5 @@ image-generation:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

@@ -4703,11 +4703,11 @@
                     "properties": {
                       "password": {
                         "const": "",
-                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                        "description": "Must be empty (or omitted) when passwordCommand is set."
                       },
                       "existingSecret": {
                         "const": "",
-                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                        "description": "Must be empty (or omitted) when passwordCommand is set."
                       }
                     }
                   }
@@ -4986,11 +4986,11 @@
                 "properties": {
                   "password": {
                     "const": "",
-                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                    "description": "Must be empty (or omitted) when passwordCommand is set."
                   },
                   "existingSecret": {
                     "const": "",
-                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                    "description": "Must be empty (or omitted) when passwordCommand is set."
                   }
                 }
               }

@@ -26,6 +26,7 @@ rules:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -50,6 +51,7 @@ rules:
             $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule created successfully
@@ -78,6 +80,7 @@ rules-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -118,6 +121,7 @@ rules-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule updated successfully
@@ -151,6 +155,7 @@ rules-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule deleted successfully
@@ -178,6 +183,7 @@ complexity:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config retrieved successfully
@@ -204,6 +210,7 @@ complexity:
             $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config updated successfully
@@ -227,6 +234,7 @@ complexity-reset:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config reset successfully
@@ -260,6 +268,7 @@ rules-legacy:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -285,6 +294,7 @@ rules-legacy:
             $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule created successfully
@@ -314,6 +324,7 @@ rules-by-id-legacy:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -355,6 +366,7 @@ rules-by-id-legacy:
             $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule updated successfully
@@ -389,6 +401,7 @@ rules-by-id-legacy:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule deleted successfully
@@ -414,6 +427,8 @@ complexity-status:
     description: Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Complexity classifier status retrieved successfully
@@ -433,6 +448,8 @@ complexity-status-retry:
     description: Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
     responses:
       '202':
         description: Semantic warmup retry accepted
@@ -531,6 +548,7 @@ complexity-legacy:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config retrieved successfully
@@ -558,6 +576,7 @@ complexity-legacy:
             $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config updated successfully
@@ -582,6 +601,7 @@ complexity-reset-legacy:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config reset successfully

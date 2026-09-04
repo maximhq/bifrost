@@ -2845,13 +2845,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		// AWS SDKs (e.g. Go SDK v2) don't silently drop an unmodeled `:event-type` -- they
 		// surface it to the caller as a typed union member (types.UnknownUnionMember). So
 		// Bedrock streams stay on purely reactive (write-failure-based) disconnect detection.
+		// An integration can opt out the same way by declaring lib.SSEHeartbeatNone (GenAI
+		// does: its official Python SDK rejects any SSE comment line).
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
-		if config.Type != RouteConfigTypeBedrock {
-			heartbeatFraming := lib.SSEHeartbeatBareCommentLine
-			if config.StreamConfig != nil {
-				heartbeatFraming = config.StreamConfig.HeartbeatFraming
-			}
+		heartbeatFraming := lib.SSEHeartbeatBareCommentLine
+		if config.StreamConfig != nil {
+			heartbeatFraming = config.StreamConfig.HeartbeatFraming
+		}
+		if config.Type != RouteConfigTypeBedrock && heartbeatFraming != lib.SSEHeartbeatNone {
 			sendHeartbeat := func() bool {
 				return reader.SendHeartbeatWithFraming(heartbeatFraming)
 			}
@@ -3424,14 +3426,19 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	ctx.Response.SetBody(resp.Body)
 }
 
-// passthroughHeartbeatEligible reports whether a resolved passthrough response
-// content-type is safe for the SSE-comment heartbeat. handlePassthroughStream proxies
-// raw upstream bytes 1:1, and content-type isn't always SSE -- e.g. Vertex/Gemini's
-// non-alt=sse mode returns an incrementally-delivered JSON array with
-// Content-Type: application/json. The media type is compared exactly (case-insensitively,
-// ignoring parameters like "; charset=utf-8") so lookalikes such as
-// "text/event-stream+json" or "text/event-streaming" aren't treated as SSE.
-func passthroughHeartbeatEligible(contentType string) bool {
+// passthroughHeartbeatEligible reports whether a passthrough stream is safe for the
+// SSE-comment heartbeat. handlePassthroughStream proxies raw upstream bytes 1:1, and
+// content-type isn't always SSE -- e.g. Vertex/Gemini's non-alt=sse mode returns an
+// incrementally-delivered JSON array with Content-Type: application/json. The media type is
+// compared exactly (case-insensitively, ignoring parameters like "; charset=utf-8") so
+// lookalikes such as "text/event-stream+json" or "text/event-streaming" aren't treated as
+// SSE. Gemini and Vertex are excluded even for real SSE: their official Python SDK
+// (google-genai, also used by LangChain) json.loads any non-"data:" line and aborts the
+// stream on a comment, see lib.SSEHeartbeatNone.
+func passthroughHeartbeatEligible(provider schemas.ModelProvider, contentType string) bool {
+	if provider == schemas.Gemini || provider == schemas.Vertex {
+		return false
+	}
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 }
@@ -3541,7 +3548,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	// content-type is actually SSE.
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
-	if passthroughHeartbeatEligible(contentType) {
+	if passthroughHeartbeatEligible(provider, contentType) {
 		heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 	}
 
