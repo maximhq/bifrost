@@ -4690,17 +4690,35 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // provider, exact pair and all-models-on-the-provider, in the scope the permit selects (the
 // deployment's own for nil, the holder's otherwise).
 //
-// The provider-less tiers are deliberately absent, and this method rather than
-// ProviderAndModelLimits is what routing asks so they stay absent: a limit covering every provider
+// The provider-less tiers are deliberately absent, and this method rather than GlobalModelLimits
+// or PermitModelLimits is what routing asks so they stay absent: a limit covering every provider
 // answers the same for every candidate, so it can only exclude all of them at once, which is a
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
-//
-// The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which configs cover
-// a pair has exactly one answer and routing's subset of it cannot drift from the funnel's.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
+// the given holder kind: the routing-side counterpart of ScopedModelLimits, and there for the same
+// reason. A store layered on this one may impose per-model limits on the caller themselves, under
+// a scope no permit stands for, and a provider-scoped one of those prices the caller out of that
+// provider exactly as a permit's would. Load balancing has to ask about it the same way, or it
+// routes to a provider the funnel then refuses.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
+// providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
+// provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
+// configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
+// funnel's.
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
-	for _, scope := range modelConfigScopesFor(permit) {
+	for _, scope := range scopes {
 		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
 			if mc == nil || mc.Provider == nil {
 				continue
