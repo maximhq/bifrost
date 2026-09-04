@@ -46,6 +46,12 @@ func (f *fakeLogReader) GetDimensionRankings(ctx context.Context, filters *logst
 	return &logstore.DimensionRankingResult{}, nil
 }
 
+func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	f.sawContext = ctx
+	f.rankingFilters = filters
+	return &logstore.ModelRankingResult{}, nil
+}
+
 func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	f.sawContext = ctx
 	f.statsCalled = true
