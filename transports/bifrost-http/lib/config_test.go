@@ -1091,6 +1091,38 @@ func (m *MockConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[str
 	return nil, nil
 }
 
+func (m *MockConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+
+func (m *MockConfigStore) AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	return nil
 }

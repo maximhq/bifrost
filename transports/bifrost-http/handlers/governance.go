@@ -63,6 +63,11 @@ type GovernanceManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
+	ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error)
+	RemoveVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
