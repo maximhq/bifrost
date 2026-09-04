@@ -9,7 +9,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
-import { COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES, COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES } from "@/lib/types/complexityRouter";
+import { COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES, COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -99,7 +99,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -328,14 +328,13 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${
-									normalizeTestIdKey
-										? item.key
-												.toLowerCase()
-												.replace(/[^a-z0-9]+/g, "-")
-												.replace(/^-+|-+$/g, "")
-										: item.key
-								}`
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey
+								? item.key
+									.toLowerCase()
+									.replace(/[^a-z0-9]+/g, "-")
+									.replace(/^-+|-+$/g, "")
+								: item.key
+							}`
 							: undefined
 					}
 				/>
