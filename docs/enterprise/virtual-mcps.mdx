@@ -1,0 +1,67 @@
+---
+title: "Virtual MCPs"
+description: "Enterprise scoping for Virtual MCPs: access-profile grants, data access control visibility, project assignment, and cluster propagation."
+icon: "layer-group"
+---
+
+## Overview
+
+**Virtual MCPs** are curated, addressable bundles of MCP tools served at `/mcp/<slug>` and attached to virtual keys. The core feature (creating vMCPs, tool selection, slugs, serving, and virtual-key assignment) is part of open-source Bifrost.
+
+<Info>
+Read **[Virtual MCPs](/mcp/virtual-mcps)** first for the core concepts, the create flow, the API, and how vMCPs are consumed through the MCP and LLM gateways. This page covers only what enterprise adds on top.
+</Info>
+
+Virtual MCPs were previously called **MCP Tool Groups**. The name changed; existing config keys and physical tables are preserved for backward compatibility.
+
+---
+
+## Access profiles
+
+An [Access Profile](/enterprise/access-profiles) can grant one or more Virtual MCPs. Every user in a role attached to the profile inherits each granted vMCP and **all of its tools**, without a direct attachment on the vMCP itself.
+
+- In the profile form, use the **Virtual MCPs** selector to add them. Selected vMCPs appear as removable badges.
+- The grant is whole-vMCP: it does not narrow individual tools within the vMCP (that narrowing lives in the vMCP's own tool specs).
+- When you propagate a profile, check **Virtual MCPs** in the propagate dialog to apply the change to already-assigned users.
+
+A vMCP granted through an access profile makes its slug reachable at `/mcp/<slug>` for that user's auto-allocated keys, the same way a direct virtual-key attachment does.
+
+Each vMCP's **Access** tab also shows a read-only reverse lookup: the access profiles that currently grant it, and how many users reach it that way.
+
+---
+
+## Data access control (visibility scoping)
+
+[Data Access Control](/enterprise/data-access-control) scopes which Virtual MCPs each operator can see and manage in the UI and API. A vMCP row is visible to a principal who:
+
+- created it, or
+- holds an attached virtual key, or
+- belongs to an attached team or customer.
+
+Operators without any of those relationships do not see the vMCP. Attach and detach on an access-profile-managed virtual key are rejected (`409`); attach/detach against a vMCP the operator can't see under DAC returns `404`.
+
+---
+
+## Projects
+
+A [project](/enterprise/access-profiles) can be assigned Virtual MCPs, so a project's members reach the assigned vMCPs. Assignment is managed on the project's MCP access surface and, under a **Restrict** access rule, tools run only through the assigned Virtual MCPs.
+
+---
+
+## Clustering
+
+In a [cluster](/enterprise/clustering), Virtual MCP changes propagate to every node:
+
+- **Definition changes** (create / update / delete) - each node reloads the vMCP from its own database copy.
+- **Assignment changes** (attach / detach) - carried with the affected virtual key id so every node updates its in-memory assignment index.
+
+The replicated entity type is `virtual_mcp` (the legacy `mcp_tool_group` type is still recognized for backward compatibility). See the [Replicated Entity Types](/enterprise/clustering#replicated-entity-types) reference.
+
+---
+
+## Next steps
+
+- **[Virtual MCPs](/mcp/virtual-mcps)** - Core concepts, create flow, API, and gateway consumption.
+- **[Access Profiles](/enterprise/access-profiles)** - Grant vMCPs to roles by reference.
+- **[Data Access Control](/enterprise/data-access-control)** - Scope which vMCPs each operator can see.
+- **[Clustering](/enterprise/clustering)** - How vMCP state replicates across nodes.
