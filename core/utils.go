@@ -99,6 +99,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.LLMGateway,
 	schemas.Mistral,
 	schemas.Nebius,
 	schemas.OpenAI,
@@ -242,8 +243,12 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
 			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
 		} {
-			if strings.TrimSpace(field.value) == "" {
+			value := strings.TrimSpace(field.value)
+			if value == "" {
 				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
+			}
+			if (field.name == "installation_id" || field.name == "repository_id") && !isDigitsOnly(value) {
+				return fmt.Errorf("github_copilot_key_config.%s must contain digits only", field.name)
 			}
 		}
 	case schemas.Databricks:
@@ -260,6 +265,19 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 	}
 	return nil
+}
+
+// isDigitsOnly reports whether s is non-empty and contains only ASCII digits.
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // IsRateLimitErrorMessage checks if an error message indicates a rate limit issue

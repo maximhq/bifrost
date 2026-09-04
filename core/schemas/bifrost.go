@@ -59,6 +59,7 @@ const (
 	Parasail      ModelProvider = "parasail"
 	Perplexity    ModelProvider = "perplexity"
 	Cerebras      ModelProvider = "cerebras"
+	LLMGateway    ModelProvider = "llmgateway"
 	DeepSeek      ModelProvider = "deepseek"
 	Gemini        ModelProvider = "gemini"
 	OpenRouter    ModelProvider = "openrouter"
@@ -99,6 +100,7 @@ var StandardProviders = []ModelProvider{
 	DeepSeek,
 	Gemini,
 	Groq,
+	LLMGateway,
 	Mistral,
 	Ollama,
 	OpencodeGo,
