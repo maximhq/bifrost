@@ -612,6 +612,7 @@ type Config struct {
 	OAuthProvider           *oauth2.OAuth2Provider
 	OAuthTokenRefreshWorker *oauth2.OAuthTokenRefreshWorker
 	OAuthSweepWorker        *oauth2.PerUserOAuthSweepWorker
+	SessionSweepWorker      *configstore.SessionSweepWorker
 
 	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
 	// Constructed alongside OAuthProvider and passed into the Bifrost core
@@ -5243,6 +5244,13 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 
 	// Initialize OAuth provider
 	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+	// Sweep dashboard sessions that have remained expired for 30 days. They are
+	// rejected by the request path immediately after expiry; this worker reclaims
+	// rows only after that retention window.
+	config.SessionSweepWorker = configstore.NewSessionSweepWorker(config.ConfigStore, 24*time.Hour, 30*24*time.Hour, logger)
+	if config.SessionSweepWorker != nil {
+		config.SessionSweepWorker.Start(ctx)
+	}
 	// Initialize per-user-headers credential provider. Storage parallel of
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
 	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
@@ -5785,6 +5793,9 @@ func (c *Config) Close(ctx context.Context) {
 	}
 	if c.OAuthTokenRefreshWorker != nil {
 		c.OAuthTokenRefreshWorker.Stop()
+	}
+	if c.SessionSweepWorker != nil {
+		c.SessionSweepWorker.Stop()
 	}
 	if c.OAuthSweepWorker != nil {
 		c.OAuthSweepWorker.Stop()

@@ -509,6 +509,10 @@ type ConfigStore interface {
 	GetSession(ctx context.Context, token string) (*tables.SessionsTable, error)
 	CreateSession(ctx context.Context, session *tables.SessionsTable) error
 	DeleteSession(ctx context.Context, token string) error
+	// DeleteOrphanedSessions hard-deletes dashboard authentication sessions that
+	// have remained expired longer than olderThan. The session sweeper calls
+	// this periodically so rejected sessions do not accumulate indefinitely.
+	DeleteOrphanedSessions(ctx context.Context, olderThan time.Duration) (int64, error)
 	FlushSessions(ctx context.Context) error
 
 	// Temp token CRUD
