@@ -46,38 +46,40 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers         []string          `json:"providers,omitempty"`
-	Models            []string          `json:"models,omitempty"`
-	Aliases           []string          `json:"aliases,omitempty"`
-	Status            []string          `json:"status,omitempty"`
-	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID   string            `json:"parent_request_id,omitempty"`
-	RequestID         string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
-	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
-	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
-	TeamIDs           []string          `json:"team_ids,omitempty"`
-	CustomerIDs       []string          `json:"customer_ids,omitempty"`
-	UserIDs           []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
+	Providers            []string          `json:"providers,omitempty"`
+	Models               []string          `json:"models,omitempty"`
+	Aliases              []string          `json:"aliases,omitempty"`
+	Status               []string          `json:"status,omitempty"`
+	StopReasons          []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	Objects              []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID      string            `json:"parent_request_id,omitempty"`
+	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
+	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	TeamIDs              []string          `json:"team_ids,omitempty"`
+	CustomerIDs          []string          `json:"customer_ids,omitempty"`
+	UserIDs              []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
 	ProjectIDs        []string          `json:"project_ids,omitempty"`
-	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
-	StartTime         *time.Time        `json:"start_time,omitempty"`
-	EndTime           *time.Time        `json:"end_time,omitempty"`
-	MinLatency        *float64          `json:"min_latency,omitempty"`
-	MaxLatency        *float64          `json:"max_latency,omitempty"`
-	MinTokens         *int              `json:"min_tokens,omitempty"`
-	MaxTokens         *int              `json:"max_tokens,omitempty"`
-	MinCost           *float64          `json:"min_cost,omitempty"`
-	MaxCost           *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime            *time.Time        `json:"start_time,omitempty"`
+	EndTime              *time.Time        `json:"end_time,omitempty"`
+	MinLatency           *float64          `json:"min_latency,omitempty"`
+	MaxLatency           *float64          `json:"max_latency,omitempty"`
+	MinTokens            *int              `json:"min_tokens,omitempty"`
+	MaxTokens            *int              `json:"max_tokens,omitempty"`
+	MinCost              *float64          `json:"min_cost,omitempty"`
+	MaxCost              *float64          `json:"max_cost,omitempty"`
+	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	ContentSearch        string            `json:"content_search,omitempty"`
+	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -208,6 +210,9 @@ type Log struct {
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                         // Raw complexity score behind the tier; unindexed (detail-view only)
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
@@ -256,13 +261,15 @@ type Log struct {
 	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
-	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
-	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
-	OverheadBreakdown       string    `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Debug spelling is retained for the persisted cache and guardrail columns.
+	CacheDebug        string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheMetadata
+	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
+	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
+	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
+	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
 	// Denormalized cost split for per-category quota aggregation. input + output +
 	// additional reconcile to the cost column. Additional holds internal sidecar
 	// costs with no input/output token category (guardrail, MCP).
@@ -368,10 +375,12 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	// Debug spelling is retained for the established cache and guardrail Go/JSON contracts.
+	CacheDebugParsed            *schemas.BifrostCacheMetadata           `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
-	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
+	GuardrailDebugParsed        *schemas.BifrostGuardrailMetadata       `gorm:"-" json:"guardrail_debug,omitempty"`
+	RoutingMetadataParsed       *schemas.BifrostRoutingMetadata         `gorm:"-" json:"routing_metadata,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
@@ -751,6 +760,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.RoutingMetadataParsed != nil {
+		if data, err := sonic.Marshal(l.RoutingMetadataParsed); err != nil {
+			return err
+		} else {
+			l.RoutingMetadata = string(data)
+		}
+	}
+
 	if len(l.AttemptTrailParsed) > 0 {
 		if data, err := sonic.Marshal(l.AttemptTrailParsed); err != nil {
 			return err
@@ -1097,6 +1114,13 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.GuardrailDebugParsed = nil
+		}
+	}
+
+	if l.RoutingMetadata != "" {
+		if err := sonic.Unmarshal([]byte(l.RoutingMetadata), &l.RoutingMetadataParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.RoutingMetadataParsed = nil
 		}
 	}
 

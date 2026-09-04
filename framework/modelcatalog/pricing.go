@@ -97,14 +97,21 @@ func (mc *ModelCatalog) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLM
 	return mc.datasheet.CalculateCostBreakdownForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateRoutingCallCost prices one routing-classification call — a
+// semantic classification embed, or an llm classification completion when the
+// call carries OutputTokens.
+func (mc *ModelCatalog) CalculateRoutingCallCost(call schemas.BifrostRoutingCall, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.RoutingCallCost(call, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
-func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateGuardrailCost(metadata, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
-	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
+func (mc *ModelCatalog) CalculateCacheEmbeddingCost(metadata *schemas.BifrostCacheMetadata, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCacheEmbeddingCost(metadata, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateBatchCostDetailsForUsage computes batch cost and exposes the

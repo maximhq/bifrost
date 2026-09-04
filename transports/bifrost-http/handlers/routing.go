@@ -27,6 +27,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ErrRoutingPluginUnavailable marks a RoutingManager call that failed because the routing
+// plugin could not be reached at all, rather than because the caller's payload was bad.
+// Implementations must wrap it so handlers can tell the two apart: the payload-rejection
+// case is the client's to fix and answers 400, while an unreachable plugin is a server
+// misconfiguration that would otherwise be reported as an invalid configuration.
+var ErrRoutingPluginUnavailable = errors.New("routing plugin unavailable")
+
 // RoutingManager applies routing-rule and complexity-analyzer edits to the running plugin.
 // Writes land in the config store first; these calls refresh the in-memory state that
 // request evaluation reads, so an edit takes effect without a restart.
@@ -34,6 +41,35 @@ type RoutingManager interface {
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// ValidateComplexityAnalyzerConfig checks runtime dependencies that static
+	// JSON validation cannot prove, such as an external VectorStore being
+	// configured for semantic.vector_store "vector_store" mode.
+	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// GetComplexitySemanticStatus returns the non-persisted readiness of
+	// semantic complexity routing so configuration clients can distinguish
+	// saved from ready.
+	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+	// GetComplexityLLMStatus returns the llm fallback classifier's readiness.
+	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
+	// ListComplexityGenerations reports the exemplar generations the vector
+	// store holds. Retired ones are not reclaimed on a shared external store, so
+	// this is the only way to see what has accumulated.
+	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
+	// DeleteComplexityGeneration removes one retired generation.
+	DeleteComplexityGeneration(ctx context.Context, namespace string) error
+}
+
+// complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
+// embedded rather than nested so every field clients already read stays at the
+// top level; session_store and llm are additive and omitted when absent.
+type complexityStatusResponse struct {
+	complexity.SemanticStatusInfo
+	LLM *complexity.LLMStatusInfo `json:"llm,omitempty"`
+	// LLMDefaultPrompt is the shipped classification guidance, served so the
+	// UI can seed its prompt editor and offer a reset without holding a copy
+	// that drifts from the gateway's. It is the editable half only; the fixed
+	// tier-name reinforcement is appended server-side and never exposed.
+	LLMDefaultPrompt string `json:"llm_default_prompt,omitempty"`
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -82,6 +118,10 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	register(fasthttp.MethodGet, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.getComplexityAnalyzerConfig)
 	register(fasthttp.MethodPut, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.updateComplexityAnalyzerConfig)
 	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
+	// Status never shipped under /api/governance, so it has no legacy alias.
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
+	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -307,6 +347,17 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		return
 	}
 
+	if err := h.routingManager.ValidateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		// An unreachable routing plugin says nothing about the submitted config, so it
+		// must not be reported as a rejected payload the operator could fix by editing.
+		if errors.Is(err, ErrRoutingPluginUnavailable) {
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
 		return
@@ -325,21 +376,58 @@ func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx)
 		return
 	}
 
+	// Reset owns the two sections it is named for — the tier boundaries and the
+	// phrase lists — and nothing else. The rest of the record is deployment
+	// state configured elsewhere: the embedding provider, model, and storage
+	// selection, without which classification stops entirely. Replacing the
+	// whole record would turn "restore the default phrases" into "turn the
+	// classifier off", which is neither what the endpoint says nor what the
+	// operator confirmed.
+	//
+	// The section hashes ride along for the same reason they are carried over on
+	// an ordinary update: they record which config.json sections have already
+	// been applied. Clearing them would let config.json reapply its phrases on
+	// the next boot and silently undo this reset.
+	//
+	// The store performs the swap: reading the record here and writing it back
+	// would leave a window in which a concurrent save of the preserved sections
+	// is read before the save and overwritten after it.
 	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	restored, err := h.configStore.ResetComplexityAnalyzerConfig(ctx, &defaults)
+	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	if err := h.reloadComplexityAnalyzerConfig(ctx, restored); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
 
-	SendJSON(ctx, defaults)
+	SendJSON(ctx, restored)
 }
 
 func (h *RoutingHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
 	return h.routingManager.ReloadComplexityAnalyzerConfig(ctx, config)
+}
+
+// getComplexitySemanticStatus returns the non-persisted readiness of semantic
+// complexity routing so configuration clients can distinguish saved from ready.
+func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
+	status, err := h.routingManager.GetComplexitySemanticStatus(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
+		return
+	}
+	response := complexityStatusResponse{SemanticStatusInfo: status}
+	// The llm classifier state rides the same endpoint and must not be able to
+	// fail the whole response.
+	if llmStatus, llmErr := h.routingManager.GetComplexityLLMStatus(ctx); llmErr != nil {
+		logger.Warn("failed to get llm complexity status: %v", llmErr)
+	} else {
+		response.LLM = &llmStatus
+		response.LLMDefaultPrompt = complexity.DefaultLLMClassifierGuidance()
+	}
+	SendJSON(ctx, response)
 }
 
 // getRoutingRules retrieves all routing rules with optional filtering from database
@@ -713,4 +801,57 @@ func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// complexityGenerationsResponse lists what the vector store is holding for
+// semantic complexity routing.
+type complexityGenerationsResponse struct {
+	Generations []complexity.GenerationInfo `json:"generations"`
+}
+
+// listComplexityGenerations reports every exemplar generation in the configured
+// vector store, flagging the serving one.
+//
+// Each configuration change mints a new fingerprinted generation, and retired
+// ones are only reclaimed automatically on a node-local store: on a shared
+// backend another replica may still be serving one, so they accumulate. The
+// backend holds no phrase text, so without this listing a retired generation is
+// an opaque hash an operator has no safe way to identify.
+func (h *RoutingHandler) listComplexityGenerations(ctx *fasthttp.RequestCtx) {
+	generations, err := h.routingManager.ListComplexityGenerations(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to list complexity generations: %v", err))
+		return
+	}
+	if generations == nil {
+		generations = []complexity.GenerationInfo{}
+	}
+	SendJSON(ctx, complexityGenerationsResponse{Generations: generations})
+}
+
+// deleteComplexityGeneration removes one retired generation and its vectors.
+//
+// The serving generation is refused rather than deleted: routing would keep
+// querying a namespace that no longer exists until the next warmup replaced it.
+func (h *RoutingHandler) deleteComplexityGeneration(ctx *fasthttp.RequestCtx) {
+	namespace, ok := ctx.UserValue("namespace").(string)
+	if !ok || strings.TrimSpace(namespace) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "namespace is required")
+		return
+	}
+
+	if err := h.routingManager.DeleteComplexityGeneration(ctx, namespace); err != nil {
+		switch {
+		case errors.Is(err, complexity.ErrGenerationActive):
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+		case errors.Is(err, complexity.ErrNotAGeneration):
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		case errors.Is(err, complexity.ErrClassifierUnavailable):
+			SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
+		default:
+			SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to delete complexity generation: %v", err))
+		}
+		return
+	}
+	SendJSON(ctx, map[string]string{"status": "deleted", "namespace": namespace})
 }

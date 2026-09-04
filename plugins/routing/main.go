@@ -16,8 +16,10 @@ import (
 	"sync"
 	"sync/atomic"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -41,7 +43,7 @@ type Governance interface {
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
 }
 
-const noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
+const noSemanticClassifierLog = "Complexity analysis skipped: no embedding model is configured for the complexity router; continuing with existing routing path"
 
 // Config is the configuration for the routing plugin
 type Config struct {
@@ -51,6 +53,9 @@ type Config struct {
 	// ComplexityAnalyzerConfig overrides the analyzer defaults. When nil, the persisted
 	// config is used, falling back to the built-in defaults.
 	ComplexityAnalyzerConfig *complexity.AnalyzerConfig `json:"complexity_analyzer_config,omitempty"`
+	// KVStore is the runtime-only shared store used for complexity
+	// session state. It is injected by the host and is never serialized.
+	KVStore schemas.KVStore `json:"-"`
 }
 
 // chainMaxDepthOrDefault resolves the configured chain depth, falling back to the default.
@@ -68,6 +73,10 @@ type RoutingPlugin struct {
 	rules              rules.Store
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
+	semanticClassifier *complexity.SemanticClassifier
+	llmClassifier      *complexity.LLMClassifier
+	sessionStore       *complexitySessionStore
+	sessionEnabled     atomic.Bool
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -76,6 +85,32 @@ type RoutingPlugin struct {
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
 	cleanupOnce sync.Once
+	// generationsCancel stops the background registration and sweep that
+	// reclaims exemplar generations no node is using; generationsWg lets
+	// Cleanup wait for that loop to actually exit.
+	generationsCancel context.CancelFunc
+	generationsWg     sync.WaitGroup
+	// generations answers what other nodes have claimed, so a manual deletion
+	// can refuse a generation still in use elsewhere.
+	generations *complexityGenerationRegistry
+
+	// Wired by the HTTP server after the bifrost client exists; see
+	// SetEmbeddingRequestExecutor / SetWarmupEmbedUsageObserver /
+	// SetComplexityVectorStore in embedding.go.
+	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
+	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
+	complexityVectorStore    atomic.Pointer[vectorstore.VectorStore]
+
+	// chatRequestExecutor is wired by the HTTP server after the bifrost client
+	// exists (post-Init) via SetChatRequestExecutor, exactly like
+	// embeddingRequestExecutor; the llm complexity classifier reads it on the
+	// request hot path.
+	chatRequestExecutor atomic.Pointer[ChatRequestExecutor]
+	// responsesRequestExecutor is the Responses-API counterpart, wired the same
+	// way via SetResponsesRequestExecutor. The llm classifier reads it only when
+	// a chat completion is rejected because the judge model requires
+	// /v1/responses; it stays nil until wired, in which case no fallback runs.
+	responsesRequestExecutor atomic.Pointer[ResponsesRequestExecutor]
 }
 
 // Init initializes and returns a routing plugin instance.
@@ -130,18 +165,60 @@ func InitFromStore(
 	}
 
 	plugin := &RoutingPlugin{
-		rules:       ruleStore,
-		engine:      engine,
-		governance:  governancePlugin,
-		configStore: configStore,
-		logger:      logger,
+		rules:              ruleStore,
+		engine:             engine,
+		governance:         governancePlugin,
+		configStore:        configStore,
+		logger:             logger,
+		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
+		llmClassifier:      complexity.NewLLMClassifier(logger),
+	}
+	if config != nil && config.KVStore != nil {
+		plugin.sessionStore = newComplexitySessionStore(config.KVStore, complexitySessionInactivityTTL)
+		// Peers sharing a vector store otherwise embed the same phrases against
+		// the same namespace at the same time, because a configuration change
+		// reaches every node at once and the marker that would let a late node
+		// skip the work is written last. Absent a KVStore this stays nil and each
+		// node warms independently, exactly as before.
+		if coordinator := newKVComplexityWarmCoordinator(config.KVStore, newRoutingNodeID()); coordinator != nil {
+			plugin.semanticClassifier.SetWarmCoordinator(coordinator)
+		}
+	}
+	// Remembering the measured embedding width is what lets a restart adopt an
+	// already-complete generation without calling the provider at all. It is
+	// persisted rather than held in the KVStore because it has to survive every
+	// node restarting at once, which is exactly when nothing is left in memory
+	// to ask.
+	if dimensions := newPersistentEmbeddingDimensionStore(ctx, configStore, logger); dimensions != nil {
+		plugin.semanticClassifier.SetEmbeddingDimensionStore(dimensions)
+	}
+	// Retired generations are reclaimed in the background. A node-local store
+	// drops its own immediately, but on a shared one a peer may still be serving
+	// a generation this node has retired, so nodes register what they use and
+	// only unclaimed namespaces are collected.
+	if registry := newComplexityGenerationRegistry(configStore, logger, newRoutingNodeID(), plugin); registry != nil {
+		registryCtx, cancel := context.WithCancel(ctx)
+		plugin.generationsCancel = cancel
+		plugin.generations = registry
+		// The classifier announces the namespace it is building through this,
+		// so a peer's sweep can see a generation under construction rather than
+		// only one already in service.
+		plugin.semanticClassifier.SetGenerationClaimer(registry)
+		plugin.generationsWg.Add(1)
+		go func() {
+			defer plugin.generationsWg.Done()
+			registry.Run(registryCtx)
+		}()
 	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
 	if config != nil {
 		analyzerOverride = config.ComplexityAnalyzerConfig
 	}
-	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, analyzerOverride))
+	if err := plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, analyzerOverride)); err != nil {
+		_ = plugin.Cleanup()
+		return nil, err
+	}
 	return plugin, nil
 }
 
@@ -156,11 +233,11 @@ func (p *RoutingPlugin) GetRuleStore() rules.Store {
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
-func (p *RoutingPlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
-	p.storeComplexityAnalyzerConfig(config)
+func (p *RoutingPlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	return p.storeComplexityAnalyzerConfig(config)
 }
 
-func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
 	resolved, err := complexity.ValidateAndNormalize(config)
 	if err != nil {
 		if p.logger != nil {
@@ -169,7 +246,119 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 		defaults := complexity.DefaultAnalyzerConfig()
 		resolved = &defaults
 	}
+	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
+		return fmt.Errorf("complexity session routing requires a KV store")
+	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+	p.sessionEnabled.Store(resolved.SessionRoutingEnabled())
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.Configure(resolved)
+	}
+	if p.llmClassifier != nil {
+		p.llmClassifier.Configure(resolved)
+	}
+	return nil
+}
+
+// ComplexityLLMStatus returns the current llm classifier readiness.
+func (p *RoutingPlugin) ComplexityLLMStatus() complexity.LLMStatusInfo {
+	if p.llmClassifier == nil {
+		return complexity.LLMStatusInfo{State: complexity.LLMStatusDisabled}
+	}
+	return p.llmClassifier.Status()
+}
+
+// RearmComplexitySemanticClassifier restarts semantic warmup after the given
+// provider's own configuration changed (key re-enabled, model list widened).
+// The classifier decides whether the change is worth acting on.
+func (p *RoutingPlugin) RearmComplexitySemanticClassifier(provider schemas.ModelProvider) {
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.RearmForProvider(provider)
+	}
+}
+
+// ValidateComplexityAnalyzerConfig runs the semantic classifier's own
+// validation before a handler persists a complexity configuration.
+//
+// Semantic configuration also requires the runtime classifier and embedding
+// executor that will apply it. Keyword-only configuration remains valid without
+// either dependency.
+func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	if config != nil && config.Semantic != nil && p.semanticClassifier == nil {
+		return fmt.Errorf("semantic complexity classifier is unavailable")
+	}
+	if config != nil && config.Semantic != nil && p.embeddingExecutor() == nil {
+		return fmt.Errorf("semantic complexity embedding executor is unavailable")
+	}
+	if p.semanticClassifier != nil {
+		if err := p.semanticClassifier.ValidateConfig(config); err != nil {
+			return err
+		}
+	}
+	resolved, err := complexity.ValidateAndNormalize(config)
+	if err != nil {
+		return err
+	}
+	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
+		return fmt.Errorf("complexity session routing requires a KV store")
+	}
+	return nil
+}
+
+// ComplexitySemanticStatus returns the current semantic classifier readiness.
+func (p *RoutingPlugin) ComplexitySemanticStatus() complexity.SemanticStatusInfo {
+	if p.semanticClassifier == nil {
+		return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}
+	}
+	return p.semanticClassifier.Status()
+}
+
+// ListComplexityGenerations reports the exemplar generations held in the vector
+// store, flagging the one currently serving.
+func (p *RoutingPlugin) ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error) {
+	if p.semanticClassifier == nil {
+		return []complexity.GenerationInfo{}, nil
+	}
+	return p.semanticClassifier.ListGenerations(ctx)
+}
+
+// DeleteComplexityGeneration removes one retired exemplar generation.
+func (p *RoutingPlugin) DeleteComplexityGeneration(ctx context.Context, namespace string) error {
+	if p.semanticClassifier == nil {
+		// Reporting success here would tell an operator a generation was removed
+		// when nothing was even asked to remove it.
+		return complexity.ErrClassifierUnavailable
+	}
+	// The classifier can only see its own state, so on its own it would happily
+	// delete a generation another node is serving. The registry knows what every
+	// node has claimed, and is asked the same question the sweep asks before it
+	// reclaims anything.
+	//
+	// The sweep must not come through here: it has already answered this
+	// question and still holds the registry lock, so re-asking would deadlock on
+	// its own lease. It calls deleteComplexityGenerationUnchecked instead.
+	if p.generations != nil {
+		// One operation under the lifecycle lock: a claim arriving between a
+		// separate check and delete would be recorded against a namespace that
+		// is already gone.
+		return p.generations.DeleteIfUnclaimed(ctx, namespace)
+	}
+	return p.deleteComplexityGenerationUnchecked(ctx, namespace)
+}
+
+// deleteComplexityGenerationUnchecked removes a generation without consulting
+// the claims registry.
+//
+// It exists for the sweep, which reaches this while holding the registry lock
+// and having just established that nothing claims the namespace. Re-checking
+// there would block on a lease this node already owns, and every reclamation
+// would fail. The classifier's own guards — the serving generation, in-flight
+// requests, a warm in progress — still apply.
+func (p *RoutingPlugin) deleteComplexityGenerationUnchecked(ctx context.Context, namespace string) error {
+	if p.semanticClassifier == nil {
+		return complexity.ErrClassifierUnavailable
+	}
+	return p.semanticClassifier.DeleteGeneration(ctx, namespace)
 }
 
 // PreRequestHook evaluates routing rules, then materializes the virtual key's provider choice
@@ -282,39 +471,9 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 
 	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
 	var computeComplexity func() *complexity.ComplexityResult
-	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
+	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			input, ok := complexity.BuildInput(req)
-			if !ok {
-				if p.logger != nil {
-					p.logger.Debug("[Routing] Complexity analysis skipped: unsupported request type")
-				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
-				return nil
-			}
-
-			result := analyzer.Analyze(input)
-			if result == nil {
-				if p.logger != nil {
-					p.logger.Debug("[Routing] %s", noComplexitySignalLog)
-				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
-				return nil
-			}
-			if p.logger != nil {
-				p.logger.Debug(
-					"[Routing] Complexity analysis details: tier=%s score=%.2f words=%d",
-					result.Tier,
-					result.Score,
-					result.WordCount,
-				)
-			}
-			ctx.AppendRoutingEngineLog(
-				schemas.RoutingEngineRoutingRule,
-				schemas.LogLevelInfo,
-				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
-			)
-			return result
+			return p.computeComplexity(ctx, req, scope.VirtualKeyID)
 		}
 	}
 
@@ -393,14 +552,31 @@ func (p *RoutingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bifro
 	return req, nil, nil
 }
 
-// PostLLMHook implements schemas.LLMPlugin (no-op).
-func (p *RoutingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook stamps routing-classification telemetry onto the response.
+// Routing's post hook runs before governance's (post hooks run in reverse
+// pre-hook order), so the stamp is visible to governance cost calculation and
+// every later post-hook consumer.
+func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if ctx != nil && resp != nil {
+		if extraFields := resp.GetExtraFields(); extraFields != nil {
+			stampRoutingMetadata(ctx, resp, extraFields.RequestType, bifrost.IsFinalChunk(ctx))
+		}
+	}
 	return resp, bifrostErr, nil
 }
 
 // Cleanup implements schemas.BasePlugin.
 func (p *RoutingPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
+		if p.generationsCancel != nil {
+			p.generationsCancel()
+			p.generationsWg.Wait()
+		}
+		if p.semanticClassifier != nil {
+			if err := p.semanticClassifier.Close(); err != nil {
+				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)
+			}
+		}
 		p.logger.Debug("[Routing] plugin cleaned up")
 	})
 	return nil

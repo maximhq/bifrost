@@ -243,6 +243,24 @@ export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
 	_auth_type: "pat",
 } as const satisfies Required<DatabricksKeyConfig>;
 
+// GithubCopilotKeyConfig matching Go's schemas.GithubCopilotKeyConfig
+export interface GithubCopilotKeyConfig {
+	app_id: SecretVar;
+	installation_id: SecretVar;
+	repository_id: SecretVar;
+	private_key: SecretVar;
+	github_domain?: SecretVar;
+}
+
+// Default GithubCopilotKeyConfig
+export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
+	app_id: { value: "", ref: "" },
+	installation_id: { value: "", ref: "" },
+	repository_id: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	github_domain: { value: "", ref: "" },
+} as const satisfies Required<GithubCopilotKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -264,6 +282,7 @@ export interface ModelProviderKey {
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
+	github_copilot_key_config?: GithubCopilotKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

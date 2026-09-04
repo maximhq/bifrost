@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -356,6 +358,67 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 		t.Fatalf("invalid test JSON: %v", err)
 	}
 	return schema.Validate(v)
+}
+
+func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		analyzer  string
+		wantError bool
+	}{
+		{
+			name:     "base analyzer remains valid",
+			analyzer: complexityAnalyzerSchemaConfig(),
+		},
+		{
+			name:     "disabled session does not require semantic config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":false}`),
+		},
+		{
+			name:      "enabled session requires semantic config",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`),
+			wantError: true,
+		},
+		{
+			name:     "enabled session accepts semantic config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`, `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`),
+		},
+		{
+			name:     "semantic fallback none does not require llm config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
+		},
+		{
+			name:      "semantic fallback llm requires llm config",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"llm"}`),
+			wantError: true,
+		},
+		{
+			name: "semantic fallback llm accepts llm config",
+			analyzer: complexityAnalyzerSchemaConfig(
+				`,"llm":{"provider":"openai","model":"gpt-4o-mini"}`,
+				`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"llm"}`,
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, tt.analyzer)
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass: %v", err)
+			}
+		})
+	}
+}
+
+func complexityAnalyzerSchemaConfig(fields ...string) string {
+	return `{"keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]}` + strings.Join(fields, "") + `}`
 }
 
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
@@ -1192,6 +1255,126 @@ func TestSchemaLiveModelsSyncInterval(t *testing.T) {
 // unmarshal - validateBudget therefore has to treat 0 as "unset", and the schema
 // has to let that value through or config.json rejects a value the runtime
 // documents as valid and handles correctly.
+// TestSchemaComplexitySemanticTimeout pins the timeout schema to what
+// ComplexitySemanticConfig.UnmarshalJSON actually accepts. The two forms are one
+// setting: the decoder takes a duration string or a number of milliseconds,
+// rejects only negatives ("must be non-negative"), and normalized() then reads
+// zero as "unset" and substitutes DefaultComplexitySemanticTimeout. A schema that
+// accepted "0s" but rejected 0 flagged a config the gateway runs happily.
+func TestSchemaComplexitySemanticTimeout(t *testing.T) {
+	compiled := compileSchema(t)
+	semantic := func(timeout string) string {
+		return `{"governance": {"complexity_analyzer_config": {
+			"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]},
+			"semantic": {"provider": "openai", "embedding_model": "text-embedding-3-small", "timeout": ` + timeout + `}
+		}}}`
+	}
+
+	for name, timeout := range map[string]string{
+		"zero as a number": "0",
+		"zero as duration": `"0s"`,
+		"number":           "1500",
+		"fractional":       "1.5",
+		"duration string":  `"1.5s"`,
+	} {
+		if err := validateConfig(t, compiled, semantic(timeout)); err != nil {
+			t.Errorf("semantic timeout (%s) must be valid — the decoder accepts it, got: %v", name, err)
+		}
+	}
+
+	for name, timeout := range map[string]string{
+		"negative number":   "-1",
+		"negative duration": `"-1s"`,
+		"unitless string":   `"1500"`,
+	} {
+		if err := validateConfig(t, compiled, semantic(timeout)); err == nil {
+			t.Errorf("semantic timeout (%s) must be rejected", name)
+		}
+	}
+}
+
+// TestSchemaComplexityLLMTimeout is the llm-block half of
+// TestSchemaComplexitySemanticTimeout. Both blocks decode timeout the same way —
+// a time.Duration with no empty-string sentinel, so absent, null, and zero all
+// arrive as 0 and normalized() substitutes the default — which is why zero has to
+// be accepted in both forms here too. Fields whose Go type is a string spell
+// "unset" as "" and do reject an explicit zero; those carry a ^[1-9] pattern
+// instead.
+func TestSchemaComplexityLLMTimeout(t *testing.T) {
+	compiled := compileSchema(t)
+	llm := func(timeout string) string {
+		return `{"governance": {"complexity_analyzer_config": {
+			"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]},
+			"semantic": {"provider": "openai", "embedding_model": "text-embedding-3-small", "fallback": "llm"},
+			"llm": {"provider": "openai", "model": "gpt-4.1-mini", "timeout": ` + timeout + `}
+		}}}`
+	}
+
+	for name, timeout := range map[string]string{
+		"zero as a number": "0",
+		"zero as duration": `"0s"`,
+		"number":           "4000",
+		"fractional":       "2.5",
+		"duration string":  `"2s"`,
+	} {
+		if err := validateConfig(t, compiled, llm(timeout)); err != nil {
+			t.Errorf("llm timeout (%s) must be valid — the decoder accepts it and normalized() defaults zero, got: %v", name, err)
+		}
+	}
+
+	for name, timeout := range map[string]string{
+		"negative number":   "-1",
+		"negative duration": `"-1s"`,
+		"unitless string":   `"4000"`,
+	} {
+		if err := validateConfig(t, compiled, llm(timeout)); err == nil {
+			t.Errorf("llm timeout (%s) must be rejected", name)
+		}
+	}
+}
+
+// TestSchemaComplexityLLMFallbackRequiresLLMBlock pins the schema to
+// ComplexityAnalyzerConfig.Validate, which rejects a semantic block selecting the
+// "llm" fallback with no llm block to run it. The conditional has to read the
+// nested semantic.fallback and require both keys: an `if` that merely names a
+// property passes vacuously when the property is absent, which would demand an
+// llm block from every analyzer config that never mentioned a fallback.
+func TestSchemaComplexityLLMFallbackRequiresLLMBlock(t *testing.T) {
+	compiled := compileSchema(t)
+	analyzer := func(body string) string {
+		fields := `"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]}`
+		if body != "" {
+			fields += ", " + body
+		}
+		return `{"governance": {"complexity_analyzer_config": {` + fields + `}}}`
+	}
+	const semanticBase = `"provider": "openai", "embedding_model": "text-embedding-3-small"`
+	const llmBlock = `"llm": {"provider": "openai", "model": "gpt-4.1-mini"}`
+
+	valid := map[string]string{
+		"llm fallback with its classifier":   `"semantic": {` + semanticBase + `, "fallback": "llm"}, ` + llmBlock,
+		"fallback none without an llm block": `"semantic": {` + semanticBase + `, "fallback": "none"}`,
+		// Validate() lets an llm block sit dormant so toggling the fallback back on
+		// does not lose it.
+		"dormant llm block under fallback none": `"semantic": {` + semanticBase + `, "fallback": "none"}, ` + llmBlock,
+		// The vacuous-truth guards: neither of these names a fallback, so the
+		// conditional must not fire.
+		"semantic block with no fallback key": `"semantic": {` + semanticBase + `}`,
+		"no semantic block at all":            `"llm": {"provider": "openai", "model": "gpt-4.1-mini"}`,
+		"keywords only":                       "",
+	}
+	for name, body := range valid {
+		if err := validateConfig(t, compiled, analyzer(body)); err != nil {
+			t.Errorf("%s must be valid — the loader accepts it, got: %v", name, err)
+		}
+	}
+
+	missing := analyzer(`"semantic": {` + semanticBase + `, "fallback": "llm"}`)
+	if err := validateConfig(t, compiled, missing); err == nil {
+		t.Error("an llm fallback with no llm block must be rejected: Validate reports \"requires an llm config block\"")
+	}
+}
+
 func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
 	compiled := compileSchema(t)
 
@@ -1321,6 +1504,173 @@ func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
 	}
 }
 
+// TestSchemaVectorStoreTypes pins the schema's store list to what NewVectorStore
+// can actually construct. The two drifted once already: chromem became a
+// selectable store type in the framework while the schema still listed four,
+// so a config the loader accepts read as invalid to every editor pointed at the
+// published schema.
+func TestSchemaVectorStoreTypes(t *testing.T) {
+	// Each supported type and the $defs section that describes its config block.
+	wantTypes := map[vectorstore.VectorStoreType]string{
+		vectorstore.VectorStoreTypeWeaviate: "weaviate_config",
+		vectorstore.VectorStoreTypeRedis:    "redis_config",
+		vectorstore.VectorStoreTypeQdrant:   "qdrant_config",
+		vectorstore.VectorStoreTypePinecone: "pinecone_config",
+		vectorstore.VectorStoreTypeChromem:  "chromem_config",
+	}
+
+	schema := loadSchema(t)
+	rawEnum, found := navigateJSON(schema, "properties", "vector_store", "properties", "type", "enum")
+	if !found {
+		t.Fatal("vector_store.type is missing its enum")
+	}
+	enum, ok := rawEnum.([]interface{})
+	if !ok {
+		t.Fatalf("vector_store.type enum is not a list, got %T", rawEnum)
+	}
+	listed := make(map[string]bool, len(enum))
+	for _, entry := range enum {
+		value, ok := entry.(string)
+		if !ok {
+			t.Fatalf("vector_store.type enum holds a non-string entry %v", entry)
+		}
+		listed[value] = true
+	}
+
+	for storeType, configDef := range wantTypes {
+		t.Run(string(storeType), func(t *testing.T) {
+			if !listed[string(storeType)] {
+				t.Errorf("vector_store.type enum is missing %q — NewVectorStore constructs this type", storeType)
+			}
+			if _, found := navigateJSON(schema, "$defs", configDef); !found {
+				t.Errorf("$defs is missing %q — %q has no config schema", configDef, storeType)
+			}
+		})
+	}
+
+	// The reverse direction: a type the schema offers but the loader rejects
+	// sends operators down a path that fails at boot.
+	for value := range listed {
+		if _, ok := wantTypes[vectorstore.VectorStoreType(value)]; !ok {
+			t.Errorf("vector_store.type enum offers %q, which NewVectorStore cannot construct", value)
+		}
+	}
+
+	// The backend config block is only meaningful next to the type that owns it.
+	// Accepting a mismatched pair means the schema validates a config the loader
+	// will reject at boot, which is the failure mode a schema exists to prevent.
+	t.Run("config block must match the declared type", func(t *testing.T) {
+		compiled := compileSchema(t)
+
+		valid := map[string]string{
+			"weaviate": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"scheme": "http", "host": "localhost:8080"}}}`,
+			"redis":    `{"vector_store": {"enabled": true, "type": "redis", "config": {"addr": "localhost:6379"}}}`,
+			"qdrant":   `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "localhost"}}}`,
+			"pinecone": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"api_key": "k", "index_host": "h"}}}`,
+			"chromem":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem"}}}`,
+		}
+		for name, config := range valid {
+			if err := validateConfig(t, compiled, config); err != nil {
+				t.Errorf("%s paired with its own config must be valid, got: %v", name, err)
+			}
+		}
+
+		mismatched := map[string]string{
+			// chromem_config requires nothing, so an empty object satisfies it. A
+			// type-blind branch lets that stand in for every other backend and
+			// waves through a redis store with no addr to dial.
+			"redis with an empty config":    `{"vector_store": {"enabled": true, "type": "redis", "config": {}}}`,
+			"redis with a chromem config":   `{"vector_store": {"enabled": true, "type": "redis", "config": {"path": "/app/data/chromem"}}}`,
+			"weaviate with a redis config":  `{"vector_store": {"enabled": true, "type": "weaviate", "config": {"addr": "localhost:6379"}}}`,
+			"qdrant with a pinecone config": `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"api_key": "k", "index_host": "h"}}}`,
+			"pinecone with a qdrant config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"host": "localhost"}}}`,
+			"chromem with a redis config":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"addr": "localhost:6379"}}}`,
+			"weaviate with an empty config": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {}}}`,
+			"pinecone with an empty config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {}}}`,
+		}
+		for name, config := range mismatched {
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Errorf("%s must be rejected: the config block belongs to a different backend", name)
+			}
+		}
+	})
+
+	// NewVectorStore rejects a nil config for every service-backed type
+	// ("<type> config is required"), because each needs an endpoint to dial.
+	// Chromem is the sole exception: a nil config there means memory-only mode.
+	t.Run("service-backed types require a config block", func(t *testing.T) {
+		compiled := compileSchema(t)
+
+		for _, storeType := range []string{"weaviate", "redis", "qdrant", "pinecone"} {
+			omitted := `{"vector_store": {"enabled": true, "type": "` + storeType + `"}}`
+			if err := validateConfig(t, compiled, omitted); err == nil {
+				t.Errorf("%s with no config block must be rejected: it has no endpoint to dial", storeType)
+			}
+		}
+
+		// The negative control lives in "chromem config validates" below, which
+		// pins the memory-only form as valid.
+	})
+
+	t.Run("chromem config validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		persistent := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": false}}}`
+		if err := validateConfig(t, compiled, persistent); err != nil {
+			t.Errorf("a persistent chromem store must be valid, got: %v", err)
+		}
+		// Path is optional: an empty config is chromem's memory-only mode.
+		memoryOnly := `{"vector_store": {"enabled": true, "type": "chromem"}}`
+		if err := validateConfig(t, compiled, memoryOnly); err != nil {
+			t.Errorf("a memory-only chromem store must be valid, got: %v", err)
+		}
+		unknownField := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "collection": "x"}}}`
+		if err := validateConfig(t, compiled, unknownField); err == nil {
+			t.Error("an unknown chromem config field must be rejected: ChromemConfig defines only path and compress")
+		}
+		// compress only reaches chromem.NewPersistentDB, so enabling it without a
+		// path silently does nothing — reject it rather than let an operator
+		// believe their memory-only store is compressed.
+		compressNoPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"compress": true}}}`
+		if err := validateConfig(t, compiled, compressNoPath); err == nil {
+			t.Error("compress without path must be rejected: compression only applies to a persistent store")
+		}
+		compressEmptyPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "", "compress": true}}}`
+		if err := validateConfig(t, compiled, compressEmptyPath); err == nil {
+			t.Error("compress with an empty path must be rejected: an empty path is memory-only mode")
+		}
+		compressWithPath := `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": true}}}`
+		if err := validateConfig(t, compiled, compressWithPath); err != nil {
+			t.Errorf("compress alongside a path must be valid, got: %v", err)
+		}
+		// newChromemStore trims the path before deciding between the persistent
+		// and memory-only db, so a blank path is memory-only however it is
+		// spelled. Both compression settings must reject it: writing one reads
+		// as a persistent store that silently never persists.
+		blankPaths := map[string]string{
+			"empty, no compress":          `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": ""}}}`,
+			"whitespace, no compress":     `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "   "}}}`,
+			"empty, compress false":       `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "", "compress": false}}}`,
+			"whitespace, compress false":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": " \t ", "compress": false}}}`,
+			"whitespace, compress true":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "   ", "compress": true}}}`,
+			"newline only, compress true": `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "\n", "compress": true}}}`,
+		}
+		for name, config := range blankPaths {
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Errorf("a blank chromem path (%s) must be rejected: omit path for memory-only mode", name)
+			}
+		}
+		// The rejection must not spill onto real paths under either setting.
+		for name, config := range map[string]string{
+			"compress false": `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem", "compress": false}}}`,
+			"compress true":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "./relative path/chromem", "compress": true}}}`,
+		} {
+			if err := validateConfig(t, compiled, config); err != nil {
+				t.Errorf("a non-blank chromem path (%s) must stay valid, got: %v", name, err)
+			}
+		}
+	})
+}
+
 // TestSchemaGovernanceProjectsValidation pins the constraints a governance.projects declaration
 // has to satisfy before the reconciler sees it: the two policies that cannot combine, the model
 // tier the provider's own budget already covers, a rate limit that would enforce nothing, negative
@@ -1368,6 +1718,83 @@ func TestSchemaGovernanceProjectsValidation(t *testing.T) {
 			}
 			if !tt.wantError && err != nil {
 				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
+// copilotKeyConfig builds a github-copilot provider config with the given key body.
+func copilotKeyConfig(keyBody string) string {
+	return fmt.Sprintf(`{
+		"providers": {
+			"github-copilot": {
+				"keys": [{%s}]
+			}
+		}
+	}`, keyBody)
+}
+
+// TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
+// credential forms. core/utils.go rejects a key carrying neither, and the schema is the
+// source of truth for config fields, so it has to reject the same shape rather than
+// deferring the failure to boot.
+func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
+	compiled := compileSchema(t)
+
+	const appConfig = `"github_copilot_key_config": {
+		"app_id": "123456",
+		"installation_id": "87654321",
+		"repository_id": "999000111",
+		"private_key": "pem"
+	}`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "direct token alone",
+			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name:   "github app config alone",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0, ` + appConfig),
+		},
+		{
+			name:   "both forms together",
+			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0, ` + appConfig),
+		},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "neither credential form",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name:   "empty token with no app config",
+			config: copilotKeyConfig(`"name": "k", "value": "", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name: "app config missing the private key",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0,
+				"github_copilot_key_config": {"app_id": "1", "installation_id": "2", "repository_id": "3"}`),
+		},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
 			}
 		})
 	}

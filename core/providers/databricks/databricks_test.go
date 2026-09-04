@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -394,6 +395,338 @@ func TestDatabricksChatStreamStripsUnsupportedFields(t *testing.T) {
 
 	if len(request.Params.ContextManagement) == 0 || request.Params.Reasoning == nil || request.Params.Reasoning.Effort == nil ||
 		request.Params.ExtraParams["context_management"] == nil || request.Params.ExtraParams["reasoning_effort"] == nil {
+		t.Error("sanitizing the wire request mutated the original request")
+	}
+}
+
+// TestDatabricksReasoningEffortFollowsDatasheet pins the model-parameter wiring: whether
+// reasoning_effort reaches Databricks is decided by the datasheet record for the endpoint's
+// model, not by a hardcoded provider-wide rule. Resolution order is unsupported_fields →
+// supports_reasoning_effort / the effort ladder → supports_reasoning, and a model with no row
+// keeps the conservative drop.
+func TestDatabricksReasoningEffortFollowsDatasheet(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		caps       *schemas.ModelCapabilities
+		wantEffort any
+	}{
+		{
+			name:       "no datasheet row drops the effort",
+			model:      "databricks-unknown-endpoint",
+			wantEffort: nil,
+		},
+		{
+			name:       "supports_reasoning keeps the effort",
+			model:      "databricks-reasoning-endpoint",
+			caps:       &schemas.ModelCapabilities{SupportsReasoning: schemas.Ptr(true)},
+			wantEffort: "medium",
+		},
+		{
+			// The shape of the real databricks/databricks-claude-opus-5 row: the model
+			// reasons, but through Claude's thinking budget rather than an effort label.
+			name:       "anthropic-family model drops the effort even when it reasons",
+			model:      "databricks-claude-opus-5",
+			caps:       &schemas.ModelCapabilities{SupportsReasoning: schemas.Ptr(true)},
+			wantEffort: nil,
+		},
+		{
+			// The shape of the real databricks/databricks-gpt-oss-120b row.
+			name:  "a published reasoning_effort parameter keeps the effort",
+			model: "databricks-gpt-oss-120b",
+			caps: &schemas.ModelCapabilities{
+				SupportsReasoning: schemas.Ptr(true),
+				ModelParameters:   []schemas.ModelParameterDescriptor{{ID: "temperature"}, {ID: "reasoning_effort"}},
+			},
+			wantEffort: "medium",
+		},
+		{
+			name:       "supports_reasoning_effort false drops the effort",
+			model:      "databricks-budget-only-endpoint",
+			caps:       &schemas.ModelCapabilities{SupportsReasoning: schemas.Ptr(true), SupportsReasoningEffort: schemas.Ptr(false)},
+			wantEffort: nil,
+		},
+		{
+			name:       "effort ladder keeps the effort and clamps it to a published rung",
+			model:      "databricks-ladder-endpoint",
+			caps:       &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "high"}},
+			wantEffort: "high",
+		},
+		{
+			name:  "unsupported_fields wins over the reasoning flags",
+			model: "databricks-rejects-effort-endpoint",
+			caps: &schemas.ModelCapabilities{
+				SupportsReasoning:       schemas.Ptr(true),
+				SupportsReasoningEffort: schemas.Ptr(true),
+				UnsupportedFields:       map[string]bool{schemas.FieldReasoningEffort: true},
+			},
+			wantEffort: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The resolver is process-global, so answer only for this case's model and
+			// leave every other lookup on the name-based fallbacks.
+			schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+				if provider == schemas.Databricks && model == tt.model {
+					return tt.caps
+				}
+				return nil
+			})
+			t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+			var mu sync.Mutex
+			var gotBody map[string]any
+			provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				mu.Lock()
+				gotBody = body
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(stubChatResponse))
+			})
+
+			key := schemas.Key{
+				Models: []string{"*"},
+				Value:  *schemas.NewSecretVar("dapi-test"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+				},
+			}
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Databricks,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("medium")},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+				t.Fatalf("ChatCompletion returned an error: %v", bErr)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if got := gotBody["reasoning_effort"]; got != tt.wantEffort {
+				t.Errorf("reasoning_effort on the wire: got %#v, want %#v", got, tt.wantEffort)
+			}
+		})
+	}
+}
+
+// TestDatabricksChatParamsFollowDatasheet covers the rest of the parameter wiring. Bifrost's
+// neutral parameter set is wider than any single Databricks endpoint accepts, so each
+// optional field is gated on the datasheet record for the model rather than on a
+// provider-wide rule. A model the datasheet does not describe keeps every field.
+func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
+	sent := []string{
+		"temperature", "top_p", "top_k", "tool_choice", "parallel_tool_calls",
+		"response_format", "stop", "presence_penalty", "frequency_penalty",
+	}
+
+	tests := []struct {
+		name        string
+		model       string
+		caps        *schemas.ModelCapabilities
+		wantDropped []string
+	}{
+		{
+			name:  "no datasheet row keeps every field",
+			model: "databricks-unknown-endpoint",
+		},
+		{
+			// The shape of the real databricks/databricks-claude-opus-5 row: adaptive-only
+			// thinking, which rejects the sampling knobs with a 400.
+			name:        "supports_sampling_params false drops temperature, top_p and top_k",
+			model:       "databricks-adaptive-endpoint",
+			caps:        &schemas.ModelCapabilities{SupportsSamplingParams: schemas.Ptr(false)},
+			wantDropped: []string{"temperature", "top_p", "top_k"},
+		},
+		{
+			name:        "supports_tool_choice false drops the tool_choice pin",
+			model:       "databricks-no-tool-choice-endpoint",
+			caps:        &schemas.ModelCapabilities{SupportsToolChoice: schemas.Ptr(false)},
+			wantDropped: []string{"tool_choice"},
+		},
+		{
+			name:        "supports_parallel_function_calling false drops parallel_tool_calls",
+			model:       "databricks-serial-tools-endpoint",
+			caps:        &schemas.ModelCapabilities{SupportsParallelFunctionCalling: schemas.Ptr(false)},
+			wantDropped: []string{"parallel_tool_calls"},
+		},
+		{
+			name:        "supports_response_schema false drops response_format",
+			model:       "databricks-no-schema-endpoint",
+			caps:        &schemas.ModelCapabilities{SupportsResponseSchema: schemas.Ptr(false)},
+			wantDropped: []string{"response_format"},
+		},
+		{
+			name:  "unsupported_fields drops stop and the penalties",
+			model: "databricks-narrow-endpoint",
+			caps: &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{
+				schemas.FieldStop:             true,
+				schemas.FieldPresencePenalty:  true,
+				schemas.FieldFrequencyPenalty: true,
+			}},
+			wantDropped: []string{"stop", "presence_penalty", "frequency_penalty"},
+		},
+		{
+			name:        "unsupported_fields top_p drops the sampling knobs",
+			model:       "databricks-no-top-p-endpoint",
+			caps:        &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{schemas.FieldTopP: true}},
+			wantDropped: []string{"temperature", "top_p", "top_k"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+				if provider == schemas.Databricks && model == tt.model {
+					return tt.caps
+				}
+				return nil
+			})
+			t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+			var mu sync.Mutex
+			var gotBody map[string]any
+			provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				mu.Lock()
+				gotBody = body
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(stubChatResponse))
+			})
+
+			key := schemas.Key{
+				Models: []string{"*"},
+				Value:  *schemas.NewSecretVar("dapi-test"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+				},
+			}
+			responseFormat := any(map[string]any{"type": "json_object"})
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Databricks,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+				Params: &schemas.ChatParameters{
+					Temperature:       schemas.Ptr(0.5),
+					TopP:              schemas.Ptr(0.9),
+					TopK:              schemas.Ptr(40),
+					ToolChoice:        &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("auto")},
+					ParallelToolCalls: schemas.Ptr(true),
+					ResponseFormat:    &responseFormat,
+					Stop:              []string{"stop"},
+					PresencePenalty:   schemas.Ptr(0.1),
+					FrequencyPenalty:  schemas.Ptr(0.2),
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+				t.Fatalf("ChatCompletion returned an error: %v", bErr)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			for _, field := range sent {
+				_, onWire := gotBody[field]
+				wantDropped := slices.Contains(tt.wantDropped, field)
+				if wantDropped && onWire {
+					t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+				}
+				if !wantDropped && !onWire {
+					t.Errorf("%s was dropped, but the datasheet does not reject it", field)
+				}
+			}
+			// Dropping is a wire-level fixup; the caller's request must survive it intact
+			// for fallbacks and post-hooks.
+			if request.Params.Temperature == nil || request.Params.ToolChoice == nil || len(request.Params.Stop) == 0 {
+				t.Error("sanitizing the wire request mutated the original request")
+			}
+		})
+	}
+}
+
+// TestDatabricksChatStripsAnthropicOnlyFields pins the fields that are dropped whatever the
+// datasheet says. They ride on the neutral chat parameters and serialize straight onto the
+// wire, but both Databricks surfaces are OpenAI-shaped and reject them regardless of which
+// model backs the endpoint — so this is a fact about the surface, not a model capability.
+// The datasheet marks Claude-on-Databricks as supporting prompt caching and context editing,
+// which would otherwise forward Anthropic-native fields onto an OpenAI-shaped request.
+func TestDatabricksChatStripsAnthropicOnlyFields(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Databricks,
+		Model:    "databricks-claude-sonnet-4-5",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		Params: &schemas.ChatParameters{
+			ContextManagement: json.RawMessage(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`),
+			CacheControl:      &schemas.CacheControl{Type: "ephemeral"},
+			Speed:             schemas.Ptr("fast"),
+			InferenceGeo:      schemas.Ptr("us"),
+			TaskBudget:        &schemas.ChatTaskBudget{},
+			Container:         &schemas.ChatContainer{},
+			MCPServers:        []schemas.ChatMCPServer{{Name: "docs"}},
+			ExtraParams:       map[string]any{"databricks_test_param": "kept"},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+		t.Fatalf("ChatCompletion returned an error: %v", bErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, field := range []string{
+		"context_management", "cache_control", "speed", "inference_geo",
+		"task_budget", "container", "mcp_servers",
+	} {
+		if _, exists := gotBody[field]; exists {
+			t.Errorf("%s reached Databricks: %#v", field, gotBody[field])
+		}
+	}
+	if gotBody["databricks_test_param"] != "kept" {
+		t.Errorf("unrelated extra param: got %#v, want %q", gotBody["databricks_test_param"], "kept")
+	}
+	if request.Params.CacheControl == nil || request.Params.Speed == nil || len(request.Params.MCPServers) == 0 {
 		t.Error("sanitizing the wire request mutated the original request")
 	}
 }

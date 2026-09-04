@@ -458,6 +458,7 @@ export interface OutputCostDetails {
 export interface AdditionalCostDetails {
 	guardrail_cost?: number; // guardrail judge-call cost
 	mcp_cost?: number; // MCP tool-execution cost
+	routing_cost?: number; // routing-classification call cost
 	semantic_cache_cost?: number; // semantic-cache embedding-lookup cost
 }
 
@@ -471,7 +472,7 @@ export interface CostBreakdown {
 	total_cost?: number;
 }
 
-export interface CacheDebug {
+export interface CacheMetadata {
 	cache_hit: boolean;
 	cache_id?: string;
 	hit_type?: string;
@@ -549,8 +550,26 @@ export interface GuardrailJudgeCall {
 	total_tokens?: number;
 }
 
-export interface GuardrailDebug {
+export interface GuardrailMetadata {
 	judge_calls?: GuardrailJudgeCall[];
+}
+
+export interface RoutingCall {
+	provider_used?: string;
+	model_used?: string;
+	input_tokens?: number;
+	// Present only when this call was a chat completion (the llm classifier);
+	// absent for a semantic classification embed.
+	output_tokens?: number;
+	count_toward_budgets?: boolean;
+}
+
+export interface RoutingMetadata {
+	// One entry per billable routing-classification call this request made: a
+	// semantic classification embed, an llm classification completion, or
+	// both when semantic classification produced no tier and the llm fallback
+	// ran.
+	calls?: RoutingCall[];
 }
 
 // Error types
@@ -668,6 +687,9 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -705,10 +727,11 @@ export interface LogEntry {
 	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
 	overhead_breakdown?: OverheadBucket[]; // per-span self-time decomposition of overhead (microseconds)
 	token_usage?: LLMUsage;
-	cache_debug?: CacheDebug;
+	cache_debug?: CacheMetadata;
 	batch_debug?: BatchDebug;
 	video_debug?: VideoDebug;
-	guardrail_debug?: GuardrailDebug;
+	guardrail_debug?: GuardrailMetadata;
+	routing_metadata?: RoutingMetadata;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
@@ -754,6 +777,8 @@ export interface LogFilters {
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format

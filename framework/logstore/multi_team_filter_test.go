@@ -92,4 +92,5 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	// project filter is served from it like a provider filter is.
 	assert.True(t, canUseMatViewFilters(SearchFilters{ProjectIDs: []string{"p1"}}), "project filter is matview-eligible")
 	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "req-1"}), "parent request filter has no matview dimension and must force the raw path")
+
 }

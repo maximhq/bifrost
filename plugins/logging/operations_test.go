@@ -629,12 +629,21 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	embeddingProvider := "openai"
 	embeddingModel := "text-embedding-3-small"
 	embeddingTokens := 12
-	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+	if !schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{
 		ProviderUsed: &embeddingProvider,
 		ModelUsed:    &embeddingModel,
 		InputTokens:  &embeddingTokens,
 	}) {
-		t.Fatal("expected semantic cache debug to be stored on context")
+		t.Fatal("expected semantic cache metadata to be stored on context")
+	}
+	routingEmbeddingTokens := 13
+	if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &embeddingProvider,
+		ModelUsed:          &embeddingModel,
+		InputTokens:        &routingEmbeddingTokens,
+		CountTowardBudgets: true,
+	}) {
+		t.Fatal("expected routing metadata to be stored on context")
 	}
 	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider:    schemas.OpenAI,
@@ -700,12 +709,23 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
 	}
 	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
-	// text-embedding-3-small is 2e-8/token. The cache lookup and the judge call
-	// must both be added even though the stream ended with an error chunk.
+	// text-embedding-3-small is 2e-8/token. The cache lookup, routing
+	// classification, and judge call must all be added even though the stream
+	// ended with an error chunk.
 	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5 +
-		float64(embeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
+		float64(embeddingTokens+routingEmbeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+	// The routing classification call must survive the full write/read round
+	// trip through the DB — this is what makes it visible in the log detail
+	// view, not just correctly billed.
+	if entry.RoutingMetadataParsed == nil || len(entry.RoutingMetadataParsed.Calls) != 1 {
+		t.Fatalf("expected one routing call to round-trip through the DB, got %+v", entry.RoutingMetadataParsed)
+	}
+	if call := entry.RoutingMetadataParsed.Calls[0]; call.ProviderUsed == nil || *call.ProviderUsed != embeddingProvider ||
+		call.InputTokens == nil || *call.InputTokens != routingEmbeddingTokens {
+		t.Fatalf("routing call round-tripped incorrectly: %+v", call)
 	}
 }
 
@@ -815,6 +835,67 @@ func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
 	}
 }
 
+func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-complexity-capture")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	// Set by the governance plugin when a routing rule references complexity_tier.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "semantic")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-complexity-capture")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.ComplexityTier == nil || *entry.ComplexityTier != "COMPLEX" {
+		t.Fatalf("expected complexity_tier COMPLEX, got %v", entry.ComplexityTier)
+	}
+	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "semantic" {
+		t.Fatalf("expected complexity_mechanism semantic, got %v", entry.ComplexityMechanism)
+	}
+	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
+		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+}
+
 func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
 	statusCode := 504
 	bifrostErr := &schemas.BifrostError{
@@ -906,6 +987,55 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
+func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
+	plugin := &LoggerPlugin{pricingManager: newTestPricingManager(t)}
+	provider, model, inputTokens := "openai", "text-embedding-3-small", 13
+
+	for _, test := range []struct {
+		name               string
+		countTowardBudgets bool
+		retryNumber        int
+		fallbackIndex      int
+		wantCost           bool
+	}{
+		{name: "initial attempt billed", countTowardBudgets: true, wantCost: true},
+		{name: "budget attribution disabled", countTowardBudgets: false},
+		{name: "retry does not rebill", countTowardBudgets: true, retryNumber: 1},
+		{name: "fallback does not rebill", countTowardBudgets: true, fallbackIndex: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, test.retryNumber)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, test.fallbackIndex)
+			if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+				ProviderUsed:       &provider,
+				ModelUsed:          &model,
+				InputTokens:        &inputTokens,
+				CountTowardBudgets: test.countTowardBudgets,
+			}) {
+				t.Fatal("AppendRoutingCallOnContext() = false")
+			}
+			entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+
+			plugin.applyInternalCallCosts(ctx, entry, nil)
+
+			if !test.wantCost {
+				if entry.Cost != nil {
+					t.Fatalf("cost = %v, want nil", *entry.Cost)
+				}
+				return
+			}
+			if entry.Cost == nil {
+				t.Fatal("cost = nil")
+			}
+			want := float64(inputTokens) * 2e-8
+			if diff := *entry.Cost - want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v", *entry.Cost, want)
+			}
+		})
+	}
+}
+
 // TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed guards
 // the case where stream accumulation already captured token usage on a failed
 // request but no cost was computed: cost must still be backfilled, and the
@@ -976,7 +1106,7 @@ func TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional(t *testing.T) 
 	}
 
 	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
-	guardrail := &schemas.BifrostGuardrailDebug{
+	guardrail := &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o",
@@ -2657,8 +2787,8 @@ func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
 	})
 }
 
-// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
-func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+// TestGuardrailMetadataForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	requireCall := schemas.BifrostGuardrailJudgeCall{
 		JudgeProvider: schemas.OpenAI,
@@ -2669,12 +2799,12 @@ func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
 		t.Fatal("failed to append guardrail judge call")
 	}
 
-	debug := guardrailDebugForLog(ctx, nil)
-	if debug == nil || len(debug.JudgeCalls) != 1 {
-		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	metadata := guardrailMetadataForLog(ctx, nil)
+	if metadata == nil || len(metadata.JudgeCalls) != 1 {
+		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if debug.JudgeCalls[0] != requireCall {
-		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
+	if metadata.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }
 

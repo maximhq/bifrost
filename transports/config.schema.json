@@ -482,7 +482,7 @@
           "$ref": "#/$defs/provider"
         },
         "github-copilot": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_github_copilot_config"
         }
       },
       "additionalProperties": true
@@ -1560,62 +1560,121 @@
         },
         "type": {
           "type": "string",
-          "enum": ["weaviate", "redis", "qdrant", "pinecone"],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
+          "enum": ["weaviate", "redis", "qdrant", "pinecone", "chromem"],
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
         },
         "config": {
+          "description": "Backend-specific settings. The block must match the backend named by the sibling \"type\"; the conditionals below pin it to that backend rather than accepting any backend's shape",
           "anyOf": [
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "weaviate"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/weaviate_config"
-              }
+              "$ref": "#/$defs/weaviate_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "redis"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/redis_config"
-              }
+              "$ref": "#/$defs/redis_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "qdrant"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/qdrant_config"
-              }
+              "$ref": "#/$defs/qdrant_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "pinecone"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/pinecone_config"
-              }
+              "$ref": "#/$defs/pinecone_config"
+            },
+            {
+              "$ref": "#/$defs/chromem_config"
             }
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "weaviate"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/weaviate_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "redis"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/redis_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "qdrant"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/qdrant_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "pinecone"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/pinecone_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "chromem"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/chromem_config"
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "config_store": {
@@ -3789,87 +3848,294 @@
     },
     "complexity_tier_boundaries": {
       "type": "object",
-      "description": "Score thresholds used to classify complexity_tier values",
+      "description": "Lexical score thresholds. simple_medium and medium_complex are applied by the complexity analyzer; complex_reasoning is retired and accepted for backward compatibility only.",
       "properties": {
         "simple_medium": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold are SIMPLE"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as SIMPLE."
         },
         "medium_complex": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as MEDIUM, and at or above it as COMPLEX. Must remain greater than simple_medium when supplied, both for the analyzer and for backward compatibility."
         },
         "complex_reasoning": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+          "deprecated": true,
+          "description": "Retired REASONING-tier boundary. Accepted for backward compatibility but ignored because REASONING is merged into COMPLEX."
         }
       },
-      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "required": ["simple_medium", "medium_complex"],
       "additionalProperties": false
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword lists for complexity analysis",
-      "properties": {
-        "code_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility. When the semantic block is present, the three normalized tier lists may contain at most 750 phrases combined; additive config.json merges are checked against that combined limit.",
+      "oneOf": [
+        {
+          "title": "Three-tier complexity keywords",
+          "properties": {
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "medium_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "complex_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          },
+          "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+          "additionalProperties": false
         },
-        "reasoning_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "technical_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "simple_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+        {
+          "title": "Deprecated legacy complexity keywords",
+          "deprecated": true,
+          "properties": {
+            "code_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "reasoning_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are migrated to complex_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "technical_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "code_keywords",
-        "reasoning_keywords",
-        "technical_keywords",
-        "simple_keywords"
-      ],
-      "additionalProperties": false
+      ]
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing",
+      "description": "Runtime configuration for semantic complexity_tier CEL routing",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
         },
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
+        },
+        "semantic": {
+          "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "llm": {
+          "$ref": "#/$defs/complexity_llm_config"
+        },
+        "session": {
+          "$ref": "#/$defs/complexity_session_config"
         }
       },
-      "required": ["tier_boundaries", "keywords"],
+      "required": ["keywords"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "session": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["enabled"]
+              }
+            },
+            "required": ["session"]
+          },
+          "then": {
+            "required": ["semantic"]
+          }
+        },
+        {
+          "description": "Selecting the llm fallback without configuring the classifier it names loads a semantic classifier whose non-answers have nothing to fall back to; the loader rejects it for the same reason.",
+          "if": {
+            "required": ["semantic"],
+            "properties": {
+              "semantic": {
+                "required": ["fallback"],
+                "properties": {
+                  "fallback": {
+                    "const": "llm"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["llm"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "complexity_session_config": {
+      "type": "object",
+      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false
+    },
+    "complexity_semantic_config": {
+      "type": "object",
+      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to generate embeddings for complexity classification"
+        },
+        "embedding_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model used to generate embeddings for complexity classification"
+        },
+        "timeout": {
+          "description": "Per-request embedding timeout (duration string like '1.5s' or '1500ms', or milliseconds as a number; default: 1500ms). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "min_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Similarity floor a nearest-exemplar match must clear before its tier is used; a match below it publishes no tier and is recorded as 'skipped' (default: 0, meaning the nearest exemplar always wins however unrelated it is). Compared against the backend's own score: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, Weaviate reports certainty ((cosine+1)/2), so retune when switching backends."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the text that gets embedded (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and embedding more input tokens per request. Only user turns count; system prompts and assistant replies are never embedded."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+        },
+        "vector_store": {
+          "type": "string",
+          "enum": ["embedded", "vector_store"],
+          "description": "Where exemplar embeddings are stored: 'embedded' uses the built-in chromem store, 'vector_store' uses the store configured in the top-level vector_store section and falls back to embedded when none is configured (default: embedded)"
+        },
+        "fallback": {
+          "type": "string",
+          "enum": ["none", "llm"],
+          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+        }
+      },
+      "required": ["provider", "embedding_model"],
+      "additionalProperties": false
+    },
+    "complexity_llm_config": {
+      "type": "object",
+      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to run the classification chat completion"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+        },
+        "timeout": {
+          "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "4s"
+        },
+        "prompt": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+        }
+      },
+      "required": ["provider", "model"],
       "additionalProperties": false
     },
     "auth_config": {
@@ -4496,6 +4762,60 @@
         }
       ]
     },
+    "github_copilot_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "github_copilot_key_config": {
+              "type": "object",
+              "properties": {
+                "app_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
+                },
+                "installation_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
+                },
+                "repository_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
+                },
+                "private_key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
+                },
+                "github_domain": {
+                  "type": "string",
+                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
+                }
+              },
+              "required": ["app_id", "installation_id", "repository_id", "private_key"],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "anyOf": [
+            {
+              "properties": { "value": { "minLength": 1 } },
+              "required": ["value"]
+            },
+            {
+              "required": ["github_copilot_key_config"]
+            }
+          ]
+        }
+      ]
+    },
     "ollama_key": {
       "allOf": [
         {
@@ -4965,6 +5285,45 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/azure_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_github_copilot_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/github_copilot_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -5885,6 +6244,30 @@
       },
       "required": ["api_key", "index_host"],
       "additionalProperties": false
+    },
+    "chromem_config": {
+      "type": "object",
+      "description": "Embedded chromem configuration for vector store. Chromem runs in-process (pure Go, no external service), so its data lives on one node and is never shared between replicas, and every filtered read is a full scan of the namespace. Suited to small, node-local vector sets rather than a shared cache.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory for on-disk persistence, reloaded on startup. Must hold a non-whitespace value - omit the field entirely for a memory-only store that starts empty after every restart.",
+          "pattern": "\\S"
+        },
+        "compress": {
+          "type": "boolean",
+          "description": "Compress persisted documents on disk. Requires path - a memory-only store has nothing to compress.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "compress": { "const": true } },
+        "required": ["compress"]
+      },
+      "then": {
+        "required": ["path"]
+      }
     },
     "proxy_config": {
       "type": "object",

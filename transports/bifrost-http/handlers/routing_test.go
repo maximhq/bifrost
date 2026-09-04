@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/require"
@@ -21,6 +23,18 @@ type mockRoutingManager struct {
 	reloadedConfig *complexity.AnalyzerConfig
 	reloadCalls    int
 	reloadErr      error
+}
+
+func (m *mockRoutingManager) ValidateComplexityAnalyzerConfig(_ context.Context, _ *complexity.AnalyzerConfig) error {
+	return nil
+}
+
+func (m *mockRoutingManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
+	return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}, nil
+}
+
+func (m *mockRoutingManager) GetComplexityLLMStatus(_ context.Context) (complexity.LLMStatusInfo, error) {
+	return complexity.LLMStatusInfo{State: complexity.LLMStatusDisabled}, nil
 }
 
 func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
@@ -118,8 +132,8 @@ func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
 	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
 		t.Fatalf("expected default boundaries, got %+v", resp.TierBoundaries)
 	}
-	if len(resp.Keywords.CodeKeywords) == 0 {
-		t.Fatalf("expected default code keywords")
+	if len(resp.Keywords.MediumKeywords) == 0 {
+		t.Fatalf("expected default medium keywords")
 	}
 }
 
@@ -135,8 +149,13 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.TierBoundaries.SimpleMedium = 0.12
 	cfg.TierBoundaries.MediumComplex = 0.34
-	cfg.TierBoundaries.ComplexReasoning = 0.78
-	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
+	cfg.Keywords.MediumKeywords = []string{" Function ", "api", "API"}
+	cfg.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+		MinSimilarity:  0.65,
+	}
+	cfg.Session = &complexity.SessionConfig{Enabled: true}
 
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
@@ -147,7 +166,7 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if manager.reloadCalls != 1 {
 		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
 	}
-	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.ComplexReasoning != 0.78 {
+	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.MediumComplex != 0.34 {
 		t.Fatalf("expected reload with normalized config, got %+v", manager.reloadedConfig)
 	}
 
@@ -155,8 +174,14 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get stored config: %v", err)
 	}
-	if stored == nil || len(stored.Keywords.CodeKeywords) != 2 || stored.Keywords.CodeKeywords[0] != "api" {
+	if stored == nil || len(stored.Keywords.MediumKeywords) != 2 {
 		t.Fatalf("expected normalized stored keywords, got %+v", stored)
+	}
+	if stored.Semantic == nil || stored.Semantic.MinSimilarity != 0.65 {
+		t.Fatalf("expected semantic threshold to persist, got %+v", stored.Semantic)
+	}
+	if stored.Session == nil || !stored.Session.Enabled {
+		t.Fatalf("expected enabled session config to persist, got %+v", stored.Session)
 	}
 }
 
@@ -173,7 +198,18 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 	invalidBoundaries := valid
 	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
 	emptyKeywords := valid
-	emptyKeywords.Keywords.CodeKeywords = nil
+	emptyKeywords.Keywords.MediumKeywords = nil
+	tooManyPhrases := valid
+	tooManyPhrases.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	tooManyPhrases.Keywords.SimpleKeywords = make([]string, configstore.MaxComplexitySemanticPhrases-1)
+	for index := range tooManyPhrases.Keywords.SimpleKeywords {
+		tooManyPhrases.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+	}
+	tooManyPhrases.Keywords.MediumKeywords = []string{"medium"}
+	tooManyPhrases.Keywords.ComplexKeywords = []string{"complex"}
 
 	tests := []struct {
 		name string
@@ -184,6 +220,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
+		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
 	}
 
 	for _, tt := range tests {
@@ -210,7 +247,29 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	}
 
 	custom := complexity.DefaultAnalyzerConfig()
-	custom.TierBoundaries.ComplexReasoning = 0.80
+	custom.TierBoundaries.MediumComplex = 0.55
+	custom.Keywords.MediumKeywords = []string{"summarize this document"}
+	// Seeded because reset must not touch it: the embedding block is deployment
+	// configuration, and losing it takes the classifier down rather than
+	// restoring phrases. Without it here the endpoint could wipe the block and
+	// this test would still pass.
+	custom.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+		MinSimilarity:  0.42,
+		VectorStore:    "vector_store",
+	}
+	// The llm fallback block is deployment configuration for the same reason:
+	// its prompt is the operator's own text, so reset must restore the shipped
+	// phrase lists, not a prompt someone wrote.
+	custom.LLM = &complexity.LLMConfig{
+		Provider:            "openai",
+		Model:               "gpt-4.1-mini",
+		Timeout:             3 * time.Second,
+		Prompt:              "route legal work to COMPLEX",
+		MessageHistoryCount: 4,
+		CountTowardBudgets:  true,
+	}
 	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
 		t.Fatalf("seed custom config: %v", err)
 	}
@@ -230,6 +289,102 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	}
 	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
 		t.Fatalf("expected stored defaults, got %+v", stored)
+	}
+	defaultMedium := complexity.DefaultAnalyzerConfig().Keywords.MediumKeywords
+	if len(stored.Keywords.MediumKeywords) != len(defaultMedium) {
+		t.Fatalf("expected default medium keywords, got %+v", stored.Keywords.MediumKeywords)
+	}
+	if stored.Semantic == nil {
+		t.Fatalf("expected the embedding config to survive reset, got %+v", stored)
+	}
+	if stored.Semantic.Provider != "openai" || stored.Semantic.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected the embedding provider and model to survive reset, got %+v", stored.Semantic)
+	}
+	if stored.Semantic.VectorStore != "vector_store" || stored.Semantic.MinSimilarity != 0.42 {
+		t.Fatalf("expected the storage selection and similarity floor to survive reset, got %+v", stored.Semantic)
+	}
+	if stored.LLM == nil {
+		t.Fatalf("expected the llm fallback config to survive reset, got %+v", stored)
+	}
+	if stored.LLM.Provider != "openai" || stored.LLM.Model != "gpt-4.1-mini" || stored.LLM.Timeout != 3*time.Second {
+		t.Fatalf("expected the llm provider, model, and timeout to survive reset, got %+v", stored.LLM)
+	}
+	if stored.LLM.Prompt != "route legal work to COMPLEX" || stored.LLM.MessageHistoryCount != 4 {
+		t.Fatalf("expected the operator's classifier prompt and history window to survive reset, got %+v", stored.LLM)
+	}
+	// Asserted separately because its zero value is a legal setting: a dropped
+	// flag reads as a deliberate "don't bill classifications", not as loss.
+	if !stored.LLM.CountTowardBudgets {
+		t.Fatalf("expected the llm budget attribution flag to survive reset, got %+v", stored.LLM)
+	}
+
+	// The reload and the response body carry the same record: the plugin
+	// reconfigures from one and the configuration UI reseeds its form from the
+	// other, so an embedding block missing from either reads as "unconfigured"
+	// until the next restart or refetch.
+	if manager.reloadedConfig == nil || manager.reloadedConfig.Semantic == nil || manager.reloadedConfig.LLM == nil {
+		t.Fatalf("expected reload with the embedding and llm config retained, got %+v", manager.reloadedConfig)
+	}
+	var resp complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Semantic == nil || resp.Semantic.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected the response to carry the embedding config, got %+v", resp.Semantic)
+	}
+	if resp.LLM == nil || resp.LLM.Model != "gpt-4.1-mini" {
+		t.Fatalf("expected the response to carry the llm fallback config, got %+v", resp.LLM)
+	}
+	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected the response to carry default boundaries, got %+v", resp.TierBoundaries)
+	}
+}
+
+// TestComplexityAnalyzerConfigResetReportsReloadFailure pins what a failed in-memory reload
+// leaves behind. The reset is already committed at that point and is deliberately not rolled
+// back — matching the update handler, and because a compensating write can fail the same way
+// the first one did. What the operator gets instead is the persisted state plus a message
+// naming the one action that reconciles the two, so the contract is worth holding still.
+func TestComplexityAnalyzerConfigResetReportsReloadFailure(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{reloadErr: errors.New("plugin is not wired")}
+	handler := &RoutingHandler{
+		configStore:    store,
+		routingManager: manager,
+	}
+
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.TierBoundaries.MediumComplex = 0.55
+	custom.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed custom config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "restart bifrost") {
+		t.Fatalf("expected the response to name the reconciling action, got %s", string(ctx.Response.Body()))
+	}
+
+	// The write landed before the reload was attempted, so the stored record is the reset one
+	// and the embedding block it preserves is still intact.
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected the reset to stay persisted, got %+v", stored)
+	}
+	if stored.Semantic == nil || stored.Semantic.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected the embedding config to survive a failed reload, got %+v", stored.Semantic)
 	}
 }
 

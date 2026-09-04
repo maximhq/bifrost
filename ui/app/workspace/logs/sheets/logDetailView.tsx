@@ -31,6 +31,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
+	ComplexityTierColors,
 	getProviderLabel,
 	logAppDisplayName,
 	mapAppToClientApp,
@@ -42,6 +43,7 @@ import {
 	Status,
 } from "@/lib/constants/logs";
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
 import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
@@ -835,6 +837,34 @@ const messageRoleLabel: Record<MessageRole, string> = {
 	tool: "Tool Result",
 };
 
+// deriveComplexityRouting returns the complexity tier / classification mechanism /
+// raw score behind a routing decision. Rows written since the structured columns
+// exist carry them directly; older rows fall back to parsing the prose routing
+// log lines ("Complexity: tier=X score=Y words=Z" / "Complexity analysis skipped").
+// REASONING only exists in that historical prose: the tier was merged into
+// COMPLEX, but old rows keep recording what the router actually decided.
+function deriveComplexityRouting(log: LogEntry): {
+	tier?: string;
+	mechanism?: string;
+	score?: number;
+} {
+	if (log.complexity_tier || log.complexity_mechanism || log.complexity_score !== undefined) {
+		return {
+			tier: log.complexity_tier,
+			mechanism: log.complexity_mechanism,
+			score: log.complexity_score,
+		};
+	}
+	const m = log.routing_engine_logs?.match(/Complexity: tier=(SIMPLE|MEDIUM|COMPLEX|REASONING) score=([0-9.]+)/);
+	if (m) {
+		return { tier: m[1], mechanism: "lexical", score: Number(m[2]) };
+	}
+	if (log.routing_engine_logs?.includes("Complexity analysis skipped")) {
+		return { mechanism: "skipped" };
+	}
+	return {};
+}
+
 function RoutingDecisionLogs({ logs }: { logs: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
 	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
@@ -1100,6 +1130,7 @@ export function LogDetailView({
 	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
+	const complexityRouting = deriveComplexityRouting(log);
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isBatch = isBatchOperation(log.object);
@@ -1940,6 +1971,33 @@ export function LogDetailView({
 									}
 								/>
 							)}
+							{complexityRouting.tier && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Tier"
+									value={
+										<Badge
+											className={cn(
+												"border-0 py-1 uppercase",
+												ComplexityTierColors[complexityRouting.tier as keyof typeof ComplexityTierColors] ?? "bg-gray-100 text-gray-800",
+											)}
+											data-testid="logdetails-complexity-tier-badge"
+										>
+											{complexityRouting.tier}
+										</Badge>
+									}
+								/>
+							)}
+							{complexityRouting.mechanism && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Mechanism"
+									value={COMPLEXITY_MECHANISM_LABELS[complexityRouting.mechanism] ?? complexityRouting.mechanism}
+								/>
+							)}
+							{complexityRouting.score !== undefined && (
+								<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
+							)}
 
 							{(log.params as any)?.audio && (
 								<>
@@ -2063,7 +2121,7 @@ export function LogDetailView({
 											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
 										/>
 									)}
-									{/* Additional cost (guardrail / semantic cache / MCP) on its own row below. */}
+									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full md:col-start-1"
@@ -2090,6 +2148,13 @@ export function LogDetailView({
 											className="w-full"
 											label="MCP Cost"
 											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Routing Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.routing_cost)}
 										/>
 									)}
 									{isRealtimeTurn && (
@@ -2411,6 +2476,48 @@ export function LogDetailView({
 											<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
 											<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
 											{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
+										</div>
+									))}
+								</div>
+							</div>
+						</>
+					)}
+					{!isContainer && !isPassthrough && log.routing_metadata?.calls && log.routing_metadata.calls.length > 0 && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Routing Classification Details" />
+								<div className="space-y-4">
+									{log.routing_metadata.calls.map((call, index) => (
+										<div
+											key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
+											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+										>
+											<LogEntryDetailsView
+												className="w-full"
+												label="Mechanism"
+												value={
+													<Badge variant="secondary" className="uppercase">
+														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+													</Badge>
+												}
+											/>
+											{call.provider_used && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Provider"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.provider_used}
+														</Badge>
+													}
+												/>
+											)}
+											{call.model_used && <LogEntryDetailsView className="w-full" label="Model" value={call.model_used} />}
+											<LogEntryDetailsView className="w-full" label="Input Tokens" value={call.input_tokens ?? 0} />
+											{call.output_tokens != null && (
+												<LogEntryDetailsView className="w-full" label="Output Tokens" value={call.output_tokens} />
+											)}
 										</div>
 									))}
 								</div>

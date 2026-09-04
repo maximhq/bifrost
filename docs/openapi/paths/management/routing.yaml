@@ -173,7 +173,7 @@ complexity:
   get:
     operationId: getComplexityAnalyzerConfig
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
@@ -193,7 +193,7 @@ complexity:
   put:
     operationId: updateComplexityAnalyzerConfig
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
     tags:
       - Routing
     requestBody:
@@ -222,7 +222,7 @@ complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
     summary: Reset complexity analyzer config
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
     tags:
       - Routing
     security:
@@ -407,12 +407,103 @@ rules-by-id-legacy:
 
 # Model Configs CRUD
 
+complexity-status:
+  get:
+    operationId: getComplexityAnalyzerStatus
+    summary: Get complexity classifier status
+    description: Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
+    tags:
+      - Routing
+    responses:
+      '200':
+        description: Complexity classifier status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-generations:
+  get:
+    operationId: listComplexityGenerations
+    summary: List complexity classifier generations
+    description: Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Generations retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityGenerations'
+      '503':
+        description: The vector store could not be enumerated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-generation-delete:
+  delete:
+    operationId: deleteComplexityGeneration
+    summary: Delete a retired complexity generation
+    description: Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - name: namespace
+        in: path
+        required: true
+        description: The fingerprinted namespace to remove, as returned by the generations listing.
+        schema:
+          type: string
+          example: BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5
+    responses:
+      '200':
+        description: Generation deleted
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: deleted
+                namespace:
+                  type: string
+      '400':
+        description: The namespace is not a complexity routing generation
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The generation is currently serving classification requests
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The vector store could not be reached
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
 complexity-legacy:
   get:
     operationId: getComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:
@@ -433,7 +524,7 @@ complexity-legacy:
     operationId: updateComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     requestBody:
@@ -463,7 +554,7 @@ complexity-reset-legacy:
     operationId: resetComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:

@@ -917,15 +917,36 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
-      # keywords:
-      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
-      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
-      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
+      #   embedding_model: "text-embedding-3-small"
+      #                                      # Bifrost detects the embedding dimension during warmup
+      #   timeout: "1.5s"                  # Ceiling on the inline embedding call; exceeding it skips tier routing for that request
+      #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
+      #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
+      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets (record-only, never enforced)
+      #   vector_store: "embedded"         # Where phrase vectors live.
+      #                                      #   embedded      = in-memory, private to one pod, re-embeds every phrase on restart
+      #                                      #   vector_store  = the configured vectorStore below; shared between pods, re-embeds nothing on restart,
+      #                                      #                   and one pod embeds on a config change while the rest adopt what it wrote.
+      #                                      #                   Falls back to embedded when no vectorStore is configured (reported as
+      #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
+      #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
+      #                                      #                   node-local even with a path, so it is private per pod.
+      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
+      #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
+      #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
+      #   timeout: "4s"                    # Per-request classification timeout; on timeout no tier is published and the request is recorded as skipped
+      #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
+      #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
+      #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
+      # session:                            # Optional session-aware routing; requires semantic configuration above
+      #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+      #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+      #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -1619,9 +1640,9 @@ postgresql:
 
 # Vector store configuration
 vectorStore:
-  # Enable vector store for semantic caching
+  # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
 
   # Weaviate configuration
   weaviate:
@@ -1772,6 +1793,12 @@ vectorStore:
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
+
+  # Chromem configuration (embedded in-process vector store, no external service).
+  # The top-level vectorStore.enabled controls activation.
+  chromem:
+    path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
+    compress: false # Gzip-compress persisted documents (only used when path is set)
 
 # Environment variables
 env: []
