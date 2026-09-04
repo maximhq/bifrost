@@ -1849,12 +1849,16 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// path that fast path exists to keep cheap.
 			complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
 			complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+			sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
 			complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 			if complexityTier != "" {
 				entry.ComplexityTier = &complexityTier
 			}
 			if complexityMechanism != "" {
 				entry.ComplexityMechanism = &complexityMechanism
+			}
+			if sessionID != "" {
+				entry.SessionID = &sessionID
 			}
 			if hasComplexityScore {
 				entry.ComplexityScore = &complexityScore
@@ -1923,6 +1927,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
 	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+	sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
 	complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
 	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
@@ -1992,6 +1997,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	if complexityMechanism != "" {
 		entry.ComplexityMechanism = &complexityMechanism
+	}
+	if sessionID != "" {
+		entry.SessionID = &sessionID
 	}
 	if hasComplexityScore {
 		entry.ComplexityScore = &complexityScore

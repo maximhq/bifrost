@@ -881,6 +881,13 @@ export const governanceApi = baseApi.injectEndpoints({
 			// page keeps showing the state the classifier was in before the edit.
 			providesTags: ["ComplexityAnalyzerConfig"],
 		}),
+		retryComplexitySemanticWarmup: builder.mutation<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/routing/complexity-analyzer-status/retry",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
 			query: () => ({
 				url: "/routing/complexity-analyzer-config/reset",
@@ -958,6 +965,7 @@ export const {
 	useUpdateComplexityAnalyzerConfigMutation,
 	useResetComplexityAnalyzerConfigMutation,
 	useGetComplexitySemanticStatusQuery,
+	useRetryComplexitySemanticWarmupMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

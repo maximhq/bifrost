@@ -349,6 +349,19 @@ func (c *SemanticClassifier) RearmForProvider(provider schemas.ModelProvider) {
 	c.requestWarmupLocked()
 }
 
+// RetryWarmup restarts a failed semantic warmup using the saved configuration.
+// It returns false unless the classifier is currently failed, which prevents an
+// operator retry from duplicating a healthy or in-flight embedding job.
+func (c *SemanticClassifier) RetryWarmup() (SemanticStatusInfo, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.config == nil || c.config.Semantic == nil || c.status.State != SemanticStatusFailed {
+		return c.status, false
+	}
+	c.restartPreparationLocked()
+	return c.status, true
+}
+
 // ValidateConfig is the seam for checks that depend on live process state
 // rather than the payload alone, run before a handler persists a configuration.
 // No semantic setting needs one today: neither vector_store mode can fail, since

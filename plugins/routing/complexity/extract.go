@@ -68,10 +68,8 @@ var (
 )
 
 const (
-	codexTurnMetadataHeader      = "x-codex-turn-metadata"
-	claudeCodeSessionIDHeader    = "x-claude-code-session-id"
-	maxComplexitySessionIDLength = 255
-	claudeResumeRecapPrefix      = "The user stepped away and is coming back."
+	codexTurnMetadataHeader = "x-codex-turn-metadata"
+	claudeResumeRecapPrefix = "The user stepped away and is coming back."
 )
 
 type codexTurnMetadata struct {
@@ -200,7 +198,11 @@ func responsesHasTrailingContinuation(messages []schemas.ResponsesMessage, harne
 		case schemas.ResponsesInputMessageRoleUser:
 			text, ok := extractResponsesTextOnly(msg.Content)
 			if !ok {
-				return true
+				// The Anthropic-to-Responses conversion can emit one user item per
+				// block. A textless image or file may therefore follow text from the
+				// same human turn, or occur in older history. It is not classifiable
+				// on its own, but it must not hide the nearest human text item.
+				continue
 			}
 			_, kind := sanitizeUserText(text, harness)
 			if kind == complexityTextContextOnly || kind == complexityTextInvalid {
@@ -284,35 +286,11 @@ func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest, harness c
 		input.SystemText = sanitizeSystemText(*req.Params.Instructions, harness)
 	}
 
-	var userTexts []string
-	lastRelevantUserKind := complexityTextInvalid
-	for _, msg := range req.Input {
-		if msg.Role == nil {
-			continue
-		}
-
-		switch *msg.Role {
-		case schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
-			input.SystemText = appendText(input.SystemText, sanitizeSystemText(extractResponsesText(msg.Content), harness))
-		case schemas.ResponsesInputMessageRoleUser:
-			text, ok := extractResponsesTextOnly(msg.Content)
-			if !ok {
-				return ComplexityInput{}, false
-			}
-			text, kind := sanitizeUserText(text, harness)
-			switch kind {
-			case complexityTextHuman:
-				userTexts = append(userTexts, text)
-				lastRelevantUserKind = kind
-			case complexityTextContextOnly:
-				continue
-			case complexityTextHousekeeping:
-				lastRelevantUserKind = kind
-			default:
-				return ComplexityInput{}, false
-			}
-		}
+	systemText, userTexts, lastRelevantUserKind, ok := collectResponsesInputText(req.Input, harness)
+	if !ok {
+		return ComplexityInput{}, false
 	}
+	input.SystemText = appendText(input.SystemText, systemText)
 
 	if lastRelevantUserKind == complexityTextHousekeeping || len(userTexts) == 0 {
 		return ComplexityInput{}, false
@@ -323,6 +301,51 @@ func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest, harness c
 		input.PriorUserTexts = userTexts[:len(userTexts)-1]
 	}
 	return input, true
+}
+
+// collectResponsesInputText gathers system context and human user text without
+// treating textless multimodal fragments as complete conversational turns.
+func collectResponsesInputText(messages []schemas.ResponsesMessage, harness complexityHarness) (string, []string, complexityTextKind, bool) {
+	var systemText string
+	var userTexts []string
+	lastRelevantUserKind := complexityTextInvalid
+	for _, msg := range messages {
+		if msg.Role == nil {
+			continue
+		}
+
+		switch *msg.Role {
+		case schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+			systemText = appendText(systemText, sanitizeSystemText(extractResponsesText(msg.Content), harness))
+		case schemas.ResponsesInputMessageRoleUser:
+			text, kind, hasText := classifyResponsesUserContent(msg.Content, harness)
+			if !hasText || kind == complexityTextContextOnly {
+				continue
+			}
+			if kind == complexityTextHuman {
+				userTexts = append(userTexts, text)
+				lastRelevantUserKind = kind
+				continue
+			}
+			if kind == complexityTextHousekeeping {
+				lastRelevantUserKind = kind
+				continue
+			}
+			return "", nil, complexityTextInvalid, false
+		}
+	}
+	return systemText, userTexts, lastRelevantUserKind, true
+}
+
+// classifyResponsesUserContent reports the text kind for one user item and
+// distinguishes a textless multimodal fragment from malformed text input.
+func classifyResponsesUserContent(content *schemas.ResponsesMessageContent, harness complexityHarness) (string, complexityTextKind, bool) {
+	text, ok := extractResponsesTextOnly(content)
+	if !ok {
+		return "", complexityTextInvalid, false
+	}
+	text, kind := sanitizeUserText(text, harness)
+	return text, kind, true
 }
 
 // extractChatText returns the text portions of chat content and ignores
@@ -451,45 +474,6 @@ func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 	default:
 		return complexityHarnessUnknown
 	}
-}
-
-// ResolveComplexitySessionID resolves the trusted session identity used only by
-// complexity routing. An explicit x-bf-session-id context value wins; otherwise
-// native harness metadata is accepted only when the User-Agent identifies the
-// corresponding Claude Code or Codex client.
-//
-// Native identities are not copied into BifrostContextKeySessionID because that
-// key also enables core provider-key stickiness, which is a separate feature.
-func ResolveComplexitySessionID(ctx *schemas.BifrostContext) (string, bool) {
-	if ctx == nil {
-		return "", false
-	}
-	if explicit, exists := ctx.Value(schemas.BifrostContextKeySessionID).(string); exists {
-		return normalizeComplexitySessionID(explicit)
-	}
-
-	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	switch detectComplexityHarness(ctx) {
-	case complexityHarnessClaudeCode:
-		return normalizeComplexitySessionID(headers[claudeCodeSessionIDHeader])
-	case complexityHarnessCodex:
-		metadata, ok := parseCodexTurnMetadata(ctx)
-		if !ok {
-			return "", false
-		}
-		return normalizeComplexitySessionID(metadata.SessionID)
-	default:
-		return "", false
-	}
-}
-
-func normalizeComplexitySessionID(raw string) (string, bool) {
-	value := strings.TrimSpace(raw)
-	if value == "" || len(value) > maxComplexitySessionIDLength ||
-		!utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
-		return "", false
-	}
-	return value, true
 }
 
 func isCodexBackgroundRequest(ctx *schemas.BifrostContext) bool {

@@ -33,8 +33,10 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 	}
 }
 
+// TestParseComplexityFilters verifies complexity-specific query filters are
+// parsed independently from generic log filters.
 func TestParseComplexityFilters(t *testing.T) {
-	t.Run("parses tier and mechanism values", func(t *testing.T) {
+	t.Run("parses tier and mechanism", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
 		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
@@ -65,6 +67,24 @@ func TestParseComplexityFilters(t *testing.T) {
 			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
 		}
 	})
+}
+
+// TestParseParentRequestIDFilter verifies the explicit parent-request filter
+// does not consume the distinct generic session_id query parameter.
+func TestParseParentRequestIDFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("parent_request_id", "parent-abc")
+	ctx.QueryArgs().Set("session_id", "session-abc")
+
+	if got, want := parseParentRequestIDFilter(ctx), "parent-abc"; got != want {
+		t.Fatalf("parent request ID = %q, want %q", got, want)
+	}
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("session_id", "session-abc")
+	if got := parseParentRequestIDFilter(ctx); got != "" {
+		t.Fatalf("parent request ID = %q, want empty", got)
+	}
 }
 
 // TestShouldUseFilterDataCacheRejectsSearchQuery verifies search requests are

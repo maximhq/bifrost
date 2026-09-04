@@ -2,7 +2,6 @@ package complexity
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -685,6 +684,7 @@ func TestBuildComplexityInput_HarnessMarkersRequireMatchingUserAgent(t *testing.
 
 func TestBuildInputWithDisposition(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
 	tests := []struct {
 		name string
 		ctx  *schemas.BifrostContext
@@ -697,6 +697,36 @@ func TestBuildInputWithDisposition(t *testing.T) {
 				RequestType: schemas.ChatCompletionRequest,
 				ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
 					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+				}},
+			},
+			want: InputClassifiable,
+		},
+		{
+			name: "claude code history image does not hide a later human turn",
+			ctx:  complexityHarnessContext(schemas.ClaudeCLI.String(), nil),
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{
+					{Role: &userRole, Content: complexityResponsesString("Inspect the attached image")},
+					{Role: &userRole, Content: complexityResponsesBlocks(
+						schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage},
+					)},
+					{Role: &assistantRole, Content: complexityResponsesString("It contains a routing diagram.")},
+					{Role: &userRole, Content: complexityResponsesString("help can u reply to this text casually")},
+				}},
+			},
+			want: InputClassifiable,
+		},
+		{
+			name: "claude code text and image in one turn is classifiable",
+			ctx:  complexityHarnessContext(schemas.ClaudeCLI.String(), nil),
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{
+					{Role: &userRole, Content: complexityResponsesString("Inspect the attached image")},
+					{Role: &userRole, Content: complexityResponsesBlocks(
+						schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage},
+					)},
 				}},
 			},
 			want: InputClassifiable,
@@ -760,84 +790,6 @@ func TestBuildInputWithDisposition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, got := BuildInputWithDisposition(tt.ctx, tt.req)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestResolveComplexitySessionID(t *testing.T) {
-	tests := []struct {
-		name      string
-		ctx       *schemas.BifrostContext
-		want      string
-		wantFound bool
-	}{
-		{
-			name: "explicit bifrost session wins over native metadata",
-			ctx: func() *schemas.BifrostContext {
-				ctx := complexityHarnessContext(schemas.CodexCLI.String(), map[string]string{
-					codexTurnMetadataHeader: `{"request_kind":"turn","session_id":"native-session"}`,
-				})
-				ctx.SetValue(schemas.BifrostContextKeySessionID, " explicit-session ")
-				return ctx
-			}(),
-			want:      "explicit-session",
-			wantFound: true,
-		},
-		{
-			name: "claude native header is accepted for claude code",
-			ctx: complexityHarnessContext(schemas.ClaudeCLI.String(), map[string]string{
-				claudeCodeSessionIDHeader: "claude-session",
-			}),
-			want:      "claude-session",
-			wantFound: true,
-		},
-		{
-			name: "claude native header is rejected for a generic client",
-			ctx: complexityHarnessContext("generic-client/1.0", map[string]string{
-				claudeCodeSessionIDHeader: "spoofed-session",
-			}),
-		},
-		{
-			name: "codex native metadata is accepted for codex",
-			ctx: complexityHarnessContext(schemas.CodexDesktop.String(), map[string]string{
-				codexTurnMetadataHeader: `{"request_kind":"turn","session_id":"codex-session"}`,
-			}),
-			want:      "codex-session",
-			wantFound: true,
-		},
-		{
-			name: "invalid request kind does not invalidate codex session identity",
-			ctx: complexityHarnessContext(schemas.CodexCLI.String(), map[string]string{
-				codexTurnMetadataHeader: `{"request_kind":{},"session_id":"codex-session"}`,
-			}),
-			want:      "codex-session",
-			wantFound: true,
-		},
-		{
-			name: "oversized explicit identity is rejected without native fallback",
-			ctx: func() *schemas.BifrostContext {
-				ctx := complexityHarnessContext(schemas.CodexCLI.String(), map[string]string{
-					codexTurnMetadataHeader: `{"session_id":"native-session"}`,
-				})
-				ctx.SetValue(schemas.BifrostContextKeySessionID, strings.Repeat("x", maxComplexitySessionIDLength+1))
-				return ctx
-			}(),
-		},
-		{
-			name: "identity containing nul is rejected",
-			ctx: func() *schemas.BifrostContext {
-				ctx := complexityHarnessContext("", nil)
-				ctx.SetValue(schemas.BifrostContextKeySessionID, "session\x00suffix")
-				return ctx
-			}(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, found := ResolveComplexitySessionID(tt.ctx)
-			assert.Equal(t, tt.wantFound, found)
 			assert.Equal(t, tt.want, got)
 		})
 	}

@@ -313,6 +313,15 @@ func (p *RoutingPlugin) ComplexitySemanticStatus() complexity.SemanticStatusInfo
 	return p.semanticClassifier.Status()
 }
 
+// RetryComplexitySemanticWarmup restarts the saved semantic classifier after
+// a failed warmup and reports whether a retry was actually started.
+func (p *RoutingPlugin) RetryComplexitySemanticWarmup() (complexity.SemanticStatusInfo, bool) {
+	if p.semanticClassifier == nil {
+		return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}, false
+	}
+	return p.semanticClassifier.RetryWarmup()
+}
+
 // ListComplexityGenerations reports the exemplar generations held in the vector
 // store, flagging the one currently serving.
 func (p *RoutingPlugin) ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error) {

@@ -22,6 +22,7 @@ import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import {
 	useGetComplexityAnalyzerConfigQuery,
 	useGetComplexitySemanticStatusQuery,
+	useRetryComplexitySemanticWarmupMutation,
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
@@ -107,6 +108,7 @@ export default function ComplexityRouterPage() {
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery();
 	const [updateConfig, { isLoading: isSaving }] = useUpdateComplexityAnalyzerConfigMutation();
 	const [resetConfig, { isLoading: isResetting }] = useResetComplexityAnalyzerConfigMutation();
+	const [retrySemanticWarmup, { isLoading: isRetryingWarmup }] = useRetryComplexitySemanticWarmupMutation();
 
 	const [submitError, setSubmitError] = useState<string | null>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
@@ -326,6 +328,19 @@ export default function ComplexityRouterPage() {
 			});
 	};
 
+	const handleRetrySemanticWarmup = () => {
+		if (!canUpdate) return;
+		retrySemanticWarmup()
+			.unwrap()
+			.then(() => {
+				toast.success("Semantic warmup restarted", { position: "top-right" });
+				void refetchStatus();
+			})
+			.catch((err) => {
+				toast.error(`Couldn’t retry semantic warmup. ${getErrorMessage(err)}`, { position: "top-right" });
+			});
+	};
+
 	const onValid = (values: AnalyzerFormValues) => {
 		if (!canUpdate) return;
 		setSubmitError(null);
@@ -469,8 +484,11 @@ export default function ComplexityRouterPage() {
 									statusUnavailable={statusIsError && !semanticStatus}
 									statusRefreshFailed={statusIsError && Boolean(semanticStatus)}
 									isRetryingStatus={statusFetching}
+									canRetryWarmup={canUpdate}
+									isRetryingWarmup={isRetryingWarmup}
 									onConfigure={() => setEmbeddingSheetOpen(true)}
 									onRetryStatus={() => void refetchStatus()}
+									onRetryWarmup={handleRetrySemanticWarmup}
 								/>
 								<Button
 									type="button"
