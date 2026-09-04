@@ -263,7 +263,7 @@ func TestWarpAgentPassesContextThroughToTools(t *testing.T) {
 // The operator's suffix may add to the built-in prompt but must never displace
 // it: those instructions are what stop Warp inventing numbers.
 func TestWarpSystemPromptAppendsOperatorSuffix(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{SystemPromptSuffix: "Costs are in EUR."})
+	content := systemInstructions(&schemas.WarpConfig{SystemPromptSuffix: "Costs are in EUR."}, true)
 
 	require.Contains(t, content, "You are Warp")
 	require.Contains(t, content, "Always get your numbers from a tool")
@@ -287,7 +287,7 @@ func TestWarpSystemPromptCarriesCurrentTime(t *testing.T) {
 	Now = func() time.Time { return time.Date(2026, 8, 17, 9, 30, 0, 0, time.UTC) }
 	defer func() { Now = original }()
 
-	content := systemInstructions(&schemas.WarpConfig{})
+	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "2026-08-17 09:30:00")
 }
 
@@ -368,7 +368,7 @@ func TestWarpAgentSurvivesNilContentOnFinalTurn(t *testing.T) {
 // like an answer, so it is read as one. The prompt has to carry both halves -
 // admit the gap, and offer somewhere to ask for it.
 func TestWarpSystemPromptAdmitsWhatItCannotAnswer(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{})
+	content := systemInstructions(&schemas.WarpConfig{}, true)
 
 	require.Contains(t, content, "say so in one sentence and stop")
 	require.Contains(t, content, "Do not answer a different question instead")
@@ -383,7 +383,7 @@ func TestWarpSystemPromptAdmitsWhatItCannotAnswer(t *testing.T) {
 // warp-scope fence. If the prompt stops asking for that exact form, the block
 // silently reappears inline in every answer.
 func TestWarpPromptRequiresProvenanceFence(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{})
+	content := systemInstructions(&schemas.WarpConfig{}, true)
 
 	require.Contains(t, content, "```warp-scope")
 	require.Contains(t, content, "Window:")
@@ -770,4 +770,24 @@ func TestWarpMergePromptDetailsDoesNotAliasTheProviderResponse(t *testing.T) {
 	require.Equal(t, 7, provider.CachedWriteTokenDetails.CachedWriteTokens5m)
 	require.Equal(t, 3, provider.CachedWriteTokenDetails.CachedWriteTokens1h)
 	require.Equal(t, 1, second.CachedWriteTokenDetails.CachedWriteTokens5m)
+}
+
+// buildToolsFor omits semantic_search_logs when there is no searcher, so the
+// prompt must not name it. Telling the model to use a tool it has not been
+// given costs a step to discover otherwise, on every attempt, because nothing
+// about the prompt changes between them.
+func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
+	require.NotContains(t, systemInstructions(&schemas.WarpConfig{}, false), "semantic_search_logs")
+	require.Contains(t, systemInstructions(&schemas.WarpConfig{}, true), "semantic_search_logs")
+
+	// And the tool list agrees with the prompt in both directions.
+	names := func(tools []Tool) []string {
+		out := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			out = append(out, tool.name)
+		}
+		return out
+	}
+	require.NotContains(t, names(buildToolsFor(nil)), SemanticSearchToolName)
+	require.Contains(t, names(buildToolsFor(&SemanticSearcher{})), SemanticSearchToolName)
 }

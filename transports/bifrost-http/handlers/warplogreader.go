@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"errors"
 
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 )
@@ -10,8 +12,9 @@ import (
 // warpLogReader adapts the logging plugin's manager to the read surface Warp
 // declares.
 //
-// Seventeen of the eighteen methods match exactly and pass through by
-// embedding. Only GetAvailableVirtualKeys needs work, and only because
+// Most methods match exactly and pass through by embedding. The two adapters
+// below cover Warp-specific return types and bounded candidate hydration.
+// GetAvailableVirtualKeys needs work only because
 // logging.KeyPair and warp.KeyPair are field-identical but carry different
 // struct tags - aliasing them would change the JSON an existing endpoint already
 // serves, so the conversion lives here instead.
@@ -21,6 +24,30 @@ import (
 // this the one place that can see both types.
 type warpLogReader struct {
 	logging.LogManager
+}
+
+// GetLogsByIDs preserves the vector result order while routing every read
+// through LogManager.GetLog. That method applies queryscope and deliberately
+// returns not-found for both absent and inaccessible rows.
+func (r warpLogReader) GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error) {
+	const maxCandidateLogs = 100
+	if len(ids) > maxCandidateLogs {
+		ids = ids[:maxCandidateLogs]
+	}
+	logs := make([]logstore.Log, 0, len(ids))
+	for _, id := range ids {
+		entry, err := r.LogManager.GetLog(ctx, id)
+		if errors.Is(err, logstore.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			logs = append(logs, *entry)
+		}
+	}
+	return logs, nil
 }
 
 // GetAvailableVirtualKeys converts the manager's key pairs into Warp's.

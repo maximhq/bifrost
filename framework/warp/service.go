@@ -69,6 +69,7 @@ type Service struct {
 	vectorStore  vectorstore.VectorStore
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
+	semantic     *SemanticSearcher
 	backfillJobs BackfillJobStore
 }
 
@@ -149,6 +150,14 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	}
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		if service.logs != nil {
+			// Only when the reader can hydrate. A reader that cannot is still a
+			// perfectly good LogReader for every other Warp tool, so semantic
+			// search is the only thing that goes missing.
+			if hydrator, ok := service.logs.(SemanticHydrator); ok {
+				service.semantic = NewSemanticSearcher(service.store, service.vectorStore, service.embed, hydrator)
+			}
+		}
 	}
 	return service
 }
@@ -175,11 +184,11 @@ func (s *Service) CanChat() bool {
 // them separately let a turn keep a usable chat func while the reader went nil
 // underneath it - RunTurn then handed nil to NewAgent, and the first log tool
 // the model reached for dereferenced it.
-func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig, conversationID string) (ChatFunc, LogReader) {
+func (s *Service) turnDeps(ctx context.Context, config *schemas.WarpConfig, conversationID string) (ChatFunc, LogReader, *SemanticSearcher) {
 	s.mu.RLock()
-	override, client, logs := s.chatOverride, s.client, s.logs
+	override, client, logs, semantic := s.chatOverride, s.client, s.logs, s.semantic
 	s.mu.RUnlock()
-	return s.chatFuncFrom(ctx, config, conversationID, override, client), logs
+	return s.chatFuncFrom(ctx, config, conversationID, override, client), logs, semantic
 }
 
 // chatFuncFor resolves the inference function for a request. The conversation
@@ -271,6 +280,37 @@ func (s *Service) SetLogReader(logs LogReader) {
 	if logs != nil && s.client == nil && s.chatOverride == nil {
 		s.client = NewClient(s.logger)
 	}
+	// The searcher holds its own reference to the reader, so rebinding without
+	// rebuilding it left semantic search hydrating through the reader this
+	// service no longer uses - or absent entirely on a deployment that enabled
+	// logging after startup, which is exactly the case SetLogReader exists for.
+	s.semantic = s.buildSemanticSearcher()
+}
+
+// buildSemanticSearcher returns a searcher for the current dependencies, or nil
+// when any of them is missing. Callers must hold s.mu.
+func (s *Service) buildSemanticSearcher() *SemanticSearcher {
+	if s.store == nil || s.vectorStore == nil || s.embed == nil {
+		return nil
+	}
+	hydrator, ok := s.logs.(SemanticHydrator)
+	if !ok {
+		return nil
+	}
+	return NewSemanticSearcher(s.store, s.vectorStore, s.embed, hydrator)
+}
+
+// researchDeps returns the reader and the searcher as one consistent pair.
+//
+// Taken together under a single RLock, because SetLogReader replaces both and a
+// turn that read them under two locks could get the old reader with the newly
+// rebuilt searcher - the agent's tools would then search one backend and hydrate
+// the details from another, and the inconsistency would look like a data bug
+// rather than a race.
+func (s *Service) researchDeps() (LogReader, *SemanticSearcher) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logs, s.semantic
 }
 
 // logReader returns the current reader under the read lock.
