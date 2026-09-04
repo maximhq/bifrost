@@ -1003,6 +1003,12 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("isActive:false"))
 	}
+	// Hash AllowAllProviders so a config.json flip triggers re-sync
+	if vk.AllowAllProviders {
+		hash.Write([]byte("allowAllProviders:true"))
+	} else {
+		hash.Write([]byte("allowAllProviders:false"))
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))

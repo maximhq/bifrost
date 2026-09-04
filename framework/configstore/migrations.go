@@ -488,6 +488,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
 	{IDs: []string{"add_github_copilot_config_columns"}, run: migrationAddGithubCopilotConfigColumns},
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
+	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
+	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -563,6 +565,85 @@ func migrationAddCompatAzureDeepseekColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running compat_azure_deepseek migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowAllProvidersToVirtualKey adds the allow_all_providers column to the virtual
+// key table. Default false preserves the existing deny-by-default behaviour, so the column needs
+// no data backfill: existing VKs keep allowing only the providers in their ProviderConfigs. The
+// config_hash is refreshed separately by migrationBackfillVirtualKeyAllowAllProvidersHash, since
+// allow_all_providers now feeds GenerateVirtualKeyHash.
+func migrationAddAllowAllProvidersToVirtualKey(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_all_providers_to_virtual_key"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "allow_all_providers"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "allow_all_providers"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add allow_all_providers to virtual key migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillVirtualKeyAllowAllProvidersHash recomputes config_hash for every virtual key
+// after allow_all_providers joined GenerateVirtualKeyHash. Existing rows carry a hash computed
+// without that field, so without this backfill config synchronization would see false drift on the
+// first boot after upgrade. It is a separate migration from the column-add so the DDL's lock is
+// never held across this SELECT + UPDATE backfill. The hash is deterministic, so this is safe to
+// re-run.
+func migrationBackfillVirtualKeyAllowAllProvidersHash(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_vk_allow_all_providers_hash"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var virtualKeys []tables.TableVirtualKey
+			if err := tx.
+				Preload("ProviderConfigs").
+				Preload("ProviderConfigs.Keys").
+				Preload("MCPConfigs").
+				Find(&virtualKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+			}
+			logger.Info("[configstore] %s: processing %d virtualKeys", migrationName, len(virtualKeys))
+			for _, vk := range virtualKeys {
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_vk_allow_all_providers_hash migration: %s", err.Error())
 	}
 	return nil
 }
