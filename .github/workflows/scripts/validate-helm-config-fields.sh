@@ -806,6 +806,12 @@ bifrost:
         connectionType: "websocket"
         websocketConfig:
           url: "wss://mcp.example.com/ws"
+      - name: "per-user-headers-server"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/headers"
+        authType: "per_user_headers"
+        perUserHeaderKeys: ["Authorization", "X-Api-Key"]
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -831,6 +837,11 @@ assert_field_value 'mcp client[1] connection_string' '.mcp.client_configs.[1].co
 assert_field_value 'mcp client[2] name' '.mcp.client_configs.[2].name' '"ws-server"'
 assert_field_value 'mcp client[2] connection_type (ws->sse)' '.mcp.client_configs.[2].connection_type' '"sse"'
 assert_field_value 'mcp client[2] connection_string' '.mcp.client_configs.[2].connection_string' '"wss://mcp.example.com/ws"'
+
+# per_user_headers client
+assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type' '"per_user_headers"'
+assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
+assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
 
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'

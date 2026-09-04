@@ -535,6 +535,15 @@ bifrost:
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      # - name: "example-per-user-headers-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
+      #   # authType "per_user_headers": each caller submits their own header values (API keys,
+      #   # signed tokens) through the Bifrost auth flow; perUserHeaderKeys declares which header
+      #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
+      #   authType: "per_user_headers"
+      #   perUserHeaderKeys: ["Authorization"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Assign groups of MCP tools to virtual keys / access profiles.
     # toolGroups:
