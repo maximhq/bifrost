@@ -1608,6 +1608,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 				clientConfigs[i] = &schemas.MCPClientConfig{
 					ID:                        dbClient.ClientID,
 					Name:                      dbClient.Name,
+					EndpointSlug:              dbClient.EndpointSlug,
 					IsCodeModeClient:          dbClient.IsCodeModeClient,
 					ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:          dbClient.ConnectionString,
@@ -1659,6 +1660,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		clientConfigs[i] = &schemas.MCPClientConfig{
 			ID:                        dbClient.ClientID,
 			Name:                      dbClient.Name,
+			EndpointSlug:              dbClient.EndpointSlug,
 			IsCodeModeClient:          dbClient.IsCodeModeClient,
 			ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:          dbClient.ConnectionString,
@@ -2096,6 +2098,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 	return &schemas.MCPClientConfig{
 		ID:                        dbClient.ClientID,
 		Name:                      dbClient.Name,
+		EndpointSlug:              dbClient.EndpointSlug,
 		IsCodeModeClient:          dbClient.IsCodeModeClient,
 		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:          dbClient.ConnectionString,
@@ -2225,6 +2228,23 @@ func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, c
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
 func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
+	// Derive the slug (caller's, else name) and reject a cross-entity collision. Immutable after create.
+	// Checked before the transaction so the read isn't on the write connection (matters for SQLite tests).
+	base := clientConfig.EndpointSlug
+	if base == "" {
+		base = clientConfig.Name
+	}
+	endpointSlug := Slugify(base)
+	if endpointSlug == "" {
+		return ErrMCPEndpointSlugInvalid
+	}
+	if taken, err := s.MCPEndpointSlugTaken(ctx, endpointSlug); err != nil {
+		return err
+	} else if taken {
+		return ErrMCPEndpointSlugExists
+	}
+	// Write the slug back so the in-memory registration serves /mcp/<slug> without a restart.
+	clientConfig.EndpointSlug = endpointSlug
 	return s.DB().Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
@@ -2244,6 +2264,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		dbClient := tables.TableMCPClient{
 			ClientID:               clientConfigCopy.ID,
 			Name:                   clientConfigCopy.Name,
+			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
 			ConnectionType:         string(clientConfigCopy.ConnectionType),
 			ConnectionString:       clientConfigCopy.ConnectionString,
@@ -4501,7 +4522,7 @@ func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[stri
 }
 
 // CreateVirtualMCP inserts a Virtual MCP. The endpoint_slug is taken from the caller's slug when set,
-// else derived from the name; a slug collision is reported as ErrVirtualMCPEndpointExists rather than
+// else derived from the name; a slug collision is reported as ErrMCPEndpointSlugExists rather than
 // auto-suffixed. Name uniqueness is left to the table's own unique index.
 func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
 	db := s.DB().WithContext(ctx)
@@ -4509,15 +4530,15 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 	if base == "" {
 		base = def.Name
 	}
-	def.EndpointSlug = VirtualMCPSlugify(base)
+	def.EndpointSlug = Slugify(base)
 	if def.EndpointSlug == "" {
-		return errors.New("could not derive an endpoint from the name; provide an endpoint_slug")
+		return ErrMCPEndpointSlugInvalid
 	}
 
-	if taken, err := s.virtualMCPSlugTaken(ctx, def.EndpointSlug, 0); err != nil {
+	if taken, err := s.MCPEndpointSlugTaken(ctx, def.EndpointSlug); err != nil {
 		return err
 	} else if taken {
-		return ErrVirtualMCPEndpointExists
+		return ErrMCPEndpointSlugExists
 	}
 
 	// Capture intent before Create: enabled has a default:true, which gorm applies to a false and
@@ -4526,8 +4547,8 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(def).Error; err != nil {
 			if isUniqueConstraintError(err) {
-				if taken, checkErr := s.virtualMCPSlugTaken(ctx, def.EndpointSlug, 0); checkErr == nil && taken {
-					return ErrVirtualMCPEndpointExists
+				if taken, checkErr := s.MCPEndpointSlugTaken(ctx, def.EndpointSlug); checkErr == nil && taken {
+					return ErrMCPEndpointSlugExists
 				}
 			}
 			return err
@@ -4539,15 +4560,21 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 	})
 }
 
-// virtualMCPSlugTaken reports whether another row (excluding excludeID) has the same endpoint_slug.
-func (s *RDBConfigStore) virtualMCPSlugTaken(ctx context.Context, slug string, excludeID uint) (bool, error) {
-	q := s.DB().WithContext(ctx).Model(&tables.TableVirtualMCP{}).Where("endpoint_slug = ?", slug)
-	if excludeID != 0 {
-		q = q.Where("id <> ?", excludeID)
-	}
+// MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already uses the slug, across both
+// tables (the /mcp/<slug> namespace is shared). Create-time check: no self-exclusion.
+func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error) {
+	db := s.DB().WithContext(ctx)
 	var count int64
-	err := q.Count(&count).Error
-	return count > 0, err
+	if err := db.Model(&tables.TableVirtualMCP{}).Where("endpoint_slug = ?", slug).Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+	if err := db.Model(&tables.TableMCPClient{}).Where("endpoint_slug = ?", slug).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {

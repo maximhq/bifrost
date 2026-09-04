@@ -5574,6 +5574,23 @@ func (c *Config) GetMCPClientNames() map[string]string {
 	return result
 }
 
+// GetMCPClientBySlug resolves an MCP client by its endpoint slug, returning its ID and name so a single
+// client can be served at /mcp/<slug>. Read-only snapshot.
+func (c *Config) GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool) {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil || slug == "" {
+		return "", "", false
+	}
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client != nil && client.EndpointSlug == slug {
+			return client.ID, client.Name, true
+		}
+	}
+	return "", "", false
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.

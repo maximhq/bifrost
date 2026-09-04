@@ -9,10 +9,16 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
-// ErrVirtualMCPEndpointExists is returned by CreateVirtualMCP when the resolved endpoint slug is
-// already taken, so callers can answer with a clear message and a 409. (Name uniqueness is left to
-// the table's own unique index and surfaces as a generic unique-constraint error.)
-var ErrVirtualMCPEndpointExists = errors.New("a virtual MCP with this endpoint already exists")
+// ErrMCPEndpointSlugExists is returned when a create resolves an endpoint slug already used by a
+// Virtual MCP or an MCP client. Both serve at /mcp/<slug>, so the slug namespace is shared; callers
+// answer with a clear message and a 409. (Name uniqueness is left to each table's own unique index
+// and surfaces as a generic unique-constraint error.)
+var ErrMCPEndpointSlugExists = errors.New("an MCP endpoint with this slug already exists")
+
+// ErrMCPEndpointSlugInvalid is returned when a create cannot derive an endpoint slug (the name
+// slugifies to empty and no endpoint_slug was supplied). It is caller input, so handlers map it
+// to a 400 rather than a 500.
+var ErrMCPEndpointSlugInvalid = errors.New("could not derive an MCP endpoint slug; provide an endpoint_slug")
 
 // ErrVirtualKeyAccessProfileManaged is returned by AttachVirtualMCPToVirtualKey (enterprise) when the
 // target virtual key is managed by an access profile: its MCP access is governed by the profile, so it

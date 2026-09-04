@@ -11,9 +11,8 @@ import (
 )
 
 func setupVirtualMCPTestStore(t *testing.T) *RDBConfigStore {
-	store := setupRDBTestStore(t)
-	require.NoError(t, store.DB().AutoMigrate(&tables.TableVirtualMCP{}, &tables.TableVirtualKeyVirtualMCP{}))
-	return store
+	// setupRDBTestStore already migrates the Virtual MCP tables.
+	return setupRDBTestStore(t)
 }
 
 func vmcpSpec(clientID string, tools ...string) tables.MCPToolSpec {
@@ -44,7 +43,7 @@ func TestVirtualMCP_RejectsExactDuplicateName(t *testing.T) {
 
 	err := store.CreateVirtualMCP(ctx, &tables.TableVirtualMCP{Name: "Engineering", EndpointSlug: "eng-b", Enabled: true})
 	assert.Error(t, err, "the pre-existing name unique index still rejects an exact duplicate name")
-	assert.NotErrorIs(t, err, ErrVirtualMCPEndpointExists, "a name collision must not be mislabeled as an endpoint conflict")
+	assert.NotErrorIs(t, err, ErrMCPEndpointSlugExists, "a name collision must not be mislabeled as an endpoint conflict")
 }
 
 func TestVirtualMCP_CaseVariantNamesCoexistWithDistinctEndpoints(t *testing.T) {
@@ -65,7 +64,7 @@ func TestVirtualMCP_RejectsDuplicateEndpoint(t *testing.T) {
 	require.NoError(t, store.CreateVirtualMCP(ctx, &tables.TableVirtualMCP{Name: "Support (Legacy)", Enabled: true}))
 
 	err := store.CreateVirtualMCP(ctx, &tables.TableVirtualMCP{Name: "Support - Legacy", Enabled: true})
-	assert.ErrorIs(t, err, ErrVirtualMCPEndpointExists, "distinct names may still collide on endpoint, and that is rejected")
+	assert.ErrorIs(t, err, ErrMCPEndpointSlugExists, "distinct names may still collide on endpoint, and that is rejected")
 }
 
 func TestVirtualMCP_CreateHonorsDisabled(t *testing.T) {

@@ -322,6 +322,10 @@ func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
 	return s.Config.GetMCPClientNames()
 }
 
+func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
+	return s.Config.GetMCPClientBySlug(slug)
+}
+
 // AddMCPClient adds a new MCP client to the in-memory store
 func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
@@ -1521,6 +1525,22 @@ func (s *BifrostHTTPServer) VirtualMCPToolAccess(ctx *schemas.BifrostContext, sl
 		return nil, false
 	}
 	return resolver.VirtualMCPToolAccess(ctx, slug, access)
+}
+
+// MCPClientToolAccess resolves the tools a /mcp/<slug> request may see for a single MCP client, gated
+// on the caller's grant (ok=false → the endpoint is refused). Sibling of VirtualMCPToolAccess.
+func (s *BifrostHTTPServer) MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, false
+	}
+	resolver, ok := governancePlugin.GetGovernanceStore().(interface {
+		MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) ([]string, bool)
+	})
+	if !ok {
+		return nil, false
+	}
+	return resolver.MCPClientToolAccess(ctx, slug, access)
 }
 
 // backgroundCtx returns the server-lifetime context background workers should

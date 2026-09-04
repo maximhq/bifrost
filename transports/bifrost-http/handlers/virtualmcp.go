@@ -408,8 +408,8 @@ func (h *VirtualMCPHandler) parseID(ctx *fasthttp.RequestCtx) (uint, bool) {
 // clash, or a name clash surfaced by the table's own unique index.
 func virtualMCPConflict(err error) (int, string, bool) {
 	switch {
-	case errors.Is(err, configstore.ErrVirtualMCPEndpointExists):
-		return fasthttp.StatusConflict, configstore.ErrVirtualMCPEndpointExists.Error(), true
+	case errors.Is(err, configstore.ErrMCPEndpointSlugExists):
+		return fasthttp.StatusConflict, configstore.ErrMCPEndpointSlugExists.Error(), true
 	case IsUniqueConstraintError(err):
 		return fasthttp.StatusConflict, "a virtual MCP with this name or endpoint already exists", true
 	}

@@ -39,7 +39,9 @@ import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "lucide-react";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
@@ -172,6 +174,9 @@ export default function MCPClientSheet({
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
+	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
+	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
+	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -759,6 +764,23 @@ export default function MCPClientSheet({
 													</span>
 												</div>
 											</div>
+											{mcpClient.config.endpoint_slug && (
+												<div className="flex flex-col gap-2">
+													<div className="text-sm font-medium">Endpoint</div>
+													<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+														<span className="font-mono break-all">/mcp/{mcpClient.config.endpoint_slug}</span>
+														<button
+															type="button"
+															onClick={() => copyEndpoint(`${baseUrl}/mcp/${mcpClient.config.endpoint_slug}`)}
+															className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+															aria-label="Copy endpoint URL"
+															data-testid={`mcp-client-sheet-endpoint-copy-${mcpClient.config.endpoint_slug}`}
+														>
+															{endpointCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+														</button>
+													</div>
+												</div>
+											)}
 											{mcpClient.config.connection_type === "stdio" &&
 												mcpClient.config.stdio_config?.envs &&
 												mcpClient.config.stdio_config.envs.length > 0 && (

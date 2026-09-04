@@ -42,6 +42,8 @@ type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 	GetMCPClientsAllowedByDefault() map[string]string // clientID → clientName
 	GetMCPClientNames() map[string]string             // clientID → clientName, every client
+	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
+	GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool)
 }
 
 type BaseGovernancePlugin interface {

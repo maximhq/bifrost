@@ -130,6 +130,7 @@ func TestFindUniqueName_NoCollision(t *testing.T) {
 	client := &tables.TableMCPClient{
 		Name:           "existing_client",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -157,6 +158,7 @@ func TestFindUniqueName_WithCollision(t *testing.T) {
 	client1 := &tables.TableMCPClient{
 		Name:           "my_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -168,6 +170,7 @@ func TestFindUniqueName_WithCollision(t *testing.T) {
 	client2 := &tables.TableMCPClient{
 		Name:           "my_tool1",
 		ClientID:       "client-2",
+		EndpointSlug:   "client-2",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -195,6 +198,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client1 := &tables.TableMCPClient{
 		Name:           "test_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -205,6 +209,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client2 := &tables.TableMCPClient{
 		Name:           "test_tool1",
 		ClientID:       "client-2",
+		EndpointSlug:   "client-2",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -215,6 +220,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client3 := &tables.TableMCPClient{
 		Name:           "test_tool2",
 		ClientID:       "client-3",
+		EndpointSlug:   "client-3",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -241,6 +247,7 @@ func TestFindUniqueName_NormalizationAndCollision(t *testing.T) {
 	client := &tables.TableMCPClient{
 		Name:           "my_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -289,6 +296,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "mcp client",
 			ClientID:       "client-1",
+			EndpointSlug:   "client-1",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -296,6 +304,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "mcp-client",
 			ClientID:       "client-2",
+			EndpointSlug:   "client-2",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -303,6 +312,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "1mcp-client",
 			ClientID:       "client-3",
+			EndpointSlug:   "client-3",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -392,6 +402,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "mcp client",
 			ClientID:       "client-1",
+			EndpointSlug:   "client-1",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -399,6 +410,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "mcp-client",
 			ClientID:       "client-2",
+			EndpointSlug:   "client-2",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -406,6 +418,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "1mcp-client",
 			ClientID:       "client-3",
+			EndpointSlug:   "client-3",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),

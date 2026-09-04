@@ -1560,6 +1560,26 @@ func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext
 	return access.NarrowMCPToolIncludeList(requested), true
 }
 
+// MCPClientToolAccess resolves what a /mcp/<slug> request may see for one MCP client: the client's tools
+// narrowed to the caller's access (empty → not granted → the caller answers 403). Nil access serves the
+// whole client. No per-request recording (unlike a Virtual MCP): the access already names the clients.
+func (gs *LocalGovernanceStore) MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool) {
+	if gs.inMemoryStore == nil {
+		return nil, false
+	}
+	_, clientName, found := gs.inMemoryStore.GetMCPClientBySlug(slug)
+	if !found || clientName == "" {
+		return nil, false
+	}
+	// Narrow the whole client (name-*) to what access grants; empty means not granted.
+	whole := []string{clientName + "-" + grant.Wildcard}
+	if access == nil {
+		return whole, true
+	}
+	served = access.NarrowMCPToolIncludeList(whole)
+	return served, len(served) > 0
+}
+
 // loadVirtualMCPs fills both caches from the store at startup; surgical updates keep them current
 // after. On error the caches are left as-is, not cleared.
 func (gs *LocalGovernanceStore) loadVirtualMCPs(ctx context.Context) error {
