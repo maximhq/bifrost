@@ -1266,6 +1266,12 @@ paths:
   # Warp
   /api/warp/config:
     $ref: "./paths/management/warp.yaml#/warp-config"
+  /api/warp/log-index/backfill:
+    $ref: "./paths/management/warp.yaml#/warp-backfill"
+  /api/warp/log-index/backfill/status:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-status"
+  /api/warp/log-index/backfill/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
   /api/warp/chat:
     $ref: "./paths/management/warp.yaml#/warp-chat"
 
@@ -1943,6 +1949,10 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpConfig"
     WarpConfigInput:
       $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
+    WarpBackfillRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
+    WarpBackfillStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
     WarpUnavailable:
       $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
     WarpChatRequest:
