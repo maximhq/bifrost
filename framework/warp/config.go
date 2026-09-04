@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -14,16 +15,23 @@ import (
 // no redaction step, because the config stores a key reference rather than a
 // key.
 type ConfigView struct {
-	Configured            bool                  `json:"configured"`
-	Enabled               bool                  `json:"enabled"`
-	Provider              schemas.ModelProvider `json:"provider"`
-	Model                 string                `json:"model"`
-	BaseURL               string                `json:"base_url,omitempty"`
-	APIKeyID              string                `json:"api_key_id,omitempty"`
-	MaxIterations         int                   `json:"max_iterations"`
-	RequestTimeoutSeconds int                   `json:"request_timeout_seconds"`
-	HistoryRetentionDays  int                   `json:"history_retention_days"`
-	SystemPromptSuffix    string                `json:"system_prompt_suffix,omitempty"`
+	Configured              bool                  `json:"configured"`
+	Enabled                 bool                  `json:"enabled"`
+	Provider                schemas.ModelProvider `json:"provider"`
+	Model                   string                `json:"model"`
+	BaseURL                 string                `json:"base_url,omitempty"`
+	APIKeyID                string                `json:"api_key_id,omitempty"`
+	MaxIterations           int                   `json:"max_iterations"`
+	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
+	HistoryRetentionDays    int                   `json:"history_retention_days"`
+	SystemPromptSuffix      string                `json:"system_prompt_suffix,omitempty"`
+	EmbeddingProvider       schemas.ModelProvider `json:"embedding_provider"`
+	EmbeddingModel          string                `json:"embedding_model"`
+	EmbeddingAPIKeyID       string                `json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension      int                   `json:"embedding_dimension"`
+	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
+	SemanticSearchThreshold float64               `json:"semantic_search_threshold"`
+	SemanticSearchLimit     int                   `json:"semantic_search_limit"`
 }
 
 // ConfigInput is a configuration write.
@@ -35,11 +43,118 @@ type ConfigInput struct {
 	// APIKeyID names one of the provider's configured keys, or is empty for a
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
-	APIKeyID              string `json:"api_key_id,omitempty"`
-	MaxIterations         int    `json:"max_iterations,omitempty"`
-	RequestTimeoutSeconds int    `json:"request_timeout_seconds,omitempty"`
-	HistoryRetentionDays  int    `json:"history_retention_days,omitempty"`
-	SystemPromptSuffix    string `json:"system_prompt_suffix,omitempty"`
+	APIKeyID                string                `json:"api_key_id,omitempty"`
+	MaxIterations           int                   `json:"max_iterations,omitempty"`
+	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds,omitempty"`
+	HistoryRetentionDays    int                   `json:"history_retention_days,omitempty"`
+	SystemPromptSuffix      string                `json:"system_prompt_suffix,omitempty"`
+	EmbeddingProvider       schemas.ModelProvider `json:"embedding_provider"`
+	EmbeddingModel          string                `json:"embedding_model"`
+	EmbeddingAPIKeyID       string                `json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension      int                   `json:"embedding_dimension"`
+	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
+	SemanticSearchThreshold float64               `json:"semantic_search_threshold,omitempty"`
+	SemanticSearchLimit     int                   `json:"semantic_search_limit,omitempty"`
+
+	// present records the keys the decoded request carried. See UnmarshalJSON.
+	present map[string]bool
+}
+
+// UnmarshalJSON records which fields the request actually carried.
+//
+// Every field on this type is a value, so an omitted string and an explicit ""
+// decode identically - and the two mean opposite things once a stored
+// configuration exists: one says "leave it alone", the other says "clear it".
+// Guessing between them is what let a draft either wipe settings it never
+// mentioned or refuse to clear one it did.
+//
+// A ConfigInput built in Go rather than decoded has no presence set, and is
+// treated as supplying only its non-zero fields. That is the conservative
+// reading for an in-process caller, which has no way to express absence.
+func (c *ConfigInput) UnmarshalJSON(data []byte) error {
+	type plain ConfigInput
+	var decoded plain
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	keys := map[string]sonic.NoCopyRawMessage{}
+	if err := sonic.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	*c = ConfigInput(decoded)
+	c.present = make(map[string]bool, len(keys))
+	for key := range keys {
+		c.present[key] = true
+	}
+	return nil
+}
+
+// supplied reports whether the write named this field at all.
+func (c *ConfigInput) supplied(field string) bool {
+	if c == nil {
+		return false
+	}
+	if c.present != nil {
+		return c.present[field]
+	}
+	// No presence set: an in-process caller. Treat a non-zero value as supplied.
+	switch field {
+	case "embedding_provider":
+		return c.EmbeddingProvider != ""
+	case "embedding_model":
+		return c.EmbeddingModel != ""
+	case "embedding_api_key_id":
+		return c.EmbeddingAPIKeyID != ""
+	case "embedding_dimension":
+		return c.EmbeddingDimension != 0
+	case "log_vector_store_namespace":
+		return strings.TrimSpace(c.LogVectorStoreNamespace) != ""
+	case "semantic_search_threshold":
+		return c.SemanticSearchThreshold != 0
+	case "semantic_search_limit":
+		return c.SemanticSearchLimit != 0
+	}
+	return false
+}
+
+// applyStoredEmbeddingSettings fills the embedding fields the write did not
+// name from the stored row, producing the effective configuration.
+//
+// It runs before validation, not after. Validation expands omitted values into
+// defaults, so a merge afterwards can never tell a field that was left out from
+// one that was explicitly set to the default - and a deployment on a custom
+// namespace was quietly moved back to the default by any save that did not
+// restate it, orphaning every vector already indexed under it.
+//
+// Running first also makes change detection honest: a write that names only a
+// new model becomes a complete space once the stored provider and dimension are
+// filled in, so embeddingSpaceChanged sees the change, the namespace rule
+// applies, and the old namespace is retired.
+func applyStoredEmbeddingSettings(input *ConfigInput, previous *tables.TableWarpConfig) {
+	if input == nil || previous == nil {
+		return
+	}
+	if !input.supplied("embedding_provider") {
+		input.EmbeddingProvider = schemas.ModelProvider(previous.EmbeddingProvider)
+	}
+	if !input.supplied("embedding_model") {
+		input.EmbeddingModel = previous.EmbeddingModel
+	}
+	if !input.supplied("embedding_api_key_id") {
+		input.EmbeddingAPIKeyID = previous.EmbeddingAPIKeyID
+	}
+	if !input.supplied("embedding_dimension") {
+		input.EmbeddingDimension = previous.EmbeddingDimension
+	}
+	if !input.supplied("log_vector_store_namespace") {
+		input.LogVectorStoreNamespace = previous.LogVectorStoreNamespace
+	}
+	if !input.supplied("semantic_search_threshold") {
+		input.SemanticSearchThreshold = previous.SemanticSearchThreshold
+	}
+	if !input.supplied("semantic_search_limit") {
+		input.SemanticSearchLimit = previous.SemanticSearchLimit
+	}
 }
 
 // ConfigView returns the stored configuration for display.
@@ -58,9 +173,12 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 	}
 	if row == nil {
 		return ConfigView{
-			MaxIterations:         schemas.WarpDefaultMaxIterations,
-			RequestTimeoutSeconds: schemas.WarpDefaultRequestTimeoutSeconds,
-			HistoryRetentionDays:  schemas.WarpDefaultHistoryRetentionDays,
+			MaxIterations:           schemas.WarpDefaultMaxIterations,
+			RequestTimeoutSeconds:   schemas.WarpDefaultRequestTimeoutSeconds,
+			HistoryRetentionDays:    schemas.WarpDefaultHistoryRetentionDays,
+			LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+			SemanticSearchThreshold: schemas.WarpDefaultSemanticSearchThreshold,
+			SemanticSearchLimit:     schemas.WarpDefaultSemanticSearchLimit,
 		}, nil
 	}
 	return configViewFromRow(row), nil
@@ -73,18 +191,58 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if s.store == nil {
 		return ConfigView{}, ErrUnavailable
 	}
+	// Stored values first, then validation. Validation expands omitted fields
+	// into defaults, so anything merged afterwards is merging into values that
+	// are no longer distinguishable from a deliberate choice.
+	previous, err := s.store.GetWarpConfig(ctx)
+	if err != nil {
+		return ConfigView{}, err
+	}
+	applyStoredEmbeddingSettings(input, previous)
 	if err := ValidateConfigInput(input); err != nil {
 		return ConfigView{}, err
 	}
+	retired := retiredNamespaces(previous)
+	// Compared as they resolve, not as they are stored. A blank namespace on
+	// either side means WarpDefaultLogVectorStoreNamespace, so a raw comparison
+	// read "" and "BifrostWarpLogs" as two different namespaces and let the model
+	// or dimension change without a rename - after which new vectors of one shape
+	// were written into the same namespace as incompatible old ones.
+	// Inside the guard, which already returns false for a nil row - there is no
+	// previous namespace to resolve before the first save.
+	if embeddingSpaceChanged(previous, input) {
+		previousNamespace := effectiveNamespace(previous.LogVectorStoreNamespace)
+		if previousNamespace == effectiveNamespace(input.LogVectorStoreNamespace) {
+			return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when embedding provider, model, or dimension changes", ErrInvalidConfig)
+		}
+		// Retire what was actually in use, which for a blank stored value is the
+		// default rather than the empty string - retiring "" names nothing.
+		retired = appendUnique(retired, previousNamespace)
+	}
+	retiredJSON, err := sonic.Marshal(retired)
+	if err != nil {
+		return ConfigView{}, err
+	}
 	row := &tables.TableWarpConfig{
-		Enabled:               input.Enabled,
-		Provider:              string(input.Provider),
-		Model:                 input.Model,
-		BaseURL:               input.BaseURL,
-		APIKeyID:              strings.TrimSpace(input.APIKeyID),
-		MaxIterations:         input.MaxIterations,
-		RequestTimeoutSeconds: input.RequestTimeoutSeconds,
-		HistoryRetentionDays:  input.HistoryRetentionDays,
+		Enabled:                 input.Enabled,
+		Provider:                string(input.Provider),
+		Model:                   input.Model,
+		BaseURL:                 input.BaseURL,
+		APIKeyID:                strings.TrimSpace(input.APIKeyID),
+		MaxIterations:           input.MaxIterations,
+		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
+		HistoryRetentionDays:    input.HistoryRetentionDays,
+		EmbeddingProvider:       string(input.EmbeddingProvider),
+		EmbeddingModel:          input.EmbeddingModel,
+		EmbeddingAPIKeyID:       strings.TrimSpace(input.EmbeddingAPIKeyID),
+		EmbeddingDimension:      input.EmbeddingDimension,
+		LogVectorStoreNamespace: input.LogVectorStoreNamespace,
+		SemanticSearchThreshold: input.SemanticSearchThreshold,
+		SemanticSearchLimit:     input.SemanticSearchLimit,
+	}
+	if len(retired) > 0 {
+		value := string(retiredJSON)
+		row.RetiredLogVectorStoreNamespaces = &value
 	}
 	if input.SystemPromptSuffix != "" {
 		row.SystemPromptSuffix = &input.SystemPromptSuffix
@@ -93,6 +251,39 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	return configViewFromRow(row), nil
+}
+
+// mergeOmittedEmbeddingSettings fills embedding fields the write left empty
+// from the stored row.
+//
+// Field by field rather than all-or-nothing, so a draft that names some of them
+// keeps the rest. Replacing a space is still possible: a write that names a
+// value overwrites, and only an absent one falls back.
+func mergeOmittedEmbeddingSettings(row, previous *tables.TableWarpConfig) {
+	if previous == nil {
+		return
+	}
+	if row.EmbeddingProvider == "" {
+		row.EmbeddingProvider = previous.EmbeddingProvider
+	}
+	if row.EmbeddingModel == "" {
+		row.EmbeddingModel = previous.EmbeddingModel
+	}
+	if row.EmbeddingAPIKeyID == "" {
+		row.EmbeddingAPIKeyID = previous.EmbeddingAPIKeyID
+	}
+	if row.EmbeddingDimension == 0 {
+		row.EmbeddingDimension = previous.EmbeddingDimension
+	}
+	if strings.TrimSpace(row.LogVectorStoreNamespace) == "" {
+		row.LogVectorStoreNamespace = previous.LogVectorStoreNamespace
+	}
+	if row.SemanticSearchThreshold == 0 {
+		row.SemanticSearchThreshold = previous.SemanticSearchThreshold
+	}
+	if row.SemanticSearchLimit == 0 {
+		row.SemanticSearchLimit = previous.SemanticSearchLimit
+	}
 }
 
 // ValidateConfigInput normalizes and checks a write in place.
@@ -111,6 +302,19 @@ func ValidateConfigInput(input *ConfigInput) error {
 	input.Model = strings.TrimSpace(input.Model)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.Provider = schemas.ModelProvider(strings.TrimSpace(string(input.Provider)))
+	input.EmbeddingProvider = schemas.ModelProvider(strings.TrimSpace(string(input.EmbeddingProvider)))
+	input.EmbeddingModel = strings.TrimSpace(input.EmbeddingModel)
+	input.EmbeddingAPIKeyID = strings.TrimSpace(input.EmbeddingAPIKeyID)
+	input.LogVectorStoreNamespace = strings.TrimSpace(input.LogVectorStoreNamespace)
+	if input.LogVectorStoreNamespace == "" {
+		input.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
+	}
+	if input.SemanticSearchThreshold == 0 {
+		input.SemanticSearchThreshold = schemas.WarpDefaultSemanticSearchThreshold
+	}
+	if input.SemanticSearchLimit == 0 {
+		input.SemanticSearchLimit = schemas.WarpDefaultSemanticSearchLimit
+	}
 
 	// BaseURL is handed to the Warp client's ProviderConfig verbatim, so a value
 	// that is not an absolute http(s) URL would only surface on the first
@@ -145,6 +349,15 @@ func ValidateConfigInput(input *ConfigInput) error {
 		if input.Model == "" {
 			return fmt.Errorf("%w: model is required when warp is enabled", ErrInvalidConfig)
 		}
+		if input.EmbeddingProvider == "" {
+			return fmt.Errorf("%w: embedding_provider is required when warp is enabled", ErrInvalidConfig)
+		}
+		if input.EmbeddingModel == "" {
+			return fmt.Errorf("%w: embedding_model is required when warp is enabled", ErrInvalidConfig)
+		}
+		if input.EmbeddingDimension <= 0 {
+			return fmt.Errorf("%w: embedding_dimension must be positive when warp is enabled", ErrInvalidConfig)
+		}
 	}
 	if input.MaxIterations < 0 || input.MaxIterations > schemas.WarpMaxIterationsCeiling {
 		return fmt.Errorf("%w: max_iterations must be between 0 and %d", ErrInvalidConfig, schemas.WarpMaxIterationsCeiling)
@@ -158,6 +371,15 @@ func ValidateConfigInput(input *ConfigInput) error {
 	// retention policy they did not choose.
 	if input.HistoryRetentionDays < 0 {
 		return fmt.Errorf("%w: history_retention_days must not be negative", ErrInvalidConfig)
+	}
+	if input.EmbeddingDimension < 0 {
+		return fmt.Errorf("%w: embedding_dimension must not be negative", ErrInvalidConfig)
+	}
+	if input.SemanticSearchThreshold <= 0 || input.SemanticSearchThreshold > 1 {
+		return fmt.Errorf("%w: semantic_search_threshold must be greater than 0 and at most 1", ErrInvalidConfig)
+	}
+	if input.SemanticSearchLimit < 1 || input.SemanticSearchLimit > schemas.WarpMaxSemanticSearchLimit {
+		return fmt.Errorf("%w: semantic_search_limit must be between 1 and %d", ErrInvalidConfig, schemas.WarpMaxSemanticSearchLimit)
 	}
 	return nil
 }
@@ -184,16 +406,23 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 func configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 	config := configFromRow(row)
 	return ConfigView{
-		Configured:            config.IsConfigured(),
-		Enabled:               row.Enabled,
-		Provider:              schemas.ModelProvider(row.Provider),
-		Model:                 row.Model,
-		BaseURL:               row.BaseURL,
-		APIKeyID:              row.APIKeyID,
-		MaxIterations:         config.EffectiveMaxIterations(),
-		RequestTimeoutSeconds: config.EffectiveRequestTimeoutSeconds(),
-		HistoryRetentionDays:  config.EffectiveHistoryRetentionDays(),
-		SystemPromptSuffix:    derefString(row.SystemPromptSuffix),
+		Configured:              config.IsConfigured(),
+		Enabled:                 row.Enabled,
+		Provider:                schemas.ModelProvider(row.Provider),
+		Model:                   row.Model,
+		BaseURL:                 row.BaseURL,
+		APIKeyID:                row.APIKeyID,
+		MaxIterations:           config.EffectiveMaxIterations(),
+		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
+		HistoryRetentionDays:    config.EffectiveHistoryRetentionDays(),
+		SystemPromptSuffix:      derefString(row.SystemPromptSuffix),
+		EmbeddingProvider:       config.EmbeddingProvider,
+		EmbeddingModel:          config.EmbeddingModel,
+		EmbeddingAPIKeyID:       config.EmbeddingAPIKeyID,
+		EmbeddingDimension:      config.EmbeddingDimension,
+		LogVectorStoreNamespace: config.EffectiveLogVectorStoreNamespace(),
+		SemanticSearchThreshold: config.EffectiveSemanticSearchThreshold(),
+		SemanticSearchLimit:     config.EffectiveSemanticSearchLimit(),
 	}
 }
 
@@ -203,17 +432,70 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		return nil
 	}
 	return &schemas.WarpConfig{
-		Enabled:               row.Enabled,
-		APIKeyID:              row.APIKeyID,
-		Provider:              schemas.ModelProvider(row.Provider),
-		Model:                 row.Model,
-		BaseURL:               row.BaseURL,
-		MaxIterations:         row.MaxIterations,
-		RequestTimeoutSeconds: row.RequestTimeoutSeconds,
-		HistoryRetentionDays:  row.HistoryRetentionDays,
-		SystemPromptSuffix:    derefString(row.SystemPromptSuffix),
-		UpdatedAt:             row.UpdatedAt,
+		Enabled:                         row.Enabled,
+		APIKeyID:                        row.APIKeyID,
+		Provider:                        schemas.ModelProvider(row.Provider),
+		Model:                           row.Model,
+		BaseURL:                         row.BaseURL,
+		MaxIterations:                   row.MaxIterations,
+		RequestTimeoutSeconds:           row.RequestTimeoutSeconds,
+		HistoryRetentionDays:            row.HistoryRetentionDays,
+		SystemPromptSuffix:              derefString(row.SystemPromptSuffix),
+		UpdatedAt:                       row.UpdatedAt,
+		EmbeddingProvider:               schemas.ModelProvider(row.EmbeddingProvider),
+		EmbeddingModel:                  row.EmbeddingModel,
+		EmbeddingAPIKeyID:               row.EmbeddingAPIKeyID,
+		EmbeddingDimension:              row.EmbeddingDimension,
+		LogVectorStoreNamespace:         row.LogVectorStoreNamespace,
+		SemanticSearchThreshold:         row.SemanticSearchThreshold,
+		SemanticSearchLimit:             row.SemanticSearchLimit,
+		RetiredLogVectorStoreNamespaces: retiredNamespaces(row),
 	}
+}
+
+func embeddingSpaceChanged(row *tables.TableWarpConfig, input *ConfigInput) bool {
+	if row == nil || row.EmbeddingProvider == "" || row.EmbeddingModel == "" || row.EmbeddingDimension <= 0 {
+		return false
+	}
+	// The input has to name a complete space before it can be said to name a
+	// different one. A disabled save is a draft and may legitimately omit these
+	// fields, and reading those zeros as a change either rejected the draft for
+	// not renaming a namespace nobody touched, or retired the live namespace
+	// while writing the zeros over the config.
+	if input == nil || input.EmbeddingProvider == "" || input.EmbeddingModel == "" || input.EmbeddingDimension <= 0 {
+		return false
+	}
+	return row.EmbeddingProvider != string(input.EmbeddingProvider) || row.EmbeddingModel != input.EmbeddingModel || row.EmbeddingDimension != input.EmbeddingDimension
+}
+
+// effectiveNamespace resolves a stored or submitted namespace the way the rest
+// of Warp reads it, so comparisons and retirement agree with what is actually
+// queried. Mirrors WarpConfig.EffectiveLogVectorStoreNamespace.
+func effectiveNamespace(namespace string) string {
+	if strings.TrimSpace(namespace) == "" {
+		return schemas.WarpDefaultLogVectorStoreNamespace
+	}
+	return strings.TrimSpace(namespace)
+}
+
+func retiredNamespaces(row *tables.TableWarpConfig) []string {
+	if row == nil || row.RetiredLogVectorStoreNamespaces == nil || *row.RetiredLogVectorStoreNamespaces == "" {
+		return nil
+	}
+	var values []string
+	if err := sonic.Unmarshal([]byte(*row.RetiredLogVectorStoreNamespaces), &values); err != nil {
+		return nil
+	}
+	return values
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 // derefString reads a *string, treating nil as empty.
