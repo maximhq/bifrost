@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,9 +14,7 @@ import (
 // usable configuration, which is the shape both transports run against.
 func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
 	return NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(fake),
 		WithChatFunc(model.respond),
 	)
@@ -108,9 +105,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
 	service := NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(blocking),
 	)
@@ -161,9 +156,7 @@ func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
 	service := NewService(nil,
-		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
-			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
-		}}),
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(model.respond),
 		WithConversationStore(store),
