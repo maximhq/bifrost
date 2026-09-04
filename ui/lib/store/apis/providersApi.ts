@@ -210,6 +210,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
+			invalidatesTags: ["Models", "BaseModels"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: newProvider } = await queryFulfilled;
@@ -230,7 +231,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body,
 			}),
-			invalidatesTags: (result, error, arg) => [{ type: "ProviderKeys", id: arg.name }, "DBKeys", "VirtualKeys"],
+			invalidatesTags: (result, error, arg) => [{ type: "ProviderKeys", id: arg.name }, "DBKeys", "VirtualKeys", "Models", "BaseModels"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: updatedProvider } = await queryFulfilled;

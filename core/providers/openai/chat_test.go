@@ -371,6 +371,29 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_CopilotClampsNoneReasoningEffort(t *testing.T) {
+	req := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.Copilot,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: schemas.Ptr("search the web"),
+			},
+		}},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortNone)},
+		},
+	})
+
+	if req == nil || req.Reasoning == nil || req.Reasoning.Effort == nil {
+		t.Fatalf("expected chat request with a reasoning effort, got %#v", req)
+	}
+	if got := *req.Reasoning.Effort; got != schemas.ReasoningEffortLow {
+		t.Fatalf("expected unsupported \"none\" to clamp to %q, got %q", schemas.ReasoningEffortLow, got)
+	}
+}
+
 // Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking, minimax-m2)
 // reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
 // Vertex case should drop a "none" effort for these models while preserving it for

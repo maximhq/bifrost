@@ -48,6 +48,15 @@ export class ProvidersPage extends BasePage {
   readonly keySaveBtn: Locator
   readonly keyCancelBtn: Locator
 
+  // Copilot key form (device-code OAuth). Copilot has no plain "API Key"
+  // field: the form offers a device-login tab and a manual-token tab instead.
+  readonly copilotDeviceLoginTab: Locator
+  readonly copilotManualTokenTab: Locator
+  readonly copilotDeviceLoginBtn: Locator
+  readonly copilotConfirmAuthBtn: Locator
+  readonly copilotCancelLoginBtn: Locator
+  readonly copilotCopyCodeBtn: Locator
+
   constructor(page: Page) {
     super(page)
 
@@ -76,6 +85,14 @@ export class ProvidersPage extends BasePage {
     this.keyForm = page.getByTestId('key-form')
     this.keySaveBtn = page.getByTestId('key-save-btn')
     this.keyCancelBtn = page.getByTestId('key-cancel-btn')
+
+    // Copilot key form
+    this.copilotDeviceLoginTab = page.getByTestId('apikey-copilot-device-login-tab')
+    this.copilotManualTokenTab = page.getByTestId('apikey-copilot-manual-token-tab')
+    this.copilotDeviceLoginBtn = page.getByTestId('copilot-device-login-button')
+    this.copilotConfirmAuthBtn = page.getByTestId('copilot-confirm-auth-button')
+    this.copilotCancelLoginBtn = page.getByTestId('copilot-cancel-login-button')
+    this.copilotCopyCodeBtn = page.getByTestId('copilot-copy-code-button')
   }
 
   /**

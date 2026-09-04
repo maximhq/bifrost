@@ -52,6 +52,13 @@ func IsOpenAIReasoningModel(model string) bool {
 	return strings.Contains(modelLower, "gpt-5")
 }
 
+// rejectsNoneEffort reports whether a "none" effort must be replaced before it
+// reaches the provider. Copilot publishes no "off" rung and 400s on "none",
+// which the Anthropic ingress emits for thinking:{type:"disabled"}.
+func rejectsNoneEffort(provider schemas.ModelProvider, effort string) bool {
+	return effort == schemas.ReasoningEffortNone && provider == schemas.Copilot
+}
+
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.
@@ -125,7 +132,6 @@ func bareModelLower(model string) string {
 	}
 	return strings.ToLower(model)
 }
-
 
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))
