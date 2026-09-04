@@ -4,6 +4,7 @@ import { CustomerSelector } from "@/components/entitySelectors/customerSelector"
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TruncatedBadge } from "@/components/truncatedBadge";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -162,16 +163,7 @@ function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 		return <span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>;
 	}
 
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<Badge variant="outline" className="block max-w-full truncate text-left" data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}>
-					{label}
-				</Badge>
-			</TooltipTrigger>
-			<TooltipContent data-testid={`vk-assigned-to-tooltip-content-${vk.name}`}>{label}</TooltipContent>
-		</Tooltip>
-	);
+	return <TruncatedBadge label={label} dataTestId={`vk-assigned-to-tooltip-${vk.name}`} />;
 }
 
 function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
