@@ -6678,6 +6678,35 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				if isOutputMessage {
 					bifrostMessages = append(bifrostMessages, buildBifrostCodeExecutionCall(block))
 				}
+			} else if block.Name != nil &&
+				(*block.Name == string(AnthropicToolNameToolSearchBM25) ||
+					*block.Name == string(AnthropicToolNameToolSearchRegex)) {
+				// Server-side tool_search; the paired tool_search_tool_result
+				// attaches its tool_references onto this message below.
+				bifrostMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+					ID:     block.ID,
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Name:                    block.Name,
+						CallID:                  block.ID,
+						ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{},
+					},
+				}
+				if block.Caller != nil {
+					bifrostMsg.ResponsesToolMessage.Caller = &schemas.ResponsesToolCaller{
+						Type:   string(block.Caller.Type),
+						ToolID: block.Caller.ToolID,
+					}
+				}
+				if block.Input != nil {
+					if q := providerUtils.GetJSONField(block.Input, "query"); q.Exists() && q.Type == gjson.String {
+						bifrostMsg.ResponsesToolMessage.ResponsesToolSearchCall.Query = schemas.Ptr(q.Str)
+					}
+				}
+				if isOutputMessage {
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
 			}
 
 		case AnthropicContentBlockTypeCodeExecutionToolResult,
@@ -6686,6 +6715,12 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			// Fold the code-execution result onto the matching code_interpreter_call.
 			if block.ToolUseID != nil {
 				attachAnthropicCodeExecutionResult(bifrostMessages, *block.ToolUseID, block)
+			}
+
+		case AnthropicContentBlockTypeToolSearchToolResult:
+			// Mirrors the AdvisorToolResult / WebFetchToolResult handling below.
+			if block.ToolUseID != nil {
+				attachAnthropicToolSearchResult(bifrostMessages, *block.ToolUseID, block)
 			}
 
 		case AnthropicContentBlockTypeAdvisorToolResult:
@@ -7430,6 +7465,60 @@ func convertAnthropicWebFetchResultToBifrost(block *AnthropicContentBlock) *sche
 	return result
 }
 
+// attachAnthropicToolSearchResult folds a tool_search_tool_result block's
+// tool_references onto the tool_search_call whose id matches its tool_use_id.
+// Mirrors attachAnthropicWebFetchResult.
+func attachAnthropicToolSearchResult(messages []schemas.ResponsesMessage, toolUseID string, block AnthropicContentBlock) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := &messages[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchCall {
+			continue
+		}
+		if msg.ID == nil || *msg.ID != toolUseID {
+			continue
+		}
+		if msg.ResponsesToolMessage == nil {
+			msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+		}
+		msg.ResponsesToolMessage.CallID = &toolUseID
+		// A replayed history item may carry caller metadata only on the
+		// result block; keep it so the reverse conversion can re-emit it.
+		if msg.ResponsesToolMessage.Caller == nil && block.Caller != nil {
+			msg.ResponsesToolMessage.Caller = &schemas.ResponsesToolCaller{
+				Type:   string(block.Caller.Type),
+				ToolID: block.Caller.ToolID,
+			}
+		}
+		// The wire nests the references: content is a single
+		// tool_search_tool_search_result object carrying tool_references.
+		// The top-level field is kept as a fallback for the flattened shape
+		// streaming deltas use.
+		refBlocks := block.ToolReferences
+		if c := block.Content; c != nil {
+			inner := c.ContentObj
+			if inner == nil && len(c.ContentBlocks) > 0 {
+				inner = &c.ContentBlocks[0]
+			}
+			if inner != nil && len(inner.ToolReferences) > 0 {
+				refBlocks = inner.ToolReferences
+			}
+		}
+		var toolRefs []string
+		for _, ref := range refBlocks {
+			if ref.ToolName != nil {
+				toolRefs = append(toolRefs, *ref.ToolName)
+			} else if ref.Name != nil {
+				toolRefs = append(toolRefs, *ref.Name)
+			}
+		}
+		if msg.ResponsesToolMessage.ResponsesToolSearchCall == nil {
+			msg.ResponsesToolMessage.ResponsesToolSearchCall = &schemas.ResponsesToolSearchCall{}
+		}
+		msg.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences = toolRefs
+		break
+	}
+}
+
 func attachAnthropicWebFetchResult(messages []schemas.ResponsesMessage, toolUseID string, block AnthropicContentBlock) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := &messages[i]
@@ -7443,6 +7532,14 @@ func attachAnthropicWebFetchResult(messages []schemas.ResponsesMessage, toolUseI
 			msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
 		}
 		msg.ResponsesToolMessage.CallID = &toolUseID
+		// A replayed history item may carry caller metadata only on the
+		// result block; keep it so the reverse conversion can re-emit it.
+		if msg.ResponsesToolMessage.Caller == nil && block.Caller != nil {
+			msg.ResponsesToolMessage.Caller = &schemas.ResponsesToolCaller{
+				Type:   string(block.Caller.Type),
+				ToolID: block.Caller.ToolID,
+			}
+		}
 		msg.ResponsesToolMessage.ResponsesWebFetchCall = convertAnthropicWebFetchResultToBifrost(&block)
 		break
 	}
@@ -7605,20 +7702,36 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 		return nil
 	}
 
-	// 1. server_tool_use block. Preserve the search variant name (regex/bm25);
-	// the query is not retained on the neutral item, so send an empty input.
+	// 1. server_tool_use block. Preserve the search variant name (regex/bm25)
+	// and the original query, so a replayed block matches what the API sent.
 	name := string(AnthropicToolNameToolSearchRegex)
 	if msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name != "" {
 		name = *msg.ResponsesToolMessage.Name
 	}
+	input := json.RawMessage("{}")
+	if sc := msg.ResponsesToolMessage.ResponsesToolSearchCall; sc != nil && sc.Query != nil {
+		if b, err := providerUtils.MarshalSorted(map[string]interface{}{"query": *sc.Query}); err == nil {
+			input = b
+		}
+	}
+	var caller *AnthropicToolCaller
+	if c := msg.ResponsesToolMessage.Caller; c != nil {
+		caller = &AnthropicToolCaller{
+			Type:   AnthropicToolCallerType(c.Type),
+			ToolID: providerUtils.SanitizeAnthropicToolUseIDPtr(c.ToolID),
+		}
+	}
 	serverToolUseBlock := AnthropicContentBlock{
-		Type:  AnthropicContentBlockTypeServerToolUse,
-		ID:    toolUseID,
-		Name:  schemas.Ptr(name),
-		Input: json.RawMessage("{}"),
+		Type:   AnthropicContentBlockTypeServerToolUse,
+		ID:     toolUseID,
+		Name:   schemas.Ptr(name),
+		Input:  input,
+		Caller: caller,
 	}
 
-	// 2. tool_search_tool_result block reconstructed from the discovered tool names.
+	// 2. tool_search_tool_result block reconstructed from the discovered tool
+	// names, in the wire's nested shape: content is a single
+	// tool_search_tool_search_result object carrying the tool_references.
 	var toolReferences []AnthropicContentBlock
 	if msg.ResponsesToolMessage.ResponsesToolSearchCall != nil {
 		for _, toolName := range msg.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences {
@@ -7629,9 +7742,13 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 		}
 	}
 	resultBlock := AnthropicContentBlock{
-		Type:           AnthropicContentBlockTypeToolSearchToolResult,
-		ToolUseID:      toolUseID,
-		ToolReferences: toolReferences,
+		Type:      AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID: toolUseID,
+		Caller:    caller,
+		Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+			Type:           AnthropicContentBlockType("tool_search_tool_search_result"),
+			ToolReferences: toolReferences,
+		}},
 	}
 
 	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
