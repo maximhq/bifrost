@@ -242,7 +242,11 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias)
 }
 
-// Redacted returns a redacted copy of the network configuration with CACertPEM masked.
+// Redacted returns a redacted copy of the network configuration: CACertPEM is masked,
+// and a BaseURL that resolved from an env./vault. reference has its resolved value
+// masked too, so the copy exposes only the reference. A literal base_url is left
+// readable, since it is not a secret and the UI displays it. Both SecretVars are
+// cloned so the copy never shares pointers with the original.
 func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc == nil {
 		return nil
@@ -250,6 +254,13 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	redacted := *nc
 	if nc.CACertPEM != nil && nc.CACertPEM.IsSet() {
 		redacted.CACertPEM = nc.CACertPEM.Redacted()
+	}
+	if nc.BaseURL != nil {
+		if nc.BaseURL.IsFromSecret() {
+			redacted.BaseURL = nc.BaseURL.Redacted()
+		} else {
+			redacted.BaseURL = nc.BaseURL.Clone()
+		}
 	}
 	return &redacted
 }
