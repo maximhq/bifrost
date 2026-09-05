@@ -175,7 +175,7 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
 	if h.dbStore != nil {
 		var err error
-		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		providers, err = h.dbStore.GetProvidersConfig(lib.DetachRequestCtx(ctx))
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
 			return
@@ -229,7 +229,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 	var config *configstore.ProviderConfig
 	if h.dbStore != nil {
-		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		config, err = h.dbStore.GetProviderConfig(lib.DetachRequestCtx(ctx), provider)
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
@@ -345,7 +345,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
-	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
+	if err := h.inMemoryStore.AddProvider(lib.DetachRequestCtx(ctx), payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
 		if errors.Is(err, lib.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
@@ -551,7 +551,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Adding the provider to store
-		if err := h.inMemoryStore.AddProvider(ctx, provider, config); err != nil {
+		if err := h.inMemoryStore.AddProvider(lib.DetachRequestCtx(ctx), provider, config); err != nil {
 			// In an upsert flow, "already exists" is not fatal — the provider may have been
 			// added concurrently or exist in the DB from a previous failed attempt.
 			if !errors.Is(err, lib.ErrAlreadyExists) {
@@ -564,7 +564,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update provider config in store (env vars will be processed by store)
-	if err := h.inMemoryStore.UpdateProviderConfig(ctx, provider, config); err != nil {
+	if err := h.inMemoryStore.UpdateProviderConfig(lib.DetachRequestCtx(ctx), provider, config); err != nil {
 		logger.Warn("Failed to update provider %s: %v", provider, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
@@ -627,7 +627,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
+	if err := h.modelsManager.RemoveProvider(lib.DetachRequestCtx(ctx), provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
 	}
 
@@ -1156,9 +1156,9 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	var params *tables.TableModelParameters
 	var err error
 	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
-		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(lib.DetachRequestCtx(ctx), modelParam)
 	} else {
-		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+		params, err = h.dbStore.GetModelParametersByModel(lib.DetachRequestCtx(ctx), modelParam)
 	}
 	if err == nil && params == nil {
 		err = configstore.ErrNotFound
@@ -1472,7 +1472,7 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+	if err := h.modelsManager.UpsertModelPricingAttributes(lib.DetachRequestCtx(ctx), payload); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
 		return
 	}
