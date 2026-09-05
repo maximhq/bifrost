@@ -940,27 +940,3 @@ func TestSessionIDResolutionIsConsistent(t *testing.T) {
 		}
 	}
 }
-
-// TestDetachRequestCtx pins the two properties handlers rely on when they hand a
-// request's context to the config store: no Done channel (so database/sql never
-// starts the goroutine that would outlive the request and read fasthttp's
-// server-wide Server.done), and request values still resolve.
-func TestDetachRequestCtx(t *testing.T) {
-	reqCtx := &fasthttp.RequestCtx{}
-	reqCtx.SetUserValue("some-key", "some-value")
-
-	detached := DetachRequestCtx(reqCtx)
-
-	if detached.Done() != nil {
-		t.Fatal("DetachRequestCtx must return a context with a nil Done channel; a non-nil one makes database/sql start Rows.awaitDone on the RequestCtx")
-	}
-	if err := detached.Err(); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if _, ok := detached.Deadline(); ok {
-		t.Fatal("expected no deadline")
-	}
-	if got := detached.Value("some-key"); got != "some-value" {
-		t.Fatalf("request values must still resolve through the detached context, got %v", got)
-	}
-}

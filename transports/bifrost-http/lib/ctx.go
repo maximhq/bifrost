@@ -832,29 +832,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	return bifrostCtx, cancel
 }
 
-// DetachRequestCtx returns a context.Context that carries ctx's request-scoped
-// values but no cancellation, for handing to anything that takes a
-// context.Context and may keep it after the RequestHandler has returned.
-//
-// fasthttp is explicit that a *RequestCtx cannot be treated that way:
-// "RequestHandler should avoid holding references to incoming RequestCtx and/or
-// its members after the return" and "It is unsafe modifying/reading RequestCtx
-// instance from concurrently running goroutines" (server.go, on RequestCtx).
-// database/sql does exactly what those sentences rule out: Rows.initContextClose
-// starts Rows.awaitDone on a goroutine bound to the Rows, and that goroutine
-// reads ctx.Done() and ctx.Err(). RequestCtx.Done() returns the process-wide
-// Server.done channel, which Server.ShutdownWithContext assigns to, so the read
-// races the shutdown's write with nothing ordering them.
-//
-// context.WithoutCancel gives a context whose Done() is nil, which is the
-// property that keeps the goroutine from being started at all
-// (initContextClose returns early when Done() == nil), while UserValue lookups
-// -- request id, query scope, tracer -- still resolve through to the RequestCtx
-// for the duration of the call.
-func DetachRequestCtx(ctx *fasthttp.RequestCtx) context.Context {
-	return context.WithoutCancel(ctx)
-}
-
 // ValidateBaseURL checks that a URL is parseable with both scheme and host —
 // the same gate BuildBaseURL applies before honoring an override. Empty values
 // are accepted (caller decides whether absence is allowed). Logging is the
