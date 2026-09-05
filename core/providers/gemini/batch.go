@@ -54,15 +54,10 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 	return geminiReq, nil
 }
 
-// ToGeminiBatchGenerateContentRequestWithContext resolves any URL-backed audio in
-// the body and then converts it. Conversion itself is deterministic and performs
-// no I/O; the resolution step is what needs the context.
+// ToGeminiBatchGenerateContentRequestWithContext converts a previously resolved
+// body without I/O, retaining the context parameter for compatibility.
 func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
-	resolvedBody, err := ResolveBatchAudioURLs(ctx, body)
-	if err != nil {
-		return GeminiBatchGenerateContentRequest{}, err
-	}
-	return ToGeminiBatchGenerateContentRequest(resolvedBody)
+	return ToGeminiBatchGenerateContentRequest(body)
 }
 
 // ResolveBatchAudioURLs fetches any URL-backed audio in an OpenAI-style batch body

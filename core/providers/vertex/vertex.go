@@ -2883,7 +2883,19 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests)
+			resolvedRequests := append([]schemas.BatchRequestItem(nil), request.Requests...)
+			for i, item := range resolvedRequests {
+				body := item.Body
+				if body == nil {
+					body = item.Params
+				}
+				resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to resolve batch request audio URLs", err)
+				}
+				resolvedRequests[i].Body = resolvedBody
+			}
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, resolvedRequests)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}
@@ -3524,7 +3536,6 @@ const (
 	gcsStorageBase = "https://storage.googleapis.com/storage/v1"
 	gcsUploadBase  = "https://storage.googleapis.com/upload/storage/v1"
 )
-
 
 // --- GCS helpers ---
 
