@@ -34,7 +34,11 @@ type ChatResponse struct {
 	ConversationID string                   `json:"conversation_id,omitempty"`
 	FinishReason   string                   `json:"finish_reason,omitempty"`
 	Usage          *schemas.BifrostLLMUsage `json:"usage,omitempty"`
-	Error          *ChatError               `json:"error,omitempty"`
+	// Question is set when the turn ended by asking rather than answering. The
+	// JSON transport needs it to show the picker, and history needs it so the
+	// thread is filed from its first turn.
+	Question *Question  `json:"question,omitempty"`
+	Error    *ChatError `json:"error,omitempty"`
 }
 
 type ChatToolCall struct {

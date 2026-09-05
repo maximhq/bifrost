@@ -332,6 +332,9 @@ type logRow struct {
 	UserID         string  `json:"user_id,omitempty"`
 	ErrorMessage   string  `json:"error_message,omitempty"`
 	Content        string  `json:"content,omitempty"`
+	// Link opens this request in the Logs view. Built server-side so the
+	// model repeats it rather than guessing the dashboard's URL scheme.
+	Link string `json:"link,omitempty"`
 }
 
 // projectLog reduces a log row to the fields that answer operational
@@ -353,6 +356,7 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		Cost:           derefFloat(entry.Cost),
 		VirtualKeyName: derefString(entry.VirtualKeyName),
 		UserID:         derefString(entry.UserID),
+		Link:           logDetailLink(entry.ID),
 	}
 	if entry.ErrorDetailsParsed != nil && entry.ErrorDetailsParsed.Error != nil {
 		row.ErrorMessage = truncateText(entry.ErrorDetailsParsed.Error.Message, 300)

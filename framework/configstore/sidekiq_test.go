@@ -533,6 +533,54 @@ func TestGetInFlightSidekiqJobByKindReturnsMostRecent(t *testing.T) {
 	assert.Equal(t, "new", job.ID, "most-recently-created in-flight job of the kind wins")
 }
 
+func TestGetLatestSidekiqJobByKindNoMatch(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	job, err := store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	assert.Nil(t, job, "no jobs of the kind at all")
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "other", Kind: "reindex"}))
+	job, err = store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	assert.Nil(t, job, "a job of a different kind does not count")
+}
+
+func TestGetLatestSidekiqJobByKindIncludesTerminal(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "done", Kind: "sync"}))
+	_, err := store.ClaimSidekiqJob(ctx, "done", "owner-A", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, store.CompleteSidekiqJob(ctx, "done", "owner-A", "{}"))
+	setCreatedAt(t, store, "done", time.Now().Add(-2*time.Hour))
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "failed", Kind: "sync"}))
+	_, err = store.ClaimSidekiqJob(ctx, "failed", "owner-A", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, store.FailSidekiqJob(ctx, "failed", "owner-A", "{}", "boom"))
+	setCreatedAt(t, store, "failed", time.Now().Add(-time.Hour))
+
+	// A newer job of a different kind must not win.
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "newest-other", Kind: "reindex"}))
+
+	job, err := store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, "failed", job.ID, "most recently created job of the kind wins regardless of status")
+	assert.Equal(t, tables.SidekiqStatusFailed, job.Status)
+	assert.Equal(t, "boom", job.LastError)
+
+	// An in-flight job newer than the terminal ones is still the latest.
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "pending", Kind: "sync"}))
+	job, err = store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, "pending", job.ID)
+}
+
 func TestMarkStaleSidekiqJobsFailed(t *testing.T) {
 	store := setupSidekiqTestStore(t)
 	ctx := context.Background()

@@ -38,6 +38,15 @@ type WarpConversationStore interface {
 	// CountWarpMessages returns message counts for the given threads in one
 	// query, so a list view does not issue a count per row.
 	CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error)
+	// SumWarpMessageUsage returns each thread's total tokens and cost in one
+	// query, for the same reason as CountWarpMessages.
+	SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error)
+}
+
+// WarpUsageTotals is what a thread has cost so far.
+type WarpUsageTotals struct {
+	TotalTokens int
+	Cost        float64
 }
 
 // ListWarpConversations returns an owner's threads, most recent first.
@@ -56,6 +65,35 @@ func (s *RDBConfigStore) ListWarpConversations(ctx context.Context, ownerID stri
 		Limit(limit).
 		Find(&conversations).Error
 	return conversations, err
+}
+
+// SumWarpMessageUsage returns each thread's total tokens and cost in one
+// grouped query. Threads with no messages, or that do not exist, are absent
+// from the result rather than reported as zero.
+func (s *RDBConfigStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
+	totals := make(map[string]WarpUsageTotals, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return totals, nil
+	}
+	type row struct {
+		ConversationID string
+		TotalTokens    int
+		Cost           float64
+	}
+	var rows []row
+	err := s.DB().WithContext(ctx).
+		Model(&tables.TableWarpMessage{}).
+		Select("conversation_id, coalesce(sum(total_tokens), 0) as total_tokens, coalesce(sum(cost), 0) as cost").
+		Where("conversation_id IN ?", conversationIDs).
+		Group("conversation_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		totals[r.ConversationID] = WarpUsageTotals{TotalTokens: r.TotalTokens, Cost: r.Cost}
+	}
+	return totals, nil
 }
 
 // CountWarpMessages returns message counts for the given threads in one query,

@@ -10,6 +10,12 @@ export interface WarpTurn {
 	/** Set when the turn ended in an error, so the UI can render it differently. */
 	error?: string;
 	/**
+	 * Set when Warp answered on its last research step without settling. The
+	 * answer is shown, labelled as partial, so what it could not check is read
+	 * as a gap rather than as a finding.
+	 */
+	partial?: boolean;
+	/**
 	 * On a user turn, the question this message answers.
 	 *
 	 * Kept so a bare "-7d" in the transcript stays legible: on its own it reads

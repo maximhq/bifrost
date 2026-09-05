@@ -1,17 +1,21 @@
 import WarpComposer from "@/components/warp/warpComposer";
+import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { useWarpStream } from "@/components/warp/useWarpStream";
+import { indexStatusLabel, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { WarpIcon } from "@/components/ui/icons";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
-import { useGetWarpConfigQuery } from "@/lib/store/apis/warpApi";
+import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
+import type { WarpConversation } from "@/lib/types/warp";
+import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
-import { ArrowDown, SquarePen, X } from "lucide-react";
-import { useCallback } from "react";
+import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Starter questions, shown on an empty conversation. */
 const STARTERS = [
@@ -38,15 +42,60 @@ export default function WarpPanel() {
 		[appendTurn],
 	);
 
-	const { streamingText, streamingToolCalls, isStreaming, question, clearQuestion, send, stop, resetConversation } = useWarpStream({
-		onTurnComplete,
-	});
+	const { streamingText, streamingToolCalls, isStreaming, question, clearQuestion, send, stop, resetConversation, openConversation } =
+		useWarpStream({ onTurnComplete });
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
 
-	if (!warp) return null;
+	// History is a view over the same column, not a second panel: the transcript
+	// steps aside while a thread is being picked and comes back with it loaded.
+	const [showHistory, setShowHistory] = useState(false);
+	const [activeConversationId, setActiveConversationId] = useState<string | undefined>(undefined);
+	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+
+	// The index chip. Polled faster while a backfill is running, because that is
+	// the only time the number moves; otherwise a slow heartbeat is enough to
+	// notice a vector store going away.
+	const { data: indexStatus } = useGetWarpLogIndexStatusQuery(undefined, {
+		skip: !isConfigured,
+		pollingInterval: 30000,
+	});
+	const { data: liveIndexStatus } = useGetWarpLogIndexStatusQuery(undefined, {
+		skip: !isConfigured || indexStatus?.state !== "indexing",
+		pollingInterval: 5000,
+	});
+	const indexChip = liveIndexStatus ?? indexStatus;
+
+	// Messages typed while an answer is streaming. Sent one per finished turn,
+	// in order, so a follow-up asked mid-answer is neither dropped nor fired
+	// into the middle of the request it follows up on.
+	const [queue, setQueue] = useState<string[]>([]);
+	// ask is redefined every render because it closes over the transcript. The
+	// drain effect reaches it through a ref so it always sends with the history
+	// as of the turn that just finished, without re-running on every render.
+	const askRef = useRef<((text: string) => void) | null>(null);
+	const wasStreaming = useRef(isStreaming);
+	useEffect(() => {
+		const drain = shouldDrainQueue(wasStreaming.current, isStreaming, queue.length);
+		wasStreaming.current = isStreaming;
+		if (!drain) return;
+		const [next, ...rest] = queue;
+		setQueue(rest);
+		askRef.current?.(next);
+	}, [isStreaming, queue]);
+
+	if (!warp) return null;
+
+	const openStored = async (conversation: WarpConversation) => {
+		const detail = await loadConversation(conversation.id).unwrap();
+		stop();
+		warp.replaceTurns(turnsFromStoredMessages(detail.messages));
+		openConversation(detail.id);
+		setActiveConversationId(detail.id);
+		setShowHistory(false);
+	};
 	// "Turned off" and "never set up" both report configured:false, but they are
 	// different situations with different fixes. Telling someone who has already
 	// filled the form in that Warp "isn't set up yet" sends them back to a page
@@ -72,6 +121,7 @@ export default function WarpPanel() {
 		scrollToBottom();
 		void send(history, text);
 	};
+	askRef.current = ask;
 
 	return (
 		// No chrome of its own: WarpDock supplies the surface, so the panel is just
@@ -92,8 +142,24 @@ export default function WarpPanel() {
 					<Badge variant="secondary" className="shrink-0 text-[10px]">
 						ALPHA
 					</Badge>
+					{indexChip && <WarpIndexChip status={indexChip} />}
 				</div>
 				<div className="flex shrink-0 items-center gap-1">
+					{isConfigured && (
+						<button
+							type="button"
+							aria-label={showHistory ? "Back to chat" : "Chat history"}
+							aria-pressed={showHistory}
+							data-testid="warp-history-btn"
+							onClick={() => setShowHistory((current) => !current)}
+							className={cn(
+								"text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors",
+								showHistory && "bg-accent text-accent-foreground",
+							)}
+						>
+							<History className="size-3.5" />
+						</button>
+					)}
 					{warp.turns.length > 0 && (
 						<button
 							type="button"
@@ -104,6 +170,9 @@ export default function WarpPanel() {
 								// Dropping the thread id as well as the transcript, or the next
 								// question would be filed under the chat that was just cleared.
 								resetConversation();
+								setActiveConversationId(undefined);
+								setShowHistory(false);
+								setQueue([]);
 								warp.clear();
 							}}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
@@ -123,7 +192,11 @@ export default function WarpPanel() {
 				</div>
 			</header>
 
-			{!isConfigured ? (
+			{isConfigured && showHistory ? (
+				<div className="min-h-0 flex-1" data-testid="warp-history-view">
+					<WarpHistory activeConversationId={activeConversationId} onOpen={openStored} />
+				</div>
+			) : !isConfigured ? (
 				// An unconfigured Warp is fixable by the operator, so the panel points
 				// at the fix rather than hiding or showing a bare error.
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center" data-testid="warp-unconfigured">
@@ -183,6 +256,29 @@ export default function WarpPanel() {
 									warp.turns.map((turn, index) => <WarpMessage key={index} turn={turn} isLatest={index === warp.turns.length - 1} />)
 								)}
 								{isStreaming && <WarpStreamingMessage text={streamingText} toolCalls={streamingToolCalls} isStreaming={isStreaming} />}
+								{queue.length > 0 && (
+									<ul className="space-y-2" data-testid="warp-queued">
+										{queue.map((text, index) => (
+											<li
+												key={`${index}-${text}`}
+												className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
+												data-testid="warp-queued-item"
+											>
+												<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
+												<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
+												<button
+													type="button"
+													aria-label="Remove queued message"
+													data-testid="warp-queued-remove"
+													onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
+													className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+												>
+													<X className="size-3" />
+												</button>
+											</li>
+										))}
+									</ul>
+								)}
 							</div>
 						</ScrollArea>
 
@@ -238,17 +334,48 @@ export default function WarpPanel() {
 									stop();
 									clearQuestion();
 									resetConversation();
+									setQueue([]);
 									warp.clear();
 								}
 							}}
 							provider={config?.provider}
 							model={config?.model}
 							onSend={ask}
-							onStop={stop}
+							onQueue={(text) => setQueue((current) => [...current, text])}
+							// Stopping is a decision about the whole exchange: a follow-up
+							// queued behind the answer you just cut off should not fire on
+							// its own the moment the cut lands.
+							onStop={() => {
+								setQueue([]);
+								stop();
+							}}
 						/>
 					</div>
 				</div>
 			)}
 		</div>
+	);
+}
+/**
+ * Whether semantic search is usable, as one small chip beside the title.
+ *
+ * Kept in the header rather than the settings page because it answers the
+ * question people have while asking: "why did Warp not find that
+ * conversation?". A backfill in progress shows its percentage; a failure shows
+ * the cause on hover.
+ */
+function WarpIndexChip({ status }: { status: Parameters<typeof indexStatusLabel>[0] }) {
+	const { label, tone, detail } = indexStatusLabel(status);
+	return (
+		<Badge
+			variant={tone === "error" ? "destructive" : "secondary"}
+			title={detail ?? label}
+			data-testid="warp-index-chip"
+			data-state={status.state}
+			className={cn("flex shrink-0 items-center gap-1 text-[10px] font-normal", tone === "muted" && "text-muted-foreground")}
+		>
+			{tone === "busy" ? <Loader2 className="size-2.5 animate-spin" /> : <Database className="size-2.5" />}
+			{label}
+		</Badge>
 	);
 }
