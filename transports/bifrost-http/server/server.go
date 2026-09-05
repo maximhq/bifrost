@@ -3056,6 +3056,110 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
+// Shutdown stops the background resources Bootstrap started: the Bifrost
+// client, the storage cleaners, the webhook/sweep/sidekiq workers, the live
+// model refresher, the websocket handler and the upstream websocket pool,
+// and finally Config itself. The context Bootstrap derived from its caller
+// is cancelled first, so ctx-aware workers begin unwinding immediately.
+//
+// Start calls this from its signal branch. It is exported so that a caller
+// embedding BifrostHTTPServer -- one that runs Bootstrap and serves s.Server
+// (or s.Router.Handler) on a listener of its own rather than calling Start --
+// can run the same sequence. Several of the steps go through unexported
+// fields and methods (wsPool, devPprofHandler, OAuth2SweepWorker.stop,
+// stopLiveModelRefresher) that nothing outside this package can reach, so
+// such a caller has no way to stop them otherwise.
+//
+// It deliberately touches neither s.Server nor any net.Listener: whoever
+// opened a listener closes it. Start shuts its own fasthttp server down
+// before calling this, preserving the previous order.
+//
+// Blocks until the sequence finishes or ctx is done, whichever comes first,
+// returning ctx.Err() in the latter case. Call it once; it is not safe to
+// call concurrently or repeatedly.
+func (s *BifrostHTTPServer) Shutdown(ctx context.Context) error {
+	// Cancelling main context
+	if s.cancel != nil {
+		s.cancel()
+	}
+	// Wait for shutdown to complete or timeout
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		logger.Info("shutting down bifrost client...")
+		s.Client.Shutdown()
+		logger.Info("bifrost client shutdown completed")
+		logger.Info("cleaning up storage engines...")
+		// Cleanup server-specific components
+		if s.LogsCleaner != nil {
+			logger.Info("stopping log retention cleaner...")
+			s.LogsCleaner.StopCleanupRoutine()
+		}
+		if s.AsyncJobCleaner != nil {
+			logger.Info("stopping async job cleaner...")
+			s.AsyncJobCleaner.StopCleanupRoutine()
+		}
+		if s.WebhookDispatcher != nil {
+			logger.Info("stopping webhook dispatcher...")
+			s.WebhookDispatcher.Stop()
+		}
+		if s.WSTicketStore != nil {
+			logger.Info("stopping ws ticket store...")
+			s.WSTicketStore.Stop()
+		}
+		if s.TempTokenSweepWorker != nil {
+			logger.Info("stopping temp-token sweep worker...")
+			s.TempTokenSweepWorker.Stop()
+		}
+		if s.OAuth2SweepWorker != nil {
+			logger.Info("stopping oauth2 sweep worker...")
+			s.OAuth2SweepWorker.stop()
+			s.OAuth2SweepWorker = nil
+		}
+		if s.SidekiqDispatcherStop != nil {
+			logger.Info("stopping sidekiq dispatcher...")
+			s.SidekiqDispatcherStop()
+		}
+		logger.Info("stopping live model refresher...")
+		s.stopLiveModelRefresher()
+		if s.SidekiqRunner != nil {
+			logger.Info("stopping sidekiq runner...")
+			s.SidekiqRunner.Shutdown()
+		}
+		if s.devPprofHandler != nil {
+			logger.Info("stopping dev pprof handler...")
+			s.devPprofHandler.Cleanup()
+		}
+		// Not previously part of this sequence. The handler's heartbeat
+		// goroutine was left to exit on context cancellation with nothing
+		// waiting for it to actually finish, and connected clients were never
+		// closed; Stop() does both. Bootstrap always starts the heartbeat
+		// (RegisterAPIRoutes -> StartHeartbeat), so this cannot block on a
+		// handler whose goroutine never ran.
+		if s.WebSocketHandler != nil {
+			logger.Info("stopping websocket handler...")
+			s.WebSocketHandler.Stop()
+		}
+		if s.wsPool != nil {
+			logger.Info("closing websocket connection pool...")
+			s.wsPool.Close()
+		}
+		// Cleanup Config and all its background components
+		if s.Config != nil {
+			s.Config.Close(ctx)
+		}
+		logger.Info("storage engines cleanup completed")
+	}()
+	select {
+	case <-done:
+		logger.Info("cleanup completed")
+		return nil
+	case <-ctx.Done():
+		logger.Warn("cleanup did not complete before the shutdown context expired: %v", ctx.Err())
+		return ctx.Err()
+	}
+}
+
 // Start starts the HTTP server at the specified host and port
 // Also watches signals and errors
 func (s *BifrostHTTPServer) Start() error {
@@ -3097,82 +3201,23 @@ func (s *BifrostHTTPServer) Start() error {
 		} else {
 			logger.Info("server gracefully shutdown")
 		}
-		// Cancelling main context
-		if s.cancel != nil {
-			s.cancel()
-		}
-		// Wait for shutdown to complete or timeout
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			logger.Info("shutting down bifrost client...")
-			s.Client.Shutdown()
-			logger.Info("bifrost client shutdown completed")
-			logger.Info("cleaning up storage engines...")
-			// Cleanup server-specific components
-			if s.LogsCleaner != nil {
-				logger.Info("stopping log retention cleaner...")
-				s.LogsCleaner.StopCleanupRoutine()
-			}
-			if s.AsyncJobCleaner != nil {
-				logger.Info("stopping async job cleaner...")
-				s.AsyncJobCleaner.StopCleanupRoutine()
-			}
-			if s.WebhookDispatcher != nil {
-				logger.Info("stopping webhook dispatcher...")
-				s.WebhookDispatcher.Stop()
-			}
-			if s.WSTicketStore != nil {
-				logger.Info("stopping ws ticket store...")
-				s.WSTicketStore.Stop()
-			}
-			if s.TempTokenSweepWorker != nil {
-				logger.Info("stopping temp-token sweep worker...")
-				s.TempTokenSweepWorker.Stop()
-			}
-			if s.OAuth2SweepWorker != nil {
-				logger.Info("stopping oauth2 sweep worker...")
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
-			if s.SidekiqDispatcherStop != nil {
-				logger.Info("stopping sidekiq dispatcher...")
-				s.SidekiqDispatcherStop()
-			}
-			logger.Info("stopping live model refresher...")
-			s.stopLiveModelRefresher()
-			if s.SidekiqRunner != nil {
-				logger.Info("stopping sidekiq runner...")
-				s.SidekiqRunner.Shutdown()
-			}
-			if s.devPprofHandler != nil {
-				logger.Info("stopping dev pprof handler...")
-				s.devPprofHandler.Cleanup()
-			}
-			if s.wsPool != nil {
-				logger.Info("closing websocket connection pool...")
-				s.wsPool.Close()
-			}
-			// Cleanup Config and all its background components
-			if s.Config != nil {
-				s.Config.Close(shutdownCtx)
-			}
-			logger.Info("storage engines cleanup completed")
-		}()
-		select {
-		case <-done:
-			logger.Info("cleanup completed")
-		case <-shutdownCtx.Done():
-			logger.Warn("cleanup timed out after 30 seconds")
-		}
+		// Stop everything Bootstrap started. The only error Shutdown returns is
+		// the shutdown context expiring, which it logs itself and which Start can
+		// do nothing further about.
+		_ = s.Shutdown(shutdownCtx)
 
 	case err := <-errChan:
 		if s.IntegrationHandler != nil {
 			s.IntegrationHandler.Close()
 		}
-		if s.wsPool != nil {
-			s.wsPool.Close()
-		}
+		// Serving failed and this returns into main's os.Exit(1). Previously
+		// this branch closed only the integration handler and the websocket
+		// pool before returning, leaving the Bifrost client, the cleaners, the
+		// sweep/webhook/sidekiq workers and Config -- the config and log stores
+		// with it -- never closed. Run the same sequence the signal branch runs.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
 		return err
 	}
 	return nil
