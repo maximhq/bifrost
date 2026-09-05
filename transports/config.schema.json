@@ -7743,7 +7743,7 @@
     },
     "project": {
       "type": "object",
-      "description": "A project declared under governance.projects: what it grants, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard.",
+      "description": "A project declared under governance.projects: what it allows, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard or the API.",
       "allOf": [
         {
           "if": {
@@ -7774,17 +7774,17 @@
         },
         "is_active": {
           "type": "boolean",
-          "description": "Whether the project grants and accounts for anything",
+          "description": "Whether the project allows and accounts for anything",
           "default": true
         },
         "expires_at": {
           "type": "string",
           "format": "date-time",
-          "description": "When the project stops granting anything; omit to never expire"
+          "description": "When the project stops allowing anything; omit to never expire"
         },
         "access_rule": {
           "type": "string",
-          "description": "How the project's grants compose with the grants a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
           "enum": ["union", "intersect"]
         },
         "membership_mode": {
@@ -7807,7 +7807,7 @@
         },
         "calendar_aligned": {
           "type": "boolean",
-          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, year) instead of rolling from first use",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
           "default": false
         },
         "budgets": {
@@ -7822,20 +7822,40 @@
         },
         "provider_configs": {
           "type": "array",
-          "description": "Per-provider grants and accounting, one entry per provider",
+          "description": "Per-provider access and accounting, one entry per provider",
           "items": {
             "$ref": "#/$defs/project_provider_config"
           }
         },
         "mcp_configs": {
           "type": "array",
-          "description": "MCP clients the project grants, one entry per client",
+          "description": "MCP clients the project allows, one entry per client",
           "items": {
             "$ref": "#/$defs/project_mcp_config"
+          }
+        },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs assigned to the project, one entry per assignment. A request scoped to the project can reach each one at its /mcp/<slug> endpoint.",
+          "items": {
+            "$ref": "#/$defs/project_virtual_mcp"
           }
         }
       },
       "required": ["name", "access_rule"],
+      "additionalProperties": false
+    },
+    "project_virtual_mcp": {
+      "type": "object",
+      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "properties": {
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+        }
+      },
+      "required": ["virtual_mcp_id"],
       "additionalProperties": false
     },
     "project_budget": {
@@ -8011,11 +8031,11 @@
       "properties": {
         "mcp_client_name": {
           "type": "string",
-          "description": "Name of the MCP client (as declared under mcp.client_configs) the project grants. Resolved to the stored client on startup; a name that matches no client is refused."
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project allows. Resolved to the stored client on startup; a name that matches no client is refused."
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools of the client the project grants. Use [\"*\"] to grant every tool; empty array or omitted grants none, regardless of the top-level version.",
+          "description": "Tools of the client the project may execute. Use [\"*\"] to allow every tool; empty array or omitted allows none, regardless of the top-level version.",
           "items": {
             "type": "string"
           }
