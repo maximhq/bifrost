@@ -52,10 +52,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.elevenlabs.io"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.elevenlabs.io")
 
 	return &ElevenlabsProvider{
 		logger:               logger,
@@ -86,7 +83,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
@@ -570,7 +567,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	if isCompleteURL {
 		req.SetRequestURI(requestPath)
 	} else {
-		req.SetRequestURI(provider.networkConfig.BaseURL + requestPath)
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + requestPath)
 	}
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
@@ -844,7 +841,7 @@ func (provider *ElevenlabsProvider) VideoRemix(_ *schemas.BifrostContext, _ sche
 
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
 func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
-	baseURL := provider.networkConfig.BaseURL
+	baseURL := provider.networkConfig.BaseURL.GetValue()
 	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 
 	var finalURL string

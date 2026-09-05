@@ -81,10 +81,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://generativelanguage.googleapis.com/v1beta"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://generativelanguage.googleapis.com/v1beta")
 
 	return &GeminiProvider{
 		logger:               logger,
@@ -121,7 +118,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Use Gemini's generateContent endpoint
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+model+endpoint))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+model+endpoint))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -204,7 +201,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("/models?pageSize=%d", schemas.DefaultPageSize)))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("/models?pageSize=%d", schemas.DefaultPageSize)))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -384,7 +381,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	return HandleGeminiChatCompletionStream(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
@@ -763,7 +760,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 
 	// Set up request (same as completeRequest)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":generateContent"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":generateContent"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -906,7 +903,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	return HandleGeminiResponsesStream(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
@@ -1251,7 +1248,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Use Gemini's batchEmbedContents endpoint
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":batchEmbedContents"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":batchEmbedContents"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -1448,7 +1445,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
 	req.Header.SetContentType("application/json")
 
 	// Set headers for streaming
@@ -1738,7 +1735,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
@@ -2029,7 +2026,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 		return nil, bifrostErr
 	}
 
-	baseURL := provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":predict")
+	baseURL := provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":predict")
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2124,7 +2121,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			return nil, bifrostErr
 		}
 
-		baseURL := provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":predict")
+		baseURL := provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":predict")
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
@@ -2287,7 +2284,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Use Gemini's predictLongRunning endpoint for video generation
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+model+":predictLongRunning"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/models/"+model+":predictLongRunning"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -2359,7 +2356,7 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/"+operationID))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/"+operationID))
 	req.Header.SetMethod(http.MethodGet)
 	if key.Value.GetValue() != "" {
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
@@ -2609,7 +2606,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
-	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL, model)
+	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL.GetValue(), model)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
@@ -2722,7 +2719,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL for listing batches
-	baseURL := fmt.Sprintf("%s/batches", provider.networkConfig.BaseURL)
+	baseURL := fmt.Sprintf("%s/batches", provider.networkConfig.BaseURL.GetValue())
 	values := url.Values{}
 	if request.PageSize > 0 {
 		values.Set("pageSize", fmt.Sprintf("%d", request.PageSize))
@@ -2890,9 +2887,9 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	batchID := request.BatchID
 	var requestURL string
 	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3007,9 +3004,9 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	batchID := request.BatchID
 	var requestURL string
 	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s:cancel", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/%s:cancel", provider.networkConfig.BaseURL.GetValue(), batchID)
 	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s:cancel", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/batches/%s:cancel", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
 	provider.logger.Debug("gemini batch cancel url: " + requestURL)
@@ -3093,9 +3090,9 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	batchID := request.BatchID
 	var requestURL string
 	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
 	provider.logger.Debug("gemini batch delete url: " + requestURL)
@@ -3301,9 +3298,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	batchID := request.BatchID
 	var requestURL string
 	if strings.HasPrefix(batchID, "batches/") {
-		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	} else {
-		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
 	provider.logger.Debug("gemini batch results url: " + requestURL)
@@ -3500,7 +3497,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL - use upload endpoint
-	baseURL := strings.Replace(provider.networkConfig.BaseURL, "/v1beta", "/upload/v1beta", 1)
+	baseURL := strings.Replace(provider.networkConfig.BaseURL.GetValue(), "/v1beta", "/upload/v1beta", 1)
 	requestURL := fmt.Sprintf("%s/files", baseURL)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3585,7 +3582,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with pagination
-	requestURL := fmt.Sprintf("%s/files", provider.networkConfig.BaseURL)
+	requestURL := fmt.Sprintf("%s/files", provider.networkConfig.BaseURL.GetValue())
 	values := url.Values{}
 	if request.Limit > 0 {
 		values.Set("pageSize", fmt.Sprintf("%d", request.Limit))
@@ -3759,7 +3756,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	if !strings.HasPrefix(fileID, "files/") {
 		fileID = "files/" + fileID
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, fileID)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), fileID)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -3873,7 +3870,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	if !strings.HasPrefix(fileID, "files/") {
 		fileID = "files/" + fileID
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, fileID)
+	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL.GetValue(), fileID)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -3997,7 +3994,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -4118,7 +4115,7 @@ func (provider *GeminiProvider) Passthrough(
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
-	url := provider.networkConfig.BaseURL + req.Path
+	url := provider.networkConfig.BaseURL.GetValue() + req.Path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
@@ -4199,7 +4196,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL + req.Path
+	url := provider.networkConfig.BaseURL.GetValue() + req.Path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}

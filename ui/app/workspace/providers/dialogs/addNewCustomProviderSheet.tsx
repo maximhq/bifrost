@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
-import { allowedRequestsSchema } from "@/lib/types/schemas";
+import { allowedRequestsSchema, baseURLSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -20,7 +20,7 @@ import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
 const formSchema = z.object({
 	name: z.string().min(1),
 	baseFormat: z.string().min(1),
-	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
+	base_url: z.string().min(1, "Base URL is required").pipe(baseURLSchema),
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
@@ -198,6 +198,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												value={field.value || ""}
 											/>
 										</FormControl>
+										<FormDescription>
+											A URL, or an <code>env.VAR_NAME</code> / <code>vault.path</code> reference resolved on the server.
+										</FormDescription>
 										<FormMessage />
 									</div>
 								</FormItem>

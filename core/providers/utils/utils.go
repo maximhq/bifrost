@@ -813,6 +813,27 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// NormalizeBaseURL prepares networkConfig.BaseURL for a provider constructor: when no
+// base URL is configured it applies defaultURL (pass "" for providers whose base URL is
+// optional, e.g. when every key carries its own URL), and it trims trailing slashes from
+// the resolved value. The SecretVar is cloned before it is mutated so a config-store
+// copy sharing the pointer is never edited in place, and its env./vault. reference is
+// retained so serializing the config emits the reference, never the resolved URL.
+func NormalizeBaseURL(networkConfig *schemas.NetworkConfig, defaultURL string) {
+	if networkConfig == nil {
+		return
+	}
+	if !networkConfig.BaseURL.IsSet() {
+		if defaultURL == "" {
+			return
+		}
+		networkConfig.BaseURL = schemas.NewSecretVar(defaultURL)
+	}
+	baseURL := networkConfig.BaseURL.Clone()
+	baseURL.Val = strings.TrimRight(baseURL.Val, "/")
+	networkConfig.BaseURL = baseURL
+}
+
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {

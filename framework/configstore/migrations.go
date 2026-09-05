@@ -7817,12 +7817,13 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					logger.Info("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
 					continue
 				}
-				if nc.BaseURL == "" {
+				if !nc.BaseURL.IsSet() {
 					continue
 				}
 
-				// Create a new key with the provider's base_url
-				urlSecretVar := schemas.SecretVar{Val: nc.BaseURL}
+				// Create a new key with the provider's base_url (a SecretVar, so an env./vault.
+				// reference is carried over as the reference rather than its resolved value)
+				urlSecretVar := *nc.BaseURL.Clone()
 				enabled := true
 				weight := 1.0
 				newKey := tables.TableKey{

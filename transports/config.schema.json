@@ -4217,8 +4217,7 @@
       "properties": {
         "base_url": {
           "type": "string",
-          "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Accepts a URL or an env.VAR_NAME / vault.path secret reference that resolves to the URL."
         },
         "extra_headers": {
           "type": "object",

@@ -90,7 +90,7 @@ func NewDatabricksProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "")
 
 	return &DatabricksProvider{
 		logger:              logger,
@@ -116,8 +116,8 @@ func (provider *DatabricksProvider) resolveWorkspaceHost(key schemas.Key) (strin
 			return host, nil
 		}
 	}
-	if provider.networkConfig.BaseURL != "" {
-		if host := normalizeHost(provider.networkConfig.BaseURL); host != "" {
+	if provider.networkConfig.BaseURL.GetValue() != "" {
+		if host := normalizeHost(provider.networkConfig.BaseURL.GetValue()); host != "" {
 			return host, nil
 		}
 	}

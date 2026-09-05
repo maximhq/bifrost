@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { isRedacted } from "@/lib/utils/validation";
+import { BASE_URL_VALIDATION_MESSAGE, isRedacted, isValidBaseURL } from "@/lib/utils/validation";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -540,10 +540,14 @@ export const modelProviderKeySchema = z
 		},
 	);
 
+// Provider base URL: an http(s) URL or an env./vault. reference (the server-side field is a
+// SecretVar, so "env.MY_UPSTREAM_URL" resolves at load time and round-trips as the reference).
+export const baseURLSchema = z.string().trim().refine(isValidBaseURL, BASE_URL_VALIDATION_MESSAGE);
+
 // Network config schema
 export const networkConfigSchema = z
 	.object({
-		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
+		base_url: z.union([baseURLSchema, z.string().length(0)]).optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z
 			.number()
@@ -589,17 +593,7 @@ export const networkConfigSchema = z
 // Network form schema - more lenient for form inputs
 export const networkFormConfigSchema = z
 	.object({
-		base_url: z
-			.union([
-				z
-					.string()
-					.url("Must be a valid URL")
-					.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
-						message: "Must be a valid HTTP or HTTPS URL",
-					}),
-				z.string().length(0),
-			])
-			.optional(),
+		base_url: z.union([baseURLSchema, z.string().length(0)]).optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
