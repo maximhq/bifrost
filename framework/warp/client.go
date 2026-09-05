@@ -76,25 +76,30 @@ func (a *warpAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) 
 	return []schemas.ModelProvider{transportProvider()}, nil
 }
 
+// placeholderBearer is the value Warp's private key carries. Core refuses to
+// select an OpenAI-transport key with an empty value, so the key must hold
+// something, but nothing Warp holds is a credential: it reaches its model
+// through this Bifrost, which supplies the real key from its own pool. The
+// receiving side only reads a bearer that carries the virtual-key prefix, so
+// this value is ignored there. Deployments that enforce auth on inference
+// would need a virtual key here instead - not supported yet.
+const placeholderBearer = "warp"
+
 // getKeysForProvider returns Warp's one key. The whitelist is "*" because the
 // account serves exactly one model and the config already names it.
 func (a *warpAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
 	key := schemas.Key{
 		ID:     "warp",
 		Name:   "warp",
+		Value:  *schemas.NewSecretVar(placeholderBearer),
 		Models: schemas.WhiteList{"*"},
 		Weight: 1,
 	}
-	// The stored value is a reference to one of the deployment's own provider
-	// keys, not a secret. Warp reaches its model through this Bifrost, which
-	// resolves the id against its key pool, so the id travels as the key value
-	// and Bifrost substitutes the real credential.
-	//
-	// An empty reference is legitimate: a model behind a trusted-network BaseURL,
-	// or a provider using ambient IAM credentials, needs none.
+	// A pinned key is named to the receiving Bifrost by header, not by bearer -
+	// see requestHeaders. The id is kept on the local key only so a settings
+	// change is visible in the instance signature.
 	if a.config.APIKeyID != "" {
 		key.ID = a.config.APIKeyID
-		key.Value = *schemas.NewSecretVar(a.config.APIKeyID)
 	}
 	return []schemas.Key{key}, nil
 }
@@ -183,17 +188,32 @@ func (c *Client) Chat(ctx context.Context, config *schemas.WarpConfig, conversat
 		// snapshot preserved travels with the inference call too.
 		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 		defer cancel()
-		if conversationID != "" {
-			// Both headers carry the same value for different ends: one groups the
-			// thread's rows in the log table, the other keeps it on one key.
-			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
-				ConversationHeader: {conversationID},
-				SessionHeader:      {conversationID},
-				"User-Agent":       {UserAgent},
-			})
-		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, requestHeaders(config, conversationID))
 		return instance.ResponsesRequest(bifrostCtx, req)
 	}
+}
+
+// PinnedKeyHeader is Bifrost's request header for pinning one provider key by
+// id (read in the HTTP transport's context builder). Governance ignores a
+// bearer that is not a virtual key, so the bearer cannot carry the pin; this
+// header is the only way a specific key reaches the selector.
+const PinnedKeyHeader = "x-bf-api-key-id"
+
+// requestHeaders builds the extra headers for one of Warp's upstream calls.
+// The User-Agent is always set so Warp's traffic is labelled even for calls
+// outside a conversation; the rest are present only when they mean something.
+func requestHeaders(config *schemas.WarpConfig, conversationID string) map[string][]string {
+	headers := map[string][]string{"User-Agent": {UserAgent}}
+	if conversationID != "" {
+		// Both headers carry the same value for different ends: one groups the
+		// thread's rows in the log table, the other keeps it on one key.
+		headers[ConversationHeader] = []string{conversationID}
+		headers[SessionHeader] = []string{conversationID}
+	}
+	if config != nil && config.APIKeyID != "" {
+		headers[PinnedKeyHeader] = []string{config.APIKeyID}
+	}
+	return headers
 }
 
 // instanceFor returns the instance matching config, building and swapping it in

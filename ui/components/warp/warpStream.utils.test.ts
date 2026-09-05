@@ -3,6 +3,12 @@ import {
 	formatWarpUsage,
 	warpErrorDetail,
 	errorMessage,
+	isPartialAnswer,
+	isInternalWarpLink,
+	isTypingInto,
+	shouldDrainQueue,
+	indexStatusLabel,
+	turnsFromStoredMessages,
 	warpToolLabel,
 	parseWarpFrame,
 	splitWarpAnswer,
@@ -71,12 +77,15 @@ describe("warpToolLabel", () => {
 		expect(warpToolLabel("query_metrics", true)).toBe("Querying metrics");
 		expect(warpToolLabel("count_logs", true)).toBe("Checking log volume");
 		expect(warpToolLabel("count_logs")).toBe("Checked log volume");
+		expect(warpToolLabel("semantic_search_logs", true)).toBe("Performing vector search");
+		expect(warpToolLabel("semantic_search_logs")).toBe("Performed vector search");
 	});
 
 	// Every tool the agent can call needs a label. A raw name like "count_logs"
 	// leaking into the transcript is the symptom this guards against.
 	it("labels every tool the agent exposes", () => {
 		const tools = [
+			"semantic_search_logs",
 			"count_logs",
 			"query_logs",
 			"get_log_detail",
@@ -223,5 +232,134 @@ describe("formatWarpUsage", () => {
 		expect(formatWarpUsage(undefined)).toBeNull();
 		expect(formatWarpUsage({})).toBeNull();
 		expect(formatWarpUsage({ total_tokens: 0, cost: { total_cost: 0 } })).toBeNull();
+	});
+});
+// The server marks an answer given on its last research step as "partial". The
+// transcript has to show that, or a half-checked figure reads as a settled one.
+describe("isPartialAnswer", () => {
+	it("recognises the partial finish reason and nothing else", () => {
+		expect(isPartialAnswer("partial")).toBe(true);
+		expect(isPartialAnswer("stop")).toBe(false);
+		expect(isPartialAnswer("question")).toBe(false);
+		expect(isPartialAnswer(undefined)).toBe(false);
+	});
+
+	it("reads it off a done frame", () => {
+		const event = parseWarpFrame('data: {"type":"done","finish_reason":"partial","iterations":8}');
+		expect(event && isPartialAnswer(event.finish_reason)).toBe(true);
+	});
+});
+
+// Warp's answers link into the dashboard with root-relative paths. Those must
+// navigate in-app, keeping the tray open; anything else is a real external link.
+describe("isInternalWarpLink", () => {
+	it("accepts root-relative dashboard paths only", () => {
+		expect(isInternalWarpLink("/workspace/logs?selected_log=abc")).toBe(true);
+		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
+		expect(isInternalWarpLink("//evil.example/x")).toBe(false);
+		expect(isInternalWarpLink("https://github.com/maximhq/bifrost/issues/new")).toBe(false);
+		expect(isInternalWarpLink("javascript:alert(1)")).toBe(false);
+		expect(isInternalWarpLink(undefined)).toBe(false);
+	});
+});
+
+// A reopened thread must look like it did live: the same tool rows, the same
+// error card, the same partial note and the same cost line.
+describe("turnsFromStoredMessages", () => {
+	it("maps stored messages onto transcript turns", () => {
+		const turns = turnsFromStoredMessages([
+			{ role: "user", content: "what did we spend?", created_at: "2026-09-05T00:00:00Z" },
+			{
+				role: "assistant",
+				content: "About $12.",
+				tool_calls: [{ name: "query_metrics", duration_ms: 12 }, { name: "count_logs", duration_ms: 3, failed: true }],
+				finish_reason: "partial",
+				total_tokens: 120,
+				cost: 0.0123,
+				created_at: "2026-09-05T00:00:01Z",
+			},
+			{ role: "assistant", content: "", error: "upstream_error:boom", created_at: "2026-09-05T00:00:02Z" },
+		]);
+		expect(turns).toHaveLength(3);
+		expect(turns[0]).toMatchObject({ role: "user", content: "what did we spend?" });
+		expect(turns[1]).toMatchObject({ role: "assistant", content: "About $12.", partial: true });
+		expect(turns[1].toolCalls).toEqual([
+			{ id: "stored-1-0", name: "query_metrics", durationMs: 12, failed: undefined },
+			{ id: "stored-1-1", name: "count_logs", durationMs: 3, failed: true },
+		]);
+		expect(turns[1].usage).toEqual({ total_tokens: 120, cost: { total_cost: 0.0123 } });
+		expect(turns[2]).toMatchObject({ role: "assistant", content: "", error: "upstream_error:boom" });
+		expect(turns[2].usage).toBeUndefined();
+		expect(turns[2].partial).toBeUndefined();
+	});
+});
+
+// The tray's index chip is one glance: is semantic search usable right now.
+describe("indexStatusLabel", () => {
+	it("names each state and shows progress while indexing", () => {
+		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({ label: "Index ready", tone: "ok" });
+		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({
+			label: "No vector store",
+			tone: "error",
+		});
+		expect(indexStatusLabel({ state: "not_configured", vector_store_connected: true, embedding_configured: false })).toEqual({
+			label: "Search not set up",
+			tone: "muted",
+		});
+		expect(
+			indexStatusLabel({
+				state: "failed",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { status: "failed", total: 5000, scanned: 100, indexed: 0, skipped: 0, failed: 100, last_error: "no keys found" },
+			}),
+		).toEqual({ label: "Indexing failed", tone: "error", detail: "no keys found" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { status: "running", total: 200, scanned: 50, indexed: 40, skipped: 10, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing 25%", tone: "busy" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { status: "pending", total: 0, scanned: 0, indexed: 0, skipped: 0, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing", tone: "busy" });
+	});
+});
+
+// The question card's shortcuts are document-level because the composer has
+// focus when the card appears. They must still work in that state - an empty
+// composer is not "typing" - and must yield the moment someone starts writing
+// their own answer.
+describe("isTypingInto", () => {
+	it("treats an empty textarea as not typing", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "" })).toBe(false);
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "   " })).toBe(false);
+	});
+	it("treats a textarea with text, or any input, as typing", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "all cust" })).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "" })).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "x" })).toBe(true);
+	});
+	it("treats anything else as not typing", () => {
+		expect(isTypingInto({ tagName: "DIV" })).toBe(false);
+		expect(isTypingInto(null)).toBe(false);
+	});
+});
+
+// Messages typed while Warp is thinking wait their turn. One goes out per
+// finished turn, never two at once.
+describe("shouldDrainQueue", () => {
+	it("sends only on the streaming-to-idle transition", () => {
+		expect(shouldDrainQueue(true, false, 2)).toBe(true);
+		expect(shouldDrainQueue(false, false, 2)).toBe(false);
+		expect(shouldDrainQueue(true, true, 2)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0)).toBe(false);
 	});
 });

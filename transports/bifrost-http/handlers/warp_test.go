@@ -223,6 +223,74 @@ func TestWarpBackfillStatusAndCancel(t *testing.T) {
 	require.Contains(t, string(cancelCtx.Response.Body()), tables.SidekiqStatusCancelled)
 }
 
+// The tray shows whether semantic search is usable at a glance. This summary
+// is readable by anyone who can chat, unlike the backfill controls, and folds
+// the vector store connection and the latest indexing job into one state.
+func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	ctx := adminCtx("")
+	handler.logIndexStatus(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"ready"`)
+	require.Contains(t, body, `"vector_store_connected":true`)
+
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed, LastError: "no keys found", Metadata: `{"scanned":100,"failed":100,"total":5000}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"failed"`)
+	require.Contains(t, body, "no keys found")
+
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-r", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":40,"total":100}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"indexing"`)
+	require.Contains(t, body, `"scanned":40`)
+	require.Contains(t, body, `"total":100`)
+}
+
+// A page reload has no job id in memory and asks for "whatever is current".
+// Once a job finishes, nothing is in flight, so without a fallback the last
+// outcome, including a failure and its cause, vanishes from the settings page.
+func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "Warp backfill stopped after 100 consecutive failures: no keys found that support model: openai/embed",
+		Metadata:  `{"scanned":100,"failed":100}`,
+	}
+
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	body := string(statusCtx.Response.Body())
+	require.Contains(t, body, `"id":"job-old"`)
+	require.Contains(t, body, `"status":"failed"`)
+	require.Contains(t, body, `"failed":100`)
+	require.Contains(t, body, "no keys found")
+
+	// An in-flight job still takes priority over the historical one.
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-new", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
+}
+
+func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+}
+
 // The agent runs after the handler returns and fasthttp has recycled the
 // request. A snapshot that drops the query scope silently widens every tool to
 // the whole deployment, so the copy is asserted rather than assumed.

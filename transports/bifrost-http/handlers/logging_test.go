@@ -520,6 +520,7 @@ type fakeSidekiqStore struct {
 	jobs     map[string]*tables.TableSidekiqJob
 	created  int
 	inFlight *tables.TableSidekiqJob
+	latest   *tables.TableSidekiqJob
 }
 
 func newFakeSidekiqStore() *fakeSidekiqStore {
@@ -557,6 +558,18 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 	if s.inFlight != nil && s.inFlight.Kind == kind {
 		copy := *s.inFlight
 		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeSidekiqStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, candidate := range []*tables.TableSidekiqJob{s.inFlight, s.latest} {
+		if candidate != nil && candidate.Kind == kind {
+			copy := *candidate
+			return &copy, nil
+		}
 	}
 	return nil, nil
 }

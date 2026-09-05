@@ -28,6 +28,11 @@ type fakeLogReader struct {
 
 	histogramBucket int64
 	statsCalled     bool
+	// Distinct-value lookups, the cheap path describe_scope takes.
+	availableTeams         []KeyPair
+	availableCustomers     []KeyPair
+	availableBusinessUnits []KeyPair
+	availableVirtualKeys   []KeyPair
 	// statsCalls counts them, so a test can assert how many of a turn's tool
 	// calls actually reached the store rather than only that one did.
 	statsCalls int
@@ -66,6 +71,19 @@ func (f *fakeLogReader) GetCostHistogram(ctx context.Context, filters *logstore.
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
 	return &logstore.CostHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
+	return f.availableTeams, nil
+}
+func (f *fakeLogReader) GetAvailableCustomers(context.Context, int, string) ([]KeyPair, error) {
+	return f.availableCustomers, nil
+}
+func (f *fakeLogReader) GetAvailableBusinessUnits(context.Context, int, string) ([]KeyPair, error) {
+	return f.availableBusinessUnits, nil
+}
+func (f *fakeLogReader) GetAvailableVirtualKeys(context.Context, int, string) ([]KeyPair, error) {
+	return f.availableVirtualKeys, nil
 }
 
 func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (any, error) {
@@ -365,4 +383,53 @@ func TestWarpLogContentHandlesNilMessageContent(t *testing.T) {
 		row := projectLog(entry, true, LogContentChars)
 		require.Contains(t, row.Content, "hello")
 	})
+}
+
+// Rows carry a link to their own detail sheet and every listing carries a
+// link to the same filters in the Logs view, so a reader can open what Warp
+// summarised instead of retyping the filters by hand.
+func TestWarpListingsCarryDashboardLinks(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	oldNow := Now
+	Now = func() time.Time { return now }
+	defer func() { Now = oldNow }()
+	fake := &fakeLogReader{searchResult: &logstore.SearchResult{
+		Logs: []logstore.Log{{ID: "req-9", Timestamp: now.Add(-time.Hour), Provider: "gemini", Model: "gemini-3.1-flash-lite", Status: "success"}},
+	}}
+	result, err := runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"providers": []any{"gemini"}, "start_time": "-7d"},
+	})
+	require.NoError(t, err)
+	response := result.(map[string]any)
+	rows := response["rows"].([]logRow)
+	require.Len(t, rows, 1)
+	require.Equal(t, "/workspace/logs?selected_log=req-9", rows[0].Link)
+	link, _ := response["logs_link"].(string)
+	require.Contains(t, link, "/workspace/logs?")
+	require.Contains(t, link, "providers=gemini")
+
+	counted, err := runTool(t, "count_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{"providers": []any{"gemini"}}})
+	require.NoError(t, err)
+	require.Contains(t, counted.(map[string]any)["logs_link"], "providers=gemini")
+}
+
+// describe_scope precedes most metric questions, so it has to be cheap. It
+// used to rank three dimensions over 30 days, which on the enterprise path
+// fans each row out through JSON-array columns - tens of seconds on a large
+// log table, all to learn which names exist. The distinct lookups the Logs
+// filter bar uses answer that in milliseconds.
+func TestWarpDescribeScopeUsesDistinctLookups(t *testing.T) {
+	fake := &fakeLogReader{
+		availableTeams:       []KeyPair{{ID: "t1", Name: "Payments"}, {ID: "t2", Name: ""}},
+		availableCustomers:   []KeyPair{{ID: "c1", Name: "Acme"}},
+		availableVirtualKeys: []KeyPair{{ID: "vk1", Name: "prod"}},
+	}
+	result, err := runTool(t, "describe_scope", &ToolDeps{logManager: fake, scope: Scope{}}, map[string]any{})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	require.Equal(t, []string{"Payments (t1)", "t2"}, out["teams"])
+	require.Equal(t, []string{"Acme (c1)"}, out["customers"])
+	require.Equal(t, []string{}, out["business_units"])
+	require.Equal(t, []KeyPair{{ID: "vk1", Name: "prod"}}, out["virtual_keys"])
+	require.Empty(t, fake.rankingDimension, "no ranking query may run for a name lookup")
 }

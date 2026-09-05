@@ -44,12 +44,22 @@ func semanticSearchLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{
+			response := map[string]any{
 				"rows":      result.Rows,
 				"returned":  result.Returned,
 				"threshold": result.Threshold,
 				"scope":     scopeNote(filters, deps.scope),
-			}, nil
+				"logs_link": logsViewLink(filters),
+			}
+			if result.Returned == 0 {
+				// Four bare fields read as "search is useless here", and the
+				// model went off counting and listing logs instead. Say what
+				// happened and what the legitimate next moves are.
+				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
+					"Do not fall back to count_logs or query_logs to answer a question about meaning. "+
+					"Widen the time range once, rephrase the query, or report that no matching conversations were found.", result.Threshold)
+			}
+			return response, nil
 		},
 	}
 }
@@ -105,6 +115,7 @@ func queryLogsTool() Tool {
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
 				"scope":          scopeNote(filters, deps.scope),
+				"logs_link":      logsViewLink(filters),
 			}, nil
 		},
 	}
@@ -178,6 +189,7 @@ func countLogsTool() Tool {
 				"success_rate":       stats.SuccessRate,
 				"average_latency_ms": stats.AverageLatency,
 				"scope":              scopeNote(filters, deps.scope),
+				"logs_link":          logsViewLink(filters),
 			}
 			// The advice travels with the number rather than living only in the
 			// prompt: this is the moment the decision gets made, and the threshold
@@ -241,7 +253,8 @@ func queryMetricsTool() Tool {
 			}
 
 			out := map[string]any{
-				"scope": scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, deps.scope),
+				"logs_link": logsViewLink(filters),
 				"window": map[string]string{
 					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
 					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
@@ -385,7 +398,7 @@ func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, d
 	if err != nil {
 		return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 	}
-	return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope)}, nil
+	return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}, nil
 }
 
 // ------------------------------------------------ flow 5: providers and models
@@ -418,7 +431,7 @@ func queryModelsTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope)}
+			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}
 
 			if boolArg(args, "include_performance") {
 				// A coarse bucket on purpose. The dashboard's bucket size is chosen for
