@@ -24,6 +24,14 @@ const (
 	// always the model failing to converge rather than a genuinely deep query.
 	WarpDefaultMaxIterations = 8
 
+	// WarpMinMaxIterations is the smallest budget that can answer.
+	//
+	// The loop keeps its final step for answering rather than researching, so one
+	// step can only do one of the two - and it spends it on a tool, ending the
+	// run out of iterations every time. Two is the smallest that both looks and
+	// replies.
+	WarpMinMaxIterations = 2
+
 	// WarpMaxIterationsCeiling is the highest value an operator may configure.
 	// Every iteration is a billable round trip whose cost the operator does not
 	// see until the invoice, so the ceiling is a guardrail rather than a
@@ -122,7 +130,11 @@ func (c *WarpConfig) EffectiveMaxIterations() int {
 	if c == nil || c.MaxIterations <= 0 {
 		return WarpDefaultMaxIterations
 	}
-	return min(c.MaxIterations, WarpMaxIterationsCeiling)
+	// Floored at two. The loop reserves its last step for answering, so a budget
+	// of one is spent on a tool call and the run always ends out of iterations
+	// with no answer at all. Validation refuses 1 now, but a row written before
+	// that rule would otherwise keep a budget that can never produce anything.
+	return min(max(c.MaxIterations, WarpMinMaxIterations), WarpMaxIterationsCeiling)
 }
 
 // EffectiveRequestTimeoutSeconds resolves the per-call timeout, substituting
@@ -252,9 +264,13 @@ type WarpConversation struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	// MessageCount lets the list render without loading every transcript.
-	MessageCount int       `json:"message_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int `json:"message_count"`
+	// TotalTokens and TotalCost are the thread's spend so far, summed from its
+	// answers, so the list can show what each conversation cost.
+	TotalTokens int       `json:"total_tokens"`
+	TotalCost   float64   `json:"total_cost"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // WarpConversationDetail is a conversation with its transcript, bounded at the
@@ -277,7 +293,36 @@ type WarpStoredMessage struct {
 	// came from nowhere.
 	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
 	Error     string               `json:"error,omitempty"`
-	CreatedAt time.Time            `json:"created_at"`
+	// FinishReason is "partial" when the answer was given on the last research
+	// step without settling, so a reopened thread still shows it as partial.
+	FinishReason string `json:"finish_reason,omitempty"`
+	// TotalTokens and Cost are what this answer cost to produce. Zero on user
+	// turns.
+	TotalTokens int       `json:"total_tokens,omitempty"`
+	Cost        float64   `json:"cost,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Question is the structured clarifying question this turn ended with, when
+	// it ended by asking. Stored structurally, not as prose: a reopened thread
+	// must render the same selectable card the live turn showed, with the hints
+	// intact so a pick still sends the short form rather than its label.
+	Question *WarpStoredQuestion `json:"question,omitempty"`
+}
+
+// WarpStoredQuestion mirrors the agent's structured question for persistence
+// and the conversation API. The JSON shape matches the live question event, so
+// the client rebuilds the same card either way.
+type WarpStoredQuestion struct {
+	Question   string                  `json:"question"`
+	Options    []WarpStoredQuestionOpt `json:"options"`
+	AllowOther bool                    `json:"allow_other"`
+	Kind       string                  `json:"kind,omitempty"`
+}
+
+// WarpStoredQuestionOpt is one pickable answer.
+type WarpStoredQuestionOpt struct {
+	Label string `json:"label"`
+	// Hint is the shorter form Warp should receive back, e.g. "-7d".
+	Hint string `json:"hint,omitempty"`
 }
 
 // WarpStoredToolCall is the persisted trace of one tool call.

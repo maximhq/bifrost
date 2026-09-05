@@ -435,3 +435,65 @@ func TestWarpConversationDetailIsBounded(t *testing.T) {
 	require.Equal(t, "m-0006", detail.Messages[0].ID, "the oldest messages are the ones dropped")
 	require.Equal(t, fmt.Sprintf("m-%04d", total-1), detail.Messages[len(detail.Messages)-1].ID)
 }
+
+// The history list shows what each thread cost. One grouped query returns the
+// totals for every listed thread, the same way message counts are fetched, so
+// the list never issues a sum per row.
+func TestWarpConversationUsageTotals(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"c1", "c2"} {
+		require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: id, OwnerID: "u", Title: id, CreatedAt: now, UpdatedAt: now}))
+	}
+	require.NoError(t, store.AppendWarpMessages(ctx, "u", "c1", []WarpMessage{
+		{ID: "c1-u1", Role: "user", Content: "q", CreatedAt: now},
+		{ID: "c1-a1", Role: "assistant", Content: "a", TotalTokens: 100, Cost: 0.01, CreatedAt: now},
+		{ID: "c1-u2", Role: "user", Content: "q2", CreatedAt: now},
+		{ID: "c1-a2", Role: "assistant", Content: "a2", TotalTokens: 50, Cost: 0.005, CreatedAt: now},
+	}))
+	require.NoError(t, store.AppendWarpMessages(ctx, "u", "c2", []WarpMessage{
+		{ID: "c2-u1", Role: "user", Content: "q", CreatedAt: now},
+		{ID: "c2-a1", Role: "assistant", Content: "a", CreatedAt: now},
+	}))
+
+	totals, err := store.SumWarpMessageUsage(ctx, []string{"c1", "c2", "missing"})
+	require.NoError(t, err)
+	require.InDelta(t, 0.015, totals["c1"].Cost, 1e-9)
+	require.Equal(t, 150, totals["c1"].TotalTokens)
+	require.Zero(t, totals["c2"].Cost)
+	_, listed := totals["missing"]
+	require.False(t, listed)
+
+	empty, err := store.SumWarpMessageUsage(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}
+
+// The failed-first-append cleanup must never take a thread that has messages,
+// whoever wrote them, and must say whether it deleted anything.
+func TestWarpConversationDeleteIfEmpty(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: "c-empty", OwnerID: "u", Title: "empty", CreatedAt: now, UpdatedAt: now}))
+	seedWarpConversation(t, store, "u", "c-full", "full", now)
+
+	deleted, err := store.DeleteWarpConversationIfEmpty(ctx, "other", "c-empty")
+	require.ErrorIs(t, err, ErrWarpConversationNotFound, "ownership is checked like every other write")
+	require.False(t, deleted)
+
+	deleted, err = store.DeleteWarpConversationIfEmpty(ctx, "u", "c-full")
+	require.NoError(t, err)
+	require.False(t, deleted, "a thread with messages is kept")
+	full, err := store.GetWarpConversation(ctx, "u", "c-full")
+	require.NoError(t, err)
+	require.Len(t, full.Messages, 2)
+
+	deleted, err = store.DeleteWarpConversationIfEmpty(ctx, "u", "c-empty")
+	require.NoError(t, err)
+	require.True(t, deleted)
+	_, err = store.GetWarpConversation(ctx, "u", "c-empty")
+	require.ErrorIs(t, err, ErrWarpConversationNotFound)
+}

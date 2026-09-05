@@ -18,16 +18,10 @@ import (
 const (
 	BackfillJobKind   = "warp_log_embedding_backfill"
 	backfillBatchSize = 100
-	// backfillMaxConsecutiveFailures stops a run that is failing for a reason no
-	// individual entry can fix.
-	//
-	// Every failure here costs an embedding request. With no bound, a provider
-	// outage or a revoked key made the job walk the entire window issuing one
-	// doomed call per log - the most expensive possible way to discover the
-	// provider is down. A run of this many in a row is a broken dependency, not
-	// unlucky rows, so the job checkpoints what it did and stops; the cursor is
-	// where it stopped, so a retry resumes rather than restarts.
-	backfillMaxConsecutiveFailures = 20
+	// backfillMaxConsecutiveFailures is how many logs in a row may fail to index
+	// before the job gives up. A dead embedding provider fails every row the same
+	// way, so continuing past this point only burns time and quota.
+	backfillMaxConsecutiveFailures = 100
 )
 
 var ErrBackfillInProgress = errors.New("warp: a log embedding backfill is running")
@@ -127,11 +121,9 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 		return lastSnapshot
 	}
 
-	// Counted across batches, not within one: a provider outage does not stop at
-	// a batch boundary, and resetting per batch would let the job keep paying for
-	// failed embeddings indefinitely in runs of ninety-nine.
+	// Counted in memory only: a resumed job starts with a clean slate, which is
+	// the point of resuming after the operator fixed the provider.
 	consecutiveFailures := 0
-
 	for {
 		if err := ctx.Err(); err != nil {
 			meta.Message = fmt.Sprintf("Stopped after scanning %d log(s).", meta.Scanned)
@@ -180,76 +172,87 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 				_ = progress(snapshot())
 				return snapshot(), cancelErr
 			}
-			if getErr != nil || entry == nil {
-				// This one does advance: the log is gone or unreadable, so there is
-				// nothing a resume could retry and leaving the cursor behind would
-				// make the job read it again forever.
-				advanceBackfillCursor(&meta, listed)
-				meta.Scanned++
-				meta.Failed++
-				// A vanished log is a fact about the window - retention can delete
-				// a row between Search listing it and GetLog reading it - not a
-				// dependency failure. Counting it in the streak let a long deleted
-				// stretch hand the cutoff to the first real failure that followed.
-				// A read that failed with anything but not-found still counts.
-				if getErr != nil && !errors.Is(getErr, logstore.ErrNotFound) {
-					consecutiveFailures++
+			failed, skipped := true, false
+			// A vanished log is a fact about the window - retention can delete a
+			// row between Search listing it and GetLog reading it - not a
+			// dependency failure. Counting it in the streak let a long deleted
+			// stretch hand the breaker's cutoff to the first real failure that
+			// followed. It is still recorded as failed; it just never feeds the
+			// breaker. A read that failed with anything but not-found does.
+			countsTowardStreak := true
+			switch {
+			case getErr != nil:
+				meta.LastError = getErr.Error()
+				if errors.Is(getErr, logstore.ErrNotFound) {
+					countsTowardStreak = false
 				}
-				if getErr != nil {
-					meta.LastError = getErr.Error()
-				} else {
-					meta.LastError = "log disappeared during backfill"
+			case entry == nil:
+				meta.LastError = "log disappeared during backfill"
+				countsTowardStreak = false
+			default:
+				// The config verified for this batch, not a fresh read: a save
+				// landing between the check above and this write would otherwise
+				// index into a different embedding space than the job froze.
+				outcome, indexErr := s.indexer.IndexWithConfig(ctx, config, entry)
+				// Recorded, not counted yet. The counters move below, together with
+				// the cursor, because a cancellation landing between here and there
+				// produced a snapshot whose Indexed or Skipped already included an
+				// entry the cursor had not passed - so the resume processed the same
+				// log again and counted it twice, and the totals could exceed Total.
+				switch {
+				case indexErr != nil:
+					meta.LastError = indexErr.Error()
+				case outcome == IndexOutcomeSkipped:
+					failed, skipped = false, true
+				default:
+					failed = false
 				}
-				// The breaker applies here too. This branch continues past the
-				// post-index cutoff below, so an unreachable log store grew the
-				// streak without bound, walked the whole window, and recorded
-				// the job complete with nothing indexed and nothing to retry it.
-				if consecutiveFailures >= backfillMaxConsecutiveFailures {
-					meta.Message = fmt.Sprintf("Stopped after %d consecutive failures, having scanned %d log(s).", consecutiveFailures, meta.Scanned)
-					if checkpointErr := progress(snapshot()); checkpointErr != nil {
-						return snapshot(), fmt.Errorf("Warp backfill stopped after %d consecutive read failures (%s), and its checkpoint could not be written: %w", consecutiveFailures, meta.LastError, checkpointErr)
-					}
-					return snapshot(), fmt.Errorf("Warp backfill stopped after %d consecutive read failures: %s", consecutiveFailures, meta.LastError)
-				}
-				continue
 			}
-			// The config verified for this batch, not a fresh read: a save landing
-			// between the check above and this write would otherwise index into a
-			// different embedding space than the job froze.
-			outcome, indexErr := s.indexer.IndexWithConfig(ctx, config, entry)
-			// Same again after the expensive half. A cancelled embedding returns an
-			// error that is indistinguishable from a genuine failure, and counting
-			// it as Failed both misreports the run and leaves the entry behind the
-			// cursor.
+			// Cancellation first, before anything is counted or the cursor moves.
+			// A cancelled index returns an error indistinguishable from a genuine
+			// one, so counting it both misreports the run and feeds the
+			// consecutive-failure breaker - a cancel reported as a provider
+			// outage. Leaving the cursor behind is what makes the entry retried on
+			// resume rather than silently skipped.
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				meta.Message = fmt.Sprintf("Stopped after scanning %d log(s).", meta.Scanned)
 				_ = progress(snapshot())
 				return snapshot(), cancelErr
 			}
-			// Only now, once the cancellable work is behind us. Advancing before
-			// the index call left the cursor past a log whose vector write may
-			// never have happened, so a resume skipped it: counted as scanned,
-			// never indexed, and nothing recording the gap.
+			// Past the cancellable work now, so this entry is genuinely done -
+			// indexed, skipped, or failed for a reason a retry would hit again.
 			advanceBackfillCursor(&meta, listed)
 			meta.Scanned++
-			switch {
-			case indexErr != nil:
-				meta.Failed++
-				meta.LastError = indexErr.Error()
+			if !failed {
+				// Counted here, in the same step as the cursor, so a snapshot never
+				// claims an outcome for an entry the cursor has not passed.
+				if skipped {
+					meta.Skipped++
+				} else {
+					meta.Indexed++
+				}
+				consecutiveFailures = 0
+				continue
+			}
+			meta.Failed++
+			if countsTowardStreak {
 				consecutiveFailures++
-			case outcome == IndexOutcomeSkipped:
-				// A skip is a healthy outcome - the log had nothing to index - so it
-				// clears the streak just as an index does.
-				meta.Skipped++
-				consecutiveFailures = 0
-			default:
-				meta.Indexed++
-				consecutiveFailures = 0
 			}
 			if consecutiveFailures >= backfillMaxConsecutiveFailures {
-				meta.Message = fmt.Sprintf("Stopped after %d consecutive failures, having scanned %d log(s).", consecutiveFailures, meta.Scanned)
-				_ = progress(snapshot())
-				return snapshot(), fmt.Errorf("warp backfill stopped after %d consecutive indexing failures; last error: %s", consecutiveFailures, meta.LastError)
+				// Every recent row failed the same way, which points at the embedding
+				// provider or key rather than the data. Stop here so a 100k-log window
+				// does not spend hours failing. Progress is checkpointed so the UI
+				// shows exactly where it gave up.
+				meta.Message = fmt.Sprintf("Stopped after %d consecutive failures (%d scanned).", consecutiveFailures, meta.Scanned)
+				// The checkpoint is the only record of where this gave up, and the
+				// UI reads it to show that. Discarding a failed write left the job
+				// reporting an older position than it reached, so a resume redid
+				// work and the operator saw a run that appeared to stop earlier
+				// than it did - reported as the same error either way.
+				if checkpointErr := progress(snapshot()); checkpointErr != nil {
+					return snapshot(), fmt.Errorf("Warp backfill stopped after %d consecutive failures (%s), and its checkpoint could not be written: %w", consecutiveFailures, meta.LastError, checkpointErr)
+				}
+				return snapshot(), fmt.Errorf("Warp backfill stopped after %d consecutive failures: %s", consecutiveFailures, meta.LastError)
 			}
 		}
 

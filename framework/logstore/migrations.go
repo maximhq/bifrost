@@ -325,6 +325,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
 	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
+	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4989,6 +4990,118 @@ func rollbackWarpConversationTables(tx *gorm.DB) error {
 		}
 	}
 	return tx.Migrator().DropTable(&WarpMessage{}, &WarpConversation{})
+}
+
+// warpMessageOutcomeColumns are the per-message outcome fields added after the
+// conversation tables shipped: how the turn ended and what it cost.
+var warpMessageOutcomeColumns = []struct{ column, field string }{
+	{"finish_reason", "FinishReason"},
+	{"total_tokens", "TotalTokens"},
+	{"cost", "Cost"},
+	// The structured question a turn ended with, kept alongside the other
+	// outcome fields because it describes how the turn ended too.
+	{"question_json", "QuestionJSON"},
+}
+
+// migrationAddWarpMessageOutcomeColumns adds finish_reason, total_tokens and
+// cost to Warp's stored messages, so a partial answer stays marked partial when
+// its thread is reopened and the history list can show what each thread cost.
+//
+// A separate step rather than a wider AutoMigrate in the migration that created
+// the tables: applied ids are recorded and never re-run, so a database that
+// already has warp_messages would keep the original column list forever and
+// every insert naming one of these would fail.
+func migrationAddWarpMessageOutcomeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_message_outcome_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Bounded, unlike logs_add_warp_conversation_tables: that one only
+			// creates tables nothing can be holding a lock on, while ADD COLUMN
+			// here waits behind any open read of warp_messages. An unbounded wait
+			// blocks every later statement queued behind it, so a slow reader
+			// stalls the boot instead of failing this migration and retrying.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			mg := tx.Migrator()
+			for _, column := range warpMessageOutcomeColumns {
+				if mg.HasColumn(&WarpMessage{}, column.column) {
+					continue
+				}
+				if err := mg.AddColumn(&WarpMessage{}, column.field); err != nil {
+					return fmt.Errorf("add %s column: %w", column.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpMessageOutcomeColumns(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpMessageOutcomeColumns drops the outcome columns, but only while
+// nothing has been recorded in them.
+//
+// These annotate a transcript rather than holding it, so at first glance they
+// look like pure schema. They are not: finish_reason is what marks an answer
+// partial, and total_tokens/cost are the only record of what a saved chat cost.
+// Dropping a populated set destroys that record - the chats stay readable, and
+// every figure anyone might reconcile against is gone. Empty is still
+// reversible, which keeps a failed upgrade recoverable.
+func rollbackWarpMessageOutcomeColumns(tx *gorm.DB) error {
+	mg := tx.Migrator()
+	if mg.HasTable(&WarpMessage{}) {
+		// Same shape as the table rollback: take the lock, then probe. The check
+		// is only worth anything if nothing can commit between it and DropColumn,
+		// and runtime chat writes take no migration lock - so a concurrent append
+		// could land outcome data after a zero result and have it dropped.
+		//
+		// The probe is an existence check rather than a Count, because holding
+		// ACCESS EXCLUSIVE through a scan of a populated warp_messages is an
+		// outage to answer a question one row settles.
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE warp_messages IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp messages before rollback: %w", err)
+			}
+		}
+		// Zero tokens and zero cost are what an unmigrated row reads as, so the
+		// guard asks whether anything was actually written rather than whether
+		// rows exist at all.
+		var recorded []struct{ One int }
+		if err := tx.Model(&WarpMessage{}).
+			Select("1 AS one").
+			Where("finish_reason <> '' OR total_tokens <> 0 OR cost <> 0 OR question_json <> ''").
+			Limit(1).
+			Find(&recorded).Error; err != nil {
+			return fmt.Errorf("could not check recorded warp outcomes before rollback: %w", err)
+		}
+		if len(recorded) > 0 {
+			return fmt.Errorf("logs_add_warp_message_outcome_columns is non-rollbackable: warp message(s) carry a recorded finish reason or usage, and dropping these columns would destroy that record rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+	for _, column := range warpMessageOutcomeColumns {
+		if !mg.HasColumn(&WarpMessage{}, column.column) {
+			continue
+		}
+		if err := mg.DropColumn(&WarpMessage{}, column.field); err != nil {
+			return fmt.Errorf("drop %s column: %w", column.column, err)
+		}
+	}
+	return nil
 }
 
 // migrationAddWarpConversationsUpdatedAtIndex adds the index the retention

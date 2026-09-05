@@ -49,6 +49,30 @@ type LogReader interface {
 	// endpoint already serves. The caller adapts this one method; the other
 	// seventeen match exactly.
 	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	// GetAvailableTeams, GetAvailableCustomers and GetAvailableBusinessUnits
+	// list the id/name pairs seen in logged traffic - the same distinct lookups
+	// the Logs filter bar uses. describe_scope reads these rather than ranking
+	// each dimension: a ranking on the enterprise hierarchy path fans every row
+	// out through JSON-array columns, which took tens of seconds on a large
+	// table, all to learn which names exist.
+	ScopeDiscoveryReader
+}
+
+// ScopeDiscoveryReader is the enterprise hierarchy half of the read surface.
+//
+// Named separately because it is optional in a way the rest is not: teams,
+// customers and business units only exist where the enterprise user path
+// records them, so an OSS deployment has nothing to answer with. Keeping it its
+// own interface says that in the type rather than in a comment, and lets a
+// reader that cannot serve these be described exactly.
+//
+// It is embedded in LogReader because the concrete manager does implement all
+// of it, and splitting the dependency Warp actually holds would buy nothing but
+// a second field to thread through.
+type ScopeDiscoveryReader interface {
+	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
 }
 
 // SemanticHydrator reads whole log rows for a set of ids.

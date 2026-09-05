@@ -1950,6 +1950,10 @@ func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind 
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
 	return 0, nil
 }
@@ -22594,4 +22598,28 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
 	require.Equal(t, "Dup", vmcps[0].Name)
+}
+
+// lockableLogStore records the locker a ClickHouse-backed store would receive.
+type lockableLogStore struct {
+	logstore.LogStore
+	locker logstore.DistributedLocker
+}
+
+func (s *lockableLogStore) SetDistributedLocker(locker logstore.DistributedLocker) {
+	s.locker = locker
+}
+
+// A ClickHouse logs store shared by several replicas only serializes Warp
+// history writes if it is handed the config-store lock at startup.
+func TestAttachWarpHistoryLock(t *testing.T) {
+	initTestLogger()
+	store := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{ConfigStore: createTestSQLiteConfigStore(t, t.TempDir()), LogsStore: store})
+	require.IsType(t, &configstore.DistributedLockManager{}, store.locker)
+
+	// No config store means nothing shared to lock on.
+	bare := &lockableLogStore{}
+	attachWarpHistoryLock(&Config{LogsStore: bare})
+	require.Nil(t, bare.locker)
 }

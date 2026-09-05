@@ -27,7 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
-import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // A fallback chain is a handful of attempts, so one page covers every realistic
@@ -100,6 +100,13 @@ export default function LogsPage() {
 			project_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
 			request_id: parseAsSafeString.withDefault(""),
+			// No default: these are genuinely unset most of the time, and 0 is a
+			// legitimate bound - "max_cost=0" means free requests only, which a
+			// zero default would make indistinguishable from no filter at all.
+			min_latency: parseAsFloat,
+			max_latency: parseAsFloat,
+			min_cost: parseAsFloat,
+			max_cost: parseAsFloat,
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
@@ -155,6 +162,10 @@ export default function LogsPage() {
 			project_ids: urlState.project_ids,
 			content_search: urlState.content_search,
 			request_id: urlState.request_id,
+			min_latency: urlState.min_latency ?? undefined,
+			max_latency: urlState.max_latency ?? undefined,
+			min_cost: urlState.min_cost ?? undefined,
+			max_cost: urlState.max_cost ?? undefined,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
@@ -200,6 +211,10 @@ export default function LogsPage() {
 			urlState.content_search,
 			urlState.request_id,
 			urlState.parent_request_id,
+			urlState.min_latency,
+			urlState.max_latency,
+			urlState.min_cost,
+			urlState.max_cost,
 			urlState.missing_cost_only,
 			urlState.cache_hit_types,
 			urlState.metadata_filters,
@@ -264,6 +279,10 @@ export default function LogsPage() {
 				project_ids: newFilters.project_ids || [],
 				content_search: newFilters.content_search || "",
 				request_id: newFilters.request_id || "",
+				min_latency: newFilters.min_latency ?? null,
+				max_latency: newFilters.max_latency ?? null,
+				min_cost: newFilters.min_cost ?? null,
+				max_cost: newFilters.max_cost ?? null,
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",

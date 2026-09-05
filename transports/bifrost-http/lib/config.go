@@ -1152,6 +1152,8 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		}
 	}
 
+	attachWarpHistoryLock(config)
+
 	// Initialize vector store (only if explicitly configured)
 	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
 		logger.Info("connecting to vectorstore")
@@ -1166,6 +1168,25 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		}
 	}
 	return nil
+}
+
+// attachWarpHistoryLock gives a ClickHouse logs store the config-store lock, so
+// Warp history writes from every replica sharing that ClickHouse serialize.
+// ClickHouse has no transactions to do it with, and its own locks are
+// per-process. The SQL stores do not take a locker: they use row locks. Without
+// a config store there is nothing shared to lock on, and the store keeps its
+// single-instance behaviour.
+func attachWarpHistoryLock(config *Config) {
+	if config.ConfigStore == nil || config.LogsStore == nil {
+		return
+	}
+	lockable, ok := config.LogsStore.(interface {
+		SetDistributedLocker(logstore.DistributedLocker)
+	})
+	if !ok {
+		return
+	}
+	lockable.SetDistributedLocker(configstore.NewDistributedLockManager(config.ConfigStore, logger, configstore.WithDefaultTTL(30*time.Second)))
 }
 
 // applyClientConfigDefaults fills in default values for zero-value fields in a ClientConfig.

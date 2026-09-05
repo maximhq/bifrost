@@ -652,7 +652,7 @@ export default function WarpView() {
 										}}
 										disabled={!hasSettingsUpdateAccess}
 									>
-										<SelectTrigger id="warp-embedding-provider" data-testid="warp-embedding-provider-select">
+										<SelectTrigger className="w-full" id="warp-embedding-provider" data-testid="warp-embedding-provider-select">
 											<SelectValue placeholder="Select embedding provider" />
 										</SelectTrigger>
 										<SelectContent>
@@ -722,7 +722,7 @@ export default function WarpView() {
 										}}
 										disabled={!form.embeddingProvider || isEmbeddingKeysLoading || isEmbeddingKeysError || !hasSettingsUpdateAccess}
 									>
-										<SelectTrigger id="warp-embedding-api-key" data-testid="warp-embedding-api-key-select">
+										<SelectTrigger className="w-full" id="warp-embedding-api-key" data-testid="warp-embedding-api-key-select">
 											<SelectValue placeholder="Any key" />
 										</SelectTrigger>
 										<SelectContent>

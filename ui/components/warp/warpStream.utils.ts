@@ -1,3 +1,5 @@
+import type { WarpTurn } from "@/lib/contexts/warpContext";
+import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
 /**
  * SSE frame parsing for Warp, kept separate from the React hook so it can be
  * tested without a DOM or a network.
@@ -216,6 +218,7 @@ export function warpToolStatusLabel(call: { durationMs?: number; failed?: boolea
  * a multi-second research pause legible, so it is worth the extra string.
  */
 const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
+	semantic_search_logs: { running: "Performing vector search", done: "Performed vector search" },
 	count_logs: { running: "Checking log volume", done: "Checked log volume" },
 	query_logs: { running: "Searching request logs", done: "Searched request logs" },
 	get_log_detail: { running: "Opening a request", done: "Opened a request" },
@@ -227,6 +230,201 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	describe_scope: { running: "Validating scope", done: "Validated scope" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
+
+/**
+ * Whether a link in an answer points inside the dashboard.
+ *
+ * Warp's tools hand the model root-relative paths into the Logs view. Those are
+ * followed with the router so the tray stays open beside the page they open.
+ * A protocol-relative "//host" is not internal, whatever it looks like.
+ */
+export function isInternalWarpLink(href: string | undefined): boolean {
+	if (!href || !href.startsWith("/")) return false;
+	// The second character decides. WHATWG URL parsing folds a backslash into a
+	// forward slash for special schemes, so "/\\host" resolves exactly as
+	// "//host" does - and handing that to the router navigates the current tab
+	// to another origin.
+	const second = href[1];
+	return second !== "/" && second !== "\\";
+}
+
+/**
+ * Rebuilds transcript turns from a stored thread, so a reopened conversation
+ * looks the way it did live: same tool rows, same error card, same partial
+ * note, same cost line.
+ */
+export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn[] {
+	return messages.map((message, index) => {
+		if (message.role === "user") {
+			return { role: "user", content: message.content };
+		}
+		const turn: WarpTurn = { role: "assistant", content: message.content };
+		if (message.tool_calls && message.tool_calls.length > 0) {
+			turn.toolCalls = message.tool_calls.map((call, callIndex) => ({
+				// Stored calls have no id; a stable synthetic one keeps React keys
+				// and the row lookup honest.
+				id: `stored-${index}-${callIndex}`,
+				name: call.name,
+				durationMs: call.duration_ms,
+				failed: call.failed,
+			}));
+		}
+		if (message.error) turn.error = message.error;
+		if (isPartialAnswer(message.finish_reason)) turn.partial = true;
+		// A stored assistant turn that asked rather than answered has to come back
+		// marked. send() serialises turn.question as `question: true`, which is how
+		// the server knows not to count the reply as a fresh question - without it
+		// a reopened thread replays a clarification as an answer and the repeated
+		// question limit stops applying.
+		if (isWarpQuestionFinish(message.finish_reason)) {
+			// The stored structured question restores the same selectable card the
+			// live turn showed, hints included. A row without one (or a blob that
+			// failed to decode server-side) still comes back as a question, so the
+			// reply is not misfiled as a fresh answer - just without shortcuts.
+			if (message.question) {
+				turn.question = {
+					question: message.question.question || message.content,
+					options: (message.question.options ?? []).map((option) => ({ label: option.label, hint: option.hint })),
+					allow_other: message.question.allow_other,
+					kind: message.question.kind as WarpQuestion["kind"],
+				};
+			} else {
+				turn.question = { question: message.content, options: [] };
+			}
+		}
+		if ((message.total_tokens ?? 0) > 0 || (message.cost ?? 0) > 0) {
+			turn.usage = { total_tokens: message.total_tokens, cost: { total_cost: message.cost } };
+		}
+		return turn;
+	});
+}
+
+/** What the tray's index chip says, and how loudly. */
+export interface IndexStatusLabel {
+	label: string;
+	tone: "ok" | "busy" | "error" | "muted";
+	/** A cause worth showing on hover, such as the last backfill error. */
+	detail?: string;
+}
+
+/**
+ * Folds the index status into one chip. Progress is shown while a backfill is
+ * running because that is the one moment the number changes; every other state
+ * is a word.
+ */
+export function indexStatusLabel(status: WarpLogIndexStatus): IndexStatusLabel {
+	// The idle response is an id-less zeroed body. Narrowing it away here is what
+	// stops "0 / 0 scanned" being read as a job and rendered as 0% progress.
+	const backfill = status.backfill?.status === "idle" ? undefined : status.backfill;
+	switch (status.state) {
+		case "unavailable":
+			return { label: "No vector store", tone: "error" };
+		case "not_configured":
+			return { label: "Search not set up", tone: "muted" };
+		case "failed": {
+			const detail = backfill?.last_error;
+			return detail ? { label: "Indexing failed", tone: "error", detail } : { label: "Indexing failed", tone: "error" };
+		}
+		case "indexing": {
+			const total = backfill?.total ?? 0;
+			const scanned = backfill?.scanned ?? 0;
+			if (total > 0) {
+				return { label: `Indexing ${Math.min(100, Math.floor((scanned / total) * 100))}%`, tone: "busy" };
+			}
+			return { label: "Indexing", tone: "busy" };
+		}
+		default:
+			return { label: "Index ready", tone: "ok" };
+	}
+}
+
+/**
+ * Whether a keystroke aimed at this element is someone typing.
+ *
+ * The question card binds its shortcuts on the document because the composer
+ * holds focus when the card appears. An empty composer is not typing, so the
+ * letters, arrows and Enter still pick an option there. The moment it holds
+ * text the person has chosen to write their own answer and every key is theirs.
+ * Any other input is always typing: the card should never eat a keystroke
+ * meant for a search box elsewhere on the page.
+ */
+export function isTypingInto(
+	target: { tagName: string; value?: string; isContentEditable?: boolean; dataset?: { testid?: string } } | null | undefined,
+): boolean {
+	if (!target) return false;
+	// contenteditable is typing too. It was covered by the inline tagName check
+	// this helper replaced, and dropping it meant a rich-text field anywhere on
+	// the page lost keystrokes to the question shortcuts - the same loss the
+	// TEXTAREA and INPUT cases exist to prevent, in the one place it is hardest
+	// to notice because the element is a DIV.
+	if (target.isContentEditable) return true;
+	if (target.tagName !== "TEXTAREA") return target.tagName === "INPUT";
+	// Only Warp's own composer is treated as "empty means the shortcuts apply".
+	// Any other textarea on the page is someone else's, and eating a keystroke
+	// there because it happens to match an option letter loses a character they
+	// were typing into something unrelated.
+	if (target.dataset?.testid !== WARP_COMPOSER_TESTID) return true;
+	return (target.value ?? "").trim() !== "";
+}
+
+/** data-testid of Warp's composer, the one textarea the question shortcuts own. */
+export const WARP_COMPOSER_TESTID = "warp-composer-input";
+
+/**
+ * Whether the next queued message should be sent now.
+ *
+ * Exactly one message goes out per finished turn: on the transition from
+ * streaming to idle. Checking the transition rather than the idle state is
+ * what stops two queued messages from being sent back to back - after the
+ * first is dequeued the panel is still idle for a render, and an idle check
+ * would fire again before the request had a chance to start streaming.
+ */
+export function shouldDrainQueue(wasStreaming: boolean, isStreaming: boolean, queued: number, questionPending = false): boolean {
+	// A question also ends streaming. Draining into it made the next queued
+	// follow-up the answer to a clarification it has nothing to do with - Warp
+	// asks "which provider?" and receives "what did this cost last week".
+	if (questionPending) return false;
+	return wasStreaming && !isStreaming && queued > 0;
+}
+
+/** The finish reason the server sends when Warp asked instead of answering. */
+export const WARP_FINISH_QUESTION = "question";
+
+/** Whether a stored turn ended by posing a question. */
+export function isWarpQuestionFinish(finishReason: string | undefined): boolean {
+	return finishReason === WARP_FINISH_QUESTION;
+}
+
+/**
+ * Whether a click should be handled by the router instead of the browser.
+ *
+ * Intercepting every click took Command-click, Ctrl-click, Shift-click and
+ * middle-click with it, so an answer's link could not be opened in a new tab or
+ * window at all - the one thing someone reading a cited figure most wants to do.
+ */
+export function isPlainLeftClick(event: {
+	button?: number;
+	metaKey?: boolean;
+	ctrlKey?: boolean;
+	shiftKey?: boolean;
+	altKey?: boolean;
+}): boolean {
+	return (event.button ?? 0) === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+/** The finish reason the server sends when Warp answered on its last research step. */
+export const WARP_FINISH_PARTIAL = "partial";
+
+/**
+ * Whether a done frame's finish reason marks the answer as partial.
+ *
+ * Partial means the model was cut off: it had used every research step and was
+ * told to answer from what it had. The text is still worth reading, but the
+ * transcript has to say so, or a half-checked figure reads as a settled one.
+ */
+export function isPartialAnswer(finishReason: string | undefined): boolean {
+	return finishReason === WARP_FINISH_PARTIAL;
+}
 
 /**
  * Message shown for a terminal error code.
