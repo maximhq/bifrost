@@ -4218,7 +4218,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Supports \"env.VAR_NAME\" to resolve from an environment variable at load time."
         },
         "extra_headers": {
           "type": "object",
