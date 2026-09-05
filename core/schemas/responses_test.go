@@ -762,3 +762,35 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesCompletedImageGenerationStringAction(t *testing.T) {
+	raw := []byte(`{"type":"response.completed","sequence_number":8,"response":{"id":"resp_123","object":"response","status":"completed","model":"gpt-image-1","created_at":1785832000,"output":[{"id":"ig_123","type":"image_generation_call","status":"completed","action":"generate","result":"base64-image"}],"tools":[],"usage":null}}`)
+
+	var response BifrostResponsesStreamResponse
+	if err := Unmarshal(raw, &response); err != nil {
+		t.Fatalf("unmarshal response.completed: %v", err)
+	}
+
+	encoded, err := Marshal(&response)
+	if err != nil {
+		t.Fatalf("marshal response.completed: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"action":"generate"`) {
+		t.Fatalf("image generation action was not preserved: %s", encoded)
+	}
+}
+
+func TestResponsesToolImageGenerationPreservesAction(t *testing.T) {
+	var tool ResponsesTool
+	if err := Unmarshal([]byte(`{"type":"image_generation","action":"edit"}`), &tool); err != nil {
+		t.Fatalf("unmarshal image generation tool: %v", err)
+	}
+
+	encoded, err := Marshal(&tool)
+	if err != nil {
+		t.Fatalf("marshal image generation tool: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"action":"edit"`) {
+		t.Fatalf("image generation tool action was not preserved: %s", encoded)
+	}
+}
