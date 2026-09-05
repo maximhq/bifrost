@@ -3056,13 +3056,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown stops the background resources Bootstrap started: the Bifrost
-// client, the storage cleaners, the webhook/sweep/sidekiq workers, the live
-// model refresher, the websocket handler and the upstream websocket pool,
-// and finally Config itself. The context Bootstrap derived from its caller
-// is cancelled first, so ctx-aware workers begin unwinding immediately.
+// Shutdown stops what Bootstrap started, in this order: the realtime
+// transport sessions, the Bifrost client, the storage cleaners, the
+// webhook/sweep/sidekiq workers, the live model refresher, the websocket
+// handler and the upstream websocket pool, and finally Config itself. The
+// context Bootstrap derived from its caller is cancelled right after the
+// realtime sessions are closed, so ctx-aware workers begin unwinding
+// immediately.
 //
-// Start calls this from its signal branch. It is exported so that a caller
+// Start calls this from both of its exits. It is exported so that a caller
 // embedding BifrostHTTPServer -- one that runs Bootstrap and serves s.Server
 // (or s.Router.Handler) on a listener of its own rather than calling Start --
 // can run the same sequence. Several of the steps go through unexported
@@ -3072,12 +3074,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 //
 // It deliberately touches neither s.Server nor any net.Listener: whoever
 // opened a listener closes it. Start shuts its own fasthttp server down
-// before calling this, preserving the previous order.
+// before calling this, and that order does not matter to the realtime
+// sessions: their connections are hijacked, so fasthttp's own shutdown
+// neither waits for them nor closes them.
 //
 // Blocks until the sequence finishes or ctx is done, whichever comes first,
 // returning ctx.Err() in the latter case. Call it once; it is not safe to
 // call concurrently or repeatedly.
 func (s *BifrostHTTPServer) Shutdown(ctx context.Context) error {
+	if s.IntegrationHandler != nil {
+		logger.Info("closing realtime transport sessions...")
+		s.IntegrationHandler.Close()
+	}
 	// Cancelling main context
 	if s.cancel != nil {
 		s.cancel()
@@ -3188,10 +3196,6 @@ func (s *BifrostHTTPServer) Start() error {
 	select {
 	case sig := <-sigChan:
 		logger.Info("received signal %v, initiating graceful shutdown...", sig)
-		if s.IntegrationHandler != nil {
-			logger.Info("closing realtime transport sessions...")
-			s.IntegrationHandler.Close()
-		}
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -3207,9 +3211,6 @@ func (s *BifrostHTTPServer) Start() error {
 		_ = s.Shutdown(shutdownCtx)
 
 	case err := <-errChan:
-		if s.IntegrationHandler != nil {
-			s.IntegrationHandler.Close()
-		}
 		// Serving failed and this returns into main's os.Exit(1). Previously
 		// this branch closed only the integration handler and the websocket
 		// pool before returning, leaving the Bifrost client, the cleaners, the
