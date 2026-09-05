@@ -225,7 +225,7 @@ Emitted for MCP (Model Context Protocol) tool calls executed through Bifrost:
 |--------|------|-------------|
 | `bifrost_mcp_client_operation_duration_seconds` | Histogram | Duration of an MCP tool call, observed by Bifrost (the MCP client). `_count` is call volume; a non-empty `error_type` marks failures. |
 
-Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
+Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, `project_id`/`project_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
 
 ### Default Labels
 
@@ -244,6 +244,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
+- `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.

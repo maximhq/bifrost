@@ -897,7 +897,7 @@ Default port: **4317**
 
 The OTel plugin supports **push-based metrics export** via OTLP, which is essential for multi-node cluster deployments. Instead of relying on Prometheus scraping each node's `/metrics` endpoint (which can miss nodes behind a load balancer), all nodes actively push metrics to a central OTEL Collector.
 
-MCP client operations are exported as `mcp.client.operation.duration` (histogram, seconds) following the OTel MCP semantic conventions, dimensioned by `mcp.method.name`, `gen_ai.tool.name`, `network.transport`, `error.type`, and the governance dimensions `virtual_key_id`, `virtual_key_name`, `team_id`, `team_name`, `customer_id`, `customer_name`, `business_unit_id`, `business_unit_name`. This histogram covers all MCP client methods (`tools/call`, `tools/list`, `ping`, `initialize`) — to measure tool calls only, filter for `mcp.method.name="tools/call"`.
+MCP client operations are exported as `mcp.client.operation.duration` (histogram, seconds) following the OTel MCP semantic conventions, dimensioned by `mcp.method.name`, `gen_ai.tool.name`, `network.transport`, `error.type`, and the governance dimensions `virtual_key_id`, `virtual_key_name`, `team_id`, `team_name`, `customer_id`, `customer_name`, `business_unit_id`, `business_unit_name`, `project_id`, `project_name`. This histogram covers all MCP client methods (`tools/call`, `tools/list`, `ping`, `initialize`) — to measure tool calls only, filter for `mcp.method.name="tools/call"`.
 
 ### Configuration
 

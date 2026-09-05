@@ -305,7 +305,12 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+<<<<<<< HEAD
               "enterprise/virtual-mcps",
+=======
+              "enterprise/mcp-tool-groups",
+              "enterprise/projects",
+>>>>>>> 15c99a742 (docs: add enterprise Projects page)
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
