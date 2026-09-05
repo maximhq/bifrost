@@ -1280,6 +1280,44 @@ func TestNetworkConfig_BaseURLSecretRef(t *testing.T) {
 	})
 }
 
+// TestNetworkConfig_Redacted_BaseURL covers the redacted copy's base_url handling: a
+// reference-resolved value is masked (the JSON still carries the reference), a literal
+// stays readable, and neither shares a pointer with the original.
+func TestNetworkConfig_Redacted_BaseURL(t *testing.T) {
+	t.Run("reference-resolved base_url is masked and cloned", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_REDACT_BASE_URL", "https://secret-host.example.com")
+		var nc NetworkConfig
+		require.NoError(t, json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_REDACT_BASE_URL"}`), &nc))
+
+		redacted := nc.Redacted()
+		require.NotNil(t, redacted.BaseURL)
+		assert.NotSame(t, nc.BaseURL, redacted.BaseURL)
+		assert.NotContains(t, redacted.BaseURL.GetValue(), "secret-host")
+		assert.True(t, redacted.BaseURL.IsRedacted())
+		assert.Equal(t, "env.BIFROST_TEST_REDACT_BASE_URL", redacted.BaseURL.GetRawRef())
+
+		out, err := json.Marshal(redacted)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), `"base_url":"env.BIFROST_TEST_REDACT_BASE_URL"`)
+		assert.NotContains(t, string(out), "secret-host")
+
+		// The original keeps the dialable value.
+		assert.Equal(t, "https://secret-host.example.com", nc.BaseURL.GetValue())
+	})
+
+	t.Run("literal base_url stays readable but is cloned", func(t *testing.T) {
+		nc := NetworkConfig{BaseURL: NewSecretVar("https://api.example.com")}
+		redacted := nc.Redacted()
+		assert.NotSame(t, nc.BaseURL, redacted.BaseURL)
+		assert.Equal(t, "https://api.example.com", redacted.BaseURL.GetValue())
+	})
+
+	t.Run("nil base_url stays nil", func(t *testing.T) {
+		nc := NetworkConfig{}
+		assert.Nil(t, nc.Redacted().BaseURL)
+	})
+}
+
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
 // strings are normalized to their canonical ResponsesToolType values.
 func TestNormalizeResponsesToolType(t *testing.T) {
