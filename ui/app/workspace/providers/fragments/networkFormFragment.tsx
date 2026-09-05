@@ -200,6 +200,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 												disabled={!hasUpdateProviderAccess}
 											/>
 										</FormControl>
+										<FormDescription>
+											A URL, or an <code>env.VAR_NAME</code> / <code>vault.path</code> reference resolved on the server.
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}

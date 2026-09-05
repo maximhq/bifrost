@@ -192,6 +192,37 @@ export function isRedacted(value: string): boolean {
 	return false;
 }
 
+/**
+ * Checks if a value is a secret reference the server resolves: "env.VAR_NAME" or
+ * "vault.path/to/secret" with a non-empty name or path.
+ */
+export function isSecretReference(value: string): boolean {
+	return /^(env|vault)\.\S+$/.test(value);
+}
+
+/**
+ * Validates a provider base URL. The server's NetworkConfig.base_url is a SecretVar,
+ * so it accepts either an http(s) URL or an env./vault. reference that resolves to one.
+ * @param value - The base URL field value
+ * @returns true if the value is an http(s) URL or a secret reference
+ */
+export function isValidBaseURL(value: string): boolean {
+	if (!value) {
+		return false;
+	}
+	if (isSecretReference(value)) {
+		return true;
+	}
+	try {
+		const url = new URL(value);
+		return (url.protocol === "http:" || url.protocol === "https:") && url.hostname.length > 0;
+	} catch {
+		return false;
+	}
+}
+
+export const BASE_URL_VALIDATION_MESSAGE = "Must be a valid HTTP or HTTPS URL, or an env.VAR_NAME / vault.path reference";
+
 const PASSWORD_REQUIREMENTS = [
 	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
 	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
