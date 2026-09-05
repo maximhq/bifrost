@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,18 @@ const (
 	ErrTimeout       = "timeout"
 	ErrCancelled     = "cancelled"
 )
+
+// FinishReasonPartial marks an answer given on the last research step, after
+// the model was told to stop querying and say what it had. The figure may be
+// incomplete, and the UI labels it so.
+const FinishReasonPartial = "partial"
+
+// finalStepInstructions is appended to the system prompt on the last research
+// step, which is sent without tools. The model cannot spend that step on one
+// more query, so whatever it knows becomes the answer instead of an error.
+const finalStepInstructions = "\n\nThis is your final step. You have used every research step you have, and no tools are available now. " +
+	"Answer from the results you already have. Lead with what you found, then say plainly what you could not check. " +
+	"Do not present a gap as a settled figure."
 
 type Event struct {
 	Type eventType `json:"type"`
@@ -220,13 +233,32 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
 	instructions := systemInstructions(a.config)
+	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	var usage *schemas.BifrostLLMUsage
+	// executed remembers every tool call that ran in an earlier step, keyed on
+	// name and raw arguments, so an identical repeat is refused instead of
+	// re-run. The value is the step it ran in, which is what the refusal points
+	// the model at. Calls within one step are not checked against each other:
+	// the per-turn cap already bounds those, and "step N" would name the step
+	// in progress.
+	executed := map[string]int{}
 
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if ctx.Err() != nil {
 			emit(Event{Type: EventError, Code: ErrCancelled, Message: "request cancelled"})
 			return
+		}
+
+		// The last step is answer-only. With tools still on offer the model
+		// spends it on one more query and the whole run ends as an error that
+		// discards everything the earlier steps learned. A budget of one step
+		// is exempt: taking its tools away would leave Warp unable to look at
+		// anything at all.
+		finalStep := iteration == a.maxIterations && a.maxIterations > 1
+		params := &schemas.ResponsesParameters{Instructions: &instructions, Tools: declared}
+		if finalStep {
+			params = &schemas.ResponsesParameters{Instructions: &finalInstructions}
 		}
 
 		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{
@@ -236,12 +268,9 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			Provider: transportProvider(),
 			// Qualified as provider/model so the routing on the other end cannot
 			// substitute a different provider for the same model name.
-			Model: modelForRequest(a.config),
-			Input: conversation,
-			Params: &schemas.ResponsesParameters{
-				Instructions: &instructions,
-				Tools:        declared,
-			},
+			Model:  modelForRequest(a.config),
+			Input:  conversation,
+			Params: params,
 		})
 		if bifrostErr != nil {
 			code := ErrUpstream
@@ -269,17 +298,30 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		text := responsesText(response.Output)
 		toolCalls := responsesToolCalls(response.Output)
 
-		if len(toolCalls) == 0 {
+		// On the final step any text is the answer, tool calls or not: nothing
+		// else can run, and an answer alongside an unrunnable call is still an
+		// answer. It is marked partial because the model was cut off, and the
+		// reader should weigh it accordingly.
+		if len(toolCalls) == 0 || (finalStep && text != "") {
 			if text != "" && !emit(Event{Type: EventDelta, Delta: text}) {
 				return
 			}
+			finishReason := "stop"
+			if finalStep {
+				finishReason = FinishReasonPartial
+			}
 			emit(Event{
 				Type:         EventDone,
-				FinishReason: "stop",
+				FinishReason: finishReason,
 				Iterations:   iteration,
 				Usage:        usage,
 			})
 			return
+		}
+		if finalStep {
+			// Asked for tools with none on offer and said nothing. Nothing is
+			// left to run, so fall through to the budget error below.
+			break
 		}
 
 		// Narration the model produced alongside its tool calls ("let me check
@@ -289,6 +331,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			return
 		}
 
+		ranThisStep := make([]string, 0, len(toolCalls))
 		for index, call := range toolCalls {
 			name, arguments, id := call.Name, call.Arguments, call.ID
 
@@ -330,6 +373,21 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				return
 			}
 
+			// An identical call returns an identical result. Running it again
+			// only burns a step, and a model that repeats itself is the shape
+			// every runaway loop takes, so the repeat is refused with a pointer
+			// to the step whose result it already has.
+			key := name + "\x00" + arguments
+			if prior, repeated := executed[key]; repeated {
+				refusal := fmt.Sprintf("not run: identical to your call in step %d, whose result you already have. Change the arguments, use a different tool, or answer from what you have.", prior)
+				if !emit(Event{Type: EventToolCallEnd, ToolID: id, ToolName: name, Failed: true, ToolError: refusal}) {
+					return
+				}
+				conversation = append(conversation, toolResultMessage(id, `{"error":`+strconv.Quote(refusal)+`}`))
+				continue
+			}
+			ranThisStep = append(ranThisStep, key)
+
 			started := time.Now()
 			result, failed := a.executeTool(ctx, name, arguments)
 			end := Event{
@@ -346,6 +404,9 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			}
 
 			conversation = append(conversation, toolResultMessage(id, result))
+		}
+		for _, key := range ranThisStep {
+			executed[key] = iteration
 		}
 	}
 

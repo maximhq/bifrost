@@ -16,6 +16,10 @@ import (
 const (
 	BackfillJobKind   = "warp_log_embedding_backfill"
 	backfillBatchSize = 100
+	// backfillMaxConsecutiveFailures is how many logs in a row may fail to index
+	// before the job gives up. A dead embedding provider fails every row the same
+	// way, so continuing past this point only burns time and quota.
+	backfillMaxConsecutiveFailures = 100
 )
 
 var ErrBackfillInProgress = errors.New("warp: a log embedding backfill is running")
@@ -97,6 +101,9 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 		return lastSnapshot
 	}
 
+	// Counted in memory only: a resumed job starts with a clean slate, which is
+	// the point of resuming after the operator fixed the provider.
+	consecutiveFailures := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			meta.Message = fmt.Sprintf("Stopped after scanning %d log(s).", meta.Scanned)
@@ -134,24 +141,39 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 			listed := result.Logs[index]
 			entry, getErr := s.logs.GetLog(ctx, listed.ID)
 			meta.Scanned++
-			if getErr != nil || entry == nil {
-				meta.Failed++
-				if getErr != nil {
-					meta.LastError = getErr.Error()
-				} else {
-					meta.LastError = "log disappeared during backfill"
+			failed := true
+			switch {
+			case getErr != nil:
+				meta.LastError = getErr.Error()
+			case entry == nil:
+				meta.LastError = "log disappeared during backfill"
+			default:
+				outcome, indexErr := s.indexer.Index(ctx, entry)
+				switch {
+				case indexErr != nil:
+					meta.LastError = indexErr.Error()
+				case outcome == IndexOutcomeSkipped:
+					failed = false
+					meta.Skipped++
+				default:
+					failed = false
+					meta.Indexed++
 				}
+			}
+			if !failed {
+				consecutiveFailures = 0
 				continue
 			}
-			outcome, indexErr := s.indexer.Index(ctx, entry)
-			switch {
-			case indexErr != nil:
-				meta.Failed++
-				meta.LastError = indexErr.Error()
-			case outcome == IndexOutcomeSkipped:
-				meta.Skipped++
-			default:
-				meta.Indexed++
+			meta.Failed++
+			consecutiveFailures++
+			if consecutiveFailures >= backfillMaxConsecutiveFailures {
+				// Every recent row failed the same way, which points at the embedding
+				// provider or key rather than the data. Stop here so a 100k-log window
+				// does not spend hours failing. Progress is checkpointed so the UI
+				// shows exactly where it gave up.
+				meta.Message = fmt.Sprintf("Stopped after %d consecutive failures (%d scanned).", consecutiveFailures, meta.Scanned)
+				_ = progress(snapshot())
+				return snapshot(), fmt.Errorf("Warp backfill stopped after %d consecutive failures: %s", consecutiveFailures, meta.LastError)
 			}
 		}
 

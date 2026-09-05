@@ -494,6 +494,51 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
+	{IDs: []string{"add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+}
+
+// warpMessageOutcomeColumns are the per-message outcome fields added after the
+// conversation tables shipped: how the turn ended and what it cost.
+var warpMessageOutcomeColumns = []struct{ column, field string }{
+	{"finish_reason", "FinishReason"},
+	{"total_tokens", "TotalTokens"},
+	{"cost", "Cost"},
+}
+
+// migrationAddWarpMessageOutcomeColumns adds finish_reason, total_tokens and
+// cost to Warp's stored messages, so a partial answer stays marked partial when
+// its thread is reopened and the history list can show what each thread cost.
+func migrationAddWarpMessageOutcomeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_message_outcome_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			for _, column := range warpMessageOutcomeColumns {
+				if mg.HasColumn(&tables.TableWarpMessage{}, column.column) {
+					continue
+				}
+				if err := mg.AddColumn(&tables.TableWarpMessage{}, column.field); err != nil {
+					return fmt.Errorf("add %s column: %w", column.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			for _, column := range warpMessageOutcomeColumns {
+				if !mg.HasColumn(&tables.TableWarpMessage{}, column.column) {
+					continue
+				}
+				if err := mg.DropColumn(&tables.TableWarpMessage{}, column.field); err != nil {
+					return fmt.Errorf("drop %s column: %w", column.column, err)
+				}
+			}
+			return nil
+		},
+	})
 }
 
 func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

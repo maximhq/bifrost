@@ -25,6 +25,7 @@ import (
 type warpBackfillJobStore interface {
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 }
 
 // WarpHandler is the HTTP face of the Warp service. It parses requests, maps
@@ -82,6 +83,10 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.startBackfill, middlewares...))
 	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.backfillStatus, middlewares...))
 	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.cancelBackfill, middlewares...))
+	// A read-only summary for the tray. Unlike the backfill controls above it is
+	// not admin-gated: whether semantic search is usable is something everyone
+	// who can ask Warp a question needs to see.
+	r.GET("/api/warp/log-index/status", lib.ChainMiddlewares(h.logIndexStatus, middlewares...))
 
 	// The chat route exists only where Warp has data to read and a way to reach
 	// a model; see Service.CanChat for why absent beats always-failing.
@@ -190,6 +195,11 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 		job, err = h.backfillStore.GetSidekiqJob(ctx, id)
 	} else {
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		if err == nil && job == nil {
+			// Nothing running. A reloaded page still wants to see how the last
+			// backfill ended, so fall back to the newest job of any status.
+			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		}
 	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill status")
@@ -245,6 +255,73 @@ func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
 		job = refreshed
 	}
 	SendJSON(ctx, warpBackfillStatusFromRow(job))
+}
+
+// warpLogIndexStatus folds the vector store connection, the embedding
+// configuration and the latest indexing job into one state the tray can show.
+type warpLogIndexStatus struct {
+	// State is one of: unavailable (no vector store), not_configured (no
+	// embedding model), indexing (a backfill is in flight), failed (the last
+	// backfill failed), ready.
+	State                string              `json:"state"`
+	VectorStoreConnected bool                `json:"vector_store_connected"`
+	EmbeddingConfigured  bool                `json:"embedding_configured"`
+	Backfill             *warpBackfillStatus `json:"backfill,omitempty"`
+}
+
+const (
+	warpIndexStateUnavailable   = "unavailable"
+	warpIndexStateNotConfigured = "not_configured"
+	warpIndexStateIndexing      = "indexing"
+	warpIndexStateFailed        = "failed"
+	warpIndexStateReady         = "ready"
+)
+
+// logIndexStatus serves the tray's indexing summary.
+func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
+	view, err := h.service.ConfigView(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to read Warp configuration")
+		return
+	}
+	status := warpLogIndexStatus{
+		VectorStoreConnected: view.VectorStoreConnected,
+		EmbeddingConfigured:  view.EmbeddingProvider != "" && view.EmbeddingModel != "",
+	}
+	switch {
+	case !status.VectorStoreConnected:
+		status.State = warpIndexStateUnavailable
+	case !status.EmbeddingConfigured:
+		status.State = warpIndexStateNotConfigured
+	default:
+		status.State = warpIndexStateReady
+	}
+	if h.backfillStore == nil || status.State != warpIndexStateReady {
+		SendJSON(ctx, status)
+		return
+	}
+	job, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	if err == nil && job == nil {
+		job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	}
+	if err != nil {
+		// The index is still usable without the job history; the summary is
+		// worth more than an error here.
+		logger.Warn("failed to read Warp backfill job for index status: %v", err)
+		SendJSON(ctx, status)
+		return
+	}
+	if job != nil {
+		backfill := warpBackfillStatusFromRow(job)
+		status.Backfill = &backfill
+		switch job.Status {
+		case tables.SidekiqStatusPending, tables.SidekiqStatusRunning:
+			status.State = warpIndexStateIndexing
+		case tables.SidekiqStatusFailed:
+			status.State = warpIndexStateFailed
+		}
+	}
+	SendJSON(ctx, status)
 }
 
 func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {

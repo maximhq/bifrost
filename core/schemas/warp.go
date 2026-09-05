@@ -208,9 +208,13 @@ type WarpConversation struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	// MessageCount lets the list render without loading every transcript.
-	MessageCount int       `json:"message_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int `json:"message_count"`
+	// TotalTokens and TotalCost are the thread's spend so far, summed from its
+	// answers, so the list can show what each conversation cost.
+	TotalTokens int       `json:"total_tokens"`
+	TotalCost   float64   `json:"total_cost"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // WarpConversationDetail is a conversation with its full transcript.
@@ -228,7 +232,14 @@ type WarpStoredMessage struct {
 	// came from nowhere.
 	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
 	Error     string               `json:"error,omitempty"`
-	CreatedAt time.Time            `json:"created_at"`
+	// FinishReason is "partial" when the answer was given on the last research
+	// step without settling, so a reopened thread still shows it as partial.
+	FinishReason string `json:"finish_reason,omitempty"`
+	// TotalTokens and Cost are what this answer cost to produce. Zero on user
+	// turns.
+	TotalTokens int       `json:"total_tokens,omitempty"`
+	Cost        float64   `json:"cost,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // WarpStoredToolCall is the persisted trace of one tool call.

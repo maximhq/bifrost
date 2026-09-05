@@ -104,3 +104,24 @@ func TestSemanticSearchToolAppliesDefaultCallerScope(t *testing.T) {
 	require.Contains(t, response["scope"], "person asking")
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: userID})
 }
+
+// An empty semantic result used to be four bare fields, and the model read it as
+// "search is useless here" and went off counting and listing logs instead. The
+// hint says what happened (nothing scored above the threshold) and what the
+// legitimate next moves are, so a meaning question stays a meaning question.
+func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
+	result, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{}}, map[string]any{
+		"query": "refund requests", "filters": map[string]any{},
+	})
+	require.NoError(t, err)
+	response := result.(map[string]any)
+	require.Equal(t, 0, response["returned"])
+	hint, _ := response["hint"].(string)
+	require.Contains(t, hint, "threshold")
+	require.Contains(t, hint, "Do not fall back to count_logs or query_logs")
+}

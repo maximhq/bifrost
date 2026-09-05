@@ -2,7 +2,7 @@ package warp
 
 import (
 	"context"
-	"time"
+	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -120,52 +120,62 @@ func describeScopeTool() Tool {
 			// Dimensions come from logged traffic, so they list what actually
 			// exists rather than what is merely configured. A team with no requests
 			// cannot be the answer to a usage question anyway.
-			virtualKeys, err := deps.logManager.GetAvailableVirtualKeys(ctx, limit, "")
-			if err != nil {
-				return nil, err
+			//
+			// These are the distinct-value lookups the Logs filter bar uses: one
+			// indexed DISTINCT each. The rankings that used to stand here rank by
+			// spend, which nothing downstream needs, and on the enterprise
+			// hierarchy path fan every row out through JSON-array columns - tens
+			// of seconds on a large table before Warp could even ask its question.
+			//
+			// The four run concurrently. Each is a scan of the log table, and on a
+			// large SQLite file with cold pages that is I/O-bound, so running them
+			// one after another paid the disk four times over.
+			lookups := []struct {
+				key    string
+				lookup func(context.Context, int, string) ([]KeyPair, error)
+			}{
+				{"virtual_keys", deps.logManager.GetAvailableVirtualKeys},
+				{"teams", deps.logManager.GetAvailableTeams},
+				{"customers", deps.logManager.GetAvailableCustomers},
+				{"business_units", deps.logManager.GetAvailableBusinessUnits},
 			}
-			out["virtual_keys"] = virtualKeys
-			for key, dimension := range map[string]logstore.RankingDimension{
-				"teams":          logstore.RankingDimensionTeam,
-				"customers":      logstore.RankingDimensionCustomer,
-				"business_units": logstore.RankingDimensionBusinessUnit,
-			} {
-				names, err := dimensionNames(ctx, deps, dimension)
-				if err != nil {
-					return nil, err
+			results := make([][]KeyPair, len(lookups))
+			errs := make([]error, len(lookups))
+			var wg sync.WaitGroup
+			for index, entry := range lookups {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					results[index], errs[index] = entry.lookup(ctx, limit, "")
+				}()
+			}
+			wg.Wait()
+			for index, entry := range lookups {
+				if errs[index] != nil {
+					return nil, errs[index]
 				}
-				out[key] = names
+				if entry.key == "virtual_keys" {
+					out[entry.key] = results[index]
+					continue
+				}
+				out[entry.key] = keyPairLabels(results[index])
 			}
 			return out, nil
 		},
 	}
 }
 
-// dimensionNames lists the entities seen on a dimension.
-//
-// Read from rankings over a wide window rather than from the governance tables:
-// the point is to offer scopes that have traffic, and a configured-but-unused
-// team is a dead end for every question this tool precedes.
-func dimensionNames(ctx context.Context, deps *ToolDeps, dimension logstore.RankingDimension) ([]string, error) {
-	limit := 25
-	filters := &logstore.SearchFilters{RankingLimit: &limit}
-	now := Now()
-	start := now.Add(-30 * 24 * time.Hour)
-	filters.StartTime, filters.EndTime = &start, &now
-
-	result, err := deps.logManager.GetDimensionRankings(ctx, filters, dimension)
-	if err != nil {
-		return nil, err
-	}
-	labels := make([]string, 0, len(result.Rankings))
-	for _, entry := range result.Rankings {
-		// Prefer the name; fall back to the id so an unnamed entity is still
-		// something the model can put in a filter.
-		if entry.Name != "" {
-			labels = append(labels, entry.Name+" ("+entry.ID+")")
+// keyPairLabels renders id/name pairs the way the model puts them in a
+// filter: the name for reading, the id in brackets for the query. An unnamed
+// entity is still listed by id so it can be chosen.
+func keyPairLabels(pairs []KeyPair) []string {
+	labels := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		if pair.Name != "" {
+			labels = append(labels, pair.Name+" ("+pair.ID+")")
 			continue
 		}
-		labels = append(labels, entry.ID)
+		labels = append(labels, pair.ID)
 	}
-	return labels, nil
+	return labels
 }
