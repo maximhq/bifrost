@@ -3015,7 +3015,7 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 		requestURL = fmt.Sprintf("%s/batches/%s:cancel", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
-	provider.logger.Debug("gemini batch cancel url: " + requestURL)
+	provider.logger.Debug("gemini batch cancel url: " + providerUtils.LoggableURL(provider.networkConfig.BaseURL, requestURL))
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
@@ -3101,7 +3101,7 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
-	provider.logger.Debug("gemini batch delete url: " + requestURL)
+	provider.logger.Debug("gemini batch delete url: " + providerUtils.LoggableURL(provider.networkConfig.BaseURL, requestURL))
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
@@ -3309,7 +3309,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		requestURL = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL.GetValue(), batchID)
 	}
 
-	provider.logger.Debug("gemini batch results url: " + requestURL)
+	provider.logger.Debug("gemini batch results url: " + providerUtils.LoggableURL(provider.networkConfig.BaseURL, requestURL))
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)

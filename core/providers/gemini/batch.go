@@ -296,7 +296,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 
 	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, fileID)
 
-	provider.logger.Debug("gemini batch results file download url: " + url)
+	provider.logger.Debug("gemini batch results file download url: " + providerUtils.LoggableURL(provider.networkConfig.BaseURL, url))
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)

@@ -62,3 +62,38 @@ func TestNormalizeBaseURL(t *testing.T) {
 		NormalizeBaseURL(nil, "https://api.example.com")
 	})
 }
+
+// TestLoggableURL covers the log-safe rendering of provider request URLs: a literal
+// base_url is logged verbatim, while a reference-resolved base_url has its resolved
+// scheme and host replaced by the reference.
+func TestLoggableURL(t *testing.T) {
+	t.Run("literal base_url is logged as-is", func(t *testing.T) {
+		base := schemas.NewSecretVar("https://api.example.com/v1beta")
+		assert.Equal(t, "https://api.example.com/v1beta/batches/123:cancel", LoggableURL(base, "https://api.example.com/v1beta/batches/123:cancel"))
+	})
+
+	t.Run("nil base_url is logged as-is", func(t *testing.T) {
+		assert.Equal(t, "https://api.example.com/x", LoggableURL(nil, "https://api.example.com/x"))
+	})
+
+	t.Run("reference-resolved base_url hides the resolved host", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/v1beta")
+		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
+		got := LoggableURL(base, "https://secret-host.example.com/v1beta/batches/123:cancel?alt=media")
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/v1beta/batches/123:cancel?alt=media", got)
+		assert.NotContains(t, got, "secret-host")
+	})
+
+	t.Run("reference-resolved base_url hides a rewritten host too", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com/v1beta")
+		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
+		got := LoggableURL(base, "https://secret-host.example.com/download/v1beta/files/abc:download?alt=media")
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL/download/v1beta/files/abc:download?alt=media", got)
+	})
+
+	t.Run("unparseable URL under a reference falls back to the reference alone", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_LOGGABLE_BASE_URL", "https://secret-host.example.com")
+		base := schemas.NewSecretVar("env.BIFROST_TEST_LOGGABLE_BASE_URL")
+		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL", LoggableURL(base, "://not a url"))
+	})
+}
