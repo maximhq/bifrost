@@ -1239,6 +1239,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableNotification{},
+		&tables.TableWarpConfig{},
 	}
 
 	migrator := db.Migrator()

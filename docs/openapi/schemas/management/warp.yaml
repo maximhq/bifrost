@@ -1,0 +1,129 @@
+# Warp Agent Configuration Schemas
+
+WarpConfig:
+  type: object
+  description: |
+    Warp's deployment-wide settings, as returned by the read API.
+
+    The stored provider credential is never included. `api_key_set` reports
+    whether one exists so the settings form can render "configured" instead of
+    an empty field, but the value itself never leaves the server: a dashboard
+    session is a weaker credential than the provider key it would reveal.
+  properties:
+    configured:
+      type: boolean
+      description: |
+        Whether Warp has everything it needs to answer a question — enabled,
+        with a provider and a model. A credential is deliberately not part of
+        this test, since a provider reached over a trusted network through
+        `base_url` legitimately needs none.
+    enabled:
+      type: boolean
+      description: Whether the operator has switched Warp on.
+    provider:
+      type: string
+      description: The model provider that runs the agent loop, e.g. `openai`.
+      example: openai
+    model:
+      type: string
+      example: gpt-4o
+    base_url:
+      type: string
+      description: |
+        Where Warp reaches its model. Defaults to this Bifrost's own origin, so
+        Warp runs through the deployment's own gateway and reuses the provider
+        credentials already configured here. Point it elsewhere only to call a
+        provider directly.
+      example: https://bifrost.internal.example.com
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp uses. A reference, not a
+        credential, so it round-trips in the clear - there is nothing here worth
+        redacting. Empty when the provider needs no key.
+    max_iterations:
+      type: integer
+      description: |
+        How many times Warp may call tools and feed the results back before it
+        must answer with what it has. Resolved value, so a row that never set
+        one reports the default rather than zero.
+      minimum: 1
+      maximum: 20
+      default: 8
+    request_timeout_seconds:
+      type: integer
+      description: Bound on a single upstream call. Resolved value.
+      default: 120
+    system_prompt_suffix:
+      type: string
+      description: |
+        Appended to Warp's built-in system prompt. Additive only: an operator
+        can teach Warp local naming conventions, but cannot remove the tool-use
+        and scoping instructions the built-in prompt establishes.
+  required:
+    - configured
+    - enabled
+    - provider
+    - model
+    - max_iterations
+    - request_timeout_seconds
+
+WarpConfigInput:
+  type: object
+  description: |
+    The write body. Only a config that claims to be usable has to be complete:
+    when `enabled` is false, `provider` and `model` may be empty, so an operator
+    can fill the form in over more than one sitting.
+  properties:
+    enabled:
+      type: boolean
+      default: false
+    provider:
+      type: string
+      description: Required when `enabled` is true.
+      example: openai
+    model:
+      type: string
+      description: Required when `enabled` is true.
+      example: gpt-4o
+    base_url:
+      type: string
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys Warp should use. Empty is valid
+        and common: with the default `base_url` Warp reaches its model through
+        this Bifrost, and a provider on a trusted network or using ambient
+        credentials needs no key at all.
+    max_iterations:
+      type: integer
+      minimum: 0
+      maximum: 20
+      description: Zero means "use the default".
+    request_timeout_seconds:
+      type: integer
+      minimum: 0
+      description: Zero means "use the default".
+    system_prompt_suffix:
+      type: string
+
+WarpUnavailable:
+  type: object
+  description: |
+    The 503 body. `reason` exists because the two causes need opposite
+    treatment in the dashboard: an unconfigured Warp is fixable by the operator
+    and must stay visible with a link to its settings, while a deployment with
+    no log store has nothing for Warp to read and no in-panel remedy. Without a
+    machine-readable field the client would have to pattern-match the message,
+    which breaks silently the first time it is reworded.
+  properties:
+    reason:
+      type: string
+      enum:
+        - not_configured
+        - no_log_store
+    message:
+      type: string
+  required:
+    - reason
+    - message

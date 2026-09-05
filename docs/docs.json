@@ -1302,7 +1302,18 @@
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": ["GET /api/notifications", "POST /api/notifications"]
+                "pages": [
+                  "GET /api/notifications",
+                  "POST /api/notifications"
+                ]
+              },
+              {
+                "group": "Warp",
+                "expanded": false,
+                "pages": [
+                  "GET /api/warp/config",
+                  "PUT /api/warp/config"
+                ]
               }
             ]
           },
