@@ -137,6 +137,7 @@ export const virtualKeysEn = {
 	rotated: "Virtual key rotated successfully",
 	rotatedWithGrace: "Virtual key rotated successfully. The previous key remains valid until {{until}}.",
 	createdAssignFailed: "Virtual key created, but assigning it to the user failed",
+	createdVmcpAssignFailed: "Virtual key created, but assigning Virtual MCPs failed",
 
 	budgetOverLimit: "{{scope}} {{duration}} budget has {{usage}} usage, which meets or exceeds the new {{limit}} limit.",
 	budgetQuarterShift:
@@ -412,6 +413,7 @@ export const virtualKeysZh: VirtualKeysMessages = {
 	rotated: "虚拟密钥轮换成功",
 	rotatedWithGrace: "虚拟密钥轮换成功。旧密钥在 {{until}} 之前仍然有效。",
 	createdAssignFailed: "虚拟密钥已创建，但分配给用户失败",
+	createdVmcpAssignFailed: "虚拟密钥已创建，但分配虚拟 MCP 失败",
 
 	budgetOverLimit: "{{scope}} {{duration}} 预算已有 {{usage}} 用量，达到或超过新的 {{limit}} 限额。",
 	budgetQuarterShift: "{{scope}} 季度预算已有 {{usage}} 用量。更改财季会移动重置日期，并将该用量结转到新季度。",

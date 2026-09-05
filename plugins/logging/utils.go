@@ -899,7 +899,9 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 }
 
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
-// Format: [timestamp] [engine] - message
+// Format: [timestamp] [engine] [level] - message
+// The level token lets the log detail view filter and badge each line by severity.
+// An entry recorded without a level is written as info so every line keeps the same shape.
 // Parameters:
 //   - logs: Slice of routing engine log entries
 //
@@ -911,7 +913,11 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 	}
 	var sb strings.Builder
 	for _, log := range logs {
-		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
+		level := log.Level
+		if level == "" {
+			level = schemas.LogLevelInfo
+		}
+		sb.WriteString(fmt.Sprintf("[%d] [%s] [%s] - %s\n", log.Timestamp, log.Engine, level, log.Message))
 	}
 	return sb.String()
 }

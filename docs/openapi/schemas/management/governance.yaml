@@ -406,6 +406,12 @@ VirtualKey:
       type: string
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs still apply as
+        optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection);
+        a provider without a config gets all models, all keys, and no per-provider limits.
     team:
       $ref: '#/Team'
     customer:
@@ -441,7 +447,7 @@ CreateVirtualKeyRequest:
       type: string
     provider_configs:
       type: array
-      description: Provider configurations (empty means no providers allowed, deny-by-default)
+      description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
       items:
         type: object
         properties:
@@ -497,6 +503,12 @@ CreateVirtualKeyRequest:
     calendar_aligned:
       type: boolean
       default: false
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs remain optional
+        per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.
     expires_at:
       type: string
       format: date-time
@@ -569,6 +581,11 @@ UpdateVirtualKeyRequest:
       type: boolean
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: >
+        When true, this virtual key may use every configured provider. provider_configs remain optional
+        per-provider overrides. Omit to leave the current setting unchanged.
     reset_budget_usage:
       type: boolean
       description: >
@@ -2207,72 +2224,281 @@ ListPricingOverridesResponse:
 
 ComplexityTierBoundaries:
   type: object
-  description: Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+  deprecated: true
+  description: |
+    Deprecated score thresholds for the retired lexical complexity classifier.
+    This block is optional and ignored by semantic classification, but remains
+    accepted for backward compatibility. When supplied, values must satisfy
+    0 < simple_medium < medium_complex < 1.
   additionalProperties: false
   required:
     - simple_medium
     - medium_complex
-    - complex_reasoning
   properties:
     simple_medium:
       type: number
-      description: Score boundary between SIMPLE and MEDIUM tiers
+      deprecated: true
+      description: Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)
       exclusiveMinimum: 0
       exclusiveMaximum: 1
     medium_complex:
       type: number
-      description: Score boundary between MEDIUM and COMPLEX tiers
-      exclusiveMinimum: 0
-      exclusiveMaximum: 1
-    complex_reasoning:
-      type: number
-      description: Score boundary between COMPLEX and REASONING tiers
+      deprecated: true
+      description: Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)
       exclusiveMinimum: 0
       exclusiveMaximum: 1
 
 ComplexityKeywordConfig:
   type: object
   description: |
-    Editable keyword lists used by the complexity analyzer. Only the four user-facing
-    dimensions are exposed; `reasoning_keywords` entries drive the reasoning tier
-    override. Matching is normalized to lowercase and duplicates are removed on save.
+    Reference phrases for semantic complexity classification, one list per tier.
+    Each request is embedded and takes the tier of its nearest phrase. Entries
+    should be whole example prompts rather than individual keywords. Each phrase
+    is limited to 2000 characters, the normalized lists may contain at most 750
+    phrases combined, and the same phrase cannot appear in two tiers. The field
+    names predate semantic classification and are kept for backward compatibility.
   additionalProperties: false
   required:
-    - code_keywords
-    - reasoning_keywords
-    - technical_keywords
     - simple_keywords
+    - medium_keywords
+    - complex_keywords
   properties:
-    code_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    reasoning_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    technical_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
     simple_keywords:
       type: array
+      description: Reference phrases for the SIMPLE tier (50 built-in defaults)
       items:
         type: string
+        maxLength: 2000
       minItems: 1
+    medium_keywords:
+      type: array
+      description: Reference phrases for the MEDIUM tier (50 built-in defaults)
+      items:
+        type: string
+        maxLength: 2000
+      minItems: 1
+    complex_keywords:
+      type: array
+      description: Reference phrases for the COMPLEX tier (50 built-in defaults)
+      items:
+        type: string
+        maxLength: 2000
+      minItems: 1
+
+ComplexitySemanticConfig:
+  type: object
+  description: |
+    Embedding configuration for semantic complexity classification. When absent,
+    no complexity tier is published and rules referencing complexity_tier fall
+    through. The provider must have an enabled key.
+  additionalProperties: false
+  required:
+    - provider
+    - embedding_model
+  properties:
+    provider:
+      type: string
+      minLength: 1
+      description: Provider used for embedding calls (must have an enabled key)
+    embedding_model:
+      type: string
+      minLength: 1
+      description: Embedding model, e.g. text-embedding-3-small
+    timeout:
+      description: Ceiling on the inline embedding call. Accepts a duration string ("1.5s") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.
+      oneOf:
+        - type: string
+          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+        - type: number
+          exclusiveMinimum: 0
+    min_similarity:
+      type: number
+      minimum: 0
+      exclusiveMaximum: 1
+      description: Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate).
+    message_history_count:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded.
+    count_toward_budgets:
+      type: boolean
+      description: Whether embedding usage counts toward virtual-key budgets (default false)
+    vector_store:
+      type: string
+      enum: [embedded, vector_store]
+      description: |
+        Where reference-phrase embeddings live. `embedded` (default) uses the
+        built-in in-memory store, so phrases are re-embedded on every restart.
+        `vector_store` uses the top-level `vector_store` when one is configured
+        and falls back to the embedded store otherwise.
+    fallback:
+      type: string
+      enum: [none, llm]
+      description: |
+        What answers when semantic classification produces no tier (a match
+        below `min_similarity`, a timeout, or an unfinished warmup). `none`
+        (the default) records the request as skipped. `llm` asks the chat
+        model configured in the analyzer's `llm` block, which is required
+        when this is set.
+
+ComplexityLLMConfig:
+  type: object
+  description: |
+    Chat-completion (LLM) fallback classifier settings. The block is inert
+    unless `semantic.fallback` selects `llm`; the classifier runs only after
+    semantic classification produces no tier. Tier names (SIMPLE, MEDIUM,
+    COMPLEX) and the response format are fixed: the gateway always appends a
+    non-editable reinforcement stating them.
+  additionalProperties: false
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      type: string
+      minLength: 1
+      description: Provider used to run the classification chat completion (must have an enabled key)
+    model:
+      type: string
+      minLength: 1
+      description: Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one.
+    timeout:
+      description: Per-request classification timeout. Accepts a duration string ("2s") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
+      oneOf:
+        - type: string
+          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+        - type: number
+          exclusiveMinimum: 0
+    prompt:
+      type: string
+      maxLength: 4000
+      description: Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited.
+    message_history_count:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: How many of the most recent user messages are given to the classifier, oldest first (default 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent.
+    count_toward_budgets:
+      type: boolean
+      description: Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)
+
+ComplexitySemanticStatus:
+  type: object
+  description: Runtime status of the semantic complexity classifier and, when configured, the LLM fallback classifier. Never contains phrases, embeddings, or provider secrets.
+  properties:
+    state:
+      type: string
+      enum: [disabled, warming, ready, failed]
+      description: disabled = no embedding configuration; warming = reference phrases are being embedded; ready = serving the current configuration; failed = the desired configuration failed to warm
+    loaded:
+      type: integer
+      description: Reference phrases embedded so far in the current warmup
+    total:
+      type: integer
+      description: Total reference phrases to embed in the current warmup
+    serving_previous:
+      type: boolean
+      description: When true with state=failed, the previous generation is still serving while the new one failed to warm
+    failure_reason:
+      type: string
+      enum: [authentication, model_unavailable, rate_limited, timeout, provider_unavailable, vector_store_unavailable, invalid_response, unknown]
+      description: Category of a warmup failure when state=failed. Provider and backend error bodies stay in server logs; this bounded vocabulary is what status clients receive.
+    error:
+      type: string
+      description: Warmup failure detail when state=failed
+    cached_phrases:
+      type: integer
+      description: How many phrase vectors the gateway currently holds in process for the configured provider and model. The cache is in-process only, since vectors cannot be read back out of a vector store, so a restart empties it while the saved phrases look unchanged. Zero means the next save re-embeds every phrase regardless of what changed.
+    storage_mode:
+      type: string
+      enum: [embedded, vector_store]
+      description: Where exemplar vectors are actually kept, which is not always what was configured. semantic.vector_store=vector_store degrades to embedded whenever no top-level vector store is configured, so this reports what is in force rather than what was asked for. Absent until a store has been resolved.
+    namespace:
+      type: string
+      description: The fingerprinted namespace the serving generation queries, for example BifrostComplexityRouter_<hash>. The backend holds no phrase text, so this is the only handle on the records the classifier owns in a shared vector store. Absent while nothing is serving.
+    llm:
+      type: object
+      description: Always present in the response. state is disabled when no llm block is configured.
+      properties:
+        state:
+          type: string
+          enum: [disabled, ready]
+          description: disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved.
+    llm_default_prompt:
+      type: string
+      description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
+
+ComplexityGenerations:
+  type: object
+  description: The exemplar generations the vector store currently holds for semantic complexity routing.
+  properties:
+    generations:
+      type: array
+      description: One entry per fingerprinted namespace, ordered by name. Empty when no vector store has been resolved.
+      items:
+        type: object
+        properties:
+          namespace:
+            type: string
+            description: The fingerprinted namespace holding the generation.
+            example: BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5
+          active:
+            type: boolean
+            description: Whether classification currently queries this generation. Exactly one is active while the classifier is ready; every other entry is retired and unreachable by any request.
 
 ComplexityAnalyzerConfig:
   type: object
   description: Full runtime configuration for complexity routing analysis.
   additionalProperties: false
   required:
-    - tier_boundaries
     - keywords
+  allOf:
+    - if:
+        properties:
+          session:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - session
+      then:
+        required:
+          - semantic
+    - if:
+        properties:
+          semantic:
+            properties:
+              fallback:
+                const: llm
+            required:
+              - fallback
+        required:
+          - semantic
+      then:
+        required:
+          - llm
   properties:
     tier_boundaries:
       $ref: '#/ComplexityTierBoundaries'
     keywords:
       $ref: '#/ComplexityKeywordConfig'
+    semantic:
+      $ref: '#/ComplexitySemanticConfig'
+    llm:
+      $ref: '#/ComplexityLLMConfig'
+    session:
+      $ref: '#/ComplexitySessionConfig'
+
+ComplexitySessionConfig:
+  type: object
+  description: Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.
+  additionalProperties: false
+  required:
+    - enabled
+  properties:
+    enabled:
+      type: boolean
+      description: Enable monotonic session tier retention. Requires semantic complexity classification; default is false.

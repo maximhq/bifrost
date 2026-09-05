@@ -3,6 +3,8 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -753,6 +755,8 @@ type MockAccount struct {
 	mu      sync.RWMutex
 	configs map[schemas.ModelProvider]*schemas.ProviderConfig
 	keys    map[schemas.ModelProvider][]schemas.Key
+	// keyLookups counts GetKeysForProvider calls per provider
+	keyLookups sync.Map
 }
 
 func NewMockAccount() *MockAccount {
@@ -823,6 +827,9 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	counter, _ := ma.keyLookups.LoadOrStore(provider, &atomic.Int64{})
+	counter.(*atomic.Int64).Add(1)
+
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
 	if keys, exists := ma.keys[provider]; exists {
@@ -835,6 +842,21 @@ func (ma *MockAccount) SetKeysForProvider(provider schemas.ModelProvider, keys [
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.keys[provider] = keys
+}
+
+func (ma *MockAccount) SetCustomProviderConfig(provider schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	if config, exists := ma.configs[provider]; exists {
+		config.CustomProviderConfig = customConfig
+	}
+}
+
+func (ma *MockAccount) KeyLookupCount(provider schemas.ModelProvider) int64 {
+	if counter, ok := ma.keyLookups.Load(provider); ok {
+		return counter.(*atomic.Int64).Load()
+	}
+	return 0
 }
 
 type countingTracer struct {
@@ -893,6 +915,110 @@ func TestFilterProvidersByContext(t *testing.T) {
 			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
 		}
 	})
+}
+
+// TestListAllModels_CustomProviderAllowedRequestsGate covers the fan-out gate:
+// a custom provider that disables list_models via allowed_requests must not be
+// dispatched at all, while providers that allow it — explicitly or by leaving
+// AllowedRequests nil, which permits every operation — still report their models.
+// The key lookup count is what separates "skipped" from "dispatched and bounced":
+// both end up contributing no models to the aggregated response.
+func TestListAllModels_CustomProviderAllowedRequestsGate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"model-a","object":"model","created":0,"owned_by":"test"}]}`)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		allowedRequests *schemas.AllowedRequests
+		wantDispatched  bool
+	}{
+		{
+			name:            "nil allowed requests allows all operations",
+			provider:        schemas.ModelProvider("custom-openai-nil"),
+			allowedRequests: nil,
+			wantDispatched:  true,
+		},
+		{
+			name:            "list models explicitly allowed",
+			provider:        schemas.ModelProvider("custom-openai-allowed"),
+			allowedRequests: &schemas.AllowedRequests{ListModels: true},
+			wantDispatched:  true,
+		},
+		{
+			name:            "list models explicitly disallowed",
+			provider:        schemas.ModelProvider("custom-openai-gated"),
+			allowedRequests: &schemas.AllowedRequests{ListModels: false},
+			wantDispatched:  false,
+		},
+	}
+
+	// All cases share one fan-out so the gate is exercised the way it runs in
+	// production: a mix of gated and ungated providers in a single pass.
+	account := NewMockAccount()
+	for _, tt := range tests {
+		account.AddProviderWithBaseURL(tt.provider, 1, 1, server.URL)
+		account.SetKeysForProvider(tt.provider, []schemas.Key{
+			{
+				ID:     fmt.Sprintf("test-key-%s", tt.provider),
+				Value:  *schemas.NewSecretVar(fmt.Sprintf("sk-test-%s", tt.provider)),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(tt.provider, &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			AllowedRequests:  tt.allowedRequests,
+		})
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	response, bifrostErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("ListAllModels returned error: %v", bifrostErr)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyLookups := account.KeyLookupCount(tt.provider)
+			foundModels := false
+			for _, model := range response.Data {
+				if strings.HasPrefix(model.ID, string(tt.provider)+"/") {
+					foundModels = true
+					break
+				}
+			}
+
+			if tt.wantDispatched {
+				if keyLookups == 0 {
+					t.Error("expected provider to be dispatched, got 0 key lookups")
+				}
+				if !foundModels {
+					t.Errorf("expected models from provider, got %+v", response.Data)
+				}
+				return
+			}
+
+			if keyLookups != 0 {
+				t.Errorf("expected provider to be skipped before key selection, got %d key lookups", keyLookups)
+			}
+			if foundModels {
+				t.Errorf("expected no models from skipped provider, got %+v", response.Data)
+			}
+		})
+	}
 }
 
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {

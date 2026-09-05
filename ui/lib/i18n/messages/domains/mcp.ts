@@ -314,6 +314,7 @@ export const mcpEn = {
 		serverFilter: "Server filter",
 		library: "Library",
 		libraryAria: "MCP server library",
+		colEndpoint: "Endpoint",
 		colConnectionType: "Connection Type",
 		colAuthType: "Auth Type",
 		colAuthScope: "Auth Scope",
@@ -783,7 +784,8 @@ export const mcpZh: McpMessages = {
 			"Bifrost 用于刷新此服务器工具列表的管理员凭据需要修复。调用方的工具调用不受影响。请从服务器操作菜单选择「以我的身份重新验证」。",
 		descNeedsReauthReason: "原因：{{message}}",
 		descUnstable: "Bifrost 最近一次连接检查失败。仍会正常尝试工具调用；下次检查约在 10 秒内进行。",
-		descUnstableWithFailure: "Bifrost 最近一次连接检查在 {{ago}} 前于「{{stage}}」阶段失败。仍会正常尝试工具调用；下次检查约在 10 秒内进行。",
+		descUnstableWithFailure:
+			"Bifrost 最近一次连接检查在 {{ago}} 前于「{{stage}}」阶段失败。仍会正常尝试工具调用；下次检查约在 10 秒内进行。",
 		descDegraded: "此部署的实例对此服务器状态意见不一致。每个实例仍会尝试工具调用。",
 		descDefault: "MCP 服务器配置与可用工具",
 		entityLabel: "服务器",
@@ -869,6 +871,7 @@ export const mcpZh: McpMessages = {
 		serverFilter: "服务器筛选",
 		library: "服务器库",
 		libraryAria: "MCP 服务器库",
+		colEndpoint: "端点",
 		colConnectionType: "连接类型",
 		colAuthType: "认证类型",
 		colAuthScope: "认证范围",
@@ -1066,8 +1069,7 @@ export const mcpZh: McpMessages = {
 		statusTooltip:
 			"有效：凭据可用。进行中：OAuth 流程进行中，用户需完成登录。需要重新认证：上游凭据已过期或在提供商处被撤销，用户必须重新连接。需要更新：管理员更改了必需请求头，用户必须重新提交。孤立：用户失去对此 MCP 的访问（例如访问配置更改）；凭据会保留，访问恢复后将自动变为有效。",
 		colScopes: "作用域",
-		scopesTooltip:
-			"提供商在登录时授予的作用域，以其令牌响应为准。提供商未报告时显示为短横线。请求头提交与进行中的登录没有作用域。",
+		scopesTooltip: "提供商在登录时授予的作用域，以其令牌响应为准。提供商未报告时显示为短横线。请求头提交与进行中的登录没有作用域。",
 		colExpiry: "访问令牌过期",
 		expiryTooltip:
 			"当前访问令牌的过期时间。若有刷新令牌，Bifrost 会在下一次请求时续期，因此已过期但仍有效的行会在使用时静默签发新令牌。若没有刷新令牌，过期后必须重新认证。请求头行没有上游过期时间；其值在撤销或 schema 更改前一直有效。",

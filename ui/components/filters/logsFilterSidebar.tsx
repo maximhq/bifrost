@@ -10,6 +10,12 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useT, type MessageKey } from "@/lib/i18n";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import {
+	COMPLEXITY_MECHANISM_LABELS,
+	COMPLEXITY_MECHANISM_VALUES,
+	COMPLEXITY_TIER_VALUES,
+	LEGACY_COMPLEXITY_TIER_VALUES,
+} from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -114,7 +120,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -124,6 +130,9 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -898,6 +907,85 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 }
 
 // ---------------------------------------------------------------------------
+// ComplexityTierFilter – static enum, no fetch (tiers are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityTierFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_tiers || []).length > 0;
+	// Legacy tiers (REASONING, merged into COMPLEX) are offered so historical
+	// rows recorded under the old scheme stay reachable through the filter.
+	const tiers: { value: string; label: string }[] = [
+		...COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: tier.toLowerCase() })),
+		...LEGACY_COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: `${tier.toLowerCase()} (legacy)` })),
+	];
+	return (
+		<FilterSection title="Complexity Tier" defaultOpen={defaultOpen || hasActive} testId="complexity-tier-filter-toggle">
+			{tiers.map(({ value, label }) => (
+				<CheckboxFilterItem
+					key={value}
+					labelClassName="capitalize"
+					label={label}
+					checked={(filters.complexity_tiers || []).includes(value)}
+					onCheckedChange={() => {
+						const current = filters.complexity_tiers || [];
+						const next = current.includes(value) ? current.filter((t) => t !== value) : [...current, value];
+						onFiltersChange({ ...filters, complexity_tiers: next });
+					}}
+					testId={`complexity-tier-filter-checkbox-${value.toLowerCase()}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ComplexityMechanismFilter – static enum, no fetch (mechanisms are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_mechanisms || []).length > 0;
+	return (
+		<FilterSection title="Complexity Mechanism" defaultOpen={defaultOpen || hasActive} testId="complexity-mechanism-filter-toggle">
+			{COMPLEXITY_MECHANISM_VALUES.map((mechanism) => (
+				<CheckboxFilterItem
+					key={mechanism}
+					label={COMPLEXITY_MECHANISM_LABELS[mechanism] ?? mechanism}
+					checked={(filters.complexity_mechanisms || []).includes(mechanism)}
+					onCheckedChange={() => {
+						const current = filters.complexity_mechanisms || [];
+						const next = current.includes(mechanism) ? current.filter((m) => m !== mechanism) : [...current, mechanism];
+						onFiltersChange({ ...filters, complexity_mechanisms: next });
+					}}
+					testId={`complexity-mechanism-filter-checkbox-${mechanism}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// RequestSessionFilter
+// ---------------------------------------------------------------------------
+
+function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.session_id;
+	return (
+		<FilterSection title="Session ID" defaultOpen={defaultOpen || hasActive} testId="request-session-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.session_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, session_id: event.target.value })}
+					placeholder="Exact session ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
 
@@ -905,7 +993,7 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const t = useT();
 	const hasActive = !!filters.parent_request_id;
 	return (
-		<FilterSection title={t("filters.session")} defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
+		<FilterSection title={t("filters.parentRequestId")} defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
 			<div className="relative">
 				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
 				<Input

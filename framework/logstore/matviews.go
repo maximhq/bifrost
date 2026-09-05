@@ -975,16 +975,19 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 
 // canUseMatViewFilters returns true if the given filters can be served from
 // mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
-// metadata, numeric ranges) require the raw logs table.
+// session ID, metadata, numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.RequestID == "" &&
 		f.ParentRequestID == "" &&
+		f.SessionID == "" &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
 		len(f.StopReasons) == 0 &&
+		len(f.ComplexityTiers) == 0 &&
+		len(f.ComplexityMechanisms) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
@@ -1437,7 +1440,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 
 	// Cache hits come from the same hybrid aggregate (materialized in
 	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
-	// no more full-window raw scan. CacheDebugCount reproduces
+	// no more full-window raw scan. The cache metadata count reproduces
 	// aggregateCacheHits' nil contract: when no row in the window carried
 	// valid cache_debug JSON, the fields stay nil so they are omitted from
 	// the JSON payload, matching the raw path.

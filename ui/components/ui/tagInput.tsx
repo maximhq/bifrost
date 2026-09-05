@@ -9,25 +9,27 @@ type OmittedInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "valu
 interface TagInputProps extends OmittedInputProps {
 	value: string[];
 	onValueChange: (value: string[]) => void;
-	collapsedTagLimit?: number;
-	expandButtonTestId?: string;
+	// Height in px the tag area is fixed to; tags past it scroll inside it.
+	// Fixing the height rather than a tag count is what keeps several of these
+	// side by side the same size: tags wrap to different numbers of lines, so a
+	// fixed count of tags is not a fixed amount of space.
+	listHeight?: number;
+	// Whether a comma commits the current entry alongside Enter. True for
+	// values that cannot contain a comma (scopes, keys), where typing one
+	// almost always means "next item". Set false where the tags are prose —
+	// reference phrases read like sentences, and eating their commas turns
+	// one phrase into two.
+	submitOnComma?: boolean;
 }
 
+// Badge renders a single clipped line by default, which drops the tail of a
+// sentence-length tag. TAG_CLASSES overrides that so a tag wraps inside the
+// container rather than running past its edge.
+const TAG_CLASSES = "bg-accent dark:bg-card flex max-w-full shrink items-center gap-1 text-left break-words whitespace-normal";
+
 export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
-	({ className, value, onValueChange, collapsedTagLimit, expandButtonTestId, ...props }, ref) => {
+	({ className, value, onValueChange, listHeight, submitOnComma = true, ...props }, ref) => {
 		const [inputValue, setInputValue] = React.useState("");
-		const [tagsExpanded, setTagsExpanded] = React.useState(false);
-
-		const canCollapse = collapsedTagLimit !== undefined && value.length > collapsedTagLimit;
-		const isCollapsed = canCollapse && !tagsExpanded;
-		const visibleTags = isCollapsed ? value.slice(0, collapsedTagLimit) : value;
-		const hiddenTagCount = canCollapse ? value.length - collapsedTagLimit : 0;
-
-		React.useEffect(() => {
-			if (collapsedTagLimit !== undefined && value.length <= collapsedTagLimit) {
-				setTagsExpanded(false);
-			}
-		}, [collapsedTagLimit, value.length]);
 
 		const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
 			setInputValue(e.target.value);
@@ -42,7 +44,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 		};
 
 		const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-			if (e.key === "Enter" || e.key === ",") {
+			if (e.key === "Enter" || (submitOnComma && e.key === ",")) {
 				e.preventDefault();
 				addCurrentTag();
 			} else if (e.key === "Backspace" && inputValue === "" && value.length > 0) {
@@ -58,22 +60,24 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 			onValueChange(value.filter((tag) => tag !== tagToRemove));
 		};
 
-		if (collapsedTagLimit === undefined) {
+		const tags = value.map((tag) => (
+			<Badge key={tag} variant="secondary" className={TAG_CLASSES}>
+				{tag}
+				<button
+					aria-label={`Remove ${tag}`}
+					type="button"
+					className="ring-offset-background focus:ring-ring shrink-0 cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
+					onClick={() => removeTag(tag)}
+				>
+					<X className="h-3 w-3" />
+				</button>
+			</Badge>
+		));
+
+		if (listHeight === undefined) {
 			return (
 				<div className={cn("border-input dark:bg-accent flex flex-wrap items-center gap-2 rounded-sm border p-1", className)}>
-					{value.map((tag) => (
-						<Badge key={tag} variant="secondary" className="bg-accent dark:bg-card flex items-center gap-1">
-							{tag}
-							<button
-								aria-label={`Remove ${tag}`}
-								type="button"
-								className="ring-offset-background focus:ring-ring cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
-								onClick={() => removeTag(tag)}
-							>
-								<X className="h-3 w-3" />
-							</button>
-						</Badge>
-					))}
+					{tags}
 					<Input
 						ref={ref}
 						type="text"
@@ -89,82 +93,31 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 		}
 
 		return (
-			<div className={cn("group border-input dark:bg-accent relative overflow-hidden rounded-sm border", className)}>
-				{isCollapsed && (
-					<div
-						aria-hidden
-						className="from-accent/35 via-accent/75 to-muted/50 dark:from-accent/45 dark:via-accent/85 dark:to-muted/45 pointer-events-none absolute inset-x-0 top-8 bottom-0 z-[1] bg-gradient-to-b"
-					/>
-				)}
-
-				<div className="relative z-[2] flex flex-wrap items-center gap-2 p-2 pb-1">
-					{visibleTags.map((tag) => (
-						<Badge key={tag} variant="secondary" className="bg-accent dark:bg-card flex items-center gap-1">
-							{tag}
-							<button
-								aria-label={`Remove ${tag}`}
-								type="button"
-								className="ring-offset-background focus:ring-ring cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
-								onClick={() => removeTag(tag)}
-							>
-								<X className="h-3 w-3" />
-							</button>
-						</Badge>
-					))}
+			<div className={cn("border-input dark:bg-accent rounded-sm border", className)}>
+				{/* The tag area is its own scroll container, so tabbing onto a remove
+				    button below the fold scrolls it into view natively -- no expand
+				    state to keep the keyboard path visible. */}
+				<div className="custom-scrollbar flex flex-wrap content-start items-start gap-2 overflow-y-auto p-2" style={{ height: listHeight }}>
+					{tags}
 				</div>
 
-				<div
-					className={cn(
-						"relative z-[2] transition-[background-color,opacity] duration-200 h-[75px] flex items-end",
-						isCollapsed &&
-							"bg-muted/25 opacity-80 group-hover:opacity-100 group-hover:bg-muted/20 group-focus-within:opacity-100 group-focus-within:bg-muted/20",
-					)}
-				>
-					{isCollapsed && (
-						<button
-							type="button"
-							data-testid={expandButtonTestId}
-							onClick={() => setTagsExpanded(true)}
-							className="text-muted-foreground/70 hover:text-foreground/90 group-hover:text-muted-foreground/85 absolute top-4 flex w-full cursor-pointer items-center justify-center py-2.5 text-xs font-medium transition-colors"
-						>
-							Show {hiddenTagCount} more
-						</button>
-					)}
-
-					<div
+				{/* On a light card the default placeholder tint reads as disabled text,
+				    so the entry row gets its own surface and a full-strength
+				    placeholder to stay recognisable as somewhere you can type. */}
+				<div className="bg-muted/40 dark:bg-accent border-border/30 border-t p-1">
+					<Input
+						ref={ref}
+						type="text"
+						value={inputValue}
+						onChange={handleInputChange}
+						onKeyDown={handleKeyDown}
+						onBlur={handleBlur}
 						className={cn(
-							"p-1 transition-colors duration-200 w-full",
-							(isCollapsed || (canCollapse && tagsExpanded)) && "border-border/30 border-t",
-							isCollapsed && "border-transparent group-hover:border-border/30 group-focus-within:border-border/30",
+							"placeholder:text-muted-foreground focus-visible:bg-background h-7 w-full min-w-0 rounded-sm border-0 bg-transparent py-0 px-2 text-xs shadow-none focus-visible:ring-0",
 						)}
-					>
-						<Input
-							ref={ref}
-							type="text"
-							value={inputValue}
-							onChange={handleInputChange}
-							onKeyDown={handleKeyDown}
-							onBlur={handleBlur}
-							className={cn(
-								"dark:bg-accent h-7 w-full min-w-0 rounded-sm border-0 py-0 px-2 text-xs shadow-none transition-[background-color,color,opacity] duration-200 focus-visible:ring-0",
-								isCollapsed
-									? "text-muted-foreground/25 placeholder:text-muted-foreground/15 bg-transparent opacity-70 group-hover:bg-background/70 group-hover:text-foreground/80 group-hover:placeholder:text-muted-foreground/60 group-hover:opacity-100 group-focus-within:bg-background group-focus-within:text-foreground group-focus-within:placeholder:text-muted-foreground/70 group-focus-within:opacity-100 focus-visible:bg-background focus-visible:text-foreground focus-visible:opacity-100"
-									: undefined,
-							)}
-							{...props}
-						/>
-					</div>
+						{...props}
+					/>
 				</div>
-
-				{canCollapse && tagsExpanded && (
-					<button
-						type="button"
-						onClick={() => setTagsExpanded(false)}
-						className="text-muted-foreground/50 hover:text-muted-foreground/80 hover:bg-muted/15 border-border/40 bg-muted/10 relative z-[2] w-full cursor-pointer border-t py-2 text-xs transition-[color,background-color]"
-					>
-						Show less
-					</button>
-				)}
 			</div>
 		);
 	},

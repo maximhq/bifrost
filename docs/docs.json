@@ -143,6 +143,7 @@
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
+                  "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/mistral",
@@ -183,6 +184,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/connections",
+              "mcp/virtual-mcps",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -200,7 +202,6 @@
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway",
               "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
@@ -246,6 +247,8 @@
               },
               "features/telemetry",
               "features/otel",
+              "features/observability/content-logging",
+              "features/observability/latency-breakdown",
               "features/semantic-caching",
               "features/skills-repository",
               {
@@ -303,7 +306,7 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              "enterprise/mcp-tool-groups",
+              "enterprise/virtual-mcps",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -547,8 +550,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
-              "features/observability/splunk",
-              "features/observability/content-logging"
+              "features/observability/splunk"
             ]
           },
           {
@@ -1508,7 +1510,9 @@
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
                   "PUT /api/routing/complexity-analyzer-config",
-                  "POST /api/routing/complexity-analyzer-config/reset"
+                  "POST /api/routing/complexity-analyzer-config/reset",
+                  "GET /api/routing/complexity-analyzer-status",
+                  "POST /api/routing/complexity-analyzer-status/retry"
                 ]
               }
             ]
@@ -2109,6 +2113,10 @@
   },
   "redirects": [
     {
+      "source": "/enterprise/mcp-tool-groups",
+      "destination": "/enterprise/virtual-mcps"
+    },
+    {
       "source": "/migration-guides/governance-api-namespace",
       "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
     },
@@ -2186,11 +2194,15 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/mcp/gateway",
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/oauth",

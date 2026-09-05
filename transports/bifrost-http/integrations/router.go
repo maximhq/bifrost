@@ -401,6 +401,23 @@ type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
+// AccessResolver narrows the provider fan-out of a models listing to what the request may reach:
+// a provider reachable only through a grant composed onto the request is asked, one the
+// composition removed is not. Without it, every configured provider is asked and governance drops
+// the ones the request may not use from the answer, so the upstream calls to them are spent for
+// nothing and their failures fill request logs with expected errors.
+//
+// Narrowing is the whole job, so an implementation must leave the fan-out it was given alone
+// whenever it cannot narrow: a request with nothing resolved (no key presented, or no governance
+// wired) is unrestricted, and so is a request nothing settled who it is, which is refused where
+// that matters and a listing is not that.
+//
+// Routes that list models take one of these the way the inference handler takes its models
+// manager, because both answer the same question about the same request.
+type AccessResolver interface {
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
+}
+
 // StreamConfig defines streaming-specific configuration for an integration
 //
 // SSE FORMAT BEHAVIOR:
@@ -557,6 +574,7 @@ type GenericRouter struct {
 	logger            schemas.Logger    // Logger for the router
 	largePayloadHook  LargePayloadHook  // Optional: enterprise hook for large payload detection
 	largeResponseHook LargeResponseHook // Optional: enterprise hook for large response scanning
+	accessResolver    AccessResolver    // What a request may reach, for the models listing. Nil lists as before.
 }
 
 type modelCatalogProvider interface {
@@ -579,10 +597,11 @@ func (g *GenericRouter) SetLargeResponseHook(hook LargeResponseHook) {
 
 // NewGenericRouter creates a new generic router with the given bifrost client and route configurations.
 // Each integration should create their own routes and pass them to this constructor.
-func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig, passthroughCfg *PassthroughConfig, logger schemas.Logger) *GenericRouter {
+func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, routes []RouteConfig, passthroughCfg *PassthroughConfig, logger schemas.Logger) *GenericRouter {
 	return &GenericRouter{
 		client:         client,
 		handlerStore:   handlerStore,
+		accessResolver: accessResolver,
 		routes:         routes,
 		passthroughCfg: passthroughCfg,
 		logger:         logger,
@@ -968,6 +987,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		if bifrostReq.ListModelsRequest.Provider != "" {
 			listModelsResponse, bifrostErr = g.client.ListModelsRequest(bifrostCtx, bifrostReq.ListModelsRequest)
 		} else {
+			// Ask only the providers this request may reach, the same way the native models
+			// route does, instead of asking every configured provider for models that are
+			// dropped from the answer anyway.
+			if g.accessResolver != nil {
+				g.accessResolver.NarrowListModelsProviders(bifrostCtx)
+			}
 			listModelsResponse, bifrostErr = g.client.ListAllModels(bifrostCtx, bifrostReq.ListModelsRequest)
 		}
 

@@ -327,6 +327,23 @@ div.content-container:has(.no-border-parent) {
 	@apply border-0!;
 }
 
+/* The shell's .custom-scrollbar utility sets `overflow: auto !important`, which
+   defeats the `overflow-y-hidden` on main.content-container-inner and turns both
+   shell wrappers into scroll containers. A page that owns its own scrolling then
+   gets a second, outer scrollbar - drawn with the utility's near-white thumb, so
+   it does not even match the app's own. Opt out with .own-scroll-parent.
+
+   This has to sit inside @layer utilities to win. For `!important` declarations
+   the cascade-layer order is reversed, so a layered `!important` beats an
+   unlayered one no matter how specific the unlayered selector is - and @utility
+   compiles into the utilities layer. Same layer, so specificity decides. */
+@layer utilities {
+	div.content-container:has(.own-scroll-parent),
+	div.content-container main.content-container-inner:has(.own-scroll-parent) {
+		overflow: hidden !important;
+	}
+}
+
 /* // trial-notification-banner style*/
 
 #trial-notification-banner {

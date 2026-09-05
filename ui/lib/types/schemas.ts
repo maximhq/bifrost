@@ -257,6 +257,85 @@ export const replicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean().optional(),
 });
 
+// A secret that resolves elsewhere cannot have its shape judged here, so format checks apply
+// only to literals.
+//
+// Only a non-empty `ref` counts as indirect. The `type` tag alone is not enough: a payload
+// like { value: "not-numeric", ref: "", type: "env" } still carries its value inline, and
+// trusting the tag would let any malformed literal skip every check below.
+const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => !!v?.ref?.trim();
+
+const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true; // presence is checked separately
+	if (isSecretVarRef(v)) return true;
+	return /^\d+$/.test((v?.value ?? "").trim());
+};
+
+// GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them to PKCS#8
+// ("PRIVATE KEY"). Nothing else signs an RS256 App JWT, so an EC or passphrase-encrypted key
+// is rejected here rather than at the first inference call.
+//
+// This checks the envelope only: the browser cannot parse DER. The server does the real
+// parse in validateProviderKeyURL, so this is a fast typo check, not the security boundary.
+// Literal backslash-n is tolerated because that is how a PEM most often arrives when it has
+// been round-tripped through JSON or an environment variable.
+const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+
+const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v)) return true;
+	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
+	const match = PEM_PRIVATE_KEY.exec(body);
+	// The back-reference makes BEGIN and END agree; the body must also carry something.
+	return !!match && match[2].trim().length > 0;
+};
+
+// githubCopilotKeyConfigComplete reports whether all four App credentials are present. It is
+// the check the outer key schema uses to decide whether this block is a real credential.
+export const githubCopilotKeyConfigComplete = (
+	data: { app_id?: unknown; installation_id?: unknown; repository_id?: unknown; private_key?: unknown } | undefined,
+): boolean => {
+	if (!data) return false;
+	const d = data as Record<string, { value?: string; ref?: string } | undefined>;
+	return isSecretVarSet(d.app_id) && isSecretVarSet(d.installation_id) && isSecretVarSet(d.repository_id) && isSecretVarSet(d.private_key);
+};
+
+// GitHub Copilot key config schema. Every field is optional because the whole block is
+// optional: a Copilot API token in `value` is the other valid auth mode. Once the operator
+// starts filling this block in, all four become required together and literals are checked
+// for shape, so a typo is caught in the form rather than at the first inference call.
+export const githubCopilotKeyConfigSchema = z
+	.object({
+		app_id: secretVarSchema.optional(),
+		installation_id: secretVarSchema.optional(),
+		repository_id: secretVarSchema.optional(),
+		private_key: secretVarSchema.optional(),
+		github_domain: secretVarSchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		const started =
+			isSecretVarSet(data.app_id) ||
+			isSecretVarSet(data.installation_id) ||
+			isSecretVarSet(data.repository_id) ||
+			isSecretVarSet(data.private_key);
+		if (!started) return;
+
+		for (const field of ["app_id", "installation_id", "repository_id", "private_key"] as const) {
+			if (!isSecretVarSet(data[field])) {
+				ctx.addIssue({ code: "custom", path: [field], message: "Required when using GitHub App credentials" });
+			}
+		}
+		if (!isLiteralDigits(data.installation_id)) {
+			ctx.addIssue({ code: "custom", path: ["installation_id"], message: "Installation ID must be numeric" });
+		}
+		if (!isLiteralDigits(data.repository_id)) {
+			ctx.addIssue({ code: "custom", path: ["repository_id"], message: "Repository ID must be numeric" });
+		}
+		if (!isLiteralPEM(data.private_key)) {
+			ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be a PKCS#1 or PKCS#8 PEM block" });
+		}
+	});
+
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
@@ -275,6 +354,33 @@ export const sglKeyConfigSchema = z
 	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
+	});
+
+// Databricks key config schema
+export const databricksKeyConfigSchema = z
+	.object({
+		workspace_url: secretVarSchema.optional(),
+		api_format: z.enum(["auto", "model_serving", "ai_gateway"]).optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		forward_gateway_tags: z.boolean().optional(),
+		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
+		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.workspace_url), {
+		message: "Workspace URL is required",
+		path: ["workspace_url"],
+	})
+	// The OAuth M2M tab hides the token field, so a key saved from it needs the whole service
+	// principal or it has no credentials at all. Mirrors the Azure Entra ID rule.
+	.refine((data) => data._auth_type !== "oauth_m2m" || (isSecretVarSet(data.client_id) && isSecretVarSet(data.client_secret)), {
+		message: "Client ID and Client Secret are both required for OAuth M2M authentication",
+		path: ["client_id"],
+	})
+	// A service principal only authenticates as a pair; half of one is always a misconfiguration.
+	.refine((data) => isSecretVarSet(data.client_id) === isSecretVarSet(data.client_secret), {
+		message: "Client ID and Client Secret must be set together",
+		path: ["client_secret"],
 	});
 
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
@@ -360,6 +466,8 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		databricks_key_config: databricksKeyConfigSchema.optional(),
+		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
@@ -367,6 +475,31 @@ export const modelProviderKeySchema = z
 	.refine(
 		(data) => {
 			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Databricks authenticates with a personal access token (the key value) or with an
+			// OAuth M2M service principal; only require a key value on the token path.
+			// Decided from the credentials themselves rather than from _auth_type: the form
+			// re-seeds that discriminator only on mount, so a reset (which the key form does
+			// when the key resolves asynchronously) leaves it undefined on an M2M key that is
+			// perfectly valid.
+			if (data.databricks_key_config) {
+				const databricks = data.databricks_key_config;
+				if (databricks._auth_type === "oauth_m2m") {
+					return true;
+				}
+				// Only infer the M2M path from the credentials when the discriminator is absent;
+				// an explicit token method must still carry a token.
+				if (databricks._auth_type === undefined && (isSecretVarSet(databricks.client_id) || isSecretVarSet(databricks.client_secret))) {
+					return true;
+				}
+				return isSecretVarSet(data.value);
+			}
+			// GitHub Copilot authenticates from its own key config when no API token is given.
+			// An empty block, or one carrying only github_domain, is not a credential: the
+			// nested schema permits it so token auth stays valid, so this is the only place
+			// that catches a key with no usable authentication at all.
+			if (githubCopilotKeyConfigComplete(data.github_copilot_key_config)) {
 				return true;
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require

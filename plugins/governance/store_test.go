@@ -2024,7 +2024,7 @@ func TestModelConfigScopesForSkipsEmptyKindExtraScopes(t *testing.T) {
 		}
 	})
 
-	scopes := modelConfigScopesFor(context.Background(), nil)
+	scopes := modelConfigScopesFor(nil)
 
 	for _, s := range scopes {
 		assert.NotEqual(t, "batch_only", s.name, "an empty-Kind extra scope must not reach request-time enforcement")

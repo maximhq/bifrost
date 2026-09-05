@@ -139289,6 +139289,1221 @@
           ]
         }
       ]
+    },
+    {
+      "name": "65. Anthropic Egress Terminal Events on Truncated Turns (#6081)",
+      "description": "Pins that a turn cut short by the output-token cap still closes the Anthropic Messages stream properly on /anthropic/v1/messages.\n\nBug (#6081): Bedrock ConverseStream ending with stopReason max_tokens is finalized by FinalizeBedrockStream as a response.incomplete terminal event, distinct from response.completed. The Anthropic egress converter (toAnthropicResponsesStreamEvents in core/providers/anthropic/responses.go) had a case only for response.completed, so response.incomplete fell through to `default: return nil` and the terminal frame was dropped. The stream ended after content_block_stop with a clean 200 - no message_delta carrying stop_reason, no message_stop, no error. Claude Code therefore treated a tool_use whose input_json had been truncated mid-JSON as complete, failed to parse it, and retried in a loop.\n\nFolder 17 already pins the upstream half (Bedrock emits response.incomplete on /v1/responses, #4680); these cases pin the Anthropic egress that consumes it.\n\nCases: (1) plain text truncation on Bedrock Claude; (2) the reported shape, truncation mid tool_use, where the open block is a function call rather than text so the block-closing path differs; (3) the same invariant through a chat-completions provider, whose finish_reason \"length\" becomes response.incomplete via responsesTerminalFromChatFinishReason in core/schemas/mux.go - guarding against a fix that only works for Bedrock.",
+      "item": [
+        {
+          "name": "Bedrock Claude /anthropic/v1/messages truncated by max_tokens emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock claude: truncated stream terminates with message_delta(stop_reason=max_tokens) + message_stop - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":16,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 1000, one number per line.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude /anthropic/v1/messages tool_use truncated mid input_json still emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock claude: tool_use truncated mid input_json still terminates with message_delta + message_stop - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":16,\"stream\":true,\"tool_choice\":{\"type\":\"tool\",\"name\":\"Write\"},\"tools\":[{\"name\":\"Write\",\"description\":\"Writes content to a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"file_path\",\"content\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call Write exactly once for /tmp/numbers.txt. The content must contain the integers 1 through 1000, one per line, with no omissions, abbreviations, or surrounding explanation.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages truncated by max_tokens emits message_delta + message_stop - #6081",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('openai gpt-4o-mini: chat finish_reason length maps to a terminated Anthropic stream - #6081', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_delta').to.include('message_delta');",
+                  "  pm.expect(raw, 'a truncated turn must still emit message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'message_delta must carry the truncation stop_reason').to.include('\"stop_reason\":\"max_tokens\"');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'expected SSE event lines in the response').to.be.above(0);",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop, not content_block_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":16,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 1000, one number per line.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "66. Databricks Model Serving and Unity AI Gateway surfaces",
+      "description": "Databricks serves foundation models on two surfaces under one workspace host, and the databricks provider\npicks between them per request:\n\n  /serving-endpoints          Foundation Model APIs - pay-per-token and provisioned-throughput endpoints,\n                              addressed by endpoint name (databricks-claude-sonnet-4-5). Also serves the\n                              OpenAI Responses API at /serving-endpoints/responses.\n  /ai-gateway/mlflow/v1       Unity AI Gateway model services, addressed by Unity Catalog name\n                              (system.ai.claude-sonnet-4-5, or <catalog>.<schema>.<service>).\n\nProduction path: POST /v1/chat/completions -> core/providers/databricks/inference.go -> prepareRequest ->\nbuildURL (databricks.go) -> openai.HandleOpenAI*Request. resolveAPIFormat is what chooses the base path:\nan explicit api_format on the key wins, otherwise a dotted model name selects the AI Gateway and anything\nelse selects Model Serving.\n\nBoth surfaces are plain OpenAI wire format, so there are no Databricks-specific converters - which is\nexactly why the routing needs pinning here. A regression in resolveAPIFormat or basePathFor does not fail\na converter unit test; it sends a valid request to the wrong base path and comes back 404 from a surface\nthat has never heard of the model. Cases 1 and 2 are that pair: the same workspace, the same credentials,\ntwo model names that must land on different paths.\n\nFIXTURE CONSTRAINT - the model names carry the routing signal. system.ai.claude-sonnet-4-5 must keep its\ndots (they are what selects the AI Gateway) and databricks-claude-sonnet-4-5 must stay dot-free. Renaming\neither to a 'cleaner' id silently stops testing the routing rule.",
+      "item": [
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions model serving surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('a bare endpoint name reaches Model Serving and answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.usage, 'usage missing; Databricks returns the OpenAI usage object').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/system.ai.claude-sonnet-4-5 /v1/chat/completions unity ai gateway surface",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('a dotted Unity Catalog name reaches the AI Gateway and answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'routed to /serving-endpoints; the dotted name must select the AI Gateway').to.not.include('RESOURCE_DOES_NOT_EXIST');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/system.ai.claude-sonnet-4-5\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/system.ai.claude-sonnet-4-5 strips context_management on streaming chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('unsupported Anthropic context management is stripped before Databricks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Databricks rejected context_management instead of Bifrost stripping it').to.not.include('context_management: Extra inputs are not permitted');",
+                  "  pm.expect(body, 'Databricks rejected reasoning_effort instead of Bifrost stripping it').to.not.include('reasoning_effort: Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/system.ai.claude-sonnet-4-5\", \"max_completion_tokens\": 32, \"stream_options\": {\"include_usage\": true}, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"hey\"}], \"reasoning_effort\": \"medium\", \"context_management\": {\"edits\": [{\"type\": \"clear_thinking_20251015\", \"keep\": \"all\"}]}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('stream emits OpenAI-shaped SSE chunks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 32, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Count to three.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 /v1/chat/completions tool call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('tool calls survive the OpenAI-compatible round trip', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool_calls returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-sonnet-4-5\", \"max_tokens\": 128, \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Paris? Use the tool.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"get_weather\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gpt-5 /v1/responses native responses on model serving",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Responses API is served natively at /serving-endpoints/responses', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.output, 'no output items returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gpt-5\", \"max_output_tokens\": 64, \"input\": \"What is 2+2? Answer with just the number.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gte-large-en /v1/embeddings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('embeddings return a vector', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'no embedding data returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.data[0].embedding, 'embedding vector is empty').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gte-large-en\", \"input\": \"What is Databricks?\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-does-not-exist /v1/chat/completions unknown endpoint surfaces the upstream error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unknown endpoint is reported as a client error, not a success or a 500', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected a 4xx for an unknown endpoint; got: ' + body).to.be.within(400, 499);",
+                  "  pm.expect(body, 'no error payload returned').to.include('error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-does-not-exist\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "67. Bedrock Converse redacted reasoning round-trip (converse-redacted-reasoning)",
+      "description": "OpenAI (gpt-5.6-*) and xAI (grok-4.6) on bedrock-runtime Converse return reasoning as\nreasoningContent.redactedContent - one opaque blob - while Anthropic and DeepSeek return\nreasoningContent.reasoningText{text,signature}. The two are mutually exclusive and replaying the\nwrong one is rejected either way: 400 on Anthropic, and on OpenAI/xAI an opaque\n\n  500 \"The system encountered an unexpected error during processing. Try your request again.\"\n\nBifrost modelled only reasoningText, so it dropped the blob on ingress, left the client holding an\nempty unsigned thinking block, and re-emitted that as reasoningContent.reasoningText.text=\"\" on the\nnext turn - earning the 500. Only reachable on turn 2, so every row here is a capture/replay pair.\n\nProduction path: POST /v1/chat/completions (and /v1/responses) -> bedrock provider ->\nconverseReasoningShape() picks the wire shape from the bedrock_reasoning_shape datasheet key,\nfalling back to family detection -> reasoningContent.redactedContent.\n\nThe \"us.\" prefix on each model id is load-bearing: a bare id routes to bedrock-mantle, and only a\ncross-region identifier reaches bedrock-runtime, where Converse lives. The blob is minted and\nvalidated by the model, so it cannot be fixtured - hence capture-then-replay through a collection\nvariable, which runners/lib/chained-vars.mjs detects so sharding keeps each pair together.\n\nThe reasoningText half of the same invariant is already covered for Anthropic-on-Bedrock by\nfolder 46 and is not duplicated here.",
+      "item": [
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":512,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Converse redacted reasoning reaches the client', function () {",
+                  "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array').to.be.an('array').that.is.not.empty;",
+                  "  var details = (j.choices[0].message && j.choices[0].message.reasoning_details) || [];",
+                  "  var enc = details.filter(function (d) { return d && d.type === 'reasoning.encrypted' && d.data; });",
+                  "  pm.expect(enc.length, 'no encrypted reasoning detail came back - the redactedContent blob was dropped on ingress, which is the first half of the defect and leaves the replay row nothing to carry').to.be.above(0);",
+                  "});",
+                  "// Echo the assistant turn back verbatim: echoing is the point, it is what",
+                  "// carries the redacted blob out to Bedrock again on the next turn.",
+                  "try {",
+                  "  var captured = pm.response.json();",
+                  "  var msg = captured.choices && captured.choices[0] && captured.choices[0].message;",
+                  "  if (msg) {",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseRedactedChatMessages',",
+                  "      JSON.stringify([",
+                  "        { role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" },",
+                  "        msg,",
+                  "        { role: \"user\", content: \"Now restate the meeting time in one sentence.\" }",
+                  "      ])",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":256,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{bedrockConverseRedactedChatMessages}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays",
+                  "// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Converse redacted reasoning is accepted', function () {",
+                  "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+                  "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+                  "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+                  "// extra_fields.raw_response, so a bare substring check on the response body can",
+                  "// never distinguish success from failure here - assert on what Bifrost SENT.",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('replay raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sent = JSON.stringify(rr);",
+                  "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+                  "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+                  "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":2048}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Converse redacted reasoning reaches the client as a reasoning item', function () {",
+                  "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning.length, 'no reasoning item came back, so the replay row would silently skip having tested nothing').to.be.above(0);",
+                  "  var carried = reasoning.filter(function (o) { return o.encrypted_content; });",
+                  "  pm.expect(carried.length, 'the reasoning item carries no encrypted_content - the redactedContent blob was dropped on ingress').to.be.above(0);",
+                  "});",
+                  "try {",
+                  "  var captured = pm.response.json();",
+                  "  if (captured.output && captured.output.length) {",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseRedactedResponsesInput',",
+                  "      JSON.stringify(",
+                  "        [{ type: \"message\", role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" }]",
+                  "          .concat(captured.output)",
+                  "          .concat([{ type: \"message\", role: \"user\", content: \"Now restate the meeting time in one sentence.\" }])",
+                  "      )",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":{{bedrockConverseRedactedResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":512}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays",
+                  "// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+                  "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+                  "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+                  "if (!isRegression && [401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Converse redacted reasoning is accepted on the Responses path', function () {",
+                  "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+                  "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+                  "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+                  "// extra_fields.raw_response, so a bare substring check on the response body can",
+                  "// never distinguish success from failure here - assert on what Bifrost SENT.",
+                  "var ef = (pm.response.json() || {}).extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('replay raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var sent = JSON.stringify(rr);",
+                  "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+                  "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+                  "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "68. Replayed thinking must stay in its own assistant turn (PR #6854)",
+      "description": "Two defects in the Anthropic -> Bifrost Responses -> Bedrock Converse replay path, both\nsurfacing as the same client-visible 400:\n\n  messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant\n  message cannot be modified. These blocks must remain as they were in the original response.\n\nMeasured against Bedrock Converse with real signed blocks, that refusal fires on exactly one\nmutation: an EXTRA thinking block appearing in an assistant turn that is a tool continuation.\nRemoving a block, reordering blocks, and fusing turns are all accepted; duplication is not.\n\n1. Reasoning migration (core/providers/bedrock/responses.go). pendingReasoningContentBlocks\n   was consumed by an assistant message or a tool-call flush and by nothing else, so reasoning\n   left buffered when a user turn arrived was prepended to the NEXT assistant message. That\n   happens whenever an assistant turn ends on a thinking block - adaptive thinking, a\n   max_tokens truncation, or a trailing block the ingress dropped - and it shifts every later\n   turn one turn forward. The three chained cases replay a turn whose last block is the\n   thinking block; turn 3 is the one that 400s without the fix.\n\n2. Encrypted-reasoning fail-soft (core/encryptedreasoning.go). When an upstream refuses a\n   replayed signature the strip retries once. It used to blank the signature and keep the\n   thinking prose, which is legal on OpenAI but refused by Anthropic on every turn -\n   \"Invalid `signature` in `thinking` block\" - so the retry turned a request the API would\n   have accepted into one it refused. The two bogus-signature cases carry a signature no\n   model minted and assert the retry heals to a 2xx instead of forwarding a second 400.\n\nThe last case covers Anthropic direct on the typed chat shape: the removal is gated on the\nmodel family rather than the provider, and stripChatUnverifiableReasoning is a separate\ncode path from the Responses one, so Bedrock coverage alone would not pin it.\n\nFolder 46 replays thinking in model order (thinking first) and folder 51 covers the raw\nAnthropic passthrough; neither exercises the Bedrock typed path with a trailing thinking\nblock, and `Invalid `signature`` appeared nowhere in the collection before this folder.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 1: signed thinking + tool_use captured - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo right now? Think it through, then use the get_weather tool.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('turn 1 returns a signed thinking block and a tool_use to build the replay on', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+                  "  var kinds = j.content.map(function (b) { return b.type; });",
+                  "  pm.expect(kinds, 'no tool_use came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('tool_use');",
+                  "  var thinking = j.content.filter(function (b) { return b.type === 'thinking'; });",
+                  "  // Without a captured thinking block there is nothing to move to the end of the turn,",
+                  "  // so turns 2 and 3 would replay an ordinary history and pass having tested nothing.",
+                  "  pm.expect(thinking, 'no thinking block came back, so the migration path is never exercised').to.not.be.empty;",
+                  "  thinking.forEach(function (b) {",
+                  "    pm.expect(b.signature, 'a thinking block came back unsigned, so the replay below would prove nothing').to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn2_6854');",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn3_6854');",
+                  "var trailingThinking6854 = function (content) {",
+                  "  var blocks = content || [];",
+                  "  var think = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  var rest = blocks.filter(function (b) { return b.type !== 'thinking' && b.type !== 'redacted_thinking'; });",
+                  "  return rest.concat(think);",
+                  "};",
+                  "var stub6854 = \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+                  "  var thought = (body.content || []).some(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  if (uses.length && thought) {",
+                  "    var messages = [",
+                  "      { role: 'user', content: [{ type: 'text', text: 'What is the weather in Tokyo right now? Think it through, then use the get_weather tool.' }] },",
+                  "      { role: 'assistant', content: trailingThinking6854(body.content) },",
+                  "      { role: 'user', content: uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stub6854 }; })",
+                  "        .concat([{ type: 'text', text: 'Now check the weather in Osaka with the same tool.' }]) }",
+                  "    ];",
+                  "    pm.collectionVariables.set('bedrockTrailingThinkingTurn2_6854', JSON.stringify(messages));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 2: trailing thinking block replayed across a tool result - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bedrockTrailingThinkingTurn2_6854}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('turn 2 accepts an assistant turn whose last block is the thinking block', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock refused the replayed thinking block').to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'turn 2 failed - a relocated or dropped thinking block is the usual cause: ' + body).to.be.below(400);",
+                  "});",
+                  "pm.collectionVariables.unset('bedrockTrailingThinkingTurn3_6854');",
+                  "var trailingThinking6854 = function (content) {",
+                  "  var blocks = content || [];",
+                  "  var think = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "  var rest = blocks.filter(function (b) { return b.type !== 'thinking' && b.type !== 'redacted_thinking'; });",
+                  "  return rest.concat(think);",
+                  "};",
+                  "var stub6854 = \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+                  "try {",
+                  "  var prior = JSON.parse(pm.collectionVariables.get('bedrockTrailingThinkingTurn2_6854') || '[]');",
+                  "  var body = pm.response.json();",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+                  "  var followUp = uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stub6854 }; });",
+                  "  followUp.push({ type: 'text', text: 'Summarize both cities in one sentence.' });",
+                  "  var next = prior.concat([{ role: 'assistant', content: trailingThinking6854(body.content) }, { role: 'user', content: followUp }]);",
+                  "  pm.collectionVariables.set('bedrockTrailingThinkingTurn3_6854', JSON.stringify(next));",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages turn 3: earlier turn thinking must not migrate into the latest turn - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bedrockTrailingThinkingTurn3_6854}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('the first turn thinking block stays in the first turn', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  // Before PR #6854 the buffered reasoning of turn 1 survived the user turn and was",
+                  "  // prepended to turn 2, giving that message a thinking block the model never produced",
+                  "  // for it. Bedrock answers exactly this:",
+                  "  //   messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest",
+                  "  //   assistant message cannot be modified.",
+                  "  pm.expect(body, 'an earlier turn thinking block was relocated into the latest assistant message: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+                  "});",
+                  "pm.test('turn 3 really replayed two assistant turns with trailing thinking', function () {",
+                  "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+                  "  var msgs = JSON.parse(raw).messages || [];",
+                  "  var assistants = msgs.filter(function (m) { return m.role === 'assistant'; });",
+                  "  pm.expect(assistants.length, 'expected two assistant turns in the replayed history').to.be.at.least(2);",
+                  "  var trailing = assistants.filter(function (m) {",
+                  "    var c = m.content || []; var last = c[c.length - 1];",
+                  "    return last && (last.type === 'thinking' || last.type === 'redacted_thinking');",
+                  "  });",
+                  "  pm.expect(trailing.length, 'no assistant turn ended on a thinking block, so the migration path was never exercised').to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages unverifiable thinking signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo? Use the get_weather tool.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the weather in Tokyo, so I should call get_weather with city Tokyo.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"},{\"type\":\"tool_use\",\"id\":\"toolu_01harness6854weather\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01harness6854weather\",\"content\":\"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unverifiable thinking signature is healed by the fail-soft, not forwarded', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip blanked the signature and kept the thinking prose. Bedrock refuses",
+                  "  // that as readily as the original payload, so the retry spent an upstream call and",
+                  "  // handed the client the same 400. Removing the block whole is the only rewrite it",
+                  "  // accepts.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less thinking block instead of removing it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(lower, 'the retry dropped the signature field rather than the block: ' + body).to.not.include('thinking.signature');",
+                  "  pm.expect(pm.response.code, 'the fail-soft failed to heal the replay: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5 /anthropic/v1/messages streaming unverifiable thinking signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":2048,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather in Tokyo? Use the get_weather tool.\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants the weather in Tokyo, so I should call get_weather with city Tokyo.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"},{\"type\":\"tool_use\",\"id\":\"toolu_01harness6854weather\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01harness6854weather\",\"content\":\"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('the streamed turn heals the same way the non-streaming one does', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip blanked the signature and kept the thinking prose. Bedrock refuses",
+                  "  // that as readily as the original payload, so the retry spent an upstream call and",
+                  "  // handed the client the same 400. Removing the block whole is the only rewrite it",
+                  "  // accepts.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less thinking block instead of removing it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(lower, 'the retry dropped the signature field rather than the block: ' + body).to.not.include('thinking.signature');",
+                  "  pm.expect(pm.response.code, 'the streamed fail-soft failed to heal the replay: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'expected an Anthropic SSE stream, got: ' + body.slice(0, 400)).to.include('message_start');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/chat/completions unverifiable reasoning signature heals instead of 400 - PR #6854",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"max_tokens\":2048,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"What is 8473 * 2917? Think it through before answering.\"},{\"role\":\"assistant\",\"content\":\"Let me work through that multiplication.\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"Multiply 8473 by 2917 using long multiplication, then verify.\",\"signature\":\"EqQBCgIYAhIMharness6854bogusSignatureNotMintedByAnyModel0000\"}]},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('an unverifiable reasoning signature is healed on the chat shape too', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  var lower = body.toLowerCase();",
+                  "  // The old strip cleared reasoning_details[].signature and kept the text, which the",
+                  "  // Anthropic egress forwards as a thinking block with an empty signature. Anthropic",
+                  "  // refuses that on any turn, so the one retry was spent earning the same class of 400.",
+                  "  pm.expect(lower, 'the fail-soft retried with a signature-less reasoning detail instead of dropping it: ' + body).to.not.include('invalid `signature`');",
+                  "  pm.expect(lower, 'the retry left a partially rewritten thinking block behind: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'the fail-soft failed to heal the chat-shaped replay: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

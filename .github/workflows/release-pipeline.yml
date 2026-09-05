@@ -328,6 +328,10 @@ jobs:
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -436,7 +440,14 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -535,6 +546,10 @@ jobs:
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -654,7 +669,14 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1002,6 +1024,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
@@ -1217,6 +1240,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1229,6 +1255,7 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1344,6 +1371,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1356,6 +1386,7 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1608,6 +1639,10 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -1711,8 +1746,14 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
-          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1971,6 +2012,10 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -2054,6 +2099,13 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2070,6 +2122,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
@@ -2113,6 +2166,10 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -2196,6 +2253,13 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2212,6 +2276,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
@@ -2317,6 +2382,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2436,6 +2504,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2571,6 +2642,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          VOLCENGINE_API_KEY: ${{ secrets.VOLCENGINE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}

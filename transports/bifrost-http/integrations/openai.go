@@ -3431,7 +3431,7 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 }
 
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
-func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
+func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
@@ -3440,7 +3440,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

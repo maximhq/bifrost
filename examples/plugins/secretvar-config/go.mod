@@ -32,3 +32,5 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/valyala/fasthttp => github.com/maximhq/fasthttp v1.73.1

@@ -67,6 +67,9 @@ export const ModelPlaceholders = {
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	zhipu: "e.g. glm-5.3, glm-4.6, embedding-3, cogview-4",
+	volcengine: "e.g. doubao-seed-2-1-turbo-260628, doubao-seedream-4-5-251128",
+	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
+	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -101,6 +104,9 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	sarvam: true,
 	wafer: true,
 	zhipu: true,
+	volcengine: true,
+	databricks: false,
+	"github-copilot": false,
 };
 
 export const DefaultNetworkConfig = {

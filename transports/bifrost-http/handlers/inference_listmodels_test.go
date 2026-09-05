@@ -9,24 +9,25 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 )
 
-// The fan-out is narrowed to the providers the request is granted.
-func TestApplyListModelsProviderFilterPublishesGrantedProviders(t *testing.T) {
+// The listing hands the narrowing to whoever can answer what the request may reach, so the
+// providers it publishes are the ones that answer grants.
+func TestApplyListModelsProviderFilterDelegatesToTheModelsManager(t *testing.T) {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: []string{"gpt-4o"}},
 		// A provider granted no model at all is still asked: the fan-out decides who can
 		// serve the request, and the response is filtered per model afterwards.
 		{Provider: "anthropic"},
 	}, nil)
-	h := &CompletionHandler{
-		modelsManager: &mockModelsManager{
-			access: grant.NewAccess([]schemas.Permit{permit}, nil, "", nil),
-		},
-	}
+	manager := &mockModelsManager{access: grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)}
+	h := &CompletionHandler{modelsManager: manager}
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 	h.applyListModelsProviderFilter(bifrostCtx)
 
+	if manager.narrowCalls != 1 {
+		t.Fatalf("narrow calls = %d, want 1", manager.narrowCalls)
+	}
 	got, ok := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
 	if !ok {
 		t.Fatalf("expected available providers to be published as []schemas.ModelProvider, got %#v",
@@ -53,8 +54,8 @@ func TestApplyListModelsProviderFilterLeavesFanOutAloneWhenNothingResolved(t *te
 
 	h.applyListModelsProviderFilter(bifrostCtx)
 
-	if manager.resolveCalls != 1 {
-		t.Fatalf("resolve calls = %d, want 1", manager.resolveCalls)
+	if manager.narrowCalls != 1 {
+		t.Fatalf("narrow calls = %d, want 1", manager.narrowCalls)
 	}
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
 		t.Fatalf("expected nothing to be published, got %#v", got)

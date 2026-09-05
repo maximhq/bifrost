@@ -95,6 +95,8 @@ export const en = {
 		mcpLibraryDescription: "Install curated MCP servers",
 		toolGroups: "Tool Groups",
 		toolGroupsDescription: "Tool Groups",
+		virtualMcps: "Virtual MCPs",
+		virtualMcpsDescription: "Virtual MCPs",
 		authSessions: "Auth Sessions",
 		authSessionsDescription: "Per-user OAuth sessions",
 		oauthGrants: "OAuth Grants",

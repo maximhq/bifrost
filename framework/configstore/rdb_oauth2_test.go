@@ -85,7 +85,7 @@ func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id
 	}
 	mkClient = func(name, oauthConfigID string, disabled bool) {
 		require.NoError(t, s.DB().Create(&tables.TableMCPClient{
-			ClientID: "cid-" + name, Name: name, ConnectionType: "http",
+			ClientID: "cid-" + name, Name: name, EndpointSlug: "cid-" + name, ConnectionType: "http",
 			AuthType: "oauth", OauthConfigID: &oauthConfigID, Disabled: disabled,
 			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)

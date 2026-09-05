@@ -146,7 +146,7 @@ Flip **Govern virtual keys created by members** so any virtual key a member of t
   />
 </Frame>
 
-- **Tool Groups** - Multi-select existing [MCP Tool Groups](/enterprise/mcp-tool-groups) to grant. Selected groups appear as removable badges.
+- **Virtual MCPs** - Multi-select existing [Virtual MCPs](/enterprise/virtual-mcps) to grant. Selected vMCPs appear as removable badges.
 - **MCP Servers** - Multi-select MCP servers. Granting a server means "all tools from this server".
 - **Individual Tool Overrides** - Add specific tools with either `include` or `exclude` action. Use this for surgical adjustments that the group + server selection does not express.
 
@@ -183,8 +183,8 @@ When you edit an existing profile, the action bar shows **Save** (template-only 
   />
 </Frame>
 
-- Check the fields to propagate: **Provider Configurations**, **Budgets**, **Rate Limit**, **MCP
-  Tool Groups**, **MCP Servers**, **MCP Tool Overrides**. - Click **Propagate** to apply. The response
+- Check the fields to propagate: **Provider Configurations**, **Budgets**, **Rate Limit**, **Virtual
+  MCPs**, **MCP Servers**, **MCP Tool Overrides**. - Click **Propagate** to apply. The response
   reports how many users were updated, failed, or skipped.
 
 By default, propagation **preserves usage**: existing users keep their accumulated budget and rate-limit counters where the reset durations match.
@@ -245,7 +245,7 @@ A profile carries the following pieces of policy. Use the UI walkthrough above f
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
 - **Govern created keys** - When on, every virtual key a member creates is adopted into the profile (same policy, attached to the user, profile-managed). Off by default. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members).
-- **MCP tool access** - Reference [MCP Tool Groups](/enterprise/mcp-tool-groups), grant entire MCP servers, or override individual tools with include/exclude actions.
+- **MCP tool access** - Reference [Virtual MCPs](/enterprise/virtual-mcps), grant entire MCP servers, or override individual tools with include/exclude actions.
 - **Tags** - Up to 50 free-form tags for filtering and grouping in the UI.
 - **Active flag** - Activate or deactivate without deleting; deactivated profiles are hidden from selection but user copies stay intact.
 
@@ -277,8 +277,8 @@ Prerequisite: the Engineering profile is already assigned to the Engineer role (
 
 ### Tighten MCP access only
 
-1. Edit the template and replace the MCP tool group reference.
-2. Open the propagate dialog. Check **MCP Tool Groups**, **MCP Servers**, and **MCP Tool Overrides**. Leave budgets and rate limits unchecked.
+1. Edit the template and replace the Virtual MCP reference.
+2. Open the propagate dialog. Check **Virtual MCPs**, **MCP Servers**, and **MCP Tool Overrides**. Leave budgets and rate limits unchecked.
 3. Click **Propagate**. Budgets and rate limits are not touched; only MCP access changes flow through.
 
 ### Give one user an individual per-model budget
@@ -310,5 +310,5 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 - **[Data Access Control](/enterprise/data-access-control)** - Scope which profiles each operator can see.
 - **[RBAC](/enterprise/rbac)** - Define the roles that profiles auto-attach to.
 - **[Virtual Keys](/features/governance/virtual-keys)** - Understand the underlying virtual key concept.
-- **[MCP Tool Groups](/enterprise/mcp-tool-groups)** - Bundle MCP tools for reuse inside profiles.
+- **[Virtual MCPs](/enterprise/virtual-mcps)** - Bundle MCP tools for reuse inside profiles.
 - **[Audit Logs](/enterprise/audit-logs)** - Cross-reference profile changes with downstream impact.

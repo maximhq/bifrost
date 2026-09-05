@@ -365,7 +365,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						{scopeEntry?.ManagedByComponent ? (
 							<div className="space-y-1">
 								<Label className="text-muted-foreground text-xs font-normal">Managed By</Label>
-								<scopeEntry.ManagedByComponent modelConfig={modelConfig} />
+								<scopeEntry.ManagedByComponent modelConfig={modelConfig} labelled />
 							</div>
 						) : null}
 

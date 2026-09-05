@@ -16,6 +16,7 @@ type TableMCPClient struct {
 	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
 	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
 	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	EndpointSlug            string             `gorm:"column:endpoint_slug;type:varchar(255);uniqueIndex" json:"endpoint_slug"`
 	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`

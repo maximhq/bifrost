@@ -274,9 +274,9 @@ func TestGetOauthUserSessionByModeIdentityAndMCPClient_AdminMode(t *testing.T) {
 	store := setupMCPSessionsTestStore(t)
 	ctx := context.Background()
 
-	client1 := &tables.TableMCPClient{ClientID: "mcp-1", Name: "MCP One", ConnectionType: "stdio"}
-	client2 := &tables.TableMCPClient{ClientID: "mcp-2", Name: "MCP Two", ConnectionType: "stdio"}
-	client3 := &tables.TableMCPClient{ClientID: "mcp-3", Name: "MCP Three", ConnectionType: "stdio"}
+	client1 := &tables.TableMCPClient{ClientID: "mcp-1", Name: "MCP One", EndpointSlug: "mcp-1", ConnectionType: "stdio"}
+	client2 := &tables.TableMCPClient{ClientID: "mcp-2", Name: "MCP Two", EndpointSlug: "mcp-2", ConnectionType: "stdio"}
+	client3 := &tables.TableMCPClient{ClientID: "mcp-3", Name: "MCP Three", EndpointSlug: "mcp-3", ConnectionType: "stdio"}
 	require.NoError(t, store.DB().WithContext(ctx).Create(client1).Error)
 	require.NoError(t, store.DB().WithContext(ctx).Create(client2).Error)
 	require.NoError(t, store.DB().WithContext(ctx).Create(client3).Error)

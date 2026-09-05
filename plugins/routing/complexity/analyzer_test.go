@@ -21,31 +21,81 @@ func TestAnalyze_CustomTierBoundaries(t *testing.T) {
 	defaultAnalyzer := NewComplexityAnalyzer()
 	cfg := DefaultAnalyzerConfig()
 	cfg.TierBoundaries = TierBoundaries{
-		SimpleMedium:     0.05,
-		MediumComplex:    0.10,
-		ComplexReasoning: 0.20,
+		SimpleMedium:  0.05,
+		MediumComplex: 0.10,
 	}
 	customAnalyzer := NewComplexityAnalyzerWithConfig(&cfg)
 
-	if got := defaultAnalyzer.classifyTier(0.18); got != TierMedium {
-		t.Fatalf("default boundary classified 0.18 as %s, want %s", got, TierMedium)
+	if got := defaultAnalyzer.classifyTier(0.25); got != TierMedium {
+		t.Fatalf("default boundary classified 0.25 as %s, want %s", got, TierMedium)
 	}
-	if got := customAnalyzer.classifyTier(0.18); got != TierComplex {
-		t.Fatalf("custom boundary classified 0.18 as %s, want %s", got, TierComplex)
+	if got := customAnalyzer.classifyTier(0.25); got != TierComplex {
+		t.Fatalf("custom boundary classified 0.25 as %s, want %s", got, TierComplex)
 	}
 }
 
-func TestAnalyze_CustomReasoningKeywordsAffectOverride(t *testing.T) {
+func TestAnalyze_CustomComplexKeywordsAffectOverride(t *testing.T) {
 	cfg := DefaultAnalyzerConfig()
-	cfg.Keywords.ReasoningKeywords = []string{"deepmagic"}
+	cfg.Keywords.ComplexKeywords = []string{"deepmagic", "deepmagic-two"}
 	a := NewComplexityAnalyzerWithConfig(&cfg)
 
 	result := a.Analyze(ComplexityInput{
-		LastUserText: "deepmagic api function",
+		LastUserText: "deepmagic deepmagic-two",
 	})
 
-	if result.Tier != TierReasoning {
-		t.Fatalf("expected custom reasoning keyword to promote tier to %s, got %s (score=%.3f)", TierReasoning, result.Tier, result.Score)
+	if result.Tier != TierComplex {
+		t.Fatalf("expected custom Complex keywords to promote tier to %s, got %s (score=%.3f)", TierComplex, result.Tier, result.Score)
+	}
+}
+
+func TestAnalyze_DefaultKeywordCalibration(t *testing.T) {
+	cfg := DefaultAnalyzerConfig()
+	cfg.Keywords.MediumKeywords = []string{"mediumone", "mediumtwo", "mediumthree", "mediumfour"}
+	cfg.Keywords.ComplexKeywords = []string{"complexone", "complextwo", "complexthree"}
+	cfg.Keywords.SimpleKeywords = []string{"simpleone", "simpletwo", "simplethree", "simplefour"}
+	a := NewComplexityAnalyzerWithConfig(&cfg)
+
+	mediumCases := []struct {
+		text string
+		want string
+	}{
+		{text: "mediumone", want: TierSimple},
+		{text: "mediumone mediumtwo", want: TierMedium},
+		{text: "mediumone mediumtwo mediumthree", want: TierMedium},
+		{text: "mediumone mediumtwo mediumthree mediumfour", want: TierComplex},
+	}
+	for _, tc := range mediumCases {
+		result := a.Analyze(ComplexityInput{LastUserText: tc.text})
+		if result == nil || result.Tier != tc.want {
+			t.Fatalf("medium calibration for %q: got %+v, want tier %s", tc.text, result, tc.want)
+		}
+	}
+
+	complexCases := []struct {
+		text string
+		want string
+	}{
+		{text: "complexone", want: TierMedium},
+		{text: "complexone complextwo", want: TierComplex},
+		{text: "complexone complextwo complexthree", want: TierComplex},
+	}
+	for _, tc := range complexCases {
+		result := a.Analyze(ComplexityInput{LastUserText: tc.text})
+		if result == nil || result.Tier != tc.want {
+			t.Fatalf("complex calibration for %q: got %+v, want tier %s", tc.text, result, tc.want)
+		}
+	}
+
+	for _, text := range []string{
+		"simpleone",
+		"simpleone simpletwo",
+		"simpleone simpletwo simplethree",
+		"simpleone simpletwo simplethree simplefour",
+	} {
+		result := a.Analyze(ComplexityInput{LastUserText: text})
+		if result == nil || result.Tier != TierSimple || result.Score != 0 {
+			t.Fatalf("simple calibration for %q: got %+v, want SIMPLE with score 0", text, result)
+		}
 	}
 }
 
@@ -117,8 +167,8 @@ func TestAnalyze_Reasoning(t *testing.T) {
 		LastUserText: "Think step by step through the tradeoffs of this ML architecture and explain why one approach is better",
 	})
 
-	if result.Tier != "REASONING" {
-		t.Errorf("expected REASONING tier for deep reasoning request, got %s (score=%.3f)", result.Tier, result.Score)
+	if result.Tier != "COMPLEX" {
+		t.Errorf("expected COMPLEX tier for deep reasoning request, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
@@ -134,7 +184,7 @@ func TestAnalyze_OutputComplexityRequiresVisibleSignal(t *testing.T) {
 	}
 }
 
-func TestAnalyze_ConversationContextDoesNotClassifyNoSignalLatestTurn(t *testing.T) {
+func TestAnalyze_NoSignalFollowupInheritsConversationScore(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	noCtx := a.Analyze(ComplexityInput{
@@ -144,6 +194,8 @@ func TestAnalyze_ConversationContextDoesNotClassifyNoSignalLatestTurn(t *testing
 		t.Fatalf("expected no-signal latest turn without context to be unclassified, got %s (score=%.3f)", noCtx.Tier, noCtx.Score)
 	}
 
+	// A no-signal follow-up in a technical conversation is a continuation: it
+	// inherits the conversation's score undiluted rather than being skipped.
 	withCtx := a.Analyze(ComplexityInput{
 		LastUserText: "Why?",
 		PriorUserTexts: []string{
@@ -153,8 +205,11 @@ func TestAnalyze_ConversationContextDoesNotClassifyNoSignalLatestTurn(t *testing
 		},
 	})
 
-	if withCtx != nil {
-		t.Errorf("expected complex history not to classify a no-signal latest turn, got %s (score=%.3f)", withCtx.Tier, withCtx.Score)
+	if withCtx == nil {
+		t.Fatal("expected no-signal follow-up with technical context to classify, got nil")
+	}
+	if withCtx.Tier == "SIMPLE" {
+		t.Errorf("expected no-signal follow-up to inherit conversation complexity, got %s (score=%.3f)", withCtx.Tier, withCtx.Score)
 	}
 }
 
@@ -340,7 +395,7 @@ func TestAnalyze_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestAnalyze_ReasoningOverrideNotTooEager(t *testing.T) {
+func TestAnalyze_ComplexOverrideNotTooEager(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -348,19 +403,26 @@ func TestAnalyze_ReasoningOverrideNotTooEager(t *testing.T) {
 	})
 
 	if result != nil {
-		t.Errorf("expected removed broad reasoning markers to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
+		t.Errorf("expected removed broad Complex markers to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
 func TestAnalyze_SimpleKeywordDoesNotSuppressTechnicalSignals(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
+	// Scores ~0.18, which lands in SIMPLE under the default 0.20 boundary.
+	// The guard here is that the "what is" simple keyword only nudges the
+	// score down — it must not zero out the technical signal or block
+	// classification entirely.
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "What is eventual consistency in distributed systems with sharding?",
 	})
 
-	if result.Tier == "SIMPLE" {
-		t.Errorf("expected non-SIMPLE tier for technical 'what is' question, got %s (score=%.3f)",
+	if result == nil {
+		t.Fatal("expected technical 'what is' question to classify, got nil")
+	}
+	if result.Score <= 0 {
+		t.Errorf("expected positive score for technical 'what is' question, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -368,12 +430,17 @@ func TestAnalyze_SimpleKeywordDoesNotSuppressTechnicalSignals(t *testing.T) {
 func TestAnalyze_AccessVsRefreshTokens(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
+	// Scores ~0.19 — SIMPLE under the default 0.20 boundary, but the
+	// technical signal must still register as a positive score.
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "Explain the difference between an access token and a refresh token. When would you use short-lived vs long-lived tokens?",
 	})
 
-	if result.Tier == "SIMPLE" {
-		t.Errorf("expected MEDIUM or higher tier for token lifecycle question, got %s (score=%.3f)",
+	if result == nil {
+		t.Fatal("expected token lifecycle question to classify, got nil")
+	}
+	if result.Score <= 0 {
+		t.Errorf("expected positive score for token lifecycle question, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -418,8 +485,8 @@ func TestAnalyze_PostIncidentReconstruction(t *testing.T) {
 		SystemText: "You are leading the post-incident review for a major production outage at a multi-region SaaS company.",
 	})
 
-	if result.Tier != "COMPLEX" && result.Tier != "REASONING" {
-		t.Errorf("expected COMPLEX or REASONING tier for post-incident reconstruction, got %s (score=%.3f)",
+	if result.Tier != "COMPLEX" {
+		t.Errorf("expected COMPLEX tier for post-incident reconstruction, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -498,8 +565,8 @@ func TestAnalyze_BillingLedgerPipeline(t *testing.T) {
 		SystemText:   "You are a staff engineer for a B2B SaaS billing platform.",
 	})
 
-	if result.Tier != "COMPLEX" && result.Tier != "REASONING" {
-		t.Errorf("expected COMPLEX or REASONING tier for billing ledger pipeline prompt, got %s (score=%.3f)",
+	if result.Tier != "COMPLEX" {
+		t.Errorf("expected COMPLEX tier for billing ledger pipeline prompt, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -511,8 +578,8 @@ func TestAnalyze_VectorDatabaseTradeoffRecommendation(t *testing.T) {
 		LastUserText: "Compare self-hosted Qdrant vs managed Pinecone for a hybrid search system serving 1,000 QPS with 50M vectors. We're in a regulated industry - no data can leave our VPC, and we need SOC 2 attestation for all data stores. Weigh the tradeoffs around data residency compliance, operational burden for a 4-person infra team, query latency at scale, cost scaling characteristics, and disaster recovery options. Recommend one and explain your reasoning.",
 	})
 
-	if result.Tier != "REASONING" {
-		t.Errorf("expected REASONING tier for vector database tradeoff recommendation, got %s (score=%.3f)",
+	if result.Tier != "COMPLEX" {
+		t.Errorf("expected COMPLEX tier for vector database tradeoff recommendation, got %s (score=%.3f)",
 			result.Tier, result.Score)
 	}
 }
@@ -526,15 +593,22 @@ func TestIsContinuationFollowup_GuardBranches(t *testing.T) {
 	}{
 		{"phrase_match_ok", "do it", 0.30, true},
 		{"phrase_match_longer_text", "do it now please right away ok", 0.30, true},
-		{"no_phrase", "", 0.30, false},
+		{"empty_text", "", 0.30, false},
 		{"phrase_match_conv_just_below_threshold", "do it", 0.199, false},
 		{"phrase_match_conv_at_threshold", "do it", 0.20, true},
 		{"explicit_use_option", "use option 2", 0.30, true},
-		{"retry_is_code_not_continuation", "retry", 0.30, false},
-		{"former_inferred_fix_it", "fix it", 0.30, false},
-		{"former_inferred_make_it_shorter", "make it shorter", 0.30, false},
-		{"former_inferred_answer_previous", "answer the previous question", 0.30, false},
-		{"unrelated_short_text", "hello there friend", 0.30, false},
+		// Short messages in a context-rich conversation are continuations even
+		// without an explicit phrase: brevity itself is the signal.
+		{"short_code_word", "retry", 0.30, true},
+		{"short_inferred_fix_it", "fix it", 0.30, true},
+		{"short_inferred_make_it_shorter", "make it shorter", 0.30, true},
+		{"short_inferred_answer_previous", "answer the previous question", 0.30, true},
+		{"short_inferred_conv_below_threshold", "fix it", 0.199, false},
+		// Simple-keyword closers stay out of the referential path so "thanks!"
+		// after a technical conversation still classifies as SIMPLE.
+		{"simple_closer_hello", "hello there friend", 0.30, false},
+		{"simple_closer_thanks", "thanks!", 0.30, false},
+		{"long_text_without_phrase", "please write up a detailed summary of everything we have discussed in this conversation so far today", 0.30, false},
 	}
 
 	for _, tt := range tests {
@@ -581,6 +655,59 @@ func TestAnalyze_ExplicitContinuationPhrasesUseContext(t *testing.T) {
 					tt.lastText, result.Tier, result.Score)
 			}
 		})
+	}
+}
+
+func TestAnalyze_ShortFollowupsWithoutPhrasesUseContext(t *testing.T) {
+	a := NewComplexityAnalyzer()
+
+	techPriors := []string{
+		"We need to refactor the retry middleware so only 429 and 408 retry.",
+		"Move fallback selection after request classification and keep the behavior change explicit in the PR.",
+		"Update the Go tests for the CEL routing rules and the governance plugin.",
+	}
+
+	tests := []struct {
+		name     string
+		lastText string
+	}{
+		{"yes_but_faster", "yes but make it faster"},
+		{"fix_it", "fix it"},
+		{"now_add_auth", "now add auth to it as well"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := a.Analyze(ComplexityInput{
+				LastUserText:   tt.lastText,
+				PriorUserTexts: techPriors,
+			})
+			if result == nil {
+				t.Fatalf("expected analysis for %q, got nil", tt.lastText)
+			}
+			if result.Tier == "SIMPLE" {
+				t.Fatalf("expected lift above SIMPLE for %q, got %s (score=%.3f)",
+					tt.lastText, result.Tier, result.Score)
+			}
+		})
+	}
+}
+
+func TestAnalyze_SimpleCloserAfterTechnicalConversationStaysSimple(t *testing.T) {
+	a := NewComplexityAnalyzer()
+
+	result := a.Analyze(ComplexityInput{
+		LastUserText: "thanks, that was helpful!",
+		PriorUserTexts: []string{
+			"We need to refactor the retry middleware so only 429 and 408 retry.",
+			"Move fallback selection after request classification and keep the behavior change explicit in the PR.",
+		},
+	})
+	if result == nil {
+		t.Fatal("expected analysis for simple closer, got nil")
+	}
+	if result.Tier != "SIMPLE" {
+		t.Fatalf("expected SIMPLE tier for conversation closer, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
@@ -637,10 +764,10 @@ func TestAnalyze_RegressionAnchors(t *testing.T) {
 			maxTier:  "MEDIUM",
 		},
 		{
-			name:      "summarize_after_tech_thread_is_unclassified",
-			lastText:  "summarize it in one sentence",
-			priors:    techPriors,
-			expectNil: true,
+			name:              "summarize_after_tech_thread_lifts",
+			lastText:          "summarize it in one sentence",
+			priors:            techPriors,
+			mustNotEqualTiers: []string{"SIMPLE"},
 		},
 		{
 			name:      "do_it_with_empty_priors_is_unclassified",
@@ -662,7 +789,7 @@ func TestAnalyze_RegressionAnchors(t *testing.T) {
 		},
 	}
 
-	tierRank := map[string]int{"SIMPLE": 0, "MEDIUM": 1, "COMPLEX": 2, "REASONING": 3}
+	tierRank := map[string]int{"SIMPLE": 0, "MEDIUM": 1, "COMPLEX": 2}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -809,7 +936,7 @@ func TestAnalyze_PunctuatedKeywordStillMatches(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	signals := a.matcher.analyzeText("Please review our CI/CD pipeline and retry middleware behavior.", lastTextBaseScanMask)
-	if signals.codeCount == 0 {
+	if signals.mediumCount == 0 {
 		t.Fatalf("expected punctuated keyword path to match code signals")
 	}
 }

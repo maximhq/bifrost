@@ -207,6 +207,50 @@ func TestAccess_BlacklistWins(t *testing.T) {
 	assert.False(t, unionAccess.IsModelAllowed("anthropic", "claude-opus-4"))
 }
 
+// A permit that allows all providers grants even a provider it holds no provider permit for, with
+// every model and every key. A provider it does list keeps that permit's own rules, so allow-all
+// coexists with per-provider restrictions rather than overriding them.
+func TestAccess_AllowAllProviders(t *testing.T) {
+	// Lists openai with a blacklist and a key restriction; allows every other provider by the flag.
+	base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false,
+		[]schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModels: []string{"gpt-4o"}, KeyIDs: []string{"key-a"}},
+			// Restrictive, non-wildcard allowlist: allow-all must not open models it omits.
+			{Provider: "anthropic", AllowedModels: []string{"claude-3-5-sonnet"}},
+		}, nil, WithAllowAllProviders(true))
+	access := NewAccess(held(base), nil, "", nil)
+
+	// A provider with no permit is allowed for any model, with no key restriction.
+	assert.True(t, access.IsProviderAllowed("cohere"), "allow-all grants an unlisted provider")
+	assert.True(t, access.IsModelAllowed("cohere", "command-r-plus"), "allow-all grants any model of an unlisted provider")
+	assert.True(t, access.IsModelAllowed("cohere", ""), "an empty model asks about the provider alone")
+	keyIDs, restricted := access.KeysForModel("cohere", "command-r-plus")
+	assert.False(t, restricted, "an unlisted provider under allow-all has no key restriction")
+	assert.Nil(t, keyIDs)
+
+	// A listed provider keeps its own rules: the blacklist still wins, and its key restriction stands.
+	assert.True(t, access.IsProviderAllowed("openai"))
+	assert.False(t, access.IsModelAllowed("openai", "gpt-4o"), "a listed provider's blacklist wins even under allow-all")
+	assert.True(t, access.IsModelAllowed("openai", "o3"))
+	keyIDs, restricted = access.KeysForModel("openai", "o3")
+	assert.True(t, restricted, "a listed provider keeps its key restriction under allow-all")
+	assert.Equal(t, []string{"key-a"}, keyIDs)
+
+	// A listed provider's restrictive allowlist wins: allow-all does not grant a model it omits.
+	assert.True(t, access.IsProviderAllowed("anthropic"))
+	assert.True(t, access.IsModelAllowed("anthropic", "claude-3-5-sonnet"), "a model in the allowlist is allowed")
+	assert.False(t, access.IsModelAllowed("anthropic", "claude-3-opus"), "allow-all must not grant a model outside a listed provider's allowlist")
+}
+
+// Without the flag, a provider the permit does not list is denied: allow-all is opt-in.
+func TestAccess_WithoutAllowAllProvidersUnlistedIsDenied(t *testing.T) {
+	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
+	access := NewAccess(held(base), nil, "", nil)
+
+	assert.False(t, access.IsProviderAllowed("cohere"))
+	assert.False(t, access.IsModelAllowed("cohere", "command-r-plus"))
+}
+
 func TestAccess_UnknownModeFailsClosed(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
 	scoping := permitWithProviders("other", "o1", "Other", "openai")

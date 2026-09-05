@@ -96,6 +96,8 @@ export const zh: Messages = {
 		mcpLibraryDescription: "安装精选 MCP 服务器",
 		toolGroups: "工具组",
 		toolGroupsDescription: "工具组",
+		virtualMcps: "虚拟 MCP",
+		virtualMcpsDescription: "虚拟 MCP",
 		authSessions: "认证会话",
 		authSessionsDescription: "按用户的 OAuth 会话",
 		oauthGrants: "OAuth 授权",

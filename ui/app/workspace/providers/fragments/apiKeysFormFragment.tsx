@@ -1,15 +1,17 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { isRedacted } from "@/lib/utils/validation";
+import { hasCopilotApiToken, isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
@@ -155,6 +157,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isSGL = effectiveProvider === "sgl";
 	const isDeepseek = effectiveProvider === "deepseek";
 	const isFireworks = effectiveProvider === "fireworks";
+	const isDatabricks = effectiveProvider === "databricks";
+	const isGithubCopilot = effectiveProvider === "github-copilot";
+	// Reactive, so the App-credential labels stay truthful. Once a Copilot token is present
+	// those fields genuinely are optional, and a static "(Required)" would contradict the
+	// section note telling the operator they can leave them blank.
+	const copilotAppSuffix = hasCopilotApiToken(form.watch("key.value")) ? "(Optional)" : "(Required)";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -166,6 +174,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 
 	// Auth type state for Bedrock Mantle: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockMantleAuthType, setBedrockMantleAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
+
+	// Auth type state for Databricks: 'pat' (personal access token) or 'oauth_m2m' (service principal)
+	const [databricksAuthType, setDatabricksAuthType] = useState<"pat" | "oauth_m2m">("pat");
 
 	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
 	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
@@ -209,6 +220,22 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			form.setValue("key.vertex_key_config._auth_type", detected);
 		}
 	}, [isVertex, form]);
+
+	const databricksDefaults = form.formState.defaultValues?.key?.databricks_key_config;
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isDatabricks) {
+			const clientId = form.getValues("key.databricks_key_config.client_id");
+			const clientSecret = form.getValues("key.databricks_key_config.client_secret");
+			const hasServicePrincipal = clientId?.value || clientId?.ref || clientSecret?.value || clientSecret?.ref;
+			const detected: "pat" | "oauth_m2m" = hasServicePrincipal ? "oauth_m2m" : "pat";
+			setDatabricksAuthType(detected);
+			form.setValue("key.databricks_key_config._auth_type", detected);
+		}
+		// databricksDefaults re-runs detection after the key form resets itself, which
+		// happens once the key resolves - after this effect has already run once against
+		// an empty form and settled on the personal access token tab.
+	}, [isDatabricks, form, databricksDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -318,15 +345,26 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
 				<FormField
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>{isVLLM ? t("providers.labelOptional", { label: t("providers.apiKey") }) : t("providers.apiKey")}</FormLabel>
+							<FormLabel>
+								{isGithubCopilot
+									? t("providers.labelOptional", { label: t("providers.copilotApiToken") })
+									: isVLLM
+										? t("providers.labelOptional", { label: t("providers.apiKey") })
+										: t("providers.apiKey")}
+							</FormLabel>
+							{isGithubCopilot && <FormDescription>{t("providers.copilotApiTokenDescription")}</FormDescription>}
 							<FormControl>
-								<SecretVarInput placeholder={t("providers.keyForm.apiKeyPlaceholder")} type="text" {...field} />
+								<SecretVarInput
+									placeholder={isGithubCopilot ? t("providers.copilotApiTokenPlaceholder") : t("providers.keyForm.apiKeyPlaceholder")}
+									type="text"
+									{...field}
+								/>
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -820,6 +858,166 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					/>
 				</div>
 			)}
+			{isDatabricks && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.databricks_key_config.workspace_url"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Workspace URL (Required)</FormLabel>
+								<FormDescription>
+									Your Databricks workspace URL (e.g. https://dbc-1234abcd-5678.cloud.databricks.com or env.DATABRICKS_WORKSPACE_URL)
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-databricks-workspace-url"
+										placeholder="https://dbc-1234abcd-5678.cloud.databricks.com"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.databricks_key_config.api_format"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Inference Surface</FormLabel>
+								<FormDescription>
+									Auto picks by model name: a dotted name such as system.ai.claude-sonnet-4-5 goes to the Unity AI Gateway, anything else to
+									Model Serving. Choose explicitly to pin one surface.
+								</FormDescription>
+								<Select value={field.value ?? "auto"} onValueChange={field.onChange}>
+									<FormControl>
+										<SelectTrigger data-testid="key-select-databricks-api-format">
+											<SelectValue placeholder="Auto" />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value="auto">Auto (by model name)</SelectItem>
+										<SelectItem value="model_serving">Model Serving (/serving-endpoints)</SelectItem>
+										<SelectItem value="ai_gateway">Unity AI Gateway (/ai-gateway/mlflow/v1)</SelectItem>
+									</SelectContent>
+								</Select>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={databricksAuthType}
+							onValueChange={(v) => {
+								setDatabricksAuthType(v as "pat" | "oauth_m2m");
+								form.setValue("key.databricks_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
+								if (v === "oauth_m2m") {
+									// The token and the service principal are alternatives, never both.
+									form.setValue("key.value", undefined, { shouldDirty: true });
+								} else {
+									form.setValue("key.databricks_key_config.client_id", undefined, { shouldDirty: true });
+									form.setValue("key.databricks_key_config.client_secret", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger data-testid="apikey-databricks-pat-tab" value="pat">
+									Personal Access Token
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-databricks-oauth-tab" value="oauth_m2m">
+									OAuth M2M (Service Principal)
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+					{databricksAuthType === "pat" && (
+						<FormField
+							control={control}
+							name="key.value"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Personal Access Token</FormLabel>
+									<FormDescription>Generate one from Settings &gt; Developer &gt; Access tokens in your workspace.</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid="key-input-databricks-pat"
+											placeholder="dapi... or env.DATABRICKS_TOKEN"
+											type="text"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+					{databricksAuthType === "oauth_m2m" && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								Databricks recommends OAuth machine-to-machine for production. Tokens are minted from the workspace OIDC endpoint and
+								refreshed automatically.
+							</p>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-id"
+												placeholder="Service principal client ID or env.DATABRICKS_CLIENT_ID"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_secret"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client Secret</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-secret"
+												placeholder="Service principal secret or env.DATABRICKS_CLIENT_SECRET"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+					<FormField
+						control={control}
+						name="key.databricks_key_config.forward_gateway_tags"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="databricks-forward-gateway-tags-switch">Forward Governance Tags</FormLabel>
+									<FormDescription>
+										Sends the virtual key, team and customer names as Databricks-Ai-Gateway-Request-Tags, so Databricks usage tracking
+										attributes spend the same way Bifrost does. Names only, never user identifiers.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch id="databricks-forward-gateway-tags-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isKeylessProvider && (
 				<div className="space-y-4">
 					<FormField
@@ -841,6 +1039,161 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
 										{...field}
 									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isGithubCopilot && (
+				<div className="space-y-4">
+					<Separator />
+					<div className="bg-muted/50 flex items-start gap-2 rounded-md border p-3">
+						<Info className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
+						<p className="text-muted-foreground text-sm">
+							Copilot accepts either credential. Fill in <strong>one</strong> of the two. <strong>GitHub App</strong> is the option for a
+							shared gateway: usage bills to the organization that owns the installation and no individual Copilot seat is used. A{" "}
+							<strong>Copilot API token</strong> in the field above is simpler but expires after about 30 minutes, so it suits testing
+							rather than a running gateway.{" "}
+							<a
+								href="https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary hover:underline"
+								data-testid="copilot-docs-link-server-to-server"
+							>
+								Set up a GitHub App for Copilot
+							</a>
+							{" or "}
+							<a
+								href="https://docs.github.com/en/copilot/how-tos/copilot-sdk/authenticate-copilot-sdk/authenticate-copilot-sdk"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary hover:underline"
+								data-testid="copilot-docs-link-api-token"
+							>
+								get a Copilot API token
+							</a>
+							.
+						</p>
+					</div>
+					<div className="space-y-1.5">
+						{/* Label, not FormLabel: this heads a section rather than labelling one
+						    control, so there is no FormItem id for htmlFor to point at. */}
+						<Label>GitHub App Credentials</Label>
+						<p className="text-muted-foreground text-sm">
+							Leave these blank if you supplied a Copilot API token above. Otherwise all four are needed together. The App needs the Copilot
+							Requests permission at Read &amp; write, installed on the organization that should be billed with All repositories access, and
+							that organization must allow Copilot requests from GitHub App installations.
+						</p>
+					</div>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.app_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>App ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The GitHub App&apos;s App ID or Client ID, from its settings page.{" "}
+									<a
+										href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app"
+										target="_blank"
+										rel="noopener noreferrer"
+										className="text-primary hover:underline"
+										data-testid="copilot-docs-link-create-app"
+									>
+										Create a GitHub App
+									</a>
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-copilot-app-id" placeholder="123456 or env.COPILOT_APP_ID" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.installation_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Installation ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The installation on the organization that should be billed.{" "}
+									<a
+										href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app"
+										target="_blank"
+										rel="noopener noreferrer"
+										className="text-primary hover:underline"
+										data-testid="copilot-docs-link-installation-id"
+									>
+										Find your installation ID
+									</a>
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-installation-id"
+										placeholder="87654321 or env.COPILOT_INSTALLATION_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.repository_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Repository ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									Any repository the installation can access. Copilot&apos;s permission check requires one in the token request even though
+									the installation itself needs All repositories access, so this is not really a scoping choice.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-repository-id"
+										placeholder="999000111 or env.COPILOT_REPOSITORY_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.private_key"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Private Key {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The App&apos;s private key in PEM form, as downloaded from GitHub. PKCS#1 and PKCS#8 both work.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-private-key"
+										variant="textarea"
+										rows={4}
+										placeholder="-----BEGIN RSA PRIVATE KEY----- or env.COPILOT_PRIVATE_KEY"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.github_domain"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>GitHub Enterprise Domain (Optional)</FormLabel>
+								<FormDescription>Leave blank for github.com</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-copilot-github-domain" placeholder="acme.ghe.com" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

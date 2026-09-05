@@ -177,6 +177,56 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 	return m.store.GetVirtualKey(ctx, id)
 }
 
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
 // TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
 func TestVirtualKeyBudgetOverrideLifecycle(t *testing.T) {
 	SetLogger(&mockLogger{})

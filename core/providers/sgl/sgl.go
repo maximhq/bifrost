@@ -410,6 +410,7 @@ func (provider *SGLProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }

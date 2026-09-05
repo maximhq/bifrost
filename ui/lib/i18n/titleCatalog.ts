@@ -83,6 +83,7 @@ const PAGE_TITLE_KEYS: Record<string, MessageKey> = {
 	"Skills Repository": "nav.skillsRepository",
 	Teams: "nav.teams",
 	"Tool Groups": "nav.toolGroups",
+	"Virtual MCPs": "nav.virtualMcps",
 	"User Provisioning": "nav.userProvisioning",
 	Users: "nav.users",
 	"Virtual Keys": "nav.virtualKeys",

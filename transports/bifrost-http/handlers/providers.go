@@ -46,6 +46,9 @@ type ModelsManager interface {
 	// than waiting for a hook to. Nil means nothing was resolved: no key was presented, or the
 	// deployment has no governance at all. An error is a request nothing settled who it is.
 	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
+	// The models listing narrows its provider fan-out to what the request may reach, by the same
+	// rule the integration routes use.
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
 }
 
 // ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
@@ -581,6 +584,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Model discovery failed for provider %s: %v", provider, err)
 		}
 	}
+	// A base URL, proxy, or credential fixed here is just as likely to be what
+	// broke the complexity classifier's warmup as a disabled key was.
+	h.rearmComplexitySemanticClassifier(provider)
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)

@@ -852,28 +852,14 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 }
 
 // applyListModelsProviderFilter narrows the provider fan-out of a models listing to what the
-// request may reach: a provider reachable only through a grant composed onto the request is
-// asked, one the composition removed is not. Without it, every configured provider is asked and
-// governance rejects the ones the request may not use, filling request logs with expected errors.
-//
-// Narrowing is the whole job, so a request with nothing resolved (no key presented, or no
-// governance wired) keeps the fan-out it already had rather than being narrowed to nothing, and
-// so does a request nothing settled who it is: it is refused where that matters, and a listing
-// is not that.
+// request may reach. The rule belongs to whoever can answer what that is, shared with the
+// integration routes that list models; a handler wired without one leaves the fan-out alone,
+// because narrowing is an optimization over the answer and not the check that produces it.
 func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.BifrostContext) {
 	if h.modelsManager == nil {
 		return
 	}
-	access, err := h.modelsManager.ResolveAccess(bifrostCtx)
-	if err != nil || access == nil {
-		return
-	}
-	granted := access.GrantedProvidersForModel("")
-	providers := make([]schemas.ModelProvider, 0, len(granted))
-	for _, provider := range granted {
-		providers = append(providers, schemas.ModelProvider(provider))
-	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
+	h.modelsManager.NarrowListModelsProviders(bifrostCtx)
 }
 
 // listModels handles GET /v1/models - Process list models requests

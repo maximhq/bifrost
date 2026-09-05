@@ -182,7 +182,7 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg)
+			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg, schemas.BedrockReasoningShapeText)
 
 			require.Len(t, blocks, tc.wantBlocks)
 			reasoningTextInvariant(t, blocks)
@@ -222,7 +222,7 @@ func TestConvertBifrostReasoningToBedrockReasoningEncryptedContent(t *testing.T)
 		},
 	}
 
-	blocks := convertBifrostReasoningToBedrockReasoning(message)
+	blocks := convertBifrostReasoningToBedrockReasoning(message, schemas.BedrockReasoningShapeText)
 	require.Len(t, blocks, 1)
 	require.NotNil(t, blocks[0].ReasoningContent)
 	require.NotNil(t, blocks[0].ReasoningContent.ReasoningText)
@@ -244,7 +244,7 @@ func TestConvertBifrostReasoningToBedrockReasoningTextAlwaysSerialized(t *testin
 			Summary:          []schemas.ResponsesReasoningSummary{},
 			EncryptedContent: &signature,
 		},
-	})
+	}, schemas.BedrockReasoningShapeText)
 	require.Len(t, blocks, 1)
 
 	raw, err := sonic.Marshal(blocks[0])
@@ -321,4 +321,162 @@ func TestStreamingReasoningReplaySerialisesForBedrock(t *testing.T) {
 		return true
 	})
 	require.Equal(t, 3, seen, "expected one reasoning block per replayed assistant turn, got %d: %s", seen, raw)
+}
+
+// ---- redactedContent: the OpenAI/xAI reasoning shape on Converse ----
+//
+// Verified against bedrock-runtime us-east-1. gpt-5.6-* and grok-4.6 return
+// reasoningContent.redactedContent, one opaque blob delivered whole in a single
+// contentBlockDelta. They reject reasoningContent.reasoningText in EVERY form --
+// empty text, prose text, with or without a signature -- with an opaque
+// "The system encountered an unexpected error during processing." 500. Anthropic
+// (through 4.8 adaptive thinking) and DeepSeek R1 are the other way round, and
+// answer a redactedContent replay with a 400. Replaying the matching shape
+// verbatim is the only thing either family accepts.
+
+func TestConverseReasoningShapeFamilyFallback(t *testing.T) {
+	tests := []struct {
+		model string
+		want  schemas.BedrockReasoningShape
+	}{
+		{"openai.gpt-5.6-luna", schemas.BedrockReasoningShapeRedacted},
+		{"us.openai.gpt-5.6-sol", schemas.BedrockReasoningShapeRedacted},
+		{"xai.grok-4.6", schemas.BedrockReasoningShapeRedacted},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", schemas.BedrockReasoningShapeText},
+		{"us.anthropic.claude-opus-4-8", schemas.BedrockReasoningShapeText},
+		{"us.deepseek.r1-v1:0", schemas.BedrockReasoningShapeText},
+		{"us.amazon.nova-premier-v1:0", schemas.BedrockReasoningShapeText},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			require.Equal(t, tc.want, converseReasoningShape(tc.model))
+		})
+	}
+}
+
+func TestConverseReasoningShapeDatasheetWinsOverFamily(t *testing.T) {
+	const model = "openai.gpt-5.6-luna"
+
+	t.Run("row overrides the family fallback", func(t *testing.T) {
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			BedrockReasoningShape: schemas.BedrockReasoningShapeText,
+		})
+		require.Equal(t, schemas.BedrockReasoningShapeText, converseReasoningShape(model))
+	})
+
+	t.Run("unrecognised value falls back to the family", func(t *testing.T) {
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			BedrockReasoningShape: schemas.BedrockReasoningShape("something_new"),
+		})
+		require.Equal(t, schemas.BedrockReasoningShapeRedacted, converseReasoningShape(model))
+	})
+
+	t.Run("empty row falls back to the family", func(t *testing.T) {
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{})
+		require.Equal(t, schemas.BedrockReasoningShapeRedacted, converseReasoningShape(model))
+	})
+}
+
+// A Grok alias resolves through capModel before reaching the converters, so the
+// shape must follow the canonical name and not the opaque id the client sent.
+func TestConverseReasoningShapeFollowsCanonicalModel(t *testing.T) {
+	require.Equal(t, schemas.BedrockReasoningShapeRedacted, converseReasoningShape("grok-4.6"),
+		"canonical Grok must pick the redacted shape")
+	require.Equal(t, schemas.BedrockReasoningShapeText, converseReasoningShape("3dnkdwuaalc7"),
+		"an unresolved opaque id carries no family and must not be guessed as redacted")
+}
+
+func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
+	blob := "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVGZWdz"
+
+	t.Run("blob round-trips as redactedContent", func(t *testing.T) {
+		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: &blob,
+			},
+		}, schemas.BedrockReasoningShapeRedacted)
+
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].ReasoningContent)
+		require.NotNil(t, blocks[0].ReasoningContent.RedactedContent)
+		require.Equal(t, blob, *blocks[0].ReasoningContent.RedactedContent)
+		require.Nil(t, blocks[0].ReasoningContent.ReasoningText)
+
+		// Wire level: the struct check above passes even if reasoningText leaks
+		// back in as an empty object, and that is what earns the 500.
+		raw, err := sonic.Marshal(blocks[0])
+		require.NoError(t, err)
+		require.Equal(t, blob, gjson.GetBytes(raw, "reasoningContent.redactedContent").String())
+		require.False(t, gjson.GetBytes(raw, "reasoningContent.reasoningText").Exists(),
+			"reasoningText must never accompany a redacted-shape block")
+	})
+
+	t.Run("reasoning text is dropped rather than sent as reasoningText", func(t *testing.T) {
+		// Exactly the payload that reproduced the 500: an empty, unsigned thinking
+		// block replayed by a client that received a dropped redacted blob.
+		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("", nil)},
+			},
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
+		}, schemas.BedrockReasoningShapeRedacted)
+
+		require.Empty(t, blocks, "an unreplayable block must be dropped, not reshaped")
+	})
+
+	t.Run("summary text is dropped too", func(t *testing.T) {
+		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{{Text: "step by step"}},
+			},
+		}, schemas.BedrockReasoningShapeRedacted)
+
+		require.Empty(t, blocks)
+	})
+}
+
+// The full loop that produced the bug: Bedrock returns a redacted blob, Bifrost
+// converts it to canonical form, and a client replays that turn.
+func TestRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
+	blob := "cnNuX2pRenlYWklGSkxscEt5ZmxZa0NmdndJRmVMK2Jp"
+	const model = "openai.gpt-5.6-luna"
+
+	resp := &BedrockConverseResponse{
+		Output: &BedrockConverseOutput{
+			Message: &BedrockMessage{
+				Role: BedrockMessageRoleAssistant,
+				Content: []BedrockContentBlock{
+					{ReasoningContent: &BedrockReasoningContent{RedactedContent: &blob}},
+					{Text: schemas.Ptr("Hello!")},
+				},
+			},
+		},
+	}
+
+	bifrostResp, err := resp.ToBifrostChatResponse(context.Background(), model)
+	require.NoError(t, err)
+	require.NotEmpty(t, bifrostResp.Choices)
+
+	assistant := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+	require.NotNil(t, assistant, "the blob must reach the client, not be dropped")
+	require.Len(t, assistant.ReasoningDetails, 1)
+	require.Equal(t, schemas.BifrostReasoningDetailsTypeEncrypted, assistant.ReasoningDetails[0].Type)
+	require.NotNil(t, assistant.ReasoningDetails[0].Data)
+	require.Equal(t, blob, *assistant.ReasoningDetails[0].Data)
+
+	// Replay that assistant turn back to Bedrock.
+	replayed, err := convertMessage(context.Background(), model,
+		*bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message)
+	require.NoError(t, err)
+
+	raw, err := sonic.Marshal(replayed)
+	require.NoError(t, err)
+	require.Equal(t, blob, gjson.GetBytes(raw, "content.0.reasoningContent.redactedContent").String())
+	require.False(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText").Exists())
 }

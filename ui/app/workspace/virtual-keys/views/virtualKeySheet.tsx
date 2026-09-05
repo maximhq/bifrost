@@ -1,5 +1,6 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -28,7 +29,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,17 +38,21 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
+	useAttachVirtualMCPVirtualKeyMutation,
 	useCreateVirtualKeyMutation,
+	useDetachVirtualMCPVirtualKeyMutation,
 	useGetAllKeysQuery,
-	useGetMCPClientsQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
+	useGetVirtualKeyQuery,
 	useRemoveVirtualKeyBudgetOverrideMutation,
 	useRotateVirtualKeyMutation,
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { useT, type TranslateFn } from "@/lib/i18n";
+import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { KnownProvider } from "@/lib/types/config";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
@@ -67,7 +71,7 @@ import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } fro
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { Info, Lock, RotateCcw, Trash2, Users } from "lucide-react";
+import { Info, Lock, RotateCcw, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user picker so "Assign to User"
 // becomes available. Resolves to an empty module on OSS builds.
@@ -158,6 +162,8 @@ const createFormSchema = (t: TranslateFn) =>
 			name: z.string().min(1, t("virtualKeys.validation.nameRequired")),
 			description: z.string().optional(),
 			providerConfigs: z.array(createProviderConfigSchema(t)).optional(),
+			// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
+			allowAllProviders: z.boolean(),
 			mcpConfigs: z.array(createMcpConfigSchema(t)).optional(),
 			entityType: z.enum(["team", "customer", "user", "none"]),
 			teamId: z.string().optional(),
@@ -359,9 +365,60 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [detachVirtualKeyUser, { isLoading: isDetachingUser }] = useDetachVirtualKeyUserMutation();
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
-	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
-	const mcpClientsData = mcpClientsResponse?.clients || [];
-	const isLoading = isCreating || isUpdating || isRotating || isAttachingUser || isDetachingUser;
+	const [attachVirtualMCPVirtualKey] = useAttachVirtualMCPVirtualKeyMutation();
+	const [detachVirtualMCPVirtualKey] = useDetachVirtualMCPVirtualKeyMutation();
+	// Tracks the whole attach/detach reconciliation, which spans several sequential requests whose
+	// own loading states go idle between them; without it Save could re-enable mid-reconcile.
+	const [isReconcilingVmcps, setIsReconcilingVmcps] = useState(false);
+	const isLoading = isCreating || isUpdating || isRotating || isAttachingUser || isDetachingUser || isReconcilingVmcps;
+
+	// Virtual MCPs this key is assigned to. The list VK carries none, so fetch the single VK (which
+	// includes virtual_mcp_ids); stage edits locally and reconcile attach/detach on Save.
+	const {
+		data: vkDetail,
+		isLoading: isVkDetailLoading,
+		isError: isVkDetailError,
+		refetch: refetchVkDetail,
+	} = useGetVirtualKeyQuery(virtualKey?.id ?? "", { skip: !isEditing || !virtualKey?.id });
+	const originalVmcpIds = vkDetail?.virtual_mcp_ids ?? [];
+	const [assignedVmcpIds, setAssignedVmcpIds] = useState<number[]>([]);
+	const vmcpsInitialized = useRef(false);
+	useEffect(() => {
+		if (isEditing && vkDetail && !vmcpsInitialized.current) {
+			setAssignedVmcpIds(vkDetail.virtual_mcp_ids ?? []);
+			vmcpsInitialized.current = true;
+		}
+	}, [isEditing, vkDetail]);
+	// For an existing key the baseline isn't trustworthy until the detail query lands, so the editor
+	// stays disabled and dirty stays false while it loads or errors (see gating on the editor below).
+	const vmcpDetailReady = !isEditing || (!!vkDetail && !isVkDetailLoading && !isVkDetailError);
+	const vmcpDirty = vmcpDetailReady && vmcpAssignmentsDirty(originalVmcpIds, assignedVmcpIds);
+
+	// Attach the newly-assigned Virtual MCPs and detach the removed ones for this key. On any failure,
+	// resync local state from the server so a later Save reconciles against what actually persisted.
+	const reconcileVmcpAssignments = async (vkId: string) => {
+		const { toAttach, toDetach } = diffVmcpAssignments(originalVmcpIds, assignedVmcpIds);
+		if (toAttach.length === 0 && toDetach.length === 0) return;
+		setIsReconcilingVmcps(true);
+		try {
+			for (const id of toAttach) {
+				await attachVirtualMCPVirtualKey({ id, vkId }).unwrap();
+			}
+			for (const id of toDetach) {
+				await detachVirtualMCPVirtualKey({ id, vkId }).unwrap();
+			}
+		} catch (error) {
+			try {
+				const refreshed = await refetchVkDetail().unwrap();
+				setAssignedVmcpIds(refreshed.virtual_mcp_ids ?? []);
+			} catch {
+				// Leave staged state as-is if the resync itself fails; the outer handler surfaces the error.
+			}
+			throw error;
+		} finally {
+			setIsReconcilingVmcps(false);
+		}
+	};
 	const persistedOverrideBudgets = [
 		...(virtualKey?.budgets ?? []).map((budget) => ({
 			budget,
@@ -432,6 +489,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							: undefined,
 					})),
 				})) || [],
+			allowAllProviders: virtualKey?.allow_all_providers ?? false,
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -481,13 +539,6 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		}
 	}, [providersError, t]);
 
-	// Handle mcp clients loading error
-	useEffect(() => {
-		if (mcpClientsError) {
-			toast.error(t("virtualKeys.loadMcpFailed", { error: getErrorMessage(mcpClientsError) }));
-		}
-	}, [mcpClientsError, t]);
-
 	// Clear the ids that don't belong to the selected entity type
 	useEffect(() => {
 		const entityType = form.watch("entityType");
@@ -522,11 +573,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Provider configuration state
 	const [selectedProvider, setSelectedProvider] = useState<string>("");
 
-	// MCP client configuration state
-	const [selectedMCPClient, setSelectedMCPClient] = useState<string>("");
-
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
+
+	// Whether "Allow all providers" is on
+	const allowAllProviders = form.watch("allowAllProviders");
 
 	// Get current MCP configs from form
 	const mcpConfigs = form.watch("mcpConfigs") || [];
@@ -552,6 +603,28 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
 	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
 
+	// Build a default provider config row (all models, all keys, no limits)
+	const makeDefaultProviderConfig = (provider: string) => ({
+		provider: provider,
+		weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
+		allowed_models: ["*"],
+		blacklisted_models: [] as string[],
+		key_ids: ["*"],
+	});
+
+	// A row is "untouched" if it still carries only the auto-added defaults (no budget/limit/restriction).
+	// Turning "Allow all providers" off keeps customized rows and drops these.
+	const isDefaultProviderConfig = (config: (typeof providerConfigs)[number]) =>
+		(config.allowed_models || []).length === 1 &&
+		config.allowed_models?.[0] === "*" &&
+		(config.blacklisted_models || []).length === 0 &&
+		(config.key_ids || []).length === 1 &&
+		config.key_ids?.[0] === "*" &&
+		(config.budgets || []).length === 0 &&
+		!config.rate_limit &&
+		(config.model_budgets || []).length === 0 &&
+		config.weight === undefined;
+
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
 		const existingConfig = providerConfigs.find((config) => config.provider === provider);
@@ -560,24 +633,45 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return;
 		}
 
-		const newConfig = {
-			provider: provider,
-			weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
-			allowed_models: ["*"],
-			blacklisted_models: [],
-			key_ids: ["*"],
-		};
-
-		form.setValue("providerConfigs", [...providerConfigs, newConfig], {
+		form.setValue("providerConfigs", [...providerConfigs, makeDefaultProviderConfig(provider)], {
 			shouldDirty: true,
 		});
 	};
 
 	// Handle removing a provider configuration
 	const handleRemoveProvider = (index: number) => {
-		const updatedConfigs = providerConfigs.filter((_, i) => i !== index);
+		// Removing a provider while "Allow all providers" is on means "all except this one":
+		// turn the flag off so the remaining rows become the explicit allowlist.
+		if (form.getValues("allowAllProviders")) {
+			form.setValue("allowAllProviders", false, { shouldDirty: true });
+		}
+		const updatedConfigs = (form.getValues("providerConfigs") || []).filter((_, i) => i !== index);
 		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
 	};
+
+	// Handle the "Allow all providers" toggle. When turned on, every configured provider is
+	// materialized as a row (via the effect below) so budgets/limits can be set or a provider
+	// excluded. When turned off, untouched default rows are dropped and customized ones kept.
+	const handleAllowAllProvidersChange = (checked: boolean) => {
+		form.setValue("allowAllProviders", checked, { shouldDirty: true });
+		if (!checked) {
+			const kept = (form.getValues("providerConfigs") || []).filter((config) => !isDefaultProviderConfig(config));
+			form.setValue("providerConfigs", kept, { shouldDirty: true });
+		}
+	};
+
+	// While "Allow all providers" is on, keep a row for every configured provider so they are
+	// visible and can be given budgets or excluded. Providers added later show up here too.
+	// Reads current configs via getValues (not a dep) so this converges in one pass without looping.
+	useEffect(() => {
+		if (!allowAllProviders || availableProviders.length === 0) return;
+		const current = form.getValues("providerConfigs") || [];
+		const missing = availableProviders.filter((p) => p.name && !current.some((c) => c.provider === p.name));
+		if (missing.length === 0) return;
+		const additions = missing.map((p) => makeDefaultProviderConfig(p.name));
+		form.setValue("providerConfigs", [...current, ...additions], { shouldDirty: false });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [allowAllProviders, availableProviders]);
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -953,6 +1047,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								: undefined,
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
+					allow_all_providers: data.allowAllProviders,
 					reset_budget_usage: resetBudgetUsage,
 					...expiryPayload,
 				};
@@ -1003,6 +1098,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						}).unwrap();
 					}
 				}
+				await reconcileVmcpAssignments(virtualKey.id);
 				toast.success(t("virtualKeys.updated"));
 			} else {
 				// Create new virtual key
@@ -1016,6 +1112,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
+					allow_all_providers: data.allowAllProviders,
 					// Optional expiry: send as UTC ISO string, or omit for no expiry
 					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
 				};
@@ -1057,6 +1154,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						onSave();
 						return;
 					}
+				}
+				try {
+					await reconcileVmcpAssignments(created.virtual_key.id);
+				} catch (error) {
+					toast.error(t("virtualKeys.createdVmcpAssignFailed"), { description: getErrorMessage(error) });
+					onSave();
+					return;
 				}
 				toast.success(t("virtualKeys.created"));
 			}
@@ -1200,12 +1304,47 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															<Info className="text-muted-foreground h-3 w-3" />
 														</span>
 													</TooltipTrigger>
-													<TooltipContent>
+													<TooltipContent className="max-w-sm">
 														<p>{t("virtualKeys.providerConfigsTooltip")}</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
+
+										{/* Allow all providers */}
+										<FormField
+											control={form.control}
+											name="allowAllProviders"
+											render={({ field }) => (
+												<FormItem>
+													<div className="flex w-full items-center justify-between gap-2 py-2 text-sm">
+														<div className="flex items-center gap-1.5">
+															<span>Allow all providers</span>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<span>
+																			<Info className="text-muted-foreground h-3 w-3" />
+																		</span>
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-sm">
+																		<p>
+																			Grant access to every provider, including ones added later. Set budgets or limits on specific
+																			providers below, or remove a provider to allow all except that one.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<Switch
+															checked={field.value}
+															onCheckedChange={handleAllowAllProvidersChange}
+															data-testid="vk-allow-all-providers-toggle"
+														/>
+													</div>
+												</FormItem>
+											)}
+										/>
 
 										{/* Add Provider Dropdown */}
 										<div className="flex gap-2">
@@ -1348,199 +1487,17 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											<div className="text-destructive text-sm">{form.formState.errors.providerConfigs.message}</div>
 										)}
 									</div>
-									{/* MCP Client Configurations */}
-									{((mcpClientsData && mcpClientsData.length > 0) || (mcpConfigs && mcpConfigs.length > 0)) && (
-										<div className="mt-6 space-y-2">
-											<div className="flex items-center gap-2">
-												<Label className="text-sm font-medium">{t("virtualKeys.mcpConfigs")}</Label>
-												<TooltipProvider>
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<span>
-																<Info className="text-muted-foreground h-3 w-3" />
-															</span>
-														</TooltipTrigger>
-														<TooltipContent>
-															<p>{t("virtualKeys.mcpConfigsTooltip", { allowAll: t("virtualKeys.allowAllTools") })}</p>
-														</TooltipContent>
-													</Tooltip>
-												</TooltipProvider>
-											</div>
-
-											{/* MCP servers allowed by default, excluding explicitly overridden ones */}
-											{(() => {
-												const defaultMCPClients = mcpClientsData.filter(
-													(client) =>
-														client.config.allow_by_default && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-												);
-												return defaultMCPClients.length > 0 ? (
-													<div className="text-muted-foreground rounded-md border p-3 text-xs">
-														<div className="flex items-start gap-1.5">
-															<Info className="mt-0.5 h-3 w-3 shrink-0" />
-															<span>
-																{t("virtualKeys.mcpDefaultServers", {
-																	names: defaultMCPClients.map((c) => c.config.name).join(", "),
-																})}
-															</span>
-														</div>
-													</div>
-												) : null;
-											})()}
-
-											{/* Add MCP Client Dropdown */}
-											{mcpClientsData && mcpClientsData.length > 0 && (
-												<div className="flex gap-2">
-													<Select
-														value={selectedMCPClient}
-														onValueChange={(mcpClientId) => {
-															handleAddMCPClient(mcpClientId);
-															setSelectedMCPClient(""); // Reset to placeholder state
-														}}
-													>
-														<SelectTrigger className="flex-1">
-															<SelectValue placeholder={t("virtualKeys.selectMcpClient")} />
-														</SelectTrigger>
-														<SelectContent>
-															{mcpClientsData.filter(
-																(client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-															).length > 0 ? (
-																mcpClientsData
-																	.filter(
-																		(client) =>
-																			client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-																	)
-																	.map((client, index) => {
-																		const client_tools = client.tools || [];
-																		const totalTools = client.config.tools_to_execute?.includes("*")
-																			? client_tools.length
-																			: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
-																		return (
-																			<SelectItem key={index} value={client.config.name}>
-																				<div className="flex items-center gap-2">
-																					{client.config.name}
-																					<span className="text-muted-foreground text-xs">
-																						{t(totalTools === 1 ? "virtualKeys.enabledTool_one" : "virtualKeys.enabledTool_other", {
-																							count: totalTools,
-																						})}
-																					</span>
-																				</div>
-																			</SelectItem>
-																		);
-																	})
-															) : (
-																<div className="text-muted-foreground px-2 py-1.5 text-sm">{t("virtualKeys.allMcpClientsConfigured")}</div>
-															)}
-														</SelectContent>
-													</Select>
-												</div>
-											)}
-
-											{/* MCP Configurations Table */}
-											{mcpConfigs.length > 0 && (
-												<div className="rounded-md border">
-													<Table>
-														<TableHeader>
-															<TableRow>
-																<TableHead>{t("virtualKeys.mcpClient")}</TableHead>
-																<TableHead>{t("virtualKeys.allowedTools")}</TableHead>
-																<TableHead className="w-[50px]"></TableHead>
-															</TableRow>
-														</TableHeader>
-														<TableBody>
-															{mcpConfigs.map((config, index) => {
-																const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
-
-																// Handle new wildcard semantics for client-level filtering
-																const clientToolsToExecute = mcpClient?.config?.tools_to_execute;
-																let availableTools: any[] = [];
-
-																if (!clientToolsToExecute || clientToolsToExecute.length === 0) {
-																	// nil/undefined or empty array - no tools available from client config
-																	availableTools = [];
-																} else if (clientToolsToExecute.includes("*")) {
-																	// Wildcard - all tools available
-																	availableTools = mcpClient?.tools || [];
-																} else {
-																	// Specific tools listed
-																	availableTools =
-																		(mcpClient?.tools || []).filter((tool) => clientToolsToExecute.includes(tool.name)) || [];
-																}
-
-																const enabledToolsByConfig =
-																	(mcpClient?.tools || []).filter((tool) => config.tools_to_execute?.includes(tool.name)) || [];
-																const selectedTools = config.tools_to_execute || [];
-
-																return (
-																	<TableRow key={`${config.mcp_client_name}-${index}`}>
-																		<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
-																		<TableCell>
-																			<MultiSelect
-																				options={[
-																					{
-																						label: t("virtualKeys.allowAllTools"),
-																						value: "*",
-																						description: t("virtualKeys.allowAllToolsDescription"),
-																					},
-																					...[...availableTools, ...enabledToolsByConfig]
-																						.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
-																						.map((tool) => ({
-																							label: tool.name,
-																							value: tool.name,
-																							description: tool.description,
-																						})),
-																				]}
-																				defaultValue={selectedTools}
-																				onValueChange={(tools: string[]) => {
-																					const hadStar = selectedTools.includes("*");
-																					const hasStar = tools.includes("*");
-																					if (!hadStar && hasStar) {
-																						// Just selected "Allow All Tools": set to ["*"] only
-																						handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
-																					} else if (hadStar && hasStar && tools.length > 1) {
-																						// Had "*", still has "*", but user also selected a specific tool, drop "*"
-																						handleUpdateMCPConfig(
-																							index,
-																							"tools_to_execute",
-																							tools.filter((t) => t !== "*"),
-																						);
-																					} else {
-																						handleUpdateMCPConfig(index, "tools_to_execute", tools);
-																					}
-																				}}
-																				placeholder={
-																					selectedTools.length === 0
-																						? t("virtualKeys.noToolsSelected")
-																						: selectedTools.includes("*")
-																							? t("virtualKeys.allToolsAllowed")
-																							: t("virtualKeys.selectTools")
-																				}
-																				variant="inverted"
-																				className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
-																				commandClassName="w-full max-w-96"
-																				modalPopover={true}
-																				animation={0}
-																			/>
-																		</TableCell>
-																		<TableCell>
-																			<Button
-																				type="button"
-																				variant="ghost"
-																				size="sm"
-																				onClick={() => handleRemoveMCPClient(index)}
-																				data-testid={`vk-delete-mcp-${index}`}
-																			>
-																				<Trash2 className="h-4 w-4" />
-																			</Button>
-																		</TableCell>
-																	</TableRow>
-																);
-															})}
-														</TableBody>
-													</Table>
-												</div>
-											)}
-										</div>
-									)}
+									{/* MCP Server Configurations */}
+									<MCPClientConfigsEditor
+										value={mcpConfigs}
+										onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
+										showDefaultsNote
+									/>
+									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save). Renders
+									    inline like the MCP server editor above; assignedVmcpIds fills in from the VK detail
+									    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
+									    diff before that baseline is in. */}
+									<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
 									<DottedSeparator className="mt-6 mb-5" />
 									{/* Budget Configuration */}
 									<div className="space-y-4">
@@ -1970,19 +1927,23 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<span className="inline-block">
-													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
+													<Button
+														type="submit"
+														disabled={isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit}
+														data-testid="vk-save-btn"
+													>
 														{isLoading ? t("common.saving") : isEditing ? t("virtualKeys.update") : t("common.create")}
 													</Button>
 												</span>
 											</TooltipTrigger>
-											{(isLoading || !form.formState.isDirty || !canSubmit) && (
+											{(isLoading || !(form.formState.isDirty || vmcpDirty) || !canSubmit) && (
 												<TooltipContent>
 													<p>
 														{!canSubmit
 															? t("virtualKeys.noPermission")
 															: isLoading
 																? t("common.saving")
-																: !form.formState.isDirty
+																: !(form.formState.isDirty || vmcpDirty)
 																	? t("virtualKeys.noChanges")
 																	: ""}
 													</p>

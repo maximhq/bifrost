@@ -1,3 +1,5 @@
+import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
+
 /**
  * Which message the Raw JSON tab shows when a log row carries no raw payload.
  *
@@ -33,4 +35,23 @@ export function resolveRawJsonNoticeState({
 	if (isProvidersLoading || !providers) return "loading";
 	const match = providers.find((p) => p.name === provider);
 	return match && match.store_raw_request_response === false ? "storage-disabled" : "unknown";
+}
+
+export interface RoutingDecisionLine {
+	timestamp: number | null;
+	engine: string | null;
+	level: LogLevel | null;
+	message: string;
+}
+
+// The logging plugin writes each routing entry as `[unix-ms] [engine] [level] - message`.
+// Rows stored before the level was recorded read `[unix-ms] [engine] - message`, so the
+// level group is optional and those lines parse with a null level.
+const ROUTING_LINE_PATTERN = /^\[(\d+)\]\s+\[([^\]]+)\](?:\s+\[([^\]]+)\])?\s+-\s+(.*)$/;
+
+export function parseRoutingDecisionLine(line: string): RoutingDecisionLine {
+	const match = line.match(ROUTING_LINE_PATTERN);
+	if (!match) return { timestamp: null, engine: null, level: null, message: line };
+	const level = match[3]?.toLowerCase();
+	return { timestamp: Number(match[1]), engine: match[2], level: isLogLevel(level) ? level : null, message: match[4] };
 }

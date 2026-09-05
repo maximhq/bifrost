@@ -116,6 +116,12 @@ type Permit interface {
 	ProviderPermits() []ProviderPermit
 	// MCPPermits is every MCP client the permit allows tools of.
 	MCPPermits() []MCPPermit
+
+	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
+	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
+	// that permit's model, key, and weight rules applied; a provider it lists none for is allowed with
+	// all models and all keys. False is the default, deny-by-default behaviour.
+	AllowsAllProviders() bool
 }
 
 // Access is an attempt's resolved access: the permits the caller holds, the permit scoping the

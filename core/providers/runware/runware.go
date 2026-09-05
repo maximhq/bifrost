@@ -309,7 +309,15 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 	}
 
 	// Decode response body
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), body, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
@@ -317,7 +325,7 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 
 	// Parse response envelope
 	var runwareResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &runwareResp, body, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &runwareResp, body, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -396,7 +404,15 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return reqBody, nil, lat, providerUtils.SetErrorLatency(parseRunwareError(resp), lat)
 	}
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return reqBody, nil, lat, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), lat)
 	}
@@ -427,7 +443,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -458,7 +474,16 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	// Time the request marshal as the request-marshal phase.
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 	jsonData, err := providerUtils.MarshalSorted(RunwareGetResponseRequest{TaskType: taskTypeGetResponse, TaskUUID: taskID})
+	if mt != nil {
+		if err != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+		} else {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
@@ -469,7 +494,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -584,7 +609,7 @@ func (provider *RunwareProvider) VideoEdit(ctx *schemas.BifrostContext, key sche
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

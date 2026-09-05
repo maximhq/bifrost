@@ -393,3 +393,45 @@ func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision,
 		"the spent budget covering every provider excludes no candidate; that refusal is the funnel's to state")
 }
+
+// TestProviderScopedModelLimitsInScopeNarrowsANamedScopeToTheProvider: the named-scope lookup is
+// ProviderScopedModelLimits for a scope no permit stands for. It reports the tiers that name the
+// provider, exact pair and all models on it, attributed to the kind it was handed, and leaves the
+// provider-less tiers to the funnel exactly as the permit-keyed lookup does. Naming no scope, or no
+// holder in it, selects nothing rather than falling through to the deployment's rows.
+func TestProviderScopedModelLimitsInScopeNarrowsANamedScopeToTheProvider(t *testing.T) {
+	openai := "openai"
+	const callerScope, callerID = "caller", "u-1"
+	kind := grant.LimitHolderKind("caller_model_config")
+	inCallerScope := func(mc *configstoreTables.TableModelConfig) configstoreTables.TableModelConfig {
+		mc.Scope, mc.ScopeID = callerScope, schemas.Ptr(callerID)
+		return *mc
+	}
+	pairBudget := buildBudgetWithUsage("pair-b", 100.0, 0, "1h")
+	allOnProviderBudget := buildBudgetWithUsage("all-on-openai-b", 100.0, 0, "1h")
+	anyProviderBudget := buildBudgetWithUsage("any-b", 100.0, 0, "1h")
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{
+			inCallerScope(buildModelConfig("pair", "gpt-5", &openai, pairBudget, nil)),
+			inCallerScope(buildModelConfig("all-on-openai", configstoreTables.ModelConfigAllModels, &openai, allOnProviderBudget, nil)),
+			inCallerScope(buildModelConfig("any", "gpt-5", nil, anyProviderBudget, nil)),
+		},
+		Budgets: []configstoreTables.TableBudget{*pairBudget, *allOnProviderBudget, *anyProviderBudget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	budgets, _ := store.ProviderScopedModelLimitsInScope(context.Background(), callerScope, callerID, kind, "openai", "gpt-5")
+	var ids []string
+	for _, limit := range budgets {
+		ids = append(ids, limit.ID)
+		assert.Equal(t, string(kind), limit.HolderKind, "attributed to the kind the caller named")
+	}
+	assert.ElementsMatch(t, []string{"pair-b", "all-on-openai-b"}, ids,
+		"the tiers naming the provider are reported; the one covering every provider is the funnel's")
+
+	budgets, rateLimits := store.ProviderScopedModelLimitsInScope(context.Background(), callerScope, "", kind, "openai", "gpt-5")
+	assert.Empty(t, budgets, "no holder in the scope selects nothing")
+	assert.Empty(t, rateLimits)
+	budgets, _ = store.ProviderScopedModelLimitsInScope(context.Background(), "", callerID, kind, "openai", "gpt-5")
+	assert.Empty(t, budgets, "no scope selects nothing, not the deployment's rows")
+}

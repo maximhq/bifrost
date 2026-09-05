@@ -366,7 +366,15 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 	defer resp.Body.Close()
 
 	// Read response body
+	ft, fh := providerUtils.StartPhaseSpan(req.Context(), "response-finalize")
 	body, err := io.ReadAll(resp.Body)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
@@ -630,11 +638,10 @@ func signAWSRequest(
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
 ) (signErr *schemas.BifrostError) {
-	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work that
-	// otherwise hides in "core". The nested "credentials-fetch" span (below) isolates
-	// the network portion (STS AssumeRole / credential-provider Retrieve) from the CPU
-	// crypto, so a cold credential cache on an idle box reads as its own bucket instead
-	// of inflating core.
+	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
+	// nested "credentials-fetch" span (below) isolates the network portion (STS
+	// AssumeRole / credential-provider Retrieve) from the CPU crypto, so a cold
+	// credential cache on an idle box reads as its own bucket.
 	// Scoped so the nested "credentials-fetch" span below is a true child and its
 	// time is subtracted from request-sign's self-time exactly once (not double-counted
 	// in both buckets). restore() reinstates the prior parent before the span ends.
@@ -1059,17 +1066,43 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	switch {
 	case schemas.IsAnthropicModelFamily(ctx, request.Model):
 		var response BedrockAnthropicTextResponse
-		if err := sonic.Unmarshal(body, &response); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error parsing anthropic response", err)
+		parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(body, &response)
+		if parseTracer != nil {
+			if umErr != nil {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+			}
 		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing anthropic response", umErr), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 		bifrostResponse = response.ToBifrostTextCompletionResponse()
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+		}
 
 	case schemas.IsMistralModelFamily(ctx, request.Model):
 		var response BedrockMistralTextResponse
-		if err := sonic.Unmarshal(body, &response); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error parsing mistral response", err)
+		parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(body, &response)
+		if parseTracer != nil {
+			if umErr != nil {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+			}
 		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing mistral response", umErr), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 		bifrostResponse = response.ToBifrostTextCompletionResponse()
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+		}
 
 	default:
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("unsupported model type for text completion: %s", request.Model))
@@ -1799,9 +1832,16 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Convert using the new response converter
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse(ctx)
 	if err != nil {
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
 
 	bifrostResponse.Model = request.Model
@@ -2171,18 +2211,48 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	switch modelType {
 	case "titan":
 		var titanResp BedrockTitanEmbeddingResponse
-		if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		titanParseTracer, titanParseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(rawResponse, &titanResp)
+		if titanParseTracer != nil {
+			if umErr != nil {
+				titanParseTracer.EndSpan(titanParseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				titanParseTracer.EndSpan(titanParseHandle, schemas.SpanStatusOk, "")
+			}
 		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		titanConvTracer, titanConvHandle := providerUtils.StartResponseConvertorSpan(ctx)
 		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
+		if titanConvTracer != nil {
+			titanConvTracer.EndSpan(titanConvHandle, schemas.SpanStatusOk, "")
+		}
 		bifrostResponse.Model = request.Model
 
 	case "cohere":
 		var cohereResp BedrockCohereEmbeddingResponse
-		if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		cohereParseTracer, cohereParseHandle := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(rawResponse, &cohereResp)
+		if cohereParseTracer != nil {
+			if umErr != nil {
+				cohereParseTracer.EndSpan(cohereParseHandle, schemas.SpanStatusError, umErr.Error())
+			} else {
+				cohereParseTracer.EndSpan(cohereParseHandle, schemas.SpanStatusOk, "")
+			}
 		}
+		if umErr != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		cohereConvTracer, cohereConvHandle := providerUtils.StartResponseConvertorSpan(ctx)
 		converted, convErr := cohereResp.ToBifrostEmbeddingResponse()
+		if cohereConvTracer != nil {
+			if convErr != nil {
+				cohereConvTracer.EndSpan(cohereConvHandle, schemas.SpanStatusError, convErr.Error())
+			} else {
+				cohereConvTracer.EndSpan(cohereConvHandle, schemas.SpanStatusOk, "")
+			}
+		}
 		if convErr != nil {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -2361,15 +2431,28 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostImageGenerationResponse
 	var imageResp BedrockImageGenerationResponse
-	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(rawResponse, &imageResp)
+	if parseTracer != nil {
+		if umErr != nil {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, umErr.Error())
+		} else {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 	bifrostResponse.Model = request.Model
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2435,8 +2518,17 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 
 	// Parse response (reuse BedrockImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
-	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(rawResponse, &imageResp)
+	if parseTracer != nil {
+		if umErr != nil {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, umErr.Error())
+		} else {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
@@ -2444,7 +2536,11 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Convert response and set metadata
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := ToBifrostImageGenerationResponse(&imageResp)
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 	bifrostResponse.Model = request.Model
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2502,8 +2598,17 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 
 	// Parse response (reuse BedrockImageGenerationResponse and ToBifrostImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
-	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(rawResponse, &imageResp)
+	if parseTracer != nil {
+		if umErr != nil {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, umErr.Error())
+		} else {
+			parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", umErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
@@ -2511,7 +2616,11 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	}
 
 	// Convert response and set metadata
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := ToBifrostImageGenerationResponse(&imageResp)
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 	bifrostResponse.Model = request.Model
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders

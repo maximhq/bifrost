@@ -139,8 +139,8 @@ func FinalizeResponseWithLargeDetection(
 	logger schemas.Logger,
 ) (body []byte, isLarge bool, finalizeErr *schemas.BifrostError) {
 	// "response-finalize" overhead phase: reading, decompressing (gzip/br/zstd), and
-	// copying the provider response body is payload-scaled work that otherwise hides in
-	// "core". Nil-safe; folds away when no trace is active.
+	// copying the provider response body is payload-scaled work. Nil-safe; folds away
+	// when no trace is active.
 	if ft, fh := startPhaseSpan(ctx, "response-finalize"); ft != nil {
 		defer func() {
 			if finalizeErr != nil {

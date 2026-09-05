@@ -22,6 +22,8 @@ interface RateLimitDisplayProps {
 	/** When true, alignable durations (day/week/month/year) get a "(calendar)" suffix to
 	 * mirror the budget cell. Sourced from the owning VK's calendar_aligned flag. */
 	calendarAligned?: boolean;
+	/** Names what the limit is on, drawn inline after the cap the way BudgetDisplay draws a line's label. */
+	scopeLabel?: string;
 }
 
 const formatResetDuration = (duration?: string | null, calendarAligned?: boolean) => {
@@ -35,16 +37,19 @@ function LimitText({
 	max,
 	resetDuration,
 	calendarAligned,
+	scopeLabel,
 }: {
 	label: string;
 	max: number;
 	resetDuration?: string | null;
 	calendarAligned?: boolean;
+	scopeLabel?: string;
 }) {
 	return (
 		<div className="flex items-center justify-between gap-4 text-xs">
 			<span className="font-mono">
 				{formatCompactNumber(max)} {label}
+				{scopeLabel ? <span className="text-muted-foreground ml-1 font-sans">{scopeLabel}</span> : null}
 			</span>
 			<span className="text-muted-foreground">{formatResetDuration(resetDuration, calendarAligned)}</span>
 		</div>
@@ -58,6 +63,7 @@ function Bar({
 	resetDuration,
 	compact,
 	calendarAligned,
+	scopeLabel,
 }: {
 	label: string;
 	current: number;
@@ -65,6 +71,7 @@ function Bar({
 	resetDuration?: string | null;
 	compact?: boolean;
 	calendarAligned?: boolean;
+	scopeLabel?: string;
 }) {
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
 	const isExhausted = max > 0 && current >= max;
@@ -77,10 +84,11 @@ function Bar({
 					<div className="flex items-center justify-between gap-4 text-xs">
 						<span className="font-medium">
 							{formatCompactNumber(max)} {label}
+							{scopeLabel ? <span className="text-muted-foreground ml-1 font-normal">{scopeLabel}</span> : null}
 						</span>
 						<span className="text-muted-foreground">{formatResetDuration(resetDuration, calendarAligned)}</span>
 					</div>
-					<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1", barClass)} />
+					<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
 				</div>
 			</TooltipTrigger>
 			<TooltipContent>
@@ -88,14 +96,14 @@ function Bar({
 					{current.toLocaleString()} / {max.toLocaleString()} {label}
 				</p>
 				{resetDuration ? (
-					<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(resetDuration, calendarAligned)}</p>
+					<p className="text-muted-foreground text-xs">Resets {formatResetDuration(resetDuration, calendarAligned)}</p>
 				) : null}
 			</TooltipContent>
 		</Tooltip>
 	);
 }
 
-export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAligned }: RateLimitDisplayProps) {
+export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAligned, scopeLabel }: RateLimitDisplayProps) {
 	if (!rateLimits) {
 		return <span className="text-muted-foreground text-sm">-</span>;
 	}
@@ -116,6 +124,7 @@ export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAlign
 						max={rateLimits.token_max_limit!}
 						resetDuration={rateLimits.token_reset_duration}
 						calendarAligned={calendarAligned}
+						scopeLabel={scopeLabel}
 					/>
 				) : (
 					<Bar
@@ -125,6 +134,7 @@ export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAlign
 						resetDuration={rateLimits.token_reset_duration}
 						compact={compact}
 						calendarAligned={calendarAligned}
+						scopeLabel={scopeLabel}
 					/>
 				)
 			) : null}
@@ -135,6 +145,7 @@ export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAlign
 						max={rateLimits.request_max_limit!}
 						resetDuration={rateLimits.request_reset_duration}
 						calendarAligned={calendarAligned}
+						scopeLabel={scopeLabel}
 					/>
 				) : (
 					<Bar
@@ -144,6 +155,7 @@ export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAlign
 						resetDuration={rateLimits.request_reset_duration}
 						compact={compact}
 						calendarAligned={calendarAligned}
+						scopeLabel={scopeLabel}
 					/>
 				)
 			) : null}

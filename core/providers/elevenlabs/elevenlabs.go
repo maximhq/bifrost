@@ -255,7 +255,15 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Get the response body
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -274,8 +282,17 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 	if withTimestampsRequest {
 		var timestampResponse ElevenlabsSpeechWithTimestampsResponse
-		if err := sonic.Unmarshal(body, &timestampResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to parse with-timestamps response", err)
+		pt, ph := providerUtils.StartResponseParseSpan(ctx)
+		umErr := sonic.Unmarshal(body, &timestampResponse)
+		if pt != nil {
+			if umErr != nil {
+				pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+			} else {
+				pt.EndSpan(ph, schemas.SpanStatusOk, "")
+			}
+		}
+		if umErr != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to parse with-timestamps response", umErr)
 		}
 
 		bifrostResponse.AudioBase64 = &timestampResponse.AudioBase64
@@ -497,7 +514,16 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 
+	// Time the request conversion as the convertor phase.
+	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToElevenlabsTranscriptionRequest(request)
+	if ct != nil {
+		if reqBody == nil {
+			ct.EndSpan(ch, schemas.SpanStatusError, "transcription request is not provided")
+		} else {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
+		}
+	}
 	if reqBody == nil {
 		return nil, providerUtils.NewBifrostOperationError("transcription request is not provided", nil)
 	}
@@ -514,7 +540,17 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	if bifrostErr := writeTranscriptionMultipart(writer, reqBody); bifrostErr != nil {
+	// Time the multipart build as the request-marshal phase.
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
+	bifrostErr := writeTranscriptionMultipart(writer, reqBody)
+	if mt != nil {
+		if bifrostErr != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, bifrostErr.Error.Message)
+		} else {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+	}
+	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -554,7 +590,15 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		return nil, providerUtils.SetErrorLatency(parseElevenlabsError(resp), latency)
 	}
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
@@ -570,7 +614,15 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		}
 	}
 
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
 	chunks, err := parseTranscriptionResponse(responseBody)
+	if pt != nil {
+		if err != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
 	}

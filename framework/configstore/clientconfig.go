@@ -690,6 +690,40 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
+
+		// Redact Databricks key config if present
+		if key.DatabricksKeyConfig != nil {
+			databricksConfig := &schemas.DatabricksKeyConfig{
+				APIFormat:          key.DatabricksKeyConfig.APIFormat,
+				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			}
+			// The workspace URL is a hostname, not a credential — surface it in
+			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+			if key.DatabricksKeyConfig.WorkspaceURL.IsFromSecret() {
+				databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.Redacted()
+			} else {
+				databricksConfig.WorkspaceURL = key.DatabricksKeyConfig.WorkspaceURL
+			}
+			if key.DatabricksKeyConfig.ClientID != nil {
+				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+			}
+			if key.DatabricksKeyConfig.ClientSecret != nil {
+				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+			}
+			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
+		}
+
+		if key.GithubCopilotKeyConfig != nil {
+			// The private key is the whole credential, so it is redacted like any other
+			// secret rather than surfaced in a config read.
+			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
+				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
+				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
+				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
+				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
+				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
+			}
+		}
 	}
 	return &redactedConfig
 }
@@ -880,6 +914,22 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash DatabricksKeyConfig
+	if key.DatabricksKeyConfig != nil {
+		data, err := sonic.Marshal(key.DatabricksKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GithubCopilotKeyConfig
+	if key.GithubCopilotKeyConfig != nil {
+		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
@@ -952,6 +1002,12 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
+	}
+	// Hash AllowAllProviders so a config.json flip triggers re-sync
+	if vk.AllowAllProviders {
+		hash.Write([]byte("allowAllProviders:true"))
+	} else {
+		hash.Write([]byte("allowAllProviders:false"))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -1298,30 +1354,64 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
 	}
-	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
-	}
-	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
-	}
-	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
-	}
 	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
 	}
+	mediumHash, err := hashComplexityValue(normalized.Keywords.MediumKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash medium keywords: %w", err)
+	}
+	complexHash, err := hashComplexityValue(normalized.Keywords.ComplexKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash complex keywords: %w", err)
+	}
 
-	return ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    tierHash,
+	hashes := ComplexityAnalyzerConfigHashes{
+		TierBoundaries:  tierHash,
+		SimpleKeywords:  simpleHash,
+		MediumKeywords:  mediumHash,
+		ComplexKeywords: complexHash,
+	}
+
+	if normalized.Semantic != nil {
+		settingsHash, err := hashComplexityValue(normalized.Semantic)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash semantic settings: %w", err)
+		}
+		hashes.SemanticSettings = settingsHash
+	}
+
+	if normalized.LLM != nil {
+		settingsHash, err := hashComplexityValue(normalized.LLM)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash llm settings: %w", err)
+		}
+		hashes.LLMSettings = settingsHash
+	}
+
+	if normalized.Session != nil {
+		settingsHash, err := hashComplexityValue(normalized.Session)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash session settings: %w", err)
+		}
+		hashes.SessionSettings = settingsHash
+	}
+
+	return hashes, nil
+}
+
+func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
+	if codeHash == "" && technicalHash == "" {
+		return "", nil
+	}
+	return hashComplexityValue(struct {
+		CodeKeywords      string `json:"code_keywords"`
+		TechnicalKeywords string `json:"technical_keywords"`
+	}{
 		CodeKeywords:      codeHash,
-		ReasoningKeywords: reasoningHash,
 		TechnicalKeywords: technicalHash,
-		SimpleKeywords:    simpleHash,
-	}, nil
+	})
 }
 
 func hashComplexityValue(value any) (string, error) {

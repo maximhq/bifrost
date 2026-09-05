@@ -177,6 +177,10 @@ type PrometheusPlugin struct {
 	CacheWriteInputTokens5mTotal   *prometheus.CounterVec
 	CacheWriteInputTokens1hTotal   *prometheus.CounterVec
 	CostTotal                      *prometheus.CounterVec
+	RoutingEmbeddingRequestsTotal  *prometheus.CounterVec
+	RoutingEmbeddingCostTotal      *prometheus.CounterVec
+	RoutingLLMRequestsTotal        *prometheus.CounterVec
+	RoutingLLMCostTotal            *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
 	RequestRetries                 *prometheus.HistogramVec
@@ -271,6 +275,8 @@ var defaultBifrostLabelNames = []string{
 	"routing_engine_used",
 	"routing_rule_id",
 	"routing_rule_name",
+	"complexity_tier",
+	"complexity_mechanism",
 	"selected_key_id",
 	"selected_key_name",
 	"fallback_index",
@@ -307,6 +313,15 @@ var defaultMCPLabelNames = []string{
 // mcpOperationDurationBuckets: the OTel MCP semconv boundaries, matching plugins/otel
 // so both exporters report the same quantiles for the same operation.
 var mcpOperationDurationBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
+
+// Values of the phase label on bifrost_routing_embedding_* counters: "request"
+// is a per-request classification embed (recorded through the routing metadata response
+// stamp), "warmup" is a boot/config-change exemplar embed (recorded via
+// ObserveWarmupRoutingEmbedding — no request or response exists for those).
+const (
+	routingEmbeddingPhaseRequest = "request"
+	routingEmbeddingPhaseWarmup  = "warmup"
+)
 
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -503,6 +518,50 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	// Routing-classification overhead (semantic complexity router embeddings).
+	// Standalone label set on purpose: these count Bifrost's own routing
+	// overhead, keyed by the embedding provider/model — not the request's — so
+	// the canonical defaultBifrostLabelNames (conformance-checked against
+	// schemas.EnrichmentDims) don't apply. phase distinguishes per-request
+	// classification embeds from warmup/boot exemplar embeds; summing over
+	// phase gives total routing overhead.
+	bifrostRoutingEmbeddingRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_embedding_requests_total",
+			Help: "Total number of embedding calls made by semantic routing, labeled by the embedding provider/model and phase (request classification vs warmup).",
+		},
+		[]string{"provider", "model", "phase"},
+	)
+
+	bifrostRoutingEmbeddingCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_embedding_cost_total",
+			Help: "Total cost in USD of semantic routing embeddings, labeled by the embedding provider/model and phase (request classification vs warmup). Recorded regardless of whether the cost counts toward budgets.",
+		},
+		[]string{"provider", "model", "phase"},
+	)
+
+	// The llm classifier's counters are separate rather than a phase or
+	// mechanism label on the embedding pair above: they count chat
+	// completions, not embeddings, and folding them into embedding-named
+	// metrics would silently misdescribe what the provider billed. No phase
+	// label either — the llm classifier has no warmup.
+	bifrostRoutingLLMRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_requests_total",
+			Help: "Total number of chat completions made by llm complexity routing, labeled by the classifier provider/model.",
+		},
+		[]string{"provider", "model"},
+	)
+
+	bifrostRoutingLLMCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_cost_total",
+			Help: "Total cost in USD of llm complexity routing completions, labeled by the classifier provider/model. Recorded regardless of whether the cost counts toward budgets.",
+		},
+		[]string{"provider", "model"},
+	)
+
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "bifrost_stream_inter_token_latency_seconds",
@@ -595,6 +654,10 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CacheWriteInputTokens5mTotal:   bifrostCacheWriteInputTokens5mTotal,
 		CacheWriteInputTokens1hTotal:   bifrostCacheWriteInputTokens1hTotal,
 		CostTotal:                      bifrostCostTotal,
+		RoutingEmbeddingRequestsTotal:  bifrostRoutingEmbeddingRequestsTotal,
+		RoutingEmbeddingCostTotal:      bifrostRoutingEmbeddingCostTotal,
+		RoutingLLMRequestsTotal:        bifrostRoutingLLMRequestsTotal,
+		RoutingLLMCostTotal:            bifrostRoutingLLMCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
 		RequestRetries:                 bifrostRequestRetries,
@@ -743,6 +806,27 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
 func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
+}
+
+// ObserveWarmupRoutingEmbedding records one warmup/boot embedding call made by
+// semantic routing (exemplar warmup has no request or response, so it cannot
+// ride the routing metadata stamp path that request-phase embeds use). The HTTP
+// server wires this into the governance plugin's warmup embed usage observer.
+// This method is telemetry-only; budget attribution for warmup (provider/model-
+// level budgets, gated on count_toward_budgets) happens inside governance.
+func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string, inputTokens int) {
+	p.RoutingEmbeddingRequestsTotal.WithLabelValues(provider, model, routingEmbeddingPhaseWarmup).Inc()
+	if p.pricingManager == nil {
+		return
+	}
+	call := schemas.BifrostRoutingCall{
+		ProviderUsed: &provider,
+		ModelUsed:    &model,
+		InputTokens:  &inputTokens,
+	}
+	if cost := p.pricingManager.CalculateRoutingCallCost(call, nil); cost > 0 {
+		p.RoutingEmbeddingCostTotal.WithLabelValues(provider, model, routingEmbeddingPhaseWarmup).Add(cost)
+	}
 }
 
 // PreLLMHook records the start time of the request in the context.
@@ -949,6 +1033,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
 
 	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -974,24 +1060,26 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
-		"provider":            string(provider),
-		"model":               model,
-		"alias":               alias,
-		"method":              string(requestType),
-		"virtual_key_id":      virtualKeyID,
-		"virtual_key_name":    virtualKeyName,
-		"routing_engine_used": routingEngineUsed,
-		"routing_rule_id":     routingRuleID,
-		"routing_rule_name":   routingRuleName,
-		"selected_key_id":     selectedKeyID,
-		"selected_key_name":   selectedKeyName,
-		"fallback_index":      strconv.Itoa(fallbackIndex),
-		"team_id":             teamIDs,
-		"team_name":           teamNames,
-		"customer_id":         customerID,
-		"customer_name":       customerName,
-		"business_unit_id":    businessUnitID,
-		"business_unit_name":  businessUnitName,
+		"provider":             string(provider),
+		"model":                model,
+		"alias":                alias,
+		"method":               string(requestType),
+		"virtual_key_id":       virtualKeyID,
+		"virtual_key_name":     virtualKeyName,
+		"routing_engine_used":  routingEngineUsed,
+		"routing_rule_id":      routingRuleID,
+		"routing_rule_name":    routingRuleName,
+		"complexity_tier":      complexityTier,
+		"complexity_mechanism": complexityMechanism,
+		"selected_key_id":      selectedKeyID,
+		"selected_key_name":    selectedKeyName,
+		"fallback_index":       strconv.Itoa(fallbackIndex),
+		"team_id":              teamIDs,
+		"team_name":            teamNames,
+		"customer_id":          customerID,
+		"customer_name":        customerName,
+		"business_unit_id":     businessUnitID,
+		"business_unit_name":   businessUnitName,
 		"project_id":          projectID,
 		"project_name":        projectName,
 	}
@@ -1110,6 +1198,39 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		if result != nil {
+			// Record routing-classification overhead (always-on: independent of
+			// each call's count_toward_budgets flag, which only controls whether
+			// that call's cost also folds into bifrost_cost_total via
+			// CalculateCost). A request can carry both a semantic embed and an
+			// llm classification call, so every call is recorded rather than
+			// only the first or last.
+			extraFields := result.GetExtraFields()
+			if rd := extraFields.RoutingMetadata; rd != nil {
+				for _, call := range rd.Calls {
+					if call.ProviderUsed == nil || call.ModelUsed == nil {
+						continue
+					}
+					// A call carrying OutputTokens is an llm classification chat
+					// completion; without it, a semantic classification embed. The
+					// cost calculation branches on the same signal.
+					if call.OutputTokens != nil {
+						p.RoutingLLMRequestsTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed).Inc()
+						if p.pricingManager != nil {
+							if llmCost := p.pricingManager.CalculateRoutingCallCost(call, pricingScopes); llmCost > 0 {
+								p.RoutingLLMCostTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed).Add(llmCost)
+							}
+						}
+					} else {
+						p.RoutingEmbeddingRequestsTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed, routingEmbeddingPhaseRequest).Inc()
+						if p.pricingManager != nil {
+							if embeddingCost := p.pricingManager.CalculateRoutingCallCost(call, pricingScopes); embeddingCost > 0 {
+								p.RoutingEmbeddingCostTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed, routingEmbeddingPhaseRequest).Add(embeddingCost)
+							}
+						}
+					}
+				}
+			}
+
 			// Record input and output tokens
 			var inputTokens, outputTokens int
 
@@ -1180,7 +1301,6 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			}
 
 			// Record cache hits with cache type
-			extraFields := result.GetExtraFields()
 			if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
 				cacheType := "unknown"
 				if extraFields.CacheDebug.HitType != nil {

@@ -647,7 +647,11 @@ err := plugin.ClearCacheForKey("support-session-456")
 - **Namespace isolation** — each `vector_store_namespace` is an independent cache pool. Use distinct namespaces to keep separate caches from colliding.
 
 <Warning>
-**Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only. The namespace is **not** recreated automatically — `CreateNamespace` is a no-op when the class/collection already exists. If the new embedding model produces a different vector size, subsequent writes fail (size mismatch) and reads silently miss. Before saving such a change, either:
+**Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only, and it is **not** recreated automatically when the dimension changes.
+
+On **Redis** and **Qdrant**, a dimension mismatch is caught at startup: namespace creation fails with `namespace ... already exists with dimension N but config requires M`, and Bifrost does not come up until you resolve it. Qdrant skips the check in two cases — the collection uses named vectors (Bifrost only ever creates unnamed ones, so the collection was not created by Bifrost), or the collection-info lookup fails — and logs that it did. On the other backends, namespace creation is a no-op when the class/collection already exists, so a mismatch surfaces later — subsequent writes fail (size mismatch) and reads silently miss.
+
+Either way, before saving such a change:
 
 - point `vector_store_namespace` at a fresh name, **or**
 - drop the existing class/index in your vector store.

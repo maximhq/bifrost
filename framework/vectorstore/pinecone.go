@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/pinecone-io/go-pinecone/v5/pinecone"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -51,6 +54,74 @@ func (s *PineconeStore) CreateNamespace(ctx context.Context, namespace string, d
 		return fmt.Errorf("failed to verify index connection: %w", err)
 	}
 	return nil
+}
+
+// ListNamespaces returns the namespaces in the configured Pinecone index.
+// Pinecone filters by prefix server-side and pages the result, so this follows
+// the pagination token to the end rather than returning a partial view — a
+// caller reconciling what exists against what it expects must see all of it.
+func (s *PineconeStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	params := &pinecone.ListNamespacesParams{}
+	if prefix != "" {
+		params.Prefix = &prefix
+	}
+
+	namespaces := []string{}
+	for {
+		page, err := s.indexConn.ListNamespaces(ctx, params)
+		if err != nil {
+			// Only serverless indexes serve the namespace listing; pod-based
+			// ones, and the local emulator, answer Unimplemented. They still
+			// report their namespaces in the index stats, so fall back to that
+			// rather than leaving enumeration unavailable — a caller
+			// reconciling what exists has no other way to ask.
+			if isPineconeUnimplemented(err) {
+				return s.listNamespacesFromStats(ctx, prefix)
+			}
+			return nil, fmt.Errorf("failed to list namespaces: %w", err)
+		}
+		if page == nil {
+			break
+		}
+		for _, namespace := range page.Namespaces {
+			if namespace != nil && namespace.Name != "" {
+				namespaces = append(namespaces, namespace.Name)
+			}
+		}
+		if page.Pagination == nil || page.Pagination.Next == "" {
+			break
+		}
+		next := page.Pagination.Next
+		params.PaginationToken = &next
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
+// isPineconeUnimplemented reports whether the backend refused an operation it
+// does not implement, as opposed to failing to perform one it does.
+func isPineconeUnimplemented(err error) bool {
+	return status.Code(err) == codes.Unimplemented
+}
+
+// listNamespacesFromStats enumerates namespaces from the index statistics.
+//
+// The stats only mention namespaces holding vectors, which is the right set
+// here: an empty namespace holds nothing to reconcile or reclaim. Prefix
+// filtering is applied locally because the stats call takes no filter.
+func (s *PineconeStore) listNamespacesFromStats(ctx context.Context, prefix string) ([]string, error) {
+	stats, err := s.indexConn.DescribeIndexStats(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces from index stats: %w", err)
+	}
+	namespaces := make([]string, 0, len(stats.Namespaces))
+	for name := range stats.Namespaces {
+		if name != "" && strings.HasPrefix(name, prefix) {
+			namespaces = append(namespaces, name)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 // DeleteNamespace deletes a namespace from the Pinecone vector store.
@@ -144,10 +215,7 @@ func (s *PineconeStore) GetAll(ctx context.Context, namespace string, queries []
 		return nil, nil, err
 	}
 
-	topK := uint32(limit)
-	if limit <= 0 {
-		topK = 100
-	}
+	topK := boundedPageLimit(limit, 100)
 
 	// Create zero vector for query - this allows us to use QueryByVectorValues
 	// which has much better consistency than ListVectors
@@ -209,10 +277,7 @@ func (s *PineconeStore) GetNearest(ctx context.Context, namespace string, vector
 		return nil, err
 	}
 
-	topK := uint32(limit)
-	if limit <= 0 {
-		topK = 10
-	}
+	topK := boundedPageLimit(limit, 10)
 
 	queryReq := &pinecone.QueryByVectorValuesRequest{
 		Vector:          vector,

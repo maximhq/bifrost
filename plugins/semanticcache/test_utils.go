@@ -666,7 +666,7 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 		return
 	}
 
-	// Check the actual CacheHit field instead of just checking if CacheDebug exists
+	// Check the actual CacheHit field instead of just checking whether cache metadata exists.
 	if extraFields.CacheDebug.CacheHit {
 		t.Error("❌ Response was cached when it shouldn't be")
 		return

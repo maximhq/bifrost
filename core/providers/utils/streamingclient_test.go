@@ -14,8 +14,10 @@ import (
 )
 
 // TestBuildStreamingClient_ZerosReadWriteTimeout verifies the streaming client
-// has ReadTimeout=0 / WriteTimeout=0 / MaxConnDuration=0 while preserving other
-// config from the base.
+// has ReadTimeout=0 / WriteTimeout=0 while preserving other config from the
+// base. MaxConnDuration is covered separately by
+// TestBuildStreamingClient_PreservesMaxConnDuration, which explains why it is
+// no longer zeroed.
 func TestBuildStreamingClient_ZerosReadWriteTimeout(t *testing.T) {
 	base := &fasthttp.Client{
 		ReadTimeout:        30 * time.Second,
@@ -33,9 +35,6 @@ func TestBuildStreamingClient_ZerosReadWriteTimeout(t *testing.T) {
 	}
 	if stream.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout: got %v, want 0", stream.WriteTimeout)
-	}
-	if stream.MaxConnDuration != 0 {
-		t.Errorf("MaxConnDuration: got %v, want 0", stream.MaxConnDuration)
 	}
 	if !stream.StreamResponseBody {
 		t.Error("StreamResponseBody: got false, want true")
@@ -214,5 +213,39 @@ func TestBuildStreamingHTTPClient_LongStreamSurvives(t *testing.T) {
 	}
 	if got != 4 {
 		t.Errorf("chunks received: got %d, want 4 (stream was likely killed by Timeout)", got)
+	}
+}
+
+// TestBuildStreamingClient_PreservesMaxConnDuration pins the one property that
+// lets a poisoned streaming pool recover without a process restart.
+//
+// MaxConnDuration is checked once per request, before the request is written
+// (fasthttp client.go:3110): an over-age connection gets Connection: close set
+// on the outgoing request, which makes the streaming close callback take
+// CloseConn instead of ReleaseConn. It therefore cannot cut a live stream, and
+// it is the only age-based eviction the streaming pool has. Zeroing it left a
+// bad connection in HostClient.conns indefinitely, because the idle cleaner only
+// evicts on lastUseTime and a connection that keeps being handed out never goes
+// idle. ReadTimeout and WriteTimeout stay zeroed: those bound the full body
+// read, which is wrong for a long-lived SSE stream.
+func TestBuildStreamingClient_PreservesMaxConnDuration(t *testing.T) {
+	base := &fasthttp.Client{
+		ReadTimeout:     30 * time.Second,
+		WriteTimeout:    30 * time.Second,
+		MaxConnDuration: 5 * time.Minute,
+	}
+	ConfigureDialer(base, false)
+
+	stream := BuildStreamingClient(base)
+
+	if stream.MaxConnDuration != base.MaxConnDuration {
+		t.Errorf("MaxConnDuration: got %v, want %v (streaming connections must still age out)",
+			stream.MaxConnDuration, base.MaxConnDuration)
+	}
+	if stream.ReadTimeout != 0 {
+		t.Errorf("ReadTimeout: got %v, want 0", stream.ReadTimeout)
+	}
+	if stream.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout: got %v, want 0", stream.WriteTimeout)
 	}
 }

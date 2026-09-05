@@ -9,6 +9,10 @@ export const providersEn = {
 	addKey: "Add Key",
 	keyName: "Key Name",
 	apiKey: "API Key",
+	copilotApiToken: "Copilot API Token",
+	copilotApiTokenDescription:
+		"Requires Network Config > Base URL set to the host the token was issued for, because a Copilot token does not carry one. Also expires after about 30 minutes, and Bifrost cannot refresh a token it did not mint, so prefer the GitHub App below for anything long-running.",
+	copilotApiTokenPlaceholder: "Copilot API token, or leave blank to use a GitHub App",
 	weight: "Weight",
 	models: "Models",
 	network: "Network",
@@ -442,6 +446,10 @@ export const providersZh: ProvidersMessages = {
 	addKey: "添加密钥",
 	keyName: "密钥名称",
 	apiKey: "API 密钥",
+	copilotApiToken: "Copilot API 令牌",
+	copilotApiTokenDescription:
+		"需要在 Network Config > Base URL 中填写签发该令牌的主机，因为 Copilot 令牌本身不携带主机信息。令牌大约 30 分钟后过期，且 Bifrost 无法刷新并非由它签发的令牌，因此长时间运行请优先使用下方的 GitHub App。",
+	copilotApiTokenPlaceholder: "Copilot API 令牌，或留空以使用 GitHub App",
 	weight: "权重",
 	models: "模型",
 	network: "网络",

@@ -574,7 +574,7 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
-							{/* MCP Client Configurations */}
+							{/* MCP Server Configurations */}
 							<div className="space-y-4">
 								<h3 className="font-semibold">{t("virtualKeys.mcpConfigs")}</h3>
 

@@ -13,6 +13,16 @@ describe("partitionTabs", () => {
 		});
 	});
 
+	it("keeps every tab inline when an exact split rounds a pixel over", () => {
+		// Two triggers splitting a 401px row measure 201 each: 402 total, one pixel
+		// wider than the row that produced them. Collapsing there would hide half of
+		// a two-tab strip.
+		expect(partitionTabs({ itemWidths: [201, 201], containerWidth: 401, moreButtonWidth: MORE, activeIndex: 0 })).toEqual({
+			visible: [0, 1],
+			overflow: [],
+		});
+	});
+
 	it("keeps every tab inline before the container has been measured", () => {
 		// First paint reports 0; collapsing there would flash a dropdown that
 		// immediately disappears once layout settles.

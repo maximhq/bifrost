@@ -15,7 +15,7 @@ import {
 	DatabaseZap,
 	Flag,
 	FolderGit,
-	FolderKanban,
+	SquareKanban,
 	Gavel,
 	GitCompareArrows,
 	Globe,
@@ -124,6 +124,7 @@ interface SidebarItem {
 	new?: boolean;
 	isExternal?: boolean;
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
+	testId?: string; // Optional: pin the data-testid slug across a rename (else derived from title)
 }
 
 const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
@@ -339,7 +340,7 @@ const SidebarItemView = ({
 							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
 							const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 							const SubItemIcon = subItem.icon;
-							const subSlug = slug(itemId(subItem));
+							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
 								<div className="flex items-center gap-2">
 									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -414,7 +415,7 @@ const SidebarItemView = ({
 								{subItem.hasAccess === false ? (
 									<SidebarMenuSubButton
 										data-nav-url={subItemHref}
-										data-testid={`sidebar-subitem-disabled-${slug(itemId(subItem))}`}
+										data-testid={`sidebar-subitem-disabled-${subItem.testId ?? slug(subItem.title)}`}
 										className={subItemClassName}
 									>
 										{subInner}
@@ -425,7 +426,7 @@ const SidebarItemView = ({
 											to={subItemHref}
 											preload="intent"
 											data-nav-url={subItemHref}
-											data-testid={`sidebar-subitem-link-${slug(itemId(subItem))}`}
+											data-testid={`sidebar-subitem-link-${subItem.testId ?? slug(subItem.title)}`}
 										>
 											{subInner}
 										</Link>
@@ -512,7 +513,7 @@ export default function AppSidebar() {
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
-	const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
+	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
@@ -675,7 +676,7 @@ export default function AppSidebar() {
 			nav("MCP Gateway", "nav.mcpGateway", "nav.mcpGatewayDescription", {
 				icon: MCPIcon,
 				url: "/workspace/mcp-gateway",
-				hasAccess: hasMCPGatewayAccess || hasMCPToolGroupsAccess,
+				hasAccess: hasMCPGatewayAccess || hasVirtualMCPsAccess,
 				subItems: [
 					nav("MCP Catalog", "nav.mcpCatalog", "nav.mcpCatalogDescription", {
 						url: "/workspace/mcp-registry",
@@ -687,10 +688,11 @@ export default function AppSidebar() {
 						icon: Boxes,
 						hasAccess: hasMCPGatewayAccess,
 					}),
-					nav("Tool Groups", "nav.toolGroups", "nav.toolGroupsDescription", {
-						url: "/workspace/mcp-tool-groups",
+					nav("Virtual MCPs", "nav.virtualMcps", "nav.virtualMcpsDescription", {
+						url: "/workspace/virtual-mcps",
 						icon: ToolCase,
-						hasAccess: hasMCPToolGroupsAccess,
+						hasAccess: hasVirtualMCPsAccess,
+						testId: "tool-groups", // keep the pre-rename E2E selector stable
 					}),
 					nav("Auth Sessions", "nav.authSessions", "nav.authSessionsDescription", {
 						url: "/workspace/mcp-sessions",
@@ -783,7 +785,7 @@ export default function AppSidebar() {
 					}),
 					nav("Projects", "nav.projects", "nav.projectsDescription", {
 						url: "/workspace/governance/projects",
-						icon: FolderKanban,
+						icon: SquareKanban,
 						hasAccess: hasProjectsAccess,
 					}),
 					nav("Audit Logs", "nav.auditLogs", "nav.auditLogsDescription", {
@@ -948,7 +950,7 @@ export default function AppSidebar() {
 		hasDashboardAccess,
 		hasModelProvidersAccess,
 		hasMCPGatewayAccess,
-		hasMCPToolGroupsAccess,
+		hasVirtualMCPsAccess,
 		hasMCPLogsAccess,
 		hasPluginsAccess,
 		hasUsersAccess,
