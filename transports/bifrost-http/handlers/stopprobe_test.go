@@ -17,7 +17,7 @@ import (
 // web_search_options (https://developers.openai.com/api/docs/api-reference/chat/create).
 //
 // The duplication is inert on most routes: MergeExtraParamsIntoJSON is gated on
-// BifrostContextKeyPassthroughExtraParams, which only deepseek, sgl, vllm, wafer and zhipu set.
+// BifrostContextKeyPassthroughExtraParams, which only deepseek, sgl, vllm, wafer, zhipu and volcengine set.
 // Where it IS set, a duplicated param normally merges back its own identical value, so the
 // one case that bites is a param compat's dropUnsupportedParams removed from the typed
 // side -- ExtraParams still carries it and the merge re-adds it after the drop.

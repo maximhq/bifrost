@@ -278,7 +278,7 @@ export function LogsHeaderView({
 		// justify-between only once the row can hold everything: while the controls
 		// wrap, spreading them pushes the last row's two icon buttons to opposite
 		// edges of the card and burns a whole row on two buttons.
-		<div className="flex grow flex-wrap lg:flex-nowrap items-center justify-start gap-2 lg:justify-between">
+		<div className="flex grow flex-wrap items-center justify-start gap-2 lg:flex-nowrap lg:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"

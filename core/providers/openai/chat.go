@@ -96,6 +96,13 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// and is stripped so it never reaches Zhipu's OpenAI-compatible endpoint.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
+	case schemas.Volcengine:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Doubao thinking models return reasoning_content and require it to be
+		// replayed on assistant tool_call turns. reasoning_details is OpenAI-specific
+		// inbound and is stripped so it never reaches Ark's OpenAI-compatible endpoint.
+		openaiReq.stripReasoningDetailsExceptToolCalls()
+		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyXAICompatibility(caps)

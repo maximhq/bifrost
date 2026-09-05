@@ -180,6 +180,7 @@ func (provider *ZhipuProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }

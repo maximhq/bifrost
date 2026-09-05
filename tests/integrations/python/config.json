@@ -373,6 +373,20 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
+    },
+    "volcengine": {
+      "keys": [
+        {
+          "name": "Volcengine API Key",
+          "value": "env.VOLCENGINE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     }
   },
   "config_store": {
@@ -514,6 +528,12 @@
           },
           {
             "provider": "zhipu",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "volcengine",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

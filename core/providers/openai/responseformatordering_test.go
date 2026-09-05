@@ -120,7 +120,7 @@ func TestResponseFormatSurvivesDelegatingProviders(t *testing.T) {
 		schemas.Azure, schemas.Cerebras, schemas.DeepSeek, schemas.Groq,
 		schemas.OpenRouter, schemas.SGL, schemas.VLLM, schemas.XAI,
 		schemas.Wafer, schemas.Ollama, schemas.Fireworks, schemas.Parasail,
-		schemas.Zhipu,
+		schemas.Zhipu, schemas.Volcengine,
 	}
 
 	for _, provider := range delegating {

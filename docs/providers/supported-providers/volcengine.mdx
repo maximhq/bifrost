@@ -1,0 +1,274 @@
+---
+title: "Volcengine"
+description: "Volcengine Ark (火山方舟) conversion guide - OpenAI-compatible chat, streaming, tool calling, reasoning, embeddings, and Seedream image generation"
+icon: "v"
+---
+
+## Overview
+
+Volcengine Ark (火山方舟) is an **OpenAI-compatible provider** with a dedicated Bifrost provider implementation. It is the API behind [Volcengine AI Hub](https://ai.volcengine.com/model) — Doubao (豆包) Seed models, plus hosted DeepSeek, GLM, Seedream, and other models on the same key. Bifrost uses the shared OpenAI-compatible request and response converters, while preserving Ark-specific extra parameters such as `thinking`. Key characteristics:
+
+- **OpenAI-compatible chat** - Chat Completions use `/chat/completions`
+- **Streaming support** - Server-Sent Events for chat
+- **Tool calling** - Function tools are passed through using the OpenAI-compatible schema
+- **Reasoning support** - Doubao thinking models return reasoning via `reasoning_content`
+- **Responses API** - Supported by converting Responses requests to Chat Completions internally
+- **Embeddings** - Text embeddings via `/embeddings`
+- **Image generation** - Seedream models via `/images/generations`
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` |
+| List Models | ✅ | - | `/models` |
+| Embeddings | ✅ | ❌ | `/embeddings` |
+| Image Generation | ✅ | ❌ | `/images/generations` |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, Batch, cached content, containers, token counting, compaction, OCR, rerank, video (Seedance), and passthrough are not offered through this provider. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Volcengine as a provider. The default base URL is the China Ark host in Beijing. Override `network_config.base_url` to use BytePlus (international) or the Ark coding-plan host.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Volcengine** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Volcengine**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.VOLCENGINE_API_KEY` or `env.ARK_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "volcengine": {
+      "keys": [
+        {
+          "name": "volcengine-key-1",
+          "value": "env.VOLCENGINE_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+To use BytePlus (international) instead of China Ark:
+
+```json
+{
+  "providers": {
+    "volcengine": {
+      "keys": [
+        {
+          "name": "volcengine-key-1",
+          "value": "env.VOLCENGINE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://ark.ap-southeast.bytepluses.com/api/v3"
+      }
+    }
+  }
+}
+```
+
+For Ark coding-plan models:
+
+```json
+{
+  "providers": {
+    "volcengine": {
+      "keys": [
+        {
+          "name": "volcengine-coding-key",
+          "value": "env.VOLCENGINE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Volcengine:
+    return []schemas.Key{{
+        Name:   "volcengine-key-1",
+        Value:  *schemas.NewSecretVar("env.VOLCENGINE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+Volcengine Ark's chat completions endpoint is OpenAI-compatible, so Bifrost delegates to the shared OpenAI implementation. For full parameter reference, message handling, tool conversion, and streaming behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Available chat models include `doubao-seed-2-1-turbo-260628`, `doubao-seed-2-1-pro-260628`, and other IDs from [AI Hub](https://ai.volcengine.com/model). Some accounts expose models only as inference endpoint IDs (`ep-...`). Call [List Models](#4-list-models) for the current catalog.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "volcengine/doubao-seed-2-1-turbo-260628",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+### Reasoning
+
+Doubao thinking models return reasoning via `reasoning_content`. Enable thinking through extra parameters:
+
+```json
+{
+  "model": "volcengine/doubao-seed-2-1-pro-260628",
+  "messages": [{"role": "user", "content": "17 * 23 是多少？请逐步思考。"}],
+  "thinking": { "type": "enabled" }
+}
+```
+
+Bifrost enables passthrough extra parameters for Volcengine, so `thinking` and other Ark-specific fields are forwarded without being dropped. Assistant-message `reasoning_details` is stripped before replay; `reasoning_content` is kept on tool-call turns so thinking models can continue the conversation.
+
+---
+
+# 2. Responses API
+
+Bifrost converts the Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "volcengine/doubao-seed-2-1-turbo-260628",
+    "input": "Hello"
+  }'
+```
+
+---
+
+# 3. Embeddings
+
+Volcengine embeddings are OpenAI-compatible. Use `doubao-embedding-large` or the embedding model ID from your Ark console.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "volcengine/doubao-embedding-large",
+    "input": "火山方舟"
+  }'
+```
+
+---
+
+# 4. List Models
+
+```bash
+curl http://localhost:8080/v1/models?provider=volcengine
+```
+
+---
+
+# 5. Image Generation
+
+Volcengine Seedream models accept OpenAI-compatible image generation requests. Extra parameters such as `size` (`2K`, `4K`), `watermark`, and `sequential_image_generation` are forwarded as-is.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "volcengine/doubao-seedream-4-5-251128",
+    "prompt": "A red panda sitting on a mossy stone",
+    "size": "2K",
+    "watermark": false
+  }'
+```
+
+---
+
+## Authentication
+
+Volcengine uses `Authorization: Bearer <key>` on every endpoint.
+
+Get an API key from the [Ark console](https://console.volcengine.com/ark) (China) or [BytePlus ModelArk](https://console.byteplus.com/ark) (international). Browse current models on [AI Hub](https://ai.volcengine.com/model).
+
+## Configuration
+
+**HTTP Settings:**
+- **Default base URL**: `https://ark.cn-beijing.volces.com/api/v3`
+- **International base URL**: `https://ark.ap-southeast.bytepluses.com/api/v3`
+- **Coding-plan base URL**: `https://ark.cn-beijing.volces.com/api/coding/v3`
+- **Chat endpoint**: `/chat/completions`
+- **Embeddings endpoint**: `/embeddings`
+- **Image endpoint**: `/images/generations`
+
+## Caveats
+
+<Accordion title="China vs international host">
+**Severity**: Low
+**Behavior**: The default base URL is China Ark (`ark.cn-beijing.volces.com`). Keys issued on BytePlus will not work against that host.
+**Impact**: Set `network_config.base_url` to `https://ark.ap-southeast.bytepluses.com/api/v3` when using an international BytePlus key.
+</Accordion>
+
+<Accordion title="Inference endpoint IDs">
+**Severity**: Low
+**Behavior**: Some Ark accounts expose models only after you create an inference endpoint. Those IDs look like `ep-2025...` rather than `doubao-seed-2-1-turbo-260628`.
+**Impact**: Use the endpoint ID as the model name (`volcengine/ep-...`) when the foundation-model ID is not enabled for your key.
+</Accordion>
+
+<Accordion title="Thinking extra parameter">
+**Severity**: Low
+**Behavior**: Doubao thinking is not mapped from OpenAI `reasoning_effort` on every model. Send `thinking: { "type": "enabled" }` through extra params when you want reasoning.
+**Impact**: Requests without `thinking` use the model's default. Tool-call turns still replay `reasoning_content` when present.
+</Accordion>
+
+<Accordion title="Tool JSON Schema keywords">
+**Severity**: Medium
+**Behavior**: Ark's tool-calling API may reject JSON Schema keywords such as `minLength`, `maxLength`, `minItems`, and `maxItems`.
+**Impact**: Keep tool schemas to `type`, `properties`, `required`, and `description` when calling Volcengine, or the request can return 400.
+</Accordion>

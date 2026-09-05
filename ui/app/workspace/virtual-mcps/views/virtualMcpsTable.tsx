@@ -30,7 +30,20 @@ import {
 } from "@/lib/store";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
+import {
+	AlertTriangle,
+	Check,
+	ChevronLeft,
+	ChevronRight,
+	Copy,
+	Loader2,
+	MoreHorizontal,
+	Pencil,
+	Plus,
+	Search,
+	Server,
+	Trash2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 interface VirtualMCPsTableProps {
@@ -114,9 +127,14 @@ export default function VirtualMCPsTable({
 		}
 		if (unreachable === 0 && unreachableServers === 0 && disabledAtSource === 0) return null;
 		const parts: string[] = [];
-		if (unreachable > 0) parts.push(`${unreachable} ${unreachable === 1 ? "tool comes" : "tools come"} from an unreachable server (shown from the last successful sync)`);
-		if (unreachableServers > 0) parts.push(`${unreachableServers} source ${unreachableServers === 1 ? "server is" : "servers are"} unreachable`);
-		if (disabledAtSource > 0) parts.push(`${disabledAtSource} selected ${disabledAtSource === 1 ? "tool is" : "tools are"} disabled at source`);
+		if (unreachable > 0)
+			parts.push(
+				`${unreachable} ${unreachable === 1 ? "tool comes" : "tools come"} from an unreachable server (shown from the last successful sync)`,
+			);
+		if (unreachableServers > 0)
+			parts.push(`${unreachableServers} source ${unreachableServers === 1 ? "server is" : "servers are"} unreachable`);
+		if (disabledAtSource > 0)
+			parts.push(`${disabledAtSource} selected ${disabledAtSource === 1 ? "tool is" : "tools are"} disabled at source`);
 		return parts.join(" · ");
 	};
 	const [pendingDelete, setPendingDelete] = useState<VirtualMCP | null>(null);
@@ -179,9 +197,7 @@ export default function VirtualMCPsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<PageTitle title="Virtual MCPs">
-				Bundle tools from your MCP servers into a single endpoint, then assign it to virtual keys.
-			</PageTitle>
+			<PageTitle title="Virtual MCPs">Bundle tools from your MCP servers into a single endpoint, then assign it to virtual keys.</PageTitle>
 
 			<div className="mb-4 flex items-center justify-between gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
@@ -242,52 +258,52 @@ export default function VirtualMCPsTable({
 								virtualMcps.map((row) => {
 									const warning = toolWarning(row);
 									return (
-									<TableRow key={row.id} className="group">
-										<TableCell className="font-medium">{row.name}</TableCell>
-										<TableCell>
-											<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
-										</TableCell>
-										<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
-										<TableCell className="text-muted-foreground text-sm">
-											<span className="flex items-center gap-1.5">
-												{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
-												{warning && (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<AlertTriangle className="size-3.5 cursor-help text-amber-500" />
-														</TooltipTrigger>
-														<TooltipContent className="max-w-xs">{warning}</TooltipContent>
-													</Tooltip>
-												)}
-											</span>
-										</TableCell>
-										<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
-										<TableCell>
-											<AssignedToCell vkIds={row.virtual_key_ids ?? []} vkNameById={vkNameById} loading={vksLoading} />
-										</TableCell>
-										<TableCell onClick={(e) => e.stopPropagation()}>
-											<Switch
-												size="md"
-												checked={row.enabled}
-												disabled={!canUpdate || togglingIds.has(row.id)}
-												onAsyncCheckedChange={(checked) => toggleEnabled(row, checked)}
-												aria-label={row.enabled ? "Disable Virtual MCP" : "Enable Virtual MCP"}
-												data-testid={`virtual-mcp-enabled-switch-${row.id}`}
-											/>
-										</TableCell>
-										<TableCell
-											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
-											onClick={(e) => e.stopPropagation()}
-										>
-											<RowActions
-												busy={deleting && pendingId === row.id}
-												canUpdate={canUpdate}
-												canDelete={canDelete}
-												onEdit={() => onEdit(row.id)}
-												onDelete={() => setPendingDelete(row)}
-											/>
-										</TableCell>
-									</TableRow>
+										<TableRow key={row.id} className="group">
+											<TableCell className="font-medium">{row.name}</TableCell>
+											<TableCell>
+												<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
+											</TableCell>
+											<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
+											<TableCell className="text-muted-foreground text-sm">
+												<span className="flex items-center gap-1.5">
+													{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
+													{warning && (
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<AlertTriangle className="size-3.5 cursor-help text-amber-500" />
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs">{warning}</TooltipContent>
+														</Tooltip>
+													)}
+												</span>
+											</TableCell>
+											<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
+											<TableCell>
+												<AssignedToCell vkIds={row.virtual_key_ids ?? []} vkNameById={vkNameById} loading={vksLoading} />
+											</TableCell>
+											<TableCell onClick={(e) => e.stopPropagation()}>
+												<Switch
+													size="md"
+													checked={row.enabled}
+													disabled={!canUpdate || togglingIds.has(row.id)}
+													onAsyncCheckedChange={(checked) => toggleEnabled(row, checked)}
+													aria-label={row.enabled ? "Disable Virtual MCP" : "Enable Virtual MCP"}
+													data-testid={`virtual-mcp-enabled-switch-${row.id}`}
+												/>
+											</TableCell>
+											<TableCell
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												onClick={(e) => e.stopPropagation()}
+											>
+												<RowActions
+													busy={deleting && pendingId === row.id}
+													canUpdate={canUpdate}
+													canDelete={canDelete}
+													onEdit={() => onEdit(row.id)}
+													onDelete={() => setPendingDelete(row)}
+												/>
+											</TableCell>
+										</TableRow>
 									);
 								})
 							)}

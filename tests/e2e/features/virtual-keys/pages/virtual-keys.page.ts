@@ -28,6 +28,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   nebius: "Nebius Token Factory",
   xai: "xAI",
   zhipu: "Zhipu AI",
+  volcengine: "Volcengine",
 };
 
 /**

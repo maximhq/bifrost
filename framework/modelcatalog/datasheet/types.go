@@ -400,6 +400,8 @@ func normalizeProvider(p string) string {
 	case p == string(schemas.Zhipu):
 		// Datasheet rows for GLM models are filed under Z.AI's catalog id.
 		return "zai"
+	case p == "volcano" || p == "volcengine_ark" || p == "byteplus":
+		return string(schemas.Volcengine)
 	default:
 		return p
 	}

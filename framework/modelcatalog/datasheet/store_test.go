@@ -84,6 +84,36 @@ func TestPricingLookupsNormalizeZhipuOntoZai(t *testing.T) {
 	}
 }
 
+func TestPricingLookupsNormalizeVolcanoOntoVolcengine(t *testing.T) {
+	const model = "doubao-seed-2-1-turbo-260628"
+	inputCost := 0.00000042
+	provider := schemas.Volcengine
+	s := NewTestStore(nil)
+	s.pricingData[makeKey(model, "volcengine", "chat")] = configstoreTables.TableModelPricing{
+		Model:             model,
+		Provider:          "volcengine",
+		Mode:              "chat",
+		InputCostPerToken: &inputCost,
+	}
+
+	row := s.Get(model, schemas.ModelProvider("volcano"), schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() did not resolve volcano onto volcengine: %#v", row)
+	}
+
+	pricing := s.GetPricingEntryForModel(model, provider)
+	if pricing == nil || pricing.InputCostPerToken == nil || *pricing.InputCostPerToken != inputCost {
+		t.Fatalf("GetPricingEntryForModel() did not resolve volcengine: %#v", pricing)
+	}
+
+	s.mu.Lock()
+	s.rebuildDatasheetViewUnsafe()
+	s.mu.Unlock()
+	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
+	}
+}
+
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()

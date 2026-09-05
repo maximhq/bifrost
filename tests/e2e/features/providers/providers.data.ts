@@ -43,6 +43,7 @@ export const KNOWN_PROVIDERS = [
   'mistral',
   'deepseek',
   'zhipu',
+  'volcengine',
   'cerebras',
   'nebius',
   'sambanova',

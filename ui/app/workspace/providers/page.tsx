@@ -85,9 +85,9 @@ export default function Providers() {
 	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
-			const key = normalizeProviderName(c.customName);
-			return c.knownProvider !== DATABRICKS_PROVIDER && !dismissedCollisions.has(key) && !handledCollisions.has(key);
-		})
+				const key = normalizeProviderName(c.customName);
+				return c.knownProvider !== DATABRICKS_PROVIDER && !dismissedCollisions.has(key) && !handledCollisions.has(key);
+			})
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
