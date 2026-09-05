@@ -383,6 +383,7 @@ const (
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
+	BifrostContextKeyRawResponsesCacheCountersKnown      BifrostContextKey = "bifrost-raw-responses-cache-counters-known" // bool (set by OpenAI Responses raw decoder; payload-blind field-presence evidence)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
