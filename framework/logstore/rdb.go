@@ -305,6 +305,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if filters.SessionID != "" {
+		baseQuery = baseQuery.Where("session_id = ?", filters.SessionID)
+	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
@@ -1267,7 +1270,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "routing_rule_id", "routing_rule_name",
-		"complexity_tier", "complexity_mechanism",
+		"complexity_tier", "complexity_mechanism", "session_id",
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
@@ -4018,7 +4021,17 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	return &log, nil
+	// The list rolls a row's children up into ChildrenCost, and a request whose cost
+	// was settled onto a child row has none of its own — so without this the detail
+	// view of a video generation or a batch shows no cost at all while the list
+	// beside it shows one. No filters here: a single row is addressed by id, so the
+	// rollup covers every child rather than only those in some window.
+	rows := []Log{log}
+	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
+		return &log, nil
+	}
+	return &rows[0], nil
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.

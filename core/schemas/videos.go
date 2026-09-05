@@ -341,6 +341,11 @@ type BifrostVideoDebug struct {
 	// Accounting is set only on the aggregate cost row, and is what distinguishes
 	// it from the submission row it settles.
 	Accounting *VideoAccountingDebug `json:"accounting,omitempty"`
+	// SettledByRequestID is the request that triggered settlement — a client poll, or
+	// empty when the sweeper got there first. The row's parent points at the request
+	// that CREATED the job so the cost rolls up onto it, so this is where "which call
+	// actually settled this" survives, for debugging a double-settle or a stuck job.
+	SettledByRequestID string `json:"settled_by_request_id,omitempty"`
 }
 
 func (d *BifrostVideoDebug) IsZero() bool {
@@ -363,4 +368,12 @@ type VideoAccountingDebug struct {
 	// Incomplete marks a row whose cost is known to be short — priced with no rate,
 	// or from dimensions the provider never confirmed.
 	Incomplete bool `json:"incomplete,omitempty"`
+	// RequestType is the request that created the job. The aggregate row's Object is
+	// "video_retrieve" so it reads as the settlement it is, which means Object can no
+	// longer name the rates this was priced at — a repricing pass reads it from here.
+	RequestType RequestType `json:"request_type,omitempty"`
+	// ProviderCost is the figure the provider reported for the job, when it reported
+	// one. A provider is always right about its own bill, so repricing must return
+	// this verbatim rather than substituting a catalog estimate.
+	ProviderCost *float64 `json:"provider_cost,omitempty"`
 }

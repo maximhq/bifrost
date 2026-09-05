@@ -9,7 +9,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
-import { COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES, COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES } from "@/lib/types/complexityRouter";
+import { COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES, COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -99,7 +99,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -111,6 +111,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -327,14 +328,13 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${
-									normalizeTestIdKey
-										? item.key
-												.toLowerCase()
-												.replace(/[^a-z0-9]+/g, "-")
-												.replace(/^-+|-+$/g, "")
-										: item.key
-								}`
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey
+								? item.key
+									.toLowerCase()
+									.replace(/[^a-z0-9]+/g, "-")
+									.replace(/^-+|-+$/g, "")
+								: item.key
+							}`
 							: undefined
 					}
 				/>
@@ -932,13 +932,35 @@ function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: Fi
 }
 
 // ---------------------------------------------------------------------------
+// RequestSessionFilter
+// ---------------------------------------------------------------------------
+
+function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.session_id;
+	return (
+		<FilterSection title="Session ID" defaultOpen={defaultOpen || hasActive} testId="request-session-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.session_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, session_id: event.target.value })}
+					placeholder="Exact session ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
 
 function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.parent_request_id;
 	return (
-		<FilterSection title="Session" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
+		<FilterSection title="Parent request ID" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
 			<div className="relative">
 				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
 				<Input

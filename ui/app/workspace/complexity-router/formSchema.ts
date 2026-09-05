@@ -287,3 +287,7 @@ export function llmTimeoutFieldValue(timeout: string | undefined): string | numb
 	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
 	return millis ? millis[1] : parseLLMTimeoutMs(timeout);
 }
+// shouldSeedLLMPrompt decides whether the shipped guidance may initialize the draft.
+export function shouldSeedLLMPrompt(enabled: boolean, defaultPrompt: string, prompt: string, edited: boolean): boolean {
+	return enabled && defaultPrompt !== "" && prompt === "" && !edited;
+}

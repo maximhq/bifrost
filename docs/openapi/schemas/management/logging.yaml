@@ -62,6 +62,10 @@ LogEntry:
       type: number
       description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
       nullable: true
+    session_id:
+      type: string
+      description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
+      nullable: true
     stream:
       type: boolean
     raw_request:

@@ -34,18 +34,17 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Infisical is the default source (Reads
-# USE_INFISICAL env var):
-#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
-#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
+#   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
+#   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
-		*) USE_INFISICAL_RESOLVED=1 ;; \
+		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
+		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -68,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1885,6 +1884,16 @@ test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2
 	done; \
 	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
 	exit $$RC
+
+# Video bills at SETTLEMENT, minutes after the POST returns, so neither newman
+# (no way to wait for an out-of-band row) nor a Go test (no provider) can check
+# the figure. This runner does the whole submit -> poll -> settle -> assert loop.
+run-video-costing-test: ## Verify async video jobs bill correctly against real providers (Usage: make run-video-costing-test ARGS="--group Runware --seed-pricing"). Needs a running Bifrost with video provider keys.
+	@$(ECHO) "$(GREEN)Running video costing checks...$(NC)"
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs $(ARGS)
+
+list-video-costing-cases: ## List the video costing cases and which checklist line each covers. No network, no Bifrost.
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs --list
 
 # Named target rather than documentation telling people to type SMOKE=1: a smoke
 # set nobody can invoke in one word does not get used before a release.

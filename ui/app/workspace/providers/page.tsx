@@ -8,6 +8,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
+import { useDismissedProviderCollisions } from "@/lib/hooks/useDismissedProviderCollisions";
 import {
 	getErrorMessage,
 	setSelectedProvider,
@@ -17,8 +18,10 @@ import {
 	useGetProvidersQuery,
 	useLazyGetProviderQuery,
 } from "@/lib/store";
-import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
+import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Server } from "lucide-react";
@@ -28,6 +31,8 @@ import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
+import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
+import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
 import { ProvidersEmptyState } from "./views/providersEmptyState";
 
@@ -55,6 +60,13 @@ export default function Providers() {
 	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
+	const { dismissed: dismissedCollisions, dismiss: dismissCollision, hydrated: collisionsHydrated } = useDismissedProviderCollisions();
+	const [handledCollisions, setHandledCollisions] = useState<Set<string>>(() => new Set());
+	// Custom Databricks provider the user chose not to migrate for now; cleared on every re-selection.
+	const [migrationDeferredFor, setMigrationDeferredFor] = useState<string | undefined>(undefined);
+	// The migration dialog is pinned to the provider it opened for: the source disappears from the
+	// list mid-migration, and the dialog must survive that.
+	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider } | undefined>(undefined);
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
@@ -66,6 +78,27 @@ export default function Providers() {
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
 
 	const knownProviders = ProviderNames.map((name) => ({ name }));
+
+	// Custom providers whose name matches a provider that is now supported natively.
+	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
+	const activeCollision = collisionsHydrated
+		? findCustomProviderCollisions(configuredProviders).find((c) => {
+			const key = normalizeProviderName(c.customName);
+			return c.knownProvider !== DATABRICKS_PROVIDER && !dismissedCollisions.has(key) && !handledCollisions.has(key);
+		})
+		: undefined;
+
+	// Open the migration dialog when the selected provider is a custom provider named exactly
+	// "databricks", unless the user deferred it for this selection.
+	useEffect(() => {
+		if (migrationSession || !selectedProvider || provider !== selectedProvider.name || isLoadingProvider) return;
+		if (migrationDeferredFor === selectedProvider.name) return;
+		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider });
+	}, [migrationSession, selectedProvider, provider, isLoadingProvider, migrationDeferredFor]);
+
+	useEffect(() => {
+		setMigrationDeferredFor(undefined);
+	}, [provider]);
 
 	useEffect(() => {
 		if (!provider) return;
@@ -114,15 +147,16 @@ export default function Providers() {
 		}
 	}, [isMobile, provider]);
 
-	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
+	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider.
+	// Held off while a Databricks migration is in progress: it removes the current provider on purpose.
 	useEffect(() => {
-		if (!provider || configuredProviderNamesArr.length === 0) return;
+		if (!provider || configuredProviderNamesArr.length === 0 || migrationSession) return;
 		const isCurrentConfigured = configuredProviderNamesArr.includes(provider as ModelProviderName);
 		if (!isCurrentConfigured) {
 			setProvider(configuredProviderNamesArr[0]);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider, configuredProviderNamesKey]);
+	}, [provider, configuredProviderNamesKey, migrationSession]);
 
 	if (!hasProvidersAccess && hasSettingsOnly) {
 		return <FullPageLoader />;
@@ -144,6 +178,18 @@ export default function Providers() {
 				description: getErrorMessage(err),
 			});
 		}
+	};
+
+	const handleCollisionProceed = () => {
+		if (!activeCollision) return;
+		setHandledCollisions((prev) => new Set(prev).add(normalizeProviderName(activeCollision.customName)));
+		if (providerFormIsDirty) {
+			setPendingRedirection(activeCollision.customName);
+			setShowRedirectionDialog(true);
+			return;
+		}
+		setProvider(activeCollision.customName);
+		if (isMobile) setMobileDetailOpen(true);
 	};
 
 	if (configuredProviders.length === 0) {
@@ -185,6 +231,31 @@ export default function Providers() {
 					setShowDeleteProviderDialog(false);
 				}}
 			/>
+			{migrationSession && (
+				<DatabricksMigrationDialog
+					show
+					provider={migrationSession.provider}
+					onDeferred={() => {
+						setMigrationDeferredFor(migrationSession.provider.name);
+						setMigrationSession(undefined);
+					}}
+					onMigrated={() => {
+						setMigrationDeferredFor(undefined);
+						setMigrationSession(undefined);
+						setProvider(DATABRICKS_PROVIDER);
+						if (isMobile) setMobileDetailOpen(true);
+					}}
+				/>
+			)}
+			{activeCollision && !migrationSession && (
+				<FirstPartyProviderAvailableDialog
+					show
+					customProviderName={activeCollision.customName}
+					knownProvider={activeCollision.knownProvider}
+					onDismiss={() => dismissCollision(activeCollision.customName)}
+					onProceed={handleCollisionProceed}
+				/>
+			)}
 			<ConfirmRedirectionDialog
 				show={showRedirectionDialog}
 				onCancel={() => setShowRedirectionDialog(false)}
@@ -217,7 +288,7 @@ export default function Providers() {
 						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
 							{configuredProviders.length > 0 ? (
 								configuredProviders.map((p) => {
-									const isCustom = !ProviderNames.includes(p.name as KnownProvider);
+									const isCustom = !!p.custom_provider_config || !ProviderNames.includes(p.name as KnownProvider);
 									const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
 									return (
 										<div

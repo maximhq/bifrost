@@ -777,9 +777,16 @@ false
 {{- $_ := set $config "cluster_config" $cluster }}
 {{- end }}
 {{- /* SCIM Config */ -}}
-{{- $scimValues := .Values.bifrost.scim }}
-{{- if and $scimValues $scimValues.enabled }}
-{{- $scim := dict "enabled" true }}
+{{- /* Rendered whenever bifrost.scim is declared at all — including enabled: false. Helm then
+       owns the section and a disable actually propagates; omitting scim_config from config.json
+       leaves the section unreconciled, so a previously enabled SCIM would stay enabled.
+       bifrost.scim has no default, so charts that never declare it emit nothing and leave
+       dashboard-configured SCIM alone. Gate on key presence, not truthiness: an empty or nil
+       map is falsy in Go templates, so `if .Values.bifrost.scim` would treat `scim: {}` as
+       undeclared and skip the section. */ -}}
+{{- if hasKey .Values.bifrost "scim" }}
+{{- $scimValues := default dict .Values.bifrost.scim }}
+{{- $scim := dict "enabled" (default false $scimValues.enabled) }}
 {{- if $scimValues.provider }}
 {{- $_ := set $scim "provider" $scimValues.provider }}
 {{- end }}
@@ -2189,60 +2196,65 @@ Call this template at the beginning of deployment/stateful templates
 {{/* Validate SCIM/SSO config when enabled */}}
 {{- $scimValidation := .Values.bifrost.scim }}
 {{- if and $scimValidation $scimValidation.enabled }}
-{{- if eq $scimValidation.provider "okta" }}
-{{- if not $scimValidation.config.issuerUrl }}
+{{- /* bifrost.scim has no chart default, so provider/config may be absent entirely — normalize
+       before comparing/indexing or the template dies on a nil rather than failing with the
+       actionable message below. */ -}}
+{{- $scimProvider := default "" $scimValidation.provider }}
+{{- $scimCfg := default dict $scimValidation.config }}
+{{- if eq $scimProvider "okta" }}
+{{- if not $scimCfg.issuerUrl }}
 {{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is Okta. Example: https://your-domain.okta.com/oauth2/default" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Okta." }}
 {{- end }}
-{{- if not $scimValidation.config.clientSecret }}
+{{- if not $scimCfg.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "entra" }}
-{{- if not $scimValidation.config.tenantId }}
+{{- if eq $scimProvider "entra" }}
+{{- if not $scimCfg.tenantId }}
 {{- fail "ERROR: bifrost.scim.config.tenantId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "keycloak" }}
-{{- if not $scimValidation.config.serverUrl }}
+{{- if eq $scimProvider "keycloak" }}
+{{- if not $scimCfg.serverUrl }}
 {{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
 {{- end }}
-{{- if not $scimValidation.config.realm }}
+{{- if not $scimCfg.realm }}
 {{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
 {{- end }}
-{{- if not $scimValidation.config.clientSecret }}
+{{- if not $scimCfg.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "zitadel" }}
-{{- if not $scimValidation.config.domain }}
+{{- if eq $scimProvider "zitadel" }}
+{{- if not $scimCfg.domain }}
 {{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "google" }}
-{{- if not $scimValidation.config.domain }}
+{{- if eq $scimProvider "google" }}
+{{- if not $scimCfg.domain }}
 {{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "generic" }}
-{{- if not $scimValidation.config.issuerUrl }}
+{{- if eq $scimProvider "generic" }}
+{{- if not $scimCfg.issuerUrl }}
 {{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is a generic OIDC provider. Example: https://idp.company.com" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is a generic OIDC provider." }}
 {{- end }}
 {{- end }}

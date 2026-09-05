@@ -135,7 +135,7 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 // name. The second return value is false when no managing entity applies; the
 // UI then renders nothing extra. Implementations must be safe to call
 // concurrently.
-type ManagedByResolver func(ctx context.Context, scopeID string) (string, bool)
+type ManagedByResolver func(ctx context.Context, scopeID string) (configstoreTables.SourceRef, bool)
 
 // managedByResolvers is the package-level registry consulted by
 // resolveModelConfigManagedBy. Empty by default in OSS; downstream builds
@@ -170,18 +170,20 @@ func lookupManagedByResolver(scope string) (ManagedByResolver, bool) {
 // tracked OUTSIDE the VK's own budget rows
 type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
 
-// SourcedBudget pairs a budget with the name of what governs it (e.g. an access
-// profile), for quota responses that can be composed from more than one source.
-// Source is empty when there's nothing to disambiguate.
+// SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
+// quota responses that can be composed from more than one source. The embedded
+// SourceRef is the same one model configs carry, so both APIs describe an origin
+// with identical keys. All three fields are empty when there is nothing to
+// disambiguate, e.g. a virtual key's own budget rows.
 type SourcedBudget struct {
 	configstoreTables.TableBudget
-	Source string `json:"source,omitempty"`
+	configstoreTables.SourceRef
 }
 
 // SourcedRateLimit is SourcedBudget's counterpart for rate limits.
 type SourcedRateLimit struct {
 	configstoreTables.TableRateLimit
-	Source string `json:"source,omitempty"`
+	configstoreTables.SourceRef
 }
 
 // ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
@@ -3771,7 +3773,7 @@ func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.resolveModelConfigScopeName(ctx, mc, map[string]string{})
-	h.resolveModelConfigManagedBy(ctx, mc, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, mc, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"model_config": mc,
 	})
@@ -3809,7 +3811,7 @@ func (h *GovernanceHandler) resolveModelConfigScopeName(ctx context.Context, mc 
 // configs; it is keyed by (scope, scope_id) so distinct scopes never collide. Kept
 // separate from resolveModelConfigScopeName (different registry, different meaning —
 // "who this applies to" vs. "what manages it") so neither can affect the other.
-func (h *GovernanceHandler) resolveModelConfigManagedBy(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]string) {
+func (h *GovernanceHandler) resolveModelConfigManagedBy(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]configstoreTables.SourceRef) {
 	if mc == nil || mc.Scope == "" || mc.ScopeID == nil {
 		return
 	}
@@ -3819,19 +3821,19 @@ func (h *GovernanceHandler) resolveModelConfigManagedBy(ctx context.Context, mc 
 	}
 	id := *mc.ScopeID
 	key := mc.Scope + "|" + id
-	label, cached := cache[key]
+	ref, cached := cache[key]
 	if !cached {
 		if resolved, found := resolver(ctx, id); found {
-			label = resolved
+			ref = resolved
 		}
-		cache[key] = label
+		cache[key] = ref
 	}
-	mc.ManagedBy = label
+	mc.SourceRef = ref
 }
 
 // enrichModelConfigManagedBy populates ManagedBy for each non-global config in the slice.
 func (h *GovernanceHandler) enrichModelConfigManagedBy(ctx context.Context, configs []configstoreTables.TableModelConfig) {
-	cache := map[string]string{}
+	cache := map[string]configstoreTables.SourceRef{}
 	for i := range configs {
 		h.resolveModelConfigManagedBy(ctx, &configs[i], cache)
 	}
@@ -3988,7 +3990,7 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		preloadedMC = &mc
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
-	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
@@ -4126,7 +4128,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
-	h.resolveModelConfigManagedBy(ctx, updatedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, updatedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
@@ -4960,9 +4962,9 @@ type quotaModelSpend struct {
 // (both measured since last_reset). models is empty when logging is disabled.
 type quotaBudget struct {
 	configstoreTables.TableBudget
-	// Source names what governs this budget (e.g. an access profile), when the
-	// caller supplied one. Empty for a VK's own budget rows.
-	Source string            `json:"source,omitempty"`
+	// Identifies what governs this budget (e.g. an access profile), when the caller
+	// supplied one. Empty for a VK's own budget rows.
+	configstoreTables.SourceRef
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
@@ -4972,7 +4974,7 @@ func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usa
 	out := make([]quotaBudget, 0, len(budgets))
 	for i := range budgets {
 		b := &budgets[i].TableBudget
-		entry := quotaBudget{TableBudget: *b, Source: budgets[i].Source, Models: []quotaModelSpend{}}
+		entry := quotaBudget{TableBudget: *b, SourceRef: budgets[i].SourceRef, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {

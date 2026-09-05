@@ -426,6 +426,29 @@ complexity-status:
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
+complexity-status-retry:
+  post:
+    operationId: retryComplexityAnalyzerWarmup
+    summary: Retry failed complexity classifier warmup
+    description: Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
+    tags:
+      - Routing
+    responses:
+      '202':
+        description: Semantic warmup retry accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '409':
+        description: The semantic classifier is not currently failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
 complexity-generations:
   get:
     operationId: listComplexityGenerations

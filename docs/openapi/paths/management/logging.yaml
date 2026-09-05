@@ -58,6 +58,11 @@ logs:
         description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
         schema:
           type: string
+      - name: session_id
+        in: query
+        description: Exact Bifrost session ID used for key stickiness and request correlation
+        schema:
+          type: string
       - name: start_time
         in: query
         description: Start time filter (RFC3339 format)
@@ -239,6 +244,11 @@ logs-stats:
       - name: complexity_mechanisms
         in: query
         description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        schema:
+          type: string
+      - name: session_id
+        in: query
+        description: Exact Bifrost session ID used for key stickiness and request correlation
         schema:
           type: string
       - name: start_time
@@ -838,6 +848,12 @@ _histogram-parameters:
     description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
     schema:
       type: string
+  session_id:
+    name: session_id
+    in: query
+    description: Exact Bifrost session ID used for key stickiness and request correlation
+    schema:
+      type: string
   start_time:
     name: start_time
     in: query
@@ -1407,6 +1423,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/stop_reasons"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1473,6 +1490,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/stop_reasons"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"

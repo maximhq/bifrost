@@ -432,6 +432,7 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, "proj-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectName, "Project One")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-no-pending-error")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -481,6 +482,9 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 	if logEntry.ProjectName == nil || *logEntry.ProjectName != "Project One" {
 		t.Fatalf("expected project name %q on the minimal-error entry, got %v", "Project One", logEntry.ProjectName)
+	}
+	if logEntry.SessionID == nil || *logEntry.SessionID != "session-no-pending-error" {
+		t.Fatalf("expected session ID on the minimal-error entry, got %v", logEntry.SessionID)
 	}
 }
 
@@ -861,6 +865,7 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "semantic")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-log-123")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -893,6 +898,9 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 	}
 	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
 		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+	if entry.SessionID == nil || *entry.SessionID != "session-log-123" {
+		t.Fatalf("expected session_id session-log-123, got %v", entry.SessionID)
 	}
 }
 

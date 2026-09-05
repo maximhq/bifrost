@@ -44,7 +44,7 @@ import {
 } from "@/lib/constants/logs";
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -399,6 +399,28 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 		["Failed", counts.failed],
 		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
 	];
+};
+
+const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+
+// Input tokens are normalized to include cache read/write tokens, so break the total down.
+const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
+	const total = usage?.prompt_tokens ?? 0;
+	if (!total || !usage?.prompt_tokens_details) return undefined;
+	const cachedRead = usage?.prompt_tokens_details.cached_read_tokens ?? 0;
+	const cachedWrite = usage?.prompt_tokens_details.cached_write_tokens ?? 0;
+	const lines = ["Input tokens include cached tokens."];
+	if (cachedRead >= 0 || cachedWrite >= 0) {
+		lines.push(`Uncached input: ${formatExactNumber(total - cachedRead - cachedWrite)}`);
+	}
+	if (cachedRead >= 0) {
+		lines.push(`Cache read: ${formatExactNumber(cachedRead)}`);
+	}
+	if (cachedWrite >= 0) {
+		lines.push(`Cache write: ${formatExactNumber(cachedWrite)}`);
+	}
+	lines.push(`Input tokens: ${formatExactNumber(total)}`);
+	return lines.join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -1012,6 +1034,7 @@ interface LogDetailViewProps {
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
+	onFilterBySessionId?: (sessionId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1089,6 +1112,7 @@ export function LogDetailView({
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
+	onFilterBySessionId,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1137,6 +1161,10 @@ export function LogDetailView({
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
+	// Set on both the submission row and the aggregate cost row a settlement writes;
+	// only the latter carries accounting, which is what tells the two apart.
+	const videoDebug = log.video_debug;
+	const videoAccounting = videoDebug?.accounting;
 	const batchRawRequest = useMemo(() => {
 		if (!isBatch || !log.raw_request) return null;
 		try {
@@ -1482,6 +1510,17 @@ export function LogDetailView({
 									{batchDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
+							{videoDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[videoDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{videoDebug.status.replace(/_/g, " ")}
+								</Badge>
+							)}
 						</div>
 						<div className="mt-3 flex items-center gap-2">
 							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
@@ -1761,6 +1800,34 @@ export function LogDetailView({
 										) : (
 											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
 												{log.parent_request_id}
+											</TruncatedLabel>
+										)
+									}
+								/>
+							)}
+							{log.session_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Session ID"
+									value={
+										onFilterBySessionId ? (
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														onClick={() => onFilterBySessionId(log.session_id as string)}
+													>
+														{log.session_id}
+													</button>
+												</TooltipTrigger>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.session_id} · Filter this session
+												</TooltipContent>
+											</Tooltip>
+										) : (
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.session_id}
 											</TruncatedLabel>
 										)
 									}
@@ -2103,7 +2170,12 @@ export function LogDetailView({
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
 								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
+									<LogEntryDetailsView
+										className="w-full"
+										label="Input Tokens"
+										value={log.token_usage?.prompt_tokens || "-"}
+										tooltip={getInputTokensTooltip(log.token_usage)}
+									/>
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
@@ -2121,6 +2193,16 @@ export function LogDetailView({
 											className="w-full"
 											label="Total Cost"
 											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
+										/>
+									)}
+									{/* An async job settles onto a child row, so the request that started it
+									    has no cost of its own. Without this the detail view of a video
+									    generation reads as free while the list beside it shows the spend. */}
+									{log.cost == null && (log.children_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Settled Cost"
+											value={formatCostPrecise(log.children_cost)}
 										/>
 									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
@@ -2339,6 +2421,43 @@ export function LogDetailView({
 													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
 												)}
 											</div>
+										)}
+									</div>
+								</>
+							)}
+
+							{videoDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Video Details" />
+										{videoDebug.video_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Video ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{videoDebug.video_id}</code>
+														<CopyInlineButton text={videoDebug.video_id} testId="logdetails-copy-video-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{videoAccounting && (
+											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+												{videoAccounting.seconds != null && (
+													<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
+												)}
+												{videoAccounting.size && <LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />}
+												{videoAccounting.output_count != null && (
+													<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
+												)}
+											</div>
+										)}
+										{videoAccounting?.incomplete && (
+											<p className="text-muted-foreground text-xs">
+												Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
+											</p>
 										)}
 									</div>
 								</>

@@ -307,7 +307,9 @@ export const createColumns = (
 							<button
 								type="button"
 								data-testid="log-chain-expand-btn"
-								aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
+								// Not always a fallback chain: a settled async job nests its cost row
+								// here too, and calling that an "attempt" misreads what it is.
+								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
 								aria-expanded={isExpanded}
 								className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center gap-1 rounded-sm transition-colors"
 								onClick={(event) => {
@@ -368,7 +370,6 @@ export const createColumns = (
 			header: "Type",
 			size: 150,
 			cell: ({ row }) => {
-				const isVideoSettlement = Boolean(row.original.video_debug?.accounting);
 				return (
 					<Badge
 						variant="outline"
@@ -377,9 +378,7 @@ export const createColumns = (
 							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
 						)}
 					>
-						{isVideoSettlement
-							? "Video Settlement"
-							: RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
 					</Badge>
 				);
 			},
@@ -514,6 +513,26 @@ export const createColumns = (
 									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(batchCost)}</div>
 								</TooltipTrigger>
 								<TooltipContent>Settled cost of this batch, billed once.</TooltipContent>
+							</Tooltip>
+						);
+					}
+					// A settled async job writes its cost to a child row rather than back
+					// onto the request, so the request itself has no cost of its own.
+					// children_cost is that rollup, computed per page.
+					const settledCost = row.original.children_cost;
+					if (settledCost != null && settledCost > 0) {
+						return (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(settledCost)}</div>
+								</TooltipTrigger>
+								{/* The expand chevron only exists in the grouped view, so pointing at
+								    it anywhere else sends people looking for a control that is not there. */}
+								<TooltipContent>
+									{groupedView
+										? "Settled after this request completed. Expand the row to see it."
+										: "Settled after this request completed, on its own row."}
+								</TooltipContent>
 							</Tooltip>
 						);
 					}

@@ -310,6 +310,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_complexity_routing_columns"}, run: migrationAddComplexityRoutingColumns},
+	{IDs: []string{"logs_add_session_id_column"}, run: migrationAddSessionIDColumn},
 	{IDs: []string{"logs_add_routing_metadata_column"}, run: migrationAddRoutingMetadataColumn},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
@@ -2927,6 +2928,11 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_mechanism ON logs(complexity_mechanism) WHERE complexity_mechanism IS NOT NULL",
 	},
 	{
+		table: "logs",
+		name:  "idx_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_user_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_id ON mcp_tool_logs(user_id)",
@@ -4088,6 +4094,53 @@ func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logg
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding complexity routing columns: %w", err)
+	}
+	return nil
+}
+
+// migrationAddSessionIDColumn adds the generic session identity resolved at
+// ingress so callers can correlate all requests in a Bifrost session.
+func migrationAddSessionIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_session_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().CreateIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return fmt.Errorf("create session_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().DropIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return err
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding session ID column: %w", err)
 	}
 	return nil
 }

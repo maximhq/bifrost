@@ -183,6 +183,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/connections",
+              "mcp/virtual-mcps",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -200,7 +201,6 @@
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway",
               "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
@@ -305,7 +305,7 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              "enterprise/mcp-tool-groups",
+              "enterprise/virtual-mcps",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -1521,7 +1521,8 @@
                   "GET /api/routing/complexity-analyzer-config",
                   "PUT /api/routing/complexity-analyzer-config",
                   "POST /api/routing/complexity-analyzer-config/reset",
-                  "GET /api/routing/complexity-analyzer-status"
+                  "GET /api/routing/complexity-analyzer-status",
+                  "POST /api/routing/complexity-analyzer-status/retry"
                 ]
               }
             ]
@@ -2122,6 +2123,10 @@
   },
   "redirects": [
     {
+      "source": "/enterprise/mcp-tool-groups",
+      "destination": "/enterprise/virtual-mcps"
+    },
+    {
       "source": "/migration-guides/governance-api-namespace",
       "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
     },
@@ -2199,11 +2204,15 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/mcp/gateway",
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/oauth",
