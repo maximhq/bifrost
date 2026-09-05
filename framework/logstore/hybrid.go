@@ -1628,3 +1628,8 @@ func (h *HybridLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, c
 func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error) {
 	return h.inner.CountWarpMessages(ctx, conversationIDs)
 }
+
+// SumWarpMessageUsage returns each thread's total tokens and cost in one query.
+func (h *HybridLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
+	return h.inner.SumWarpMessageUsage(ctx, conversationIDs)
+}

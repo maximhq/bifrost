@@ -259,44 +259,72 @@ func TestWarpBackfillCursorStaysBehindACancelledIndex(t *testing.T) {
 	require.Nil(t, final.CursorTime, "the cursor must not have moved past it, so the resume retries it")
 }
 
-// A provider outage fails every entry, and every failure costs an embedding
-// request. Without a bound the job walked the whole window issuing one doomed
-// call per log - the most expensive possible way to find out the provider is
-// down - and finished reporting "done" with everything failed.
-func TestWarpBackfillStopsAfterConsecutiveFailures(t *testing.T) {
-	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	logs := make([]logstore.Log, 0, backfillMaxConsecutiveFailures*3)
-	for i := range cap(logs) {
+func failingBackfillEmbeddingExecutor(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found that support model: openai/text-embedding-3-small"}}
+}
+
+func backfillLogsForAbort(start time.Time, count int) []logstore.Log {
+	logs := make([]logstore.Log, 0, count)
+	for index := range count {
 		logs = append(logs, logstore.Log{
-			ID: fmt.Sprintf("log-%03d", i), Timestamp: start.Add(time.Duration(i) * time.Minute),
+			ID: fmt.Sprintf("log-%d", index), Timestamp: start.Add(time.Duration(index) * time.Second),
 			Object: string(schemas.ChatCompletionRequest), Status: "success", ContentSummary: "payment failed",
 		})
 	}
-	reader := &backfillLogReader{logs: logs}
-	calls := 0
+	return logs
+}
+
+func TestWarpBackfillStopsAfterConsecutiveFailures(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := &backfillLogReader{logs: backfillLogsForAbort(start, backfillMaxConsecutiveFailures+50)}
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
-		WithVectorStore(newFakeWarpVectorStore()),
-		WithEmbeddingExecutor(func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-			calls++
-			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
-		}),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(failingBackfillEmbeddingExecutor),
 	)
 	defer service.Shutdown()
 	metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, start.Add(24*time.Hour))
 	require.NoError(t, err)
 
-	finalJSON, err := service.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
-	require.Error(t, err, "a run that failed every entry must not report success")
-	require.ErrorContains(t, err, "consecutive indexing failures")
-
+	var checkpoints []string
+	finalJSON, err := service.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(value string) error {
+		checkpoints = append(checkpoints, value)
+		return nil
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "consecutive")
+	require.Contains(t, err.Error(), "no keys found")
+	require.NotEmpty(t, checkpoints)
 	var final BackfillJobMeta
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Equal(t, backfillMaxConsecutiveFailures, final.Scanned)
 	require.Equal(t, backfillMaxConsecutiveFailures, final.Failed)
-	require.Equal(t, backfillMaxConsecutiveFailures, final.Scanned,
-		"it must stop at the threshold, not walk the rest of the window")
-	require.LessOrEqual(t, calls, backfillMaxConsecutiveFailures,
-		"every attempt past the threshold is a paid-for request that could not succeed")
-	// The cursor is where it stopped, so a retry resumes rather than restarts.
-	require.NotNil(t, final.CursorTime)
+	require.Zero(t, final.Indexed)
+	require.Contains(t, final.LastError, "no keys found")
+	require.Contains(t, final.Message, "Stopped")
+}
+
+func TestWarpBackfillSuccessResetsConsecutiveFailures(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := &backfillLogReader{logs: backfillLogsForAbort(start, backfillMaxConsecutiveFailures+50)}
+	calls := 0
+	flaky := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		calls++
+		if calls%backfillMaxConsecutiveFailures == 0 {
+			return backfillEmbeddingExecutor(ctx, request)
+		}
+		return failingBackfillEmbeddingExecutor(ctx, request)
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(flaky),
+	)
+	defer service.Shutdown()
+	metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, start.Add(24*time.Hour))
+	require.NoError(t, err)
+	finalJSON, err := service.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
+	require.NoError(t, err)
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Equal(t, backfillMaxConsecutiveFailures+50, final.Scanned)
+	require.Equal(t, 1, final.Indexed)
 }

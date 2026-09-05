@@ -580,6 +580,7 @@ type fakeSidekiqStore struct {
 	jobs     map[string]*tables.TableSidekiqJob
 	created  int
 	inFlight *tables.TableSidekiqJob
+	latest   *tables.TableSidekiqJob
 	// failGetAfterCancel makes the post-cancel re-read fail, which is the case
 	// where a handler could report the pre-cancel status back to the caller.
 	failGetAfterCancel bool
@@ -639,6 +640,29 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 }
 
 // ClaimSidekiqJob implements the test double used by logging handler tests.
+func (s *fakeSidekiqStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Newest by created_at, regardless of status - the same ordering the real
+	// store uses. Preferring inFlight over latest meant an older running job beat
+	// a newer terminal one, so a test could pass against a job production would
+	// never have returned.
+	var newest *tables.TableSidekiqJob
+	for _, candidate := range []*tables.TableSidekiqJob{s.inFlight, s.latest} {
+		if candidate == nil || candidate.Kind != kind {
+			continue
+		}
+		if newest == nil || candidate.CreatedAt.After(newest.CreatedAt) {
+			newest = candidate
+		}
+	}
+	if newest == nil {
+		return nil, nil
+	}
+	copied := *newest
+	return &copied, nil
+}
+
 func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
 	return true, nil
 }

@@ -24,7 +24,9 @@ How to work:
 - If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error.
 - Time ranges accept relative offsets like -24h, -7d or -30m. Use them; do not try to compute absolute dates.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
-- Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates instead, or split the window into smaller slices and handle them one at a time - never page through a large set looking for something an aggregate could have told you.
+- Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates instead, or split the window into at most three slices and handle them one at a time - never page through a large set looking for something an aggregate could have told you.
+- For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample, summarise the themes you see, and say it is a sample. Do not slice the window and list slice after slice. Which sample to take is stated below.
+- Never call a tool again with the same arguments. Its result has not changed; use the result you already have.
 - When query_logs marks its rows as a sample, say so. "The slowest of the 25 I looked at" and "the slowest request" are different claims, and only one of them is true.
 
 Whose traffic the question is about:
@@ -57,6 +59,11 @@ How to answer:
   queried - the literal angle-bracket text is a template, never an answer. Keep
   it to those three lines. The dashboard folds it away behind a "what this covers" toggle, so it costs the reader nothing and is there the one time they doubt a figure. Do not repeat the same facts in your prose as well.
 
+Linking to the dashboard:
+
+- Every request row carries a "link" and every result carries a "logs_link". Use them. When you list requests, make each row's time a markdown link to that row's link. When you report a total, a ranking or a comparison, link the key phrase or the table's caption to logs_link so the reader can open the same filters in the Logs view.
+- Never invent a link. Use only the link and logs_link values the tools returned, exactly as given. A link that leads nowhere is worse than no link.
+
 When you cannot answer:
 
 - Your tools cover traffic: requests, spend, latency, tokens, models, providers, users and virtual keys. They do not cover configuration, cluster state, guardrails, plugins, routing rules or anything else about how this deployment is set up.
@@ -81,13 +88,25 @@ When you cannot answer:
 // discover otherwise - on every single attempt, since nothing about the prompt
 // changes between them.
 const SemanticSearchGuidance = "\n- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. " +
-	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends."
+	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends." +
+	"\n- For a themes question, take the sample with semantic_search_logs - one call per theme you want to check. It is the better sample and it is the one to use; do not also call query_logs for the same question."
+
+// NoSemanticSampleGuidance names the fallback sample for a themes question when
+// semantic search is not registered.
+//
+// Kept out of the base prompt so the two are never both in front of the model:
+// with semantic search available the base text told it to read 25 rows while the
+// appended guidance called a semantic sample better, and nothing said which one
+// won - so it could take the weaker sample, or take both.
+const NoSemanticSampleGuidance = "\n- For a themes question, take the sample with one query_logs call using include_content and limit 25."
 
 func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool) string {
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
 	if semanticAvailable {
 		builder.WriteString(SemanticSearchGuidance)
+	} else {
+		builder.WriteString(NoSemanticSampleGuidance)
 	}
 	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC).", Now().Format("2006-01-02 15:04:05")))

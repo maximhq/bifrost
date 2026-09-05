@@ -52,7 +52,27 @@ func (r warpLogReader) GetLogsByIDs(ctx context.Context, ids []string) ([]logsto
 
 // GetAvailableVirtualKeys converts the manager's key pairs into Warp's.
 func (r warpLogReader) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
-	pairs, err := r.LogManager.GetAvailableVirtualKeys(ctx, limit, query)
+	return convertWarpKeyPairs(r.LogManager.GetAvailableVirtualKeys(ctx, limit, query))
+}
+
+// GetAvailableTeams converts the manager's key pairs into Warp's.
+func (r warpLogReader) GetAvailableTeams(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
+	return convertWarpKeyPairs(r.LogManager.GetAvailableTeams(ctx, limit, query))
+}
+
+// GetAvailableCustomers converts the manager's key pairs into Warp's.
+func (r warpLogReader) GetAvailableCustomers(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
+	return convertWarpKeyPairs(r.LogManager.GetAvailableCustomers(ctx, limit, query))
+}
+
+// GetAvailableBusinessUnits converts the manager's key pairs into Warp's.
+func (r warpLogReader) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
+	return convertWarpKeyPairs(r.LogManager.GetAvailableBusinessUnits(ctx, limit, query))
+}
+
+// convertWarpKeyPairs maps the manager's pairs onto Warp's field-identical
+// type, passing an error straight through.
+func convertWarpKeyPairs(pairs []logging.KeyPair, err error) ([]warp.KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}

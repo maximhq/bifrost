@@ -1252,7 +1252,10 @@ func TestClickHouseWarpConversationDDLOmitsAssociations(t *testing.T) {
 	cols, err = clickhouseColumnDefs(db, &WarpMessage{})
 	require.NoError(t, err)
 	assert.Equal(t,
-		[]string{"id", "conversation_id", "created_at", "position", "role", "content", "tool_calls_json", "error"},
+		[]string{
+			"id", "conversation_id", "created_at", "position", "role", "content",
+			"tool_calls_json", "error", "finish_reason", "total_tokens", "cost",
+		},
 		chColumnNames(cols))
 }
 

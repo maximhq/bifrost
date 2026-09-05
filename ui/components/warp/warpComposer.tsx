@@ -23,6 +23,12 @@ interface WarpComposerProps {
 	provider?: string;
 	model?: string;
 	onSend: (question: string) => void;
+	/**
+	 * Holds a message typed while an answer is still streaming, to be sent once
+	 * it finishes. Without it a submit mid-answer is silently dropped, which
+	 * reads as the panel ignoring you.
+	 */
+	onQueue?: (question: string) => void;
 	onStop: () => void;
 }
 
@@ -35,7 +41,17 @@ interface WarpComposerProps {
  * button pressed against the rounded border. Stacking also gives the control row
  * somewhere to name the model that is answering.
  */
-export default function WarpComposer({ isStreaming, disabled, attached, provider, model, onCommand, onSend, onStop }: WarpComposerProps) {
+export default function WarpComposer({
+	isStreaming,
+	disabled,
+	attached,
+	provider,
+	model,
+	onCommand,
+	onSend,
+	onQueue,
+	onStop,
+}: WarpComposerProps) {
 	const [value, setValue] = useState("");
 	// Which command the arrow keys have landed on. Reset whenever the list
 	// changes, so a shrinking list cannot leave the highlight past its end.
@@ -52,7 +68,7 @@ export default function WarpComposer({ isStreaming, disabled, attached, provider
 
 	const submit = () => {
 		const text = value.trim();
-		if (!text || isStreaming || disabled) return;
+		if (!text || disabled) return;
 
 		// A command is resolved before anything is sent, so "/clear" never reaches
 		// the model as a question - but only where there is a handler to run it.
@@ -62,6 +78,13 @@ export default function WarpComposer({ isStreaming, disabled, attached, provider
 		const command = onCommand ? resolveWarpCommand(text) : undefined;
 		if (command) {
 			runCommand(command);
+			return;
+		}
+		if (isStreaming) {
+			// The answer in flight is not interrupted; the message waits for it.
+			if (!onQueue) return;
+			onQueue(text);
+			setValue("");
 			return;
 		}
 		onSend(text);
@@ -92,7 +115,7 @@ export default function WarpComposer({ isStreaming, disabled, attached, provider
 					))}
 				</div>
 			)}
-			<div className="focus-within:border-ring bg-background flex flex-col gap-2 rounded-lg border p-2 transition-colors">
+			<div className="focus-within:border-ring bg-background dark:bg-card flex flex-col gap-2 rounded-lg border p-2 transition-colors">
 				<TextareaAutosize
 					value={value}
 					onChange={(event) => setValue(event.target.value)}
@@ -135,7 +158,9 @@ export default function WarpComposer({ isStreaming, disabled, attached, provider
 							submit();
 						}
 					}}
-					placeholder="Ask about your Bifrost data..."
+					placeholder={
+						isStreaming && onQueue ? "Ask a follow-up, it is sent when this answer finishes..." : "Ask about your Bifrost data..."
+					}
 					disabled={disabled}
 					minRows={1}
 					maxRows={8}
