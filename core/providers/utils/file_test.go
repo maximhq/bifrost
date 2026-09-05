@@ -89,7 +89,7 @@ func TestDownloadClientDialRejectsLoopbackResolutionInProduction(t *testing.T) {
 	// No AllowPrivateAudioURLsForTest call: guard is active. This exercises the
 	// fasthttp Dial hook directly so the authoritative connection-time check
 	// rejects loopback DNS resolution before any TCP connection is attempted.
-	conn, err := downloadClient.Dial("localhost:443")
+	conn, err := audioDownloadClient.Dial("localhost:443")
 	if conn != nil {
 		_ = conn.Close()
 		t.Fatal("expected no connection for loopback dial in production mode")

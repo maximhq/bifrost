@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 // FileBytesToBase64DataURL converts raw file bytes to base64 data URL format
@@ -23,11 +24,6 @@ func FileBytesToBase64DataURL(fileBytes []byte) string {
 }
 
 const maxAudioDownloadSize = 25 * 1024 * 1024
-
-type contextDownloadClient struct {
-	*http.Client
-	Dial func(string) (net.Conn, error)
-}
 
 var audioDownloadDialer = &net.Dialer{Timeout: 10 * time.Second}
 
@@ -59,19 +55,15 @@ func dialValidatedAudioURL(ctx context.Context, network, addr string) (net.Conn,
 	return nil, dialErr
 }
 
-// downloadClient is process-wide so TCP/TLS connections are reused across
-// audio downloads. DialContext validates and pins the resolved address used by
-// the connection, preventing a second DNS lookup from bypassing the SSRF guard.
-var downloadClient = &contextDownloadClient{
-	Client: &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			DialContext: dialValidatedAudioURL,
-		},
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	},
+// audioDownloadClient performs the actual audio fetch. Bifrost's provider
+// transport is fasthttp, so this path uses it too rather than net/http. Dial is
+// the same SSRF-validating dialer used above, so the guard is unchanged, and
+// fasthttp's Do does not follow redirects, which preserves the refuse-redirect
+// behavior the net/http CheckRedirect hook provided.
+var audioDownloadClient = &fasthttp.Client{
+	ReadTimeout:         20 * time.Second,
+	WriteTimeout:        20 * time.Second,
+	MaxResponseBodySize: maxAudioDownloadSize + 1,
 	Dial: func(addr string) (net.Conn, error) {
 		return dialValidatedAudioURL(context.Background(), "tcp", addr)
 	},
@@ -149,35 +141,48 @@ func DownloadURLToBase64(ctx context.Context, fileURL string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create download request: %w", err)
-	}
-	req.Header.Set("User-Agent", "bifrost-fetch/1")
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 
-	resp, err := downloadClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to download URL: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	req.SetRequestURI(fileURL)
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.Header.SetUserAgent("bifrost-fetch/1")
 
-	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
-		return "", fmt.Errorf("redirect not followed (status=%d, Location=%q); resolve the redirect server-side or supply the final URL", resp.StatusCode, resp.Header.Get("Location"))
+	// fasthttp has no context plumbing, so the caller's deadline is mapped onto
+	// the request deadline and the client timeout is the fallback bound.
+	var doErr error
+	if deadline, ok := ctx.Deadline(); ok {
+		doErr = audioDownloadClient.DoDeadline(req, resp, deadline)
+	} else {
+		doErr = audioDownloadClient.DoTimeout(req, resp, 20*time.Second)
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("failed to download URL: status=%d", resp.StatusCode)
+	if doErr != nil {
+		if errors.Is(doErr, fasthttp.ErrBodyTooLarge) {
+			return "", fmt.Errorf("audio URL response exceeds %d byte limit", maxAudioDownloadSize)
+		}
+		return "", fmt.Errorf("failed to download URL: %w", doErr)
 	}
-	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	statusCode := resp.StatusCode()
+	if statusCode >= fasthttp.StatusMultipleChoices && statusCode < fasthttp.StatusBadRequest {
+		return "", fmt.Errorf("redirect not followed (status=%d, Location=%q); resolve the redirect server-side or supply the final URL", statusCode, resp.Header.Peek("Location"))
+	}
+	if statusCode < fasthttp.StatusOK || statusCode >= fasthttp.StatusMultipleChoices {
+		return "", fmt.Errorf("failed to download URL: status=%d", statusCode)
+	}
+	if contentLength := string(resp.Header.Peek("Content-Length")); contentLength != "" {
 		size, parseErr := strconv.ParseInt(contentLength, 10, 64)
 		if parseErr == nil && size > maxAudioDownloadSize {
 			return "", fmt.Errorf("audio URL response exceeds %d byte limit", maxAudioDownloadSize)
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAudioDownloadSize+1))
-	if err != nil {
-		return "", fmt.Errorf("failed to read URL response: %w", err)
-	}
+	body := resp.Body()
 	if len(body) > maxAudioDownloadSize {
 		return "", fmt.Errorf("audio URL response exceeds %d byte limit", maxAudioDownloadSize)
 	}
