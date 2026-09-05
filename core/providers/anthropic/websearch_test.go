@@ -305,3 +305,43 @@ func TestServerSearchTools_VersionRecognition(t *testing.T) {
 		})
 	}
 }
+
+func TestWebSearch_OutputItemDone_Idempotent_DuplicateDoneReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	const itemID = "toolu_ws_idempotent_test"
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	// Pre-seed per-request state as if output_item.added already fired
+	state := getOrCreateAnthropicToResponsesStreamState(ctx)
+	state.webSearchItemIDs = map[string]bool{itemID: true}
+
+	query := `{"query":"test query"}`
+	bifrostResp := &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemDone,
+		OutputIndex: schemas.Ptr(1),
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr(itemID),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr(itemID),
+				Name:      schemas.Ptr("WebSearch"),
+				Arguments: &query,
+			},
+		},
+	}
+
+	// First call should generate deltas and stop event
+	firstEvents := ToAnthropicResponsesStreamResponse(ctx, bifrostResp)
+	if len(firstEvents) == 0 {
+		t.Fatal("expected events on first output_item.done")
+	}
+
+	// Second call with same item ID should return nil (idempotent, no duplicate synthetic deltas)
+	secondEvents := ToAnthropicResponsesStreamResponse(ctx, bifrostResp)
+	if len(secondEvents) != 0 {
+		t.Fatalf("expected 0 events on duplicate output_item.done, got %d", len(secondEvents))
+	}
+}

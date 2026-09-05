@@ -1544,6 +1544,7 @@ type ChatToResponsesStreamState struct {
 	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning output_item.done
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
+	ToolCallsClosed       map[string]bool   // Maps tool call ID to whether its output_item.done has been emitted
 	SequenceNumber        int               // Monotonic sequence number across all chunks
 }
 
@@ -1558,6 +1559,7 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			CreatedAt:             int(time.Now().Unix()),
 			CurrentOutputIndex:    0,
 			ToolCallOutputIndices: make(map[string]int),
+			ToolCallsClosed:       make(map[string]bool),
 			SequenceNumber:        0,
 			HasEmittedCreated:     false,
 			HasEmittedInProgress:  false,
@@ -1599,6 +1601,11 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	} else {
 		clear(state.ToolCallOutputIndices)
 	}
+	if state.ToolCallsClosed == nil {
+		state.ToolCallsClosed = make(map[string]bool)
+	} else {
+		clear(state.ToolCallsClosed)
+	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -1637,6 +1644,9 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		}
 		if state.ToolCallOutputIndices != nil {
 			clear(state.ToolCallOutputIndices)
+		}
+		if state.ToolCallsClosed != nil {
+			clear(state.ToolCallsClosed)
 		}
 		// Reset other fields
 		state.CurrentOutputIndex = 0
@@ -2171,7 +2181,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 		// Close any open tool call items and emit function_call_arguments.done
 		for toolCallID, args := range state.ToolArgumentBuffers {
-			if args != "" {
+			if args != "" && !state.ToolCallsClosed[toolCallID] {
 				outputIndex := state.ToolCallOutputIndices[toolCallID]
 				itemID := state.ItemIDs[toolCallID]
 				contentIndex := 1 // Tool calls use content_index:1
@@ -2221,6 +2231,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					ExtraFields:    cr.ExtraFields,
 				})
 				state.SequenceNumber++
+				state.ToolCallsClosed[toolCallID] = true
 			}
 		}
 

@@ -1449,7 +1449,6 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	}
 }
 
-
 // responseFormatAsMap reads a converted chat response_format regardless of its
 // representation. The Responses to Chat conversion emits raw JSON (the same
 // representation the chat wire decode produces), so tests read it through the
@@ -1470,4 +1469,106 @@ func nestedMap(t *testing.T, parent map[string]interface{}, key string) map[stri
 		t.Fatalf("expected %q to be an object, got %T", key, parent[key])
 	}
 	return om.ToMap()
+}
+
+func TestToBifrostResponsesStreamResponse_DuplicateFinishReasonDoesNotDuplicateToolDone(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	funcName := "WebSearch"
+	toolCallID := "call_websearch_123"
+
+	var all []*BifrostResponsesStreamResponse
+
+	// Role chunk
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Role: &role,
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Tool call chunk with arguments
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &toolCallID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"query":"test"}`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// First finish chunk with tool_calls finish reason
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &toolCallsFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Second finish chunk with usage and repeating finish reason (common in OpenAI compatible proxies)
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &toolCallsFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+		Usage: &BifrostLLMUsage{
+			PromptTokens:     10,
+			CompletionTokens: 20,
+			TotalTokens:      30,
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Count output_item.done and function_call_arguments.done
+	outputItemDoneCount := 0
+	funcArgsDoneCount := 0
+	for _, evt := range all {
+		if evt != nil {
+			if evt.Type == ResponsesStreamResponseTypeOutputItemDone && evt.Item != nil && evt.Item.ResponsesToolMessage != nil {
+				outputItemDoneCount++
+			}
+			if evt.Type == ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+				funcArgsDoneCount++
+			}
+		}
+	}
+
+	if outputItemDoneCount != 1 {
+		t.Fatalf("expected output_item.done to be emitted exactly 1 time, got %d", outputItemDoneCount)
+	}
+	if funcArgsDoneCount != 1 {
+		t.Fatalf("expected function_call_arguments.done to be emitted exactly 1 time, got %d", funcArgsDoneCount)
+	}
 }

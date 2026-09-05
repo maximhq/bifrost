@@ -3435,6 +3435,15 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
 			bifrostResp.Item.ResponsesToolMessage.Arguments != nil {
 
+			// Guard against duplicate synthetic delta generation:
+			// only generate synthetic deltas if this WebSearch item is currently tracked.
+			if bifrostResp.Item.ID != nil {
+				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+				if !streamState.webSearchItemIDs[*bifrostResp.Item.ID] {
+					return nil
+				}
+			}
+
 			argumentsJSON := sanitizeWebSearchArguments(*bifrostResp.Item.ResponsesToolMessage.Arguments)
 			bifrostResp.Item.ResponsesToolMessage.Arguments = &argumentsJSON
 
