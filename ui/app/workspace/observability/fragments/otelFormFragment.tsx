@@ -15,8 +15,9 @@ import { emptySecretVar, toSecretVarFormValue, toSecretVarMapFormValue } from "@
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm, type Control, type Resolver, type UseFormReturn } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 // ProfileForm is a single profile's form shape, derived from the form schema.
 type ProfileForm = OtelFormSchema["profiles"][number];
@@ -60,24 +61,24 @@ interface OtelFormFragmentProps {
 	isLoading?: boolean;
 }
 
-const traceTypeOptions: {
+const getTraceTypeOptions = (t: (key: string) => string): {
 	value: string;
 	label: string;
 	disabled?: boolean;
 	disabledReason?: string;
-}[] = [
-	{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+}[] => [
+	{ value: "genai_extension", label: t("connectors.otelGenAi") },
 	{
 		value: "vercel",
-		label: "Vercel AI SDK",
+		label: t("connectors.vercelAiSdk"),
 		disabled: true,
-		disabledReason: "Coming soon",
+		disabledReason: t("connectors.comingSoon"),
 	},
 	{
 		value: "open_inference",
-		label: "Arize OpenInference",
+		label: t("connectors.arizeOpenInference"),
 		disabled: true,
-		disabledReason: "Coming soon",
+		disabledReason: t("connectors.comingSoon"),
 	},
 ];
 const protocolOptions: {
@@ -160,6 +161,8 @@ export function OtelFormFragment({
 	isDeleting = false,
 	isLoading = false,
 }: OtelFormFragmentProps) {
+	const { t } = useTranslation("observability");
+	const traceTypeOptions = useMemo(() => getTraceTypeOptions(t), [t]);
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const [profileOpenState, setProfileOpenState] = useState<Record<number, boolean>>({});
@@ -266,8 +269,8 @@ export function OtelFormFragment({
 								onClick={onDelete}
 								disabled={isDeleting || !hasOtelAccess}
 								data-testid="otel-connector-delete-btn"
-								title="Delete connector"
-								aria-label="Delete connector"
+								title={t("connectors.deleteConnector")}
+								aria-label={t("connectors.deleteConnector")}
 							>
 								<Trash2 className="size-4" />
 							</Button>
@@ -286,17 +289,17 @@ export function OtelFormFragment({
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>
-										Save OTEL Configuration
+										{t("connectors.saveOtel")}
 									</Button>
 								</TooltipTrigger>
 								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid
-												? "No changes made and validation errors present"
+												? t("connectors.noChangesWithErrors")
 												: !form.formState.isDirty
-													? "No changes made"
-													: "Please fix validation errors"}
+													? t("connectors.noChanges")
+													: t("connectors.fixValidationErrors")}
 										</p>
 									</TooltipContent>
 								)}
@@ -323,6 +326,8 @@ interface OtelProfileSectionProps {
 // OtelProfileSection renders one collapsible profile. The header stays visible when collapsed
 // and surfaces the profile identity plus its enable toggle and remove control.
 function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, open, onOpenChange, onRemove }: OtelProfileSectionProps) {
+	const { t } = useTranslation("observability");
+	const traceTypeOptions = getTraceTypeOptions(t);
 	const base = `profiles.${index}` as const;
 	const protocol = form.watch(`${base}.protocol`);
 	const tracesEnabled = form.watch(`${base}.traces_enabled`);
@@ -378,7 +383,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									onCheckedChange={field.onChange}
 									disabled={!hasOtelAccess}
 									data-testid={`otel-profile-${index}-enable-toggle`}
-									aria-label="Enable profile"
+									aria-label={t("connectors.enableProfile")}
 								/>
 							</FormControl>
 						</FormItem>
@@ -393,8 +398,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						onClick={onRemove}
 						disabled={!hasOtelAccess}
 						data-testid={`otel-profile-${index}-remove-btn`}
-						title="Remove profile"
-						aria-label="Remove profile"
+						title={t("connectors.removeProfile")}
+						aria-label={t("connectors.removeProfile")}
 					>
 						<Trash2 className="size-4" />
 					</Button>
@@ -428,7 +433,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<Select onValueChange={field.onChange} value={field.value} disabled={!hasOtelAccess}>
 									<FormControl>
 										<SelectTrigger className="w-full">
-											<SelectValue placeholder="Select protocol" />
+											<SelectValue placeholder={t("connectors.selectProtocol")} />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
@@ -450,7 +455,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							<FormItem className="w-full">
 								<FormControl>
 									<HeadersTable
-										label="Common Headers"
+										label={t("connectors.commonHeaders")}
 										value={field.value || {}}
 										onChange={field.onChange}
 										disabled={!hasOtelAccess}
@@ -593,7 +598,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											<FormItem className="w-full">
 												<FormControl>
 													<HeadersTable
-														label="Trace Headers"
+														label={t("connectors.traceHeaders")}
 														value={field.value || {}}
 														onChange={field.onChange}
 														disabled={!hasOtelAccess}
@@ -615,7 +620,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 													<FormControl>
 														<SelectTrigger className="w-full">
-															<SelectValue placeholder="Select trace type" />
+															<SelectValue placeholder={t("connectors.selectTraceType")} />
 														</SelectTrigger>
 													</FormControl>
 													<SelectContent>
@@ -827,7 +832,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											<FormItem className="w-full">
 												<FormControl>
 													<HeadersTable
-														label="Metrics Headers"
+														label={t("connectors.metricsHeaders")}
 														value={field.value || {}}
 														onChange={field.onChange}
 														disabled={!hasOtelAccess}

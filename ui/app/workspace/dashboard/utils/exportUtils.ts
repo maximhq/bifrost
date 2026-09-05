@@ -5,6 +5,7 @@
  * for `buildCSV()`.
  */
 
+import i18n from "@/lib/i18n";
 import type {
 	CostHistogramResponse,
 	DimensionRankingsResponse,
@@ -230,21 +231,30 @@ export type ExportTab = DashboardTab | "all";
  * Single source of truth for the tab labels shown in the export menu and as
  * PDF section headings, and for the DOM ids the PDF capture reads.
  */
-export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectionId: string }[] = [
-	{ value: "overview", label: "Overview", sectionId: "dashboard-section-overview" },
-	{ value: "provider-usage", label: "Provider Usage", sectionId: "dashboard-section-provider-usage" },
-	{ value: "rankings", label: "Model Rankings", sectionId: "dashboard-section-rankings" },
-	{ value: "mcp", label: "MCP Usage", sectionId: "dashboard-section-mcp" },
-	{ value: "team-rankings", label: "Team Rankings", sectionId: "dashboard-section-team-rankings" },
-	{ value: "customer-rankings", label: "Customer Rankings", sectionId: "dashboard-section-customer-rankings" },
-	{ value: "bu-rankings", label: "BU Rankings", sectionId: "dashboard-section-bu-rankings" },
-	{ value: "project-rankings", label: "Project Rankings", sectionId: "dashboard-section-project-rankings" },
-	{ value: "user-rankings", label: "User Rankings", sectionId: "dashboard-section-user-rankings" },
-	{ value: "virtual-key-rankings", label: "Virtual Key Rankings", sectionId: "dashboard-section-virtual-key-rankings" },
-	{ value: "app-rankings", label: "App Rankings", sectionId: "dashboard-section-app-rankings" },
+const DASHBOARD_EXPORT_TAB_DEFS: { value: DashboardTab; labelKey: string; sectionId: string }[] = [
+	{ value: "overview", labelKey: "dashboard.tabs.overview", sectionId: "dashboard-section-overview" },
+	{ value: "provider-usage", labelKey: "dashboard.tabs.providerUsage", sectionId: "dashboard-section-provider-usage" },
+	{ value: "rankings", labelKey: "dashboard.tabs.modelRankings", sectionId: "dashboard-section-rankings" },
+	{ value: "mcp", labelKey: "dashboard.export.mcpUsage", sectionId: "dashboard-section-mcp" },
+	{ value: "team-rankings", labelKey: "dashboard.tabs.teamRankings", sectionId: "dashboard-section-team-rankings" },
+	{ value: "customer-rankings", labelKey: "dashboard.tabs.customerRankings", sectionId: "dashboard-section-customer-rankings" },
+	{ value: "bu-rankings", labelKey: "dashboard.tabs.buRankings", sectionId: "dashboard-section-bu-rankings" },
+	{ value: "project-rankings", labelKey: "dashboard.tabs.projectRankings", sectionId: "dashboard-section-project-rankings" },
+	{ value: "user-rankings", labelKey: "dashboard.tabs.userRankings", sectionId: "dashboard-section-user-rankings" },
+	{ value: "virtual-key-rankings", labelKey: "dashboard.tabs.virtualKeyRankings", sectionId: "dashboard-section-virtual-key-rankings" },
+	{ value: "app-rankings", labelKey: "dashboard.tabs.appRankings", sectionId: "dashboard-section-app-rankings" },
 ];
 
-export const getExportTabLabel = (tab: DashboardTab): string => DASHBOARD_EXPORT_TABS.find((t) => t.value === tab)?.label ?? "Current Tab";
+export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectionId: string }[] = DASHBOARD_EXPORT_TAB_DEFS.map((tab) => ({
+	value: tab.value,
+	get label() {
+		return i18n.t(tab.labelKey, { ns: "observability" });
+	},
+	sectionId: tab.sectionId,
+}));
+
+export const getExportTabLabel = (tab: DashboardTab): string =>
+	DASHBOARD_EXPORT_TABS.find((t) => t.value === tab)?.label ?? i18n.t("dashboard.export.currentTab", { ns: "observability" });
 
 /** Return all CSV sections for the selected scope. Each entry becomes its own sheet / file section. */
 export function getCSVSections(data: DashboardData, tab: ExportTab): { name: string; csv: CSVData }[] {

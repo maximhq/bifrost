@@ -4,6 +4,7 @@ import { useDescriptionSlot, useSetTopbarTitle } from "@/lib/contexts/topbarCont
 import type { Breadcrumb } from "@/lib/contexts/topbarContext.utils";
 import { Info } from "lucide-react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 
 /**
  * Declares the page's title and, optionally, its description. Renders nothing
@@ -49,6 +50,7 @@ export default function PageTitle({
 	breadcrumbs?: Breadcrumb[];
 	children?: React.ReactNode;
 }) {
+	const { t } = useTranslation("shell");
 	useSetTopbarTitle(breadcrumbs?.length ? breadcrumbs : title);
 	const slot = useDescriptionSlot();
 	// The badge's label needs a name; with a trail that is the current page.
@@ -59,8 +61,8 @@ export default function PageTitle({
 	return createPortal(
 		<>
 			{beta && (
-				<Badge className="shrink-0" aria-label={label ? `${label} is in beta` : "This page is in beta"}>
-					Beta
+				<Badge className="shrink-0" aria-label={label ? t("pageTitle.betaAria", { title: label }) : t("pageTitle.betaAriaFallback")}>
+					{t("pageTitle.beta")}
 				</Badge>
 			)}
 			{children && (
@@ -69,7 +71,7 @@ export default function PageTitle({
 						<button
 							type="button"
 							data-testid="page-description-trigger"
-							aria-label="About this page"
+							aria-label={t("pageTitle.aboutPage")}
 							className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm transition-colors"
 						>
 							<Info className="size-4" strokeWidth={2} />

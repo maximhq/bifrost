@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
+import { useTranslation } from "react-i18next";
 
 function PricingOverrideActionsMenu({
 	row,
@@ -176,6 +177,8 @@ function resolveScopeKind(override: PricingOverride): PricingOverrideScopeKind {
 const PAGE_SIZE = 25;
 
 export default function ScopedPricingOverridesView() {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const location = useLocation();
 	const searchParams = useMemo(() => new URLSearchParams(location.searchStr), [location.searchStr]);
 
@@ -232,7 +235,7 @@ export default function ScopedPricingOverridesView() {
 
 	useEffect(() => {
 		if (error) {
-			toast.error("Failed to load pricing overrides", { description: getErrorMessage(error) });
+			toast.error(t("customPricing.failedLoad"), { description: getErrorMessage(error) });
 		}
 	}, [error]);
 
@@ -288,10 +291,10 @@ export default function ScopedPricingOverridesView() {
 		if (!deleteTarget) return;
 		try {
 			await deleteOverride(deleteTarget.id).unwrap();
-			toast.success("Pricing override deleted");
+			toast.success(t("customPricing.deletedSuccess"));
 			setDeleteTarget(null);
 		} catch (deleteError) {
-			toast.error("Failed to delete pricing override", { description: getErrorMessage(deleteError) });
+			toast.error(t("customPricing.failedDelete"), { description: getErrorMessage(deleteError) });
 		}
 	};
 
@@ -301,8 +304,8 @@ export default function ScopedPricingOverridesView() {
 	// nothing inline, and without it the topbar drops to the route-derived
 	// fallback, which for this route reads "Overrides".
 	const pageTitle = (
-		<PageTitle title="Pricing Overrides">
-			Set custom rates for any model across global, virtual key, or user scopes, optionally narrowed to a specific provider or key
+		<PageTitle title={t("customPricing.title")}>
+			{t("customPricing.titleDescription")}
 		</PageTitle>
 	);
 
@@ -341,8 +344,8 @@ export default function ScopedPricingOverridesView() {
 				<div className="relative w-full max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search pricing overrides by name"
-						placeholder="Search by name..."
+						aria-label={t("customPricing.searchAria")}
+						placeholder={t("customPricing.searchByName")}
 						value={search}
 						onChange={(e) => setSearch(e.target.value)}
 						className="pl-9"
@@ -354,7 +357,7 @@ export default function ScopedPricingOverridesView() {
 					<VirtualKeySelector
 						value={virtualKeyID}
 						onChange={setVirtualKeyID}
-						placeholder="All virtual keys"
+						placeholder={t("customPricing.allVirtualKeys")}
 						triggerClassName="h-9"
 						// A page, not a sheet — portalling keeps the popover out of the
 						// scrolling table container.
@@ -369,7 +372,7 @@ export default function ScopedPricingOverridesView() {
 						onClick={() => setVirtualKeyID("")}
 						data-testid="pricing-overrides-virtual-key-filter-clear-btn"
 					>
-						Clear
+						{t("customPricing.clear")}
 					</Button>
 				)}
 
@@ -379,29 +382,29 @@ export default function ScopedPricingOverridesView() {
 					data-testid="pricing-override-create-btn"
 					onClick={openCreateDrawer}
 					className="gap-2 sm:ml-auto"
-					aria-label="New pricing override"
+					aria-label={t("customPricing.newOverrideAria")}
 				>
 					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New Override</span>
+					<span className="hidden sm:inline">{t("customPricing.newOverride")}</span>
 				</Button>
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">
 				{isLoading ? (
-					<div className="p-4 text-sm">Loading overrides...</div>
+					<div className="p-4 text-sm">{t("customPricing.loading")}</div>
 				) : error ? (
-					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
+					<div className="p-4 text-sm text-red-500">{t("customPricing.loadFailed")}</div>
 				) : (
 					<Table containerClassName="h-full overflow-auto">
 						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Name</TableHead>
-								<TableHead className="font-semibold">Scope</TableHead>
-								<TableHead className="font-semibold">Provider</TableHead>
-								<TableHead className="font-semibold">Key</TableHead>
-								<TableHead className="font-semibold">Model</TableHead>
+								<TableHead className="font-semibold">{t("customPricing.colName")}</TableHead>
+								<TableHead className="font-semibold">{t("customPricing.scope")}</TableHead>
+								<TableHead className="font-semibold">{t("customPricing.provider")}</TableHead>
+								<TableHead className="font-semibold">{t("virtualKeys.key")}</TableHead>
+								<TableHead className="font-semibold">{t("customPricing.modelName")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
-									Actions
+									{t("customPricing.actions")}
 								</TableHead>
 							</TableRow>
 						</TableHeader>
@@ -409,7 +412,7 @@ export default function ScopedPricingOverridesView() {
 							{rows.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={6} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching pricing overrides found.</span>
+										<span className="text-muted-foreground text-sm">{t("customPricing.noMatching")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -470,7 +473,7 @@ export default function ScopedPricingOverridesView() {
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>{t("customPricing.page")}</span>
 							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
 							<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
 						</div>
@@ -499,7 +502,7 @@ export default function ScopedPricingOverridesView() {
 			<AlertDialog open={!!deleteTarget} onOpenChange={(open) => (!open ? setDeleteTarget(null) : undefined)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Pricing Override</AlertDialogTitle>
+						<AlertDialogTitle>{t("customPricing.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete &quot;{deleteTarget?.name}&quot;? This action cannot be undone.
 						</AlertDialogDescription>

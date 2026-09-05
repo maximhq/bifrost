@@ -17,6 +17,7 @@ import type { ColumnOrderState, ColumnPinningState, TableMeta, VisibilityState }
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -59,6 +60,7 @@ export function LogsDataTable({
 	onReorderColumns,
 	tableMeta,
 }: DataTableProps) {
+	const { t } = useTranslation("observability");
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const [pageSizePref, setPageSizePref, pageSizeHydrated] = useTablePageSizePreference("bifrost.logs.pageSize");
 
@@ -204,12 +206,12 @@ export function LogsDataTable({
 									{loading ? (
 										<>
 											<RefreshCw className="h-4 w-4 animate-spin" />
-											Loading logs...
+											{t("logs.loading")}
 										</>
 									) : polling ? (
 										<>
 											<RefreshCw className="h-4 w-4 animate-spin" />
-											Waiting for new logs...
+											{t("logs.waitingForNew")}
 										</>
 									) : (
 										<Button
@@ -300,7 +302,7 @@ export function LogsDataTable({
 							onClick={() => goToPage(currentPage - 1)}
 							disabled={currentPage <= 1}
 							data-testid="prev-page"
-							aria-label="Previous page"
+							aria-label={t("labels.previousPage")}
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
@@ -317,7 +319,7 @@ export function LogsDataTable({
 							onClick={() => goToPage(currentPage + 1)}
 							disabled={totalPages === 0 || currentPage >= totalPages}
 							data-testid="next-page"
-							aria-label="Next page"
+							aria-label={t("labels.nextPage")}
 						>
 							<ChevronRight className="size-3" />
 						</Button>

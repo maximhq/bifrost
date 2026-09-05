@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
+import { NoChartData } from "./noChartData";
 
 interface LocalCacheTokenMeterChartProps {
 	data: LogStats | null;
@@ -47,7 +48,7 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 		<ChartErrorBoundary resetKey={`${directHits}-${semanticHits}-${totalRequests}`}>
 			<div className="grid h-full grid-rows-[104px_auto] items-start overflow-hidden pt-8">
 				<div ref={ref} className="relative h-[104px] w-full">
-					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
+					{!hasData && <NoChartData />}
 					{hasData && gaugeGeometry && (
 						<>
 							<ResponsiveContainer width="100%" height="100%">

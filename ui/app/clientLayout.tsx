@@ -12,6 +12,7 @@ import { useNotificationSync } from "@/hooks/useNotificationSync";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { TopbarProvider } from "@/lib/contexts/topbarContext";
+import i18n from "@/lib/i18n";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
@@ -20,6 +21,7 @@ import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { CookiesProvider } from "react-cookie";
+import { I18nextProvider } from "react-i18next";
 import { toast, Toaster } from "sonner";
 
 // Lazy import — only loaded in development, completely excluded from prod bundle
@@ -221,17 +223,19 @@ function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRet
 export function ClientLayout({ children }: { children: React.ReactNode }) {
 	return (
 		<ProgressProvider>
-			<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-				<Toaster closeButton />
-				<ReduxProvider>
-					<NuqsAdapter>
-						<RbacProvider>
-							<AppContent>{children}</AppContent>
-							{process.env.NODE_ENV === "development" && !process.env.BIFROST_DISABLE_PROFILER && <DevProfiler />}
-						</RbacProvider>
-					</NuqsAdapter>
-				</ReduxProvider>
-			</ThemeProvider>
+			<I18nextProvider i18n={i18n}>
+				<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+					<Toaster closeButton />
+					<ReduxProvider>
+						<NuqsAdapter>
+							<RbacProvider>
+								<AppContent>{children}</AppContent>
+								{process.env.NODE_ENV === "development" && !process.env.BIFROST_DISABLE_PROFILER && <DevProfiler />}
+							</RbacProvider>
+						</NuqsAdapter>
+					</ReduxProvider>
+				</ThemeProvider>
+			</I18nextProvider>
 		</ProgressProvider>
 	);
 }

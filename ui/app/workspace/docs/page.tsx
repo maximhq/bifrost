@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import GradientHeader from "@/components/ui/gradientHeader";
 import { BookOpen, Code, ExternalLink, FileText, GitBranch, Play, Shield, Users, Zap } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const docSections = [
 	{
@@ -77,6 +78,7 @@ const featuredDocs = [
 ];
 
 export default function DocsPage() {
+	const { t } = useTranslation("config");
 	return (
 		<div className="dark:bg-card bg-white">
 			<div className="mx-auto max-w-7xl">
@@ -85,11 +87,11 @@ export default function DocsPage() {
 					<div className="space-y-4 text-center">
 						<div className="bg-primary/10 text-primary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm">
 							<BookOpen className="h-4 w-4" />
-							<span className="font-semibold">Documentation</span>
+							<span className="font-semibold">{t("docs.title")}</span>
 						</div>
 						<GradientHeader title="Power Up Your Bifrost Stack" />
 						<p className="text-muted-foreground mx-auto max-w-2xl text-lg">
-							Everything you need to know about building production AI applications with Bifrost
+							{t("docs.subtitle")}
 						</p>
 						<div className="flex justify-center gap-4">
 							<Button asChild>

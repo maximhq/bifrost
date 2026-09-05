@@ -1,0 +1,18 @@
+{
+	"save": "保存",
+	"cancel": "取消",
+	"loading": "加载中…",
+	"error": "错误",
+	"search": "搜索",
+	"back": "返回",
+	"confirm": "确认",
+	"delete": "删除",
+	"edit": "编辑",
+	"create": "创建",
+	"close": "关闭",
+	"retry": "重试",
+	"yes": "是",
+	"no": "否",
+	"actions": "操作",
+	"language": "语言"
+}

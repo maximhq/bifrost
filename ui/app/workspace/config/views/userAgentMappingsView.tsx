@@ -28,7 +28,9 @@ import {
 } from "@/lib/store";
 import { MoreVertical, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import i18n from "@/lib/i18n";
 
 const matchTypeOptions: Array<{ value: UserAgentMappingMatchType; label: string }> = [
 	{ value: "contains", label: "Contains" },
@@ -54,6 +56,7 @@ interface UserAgentMappingsViewProps {
 }
 
 export default function UserAgentMappingsView({ disabled }: UserAgentMappingsViewProps) {
+	const { t } = useTranslation("config");
 	const { data, isLoading } = useGetUserAgentMappingsQuery();
 	const [createMapping, { isLoading: isCreating }] = useCreateUserAgentMappingMutation();
 	const [updateMapping, { isLoading: isUpdating }] = useUpdateUserAgentMappingMutation();
@@ -92,23 +95,23 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 		try {
 			if (editingMappingId) {
 				await updateMapping({ id: editingMappingId, data: validated }).unwrap();
-				toast.success("User agent mapping updated.");
+				toast.success(t("userAgent.toastUpdated"));
 			} else {
 				await createMapping(validated).unwrap();
-				toast.success("User agent mapping added.");
+				toast.success(t("userAgent.toastAdded"));
 			}
 			handleSheetOpenChange(false);
 		} catch (error) {
-			toast.error(`Failed to ${editingMappingId ? "update" : "add"} mapping: ${getErrorMessage(error)}`);
+			toast.error(t("userAgent.toastSaveFailed", { action: editingMappingId ? t("userAgent.update") : t("userAgent.add"), error: getErrorMessage(error) }));
 		}
 	};
 
 	const handleDelete = async (id: string) => {
 		try {
 			await deleteMapping(id).unwrap();
-			toast.success("User agent mapping deleted.");
+			toast.success(t("userAgent.toastDeleted"));
 		} catch (error) {
-			toast.error(`Failed to delete mapping: ${getErrorMessage(error)}`);
+			toast.error(t("userAgent.toastDeleteFailed", { error: getErrorMessage(error) }));
 		}
 	};
 
@@ -116,8 +119,8 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 		<div className="space-y-4">
 			<div className="flex items-start justify-between gap-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">User Agent Mappings</h3>
-					<p className="text-muted-foreground text-sm">Map incoming User-Agent strings to app names and optional logos used in logs.</p>
+					<h3 className="text-lg font-semibold tracking-tight">{t("userAgent.title")}</h3>
+					<p className="text-muted-foreground text-sm">{t("userAgent.description")}</p>
 				</div>
 				<div className="pt-2">
 					<Button
@@ -137,8 +140,8 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			<Sheet open={isSheetOpen} onOpenChange={handleSheetOpenChange}>
 				<SheetContent className="p-0">
 					<SheetHeader className="flex flex-col items-start px-4 pt-6 md:px-6">
-						<SheetTitle>{isEditing ? "Edit User Agent Mapping" : "Add User Agent Mapping"}</SheetTitle>
-						<SheetDescription>Define how a User-Agent value maps to an app label in logs.</SheetDescription>
+						<SheetTitle>{isEditing ? t("userAgent.sheetEdit") : t("userAgent.sheetAdd")}</SheetTitle>
+						<SheetDescription>{t("userAgent.sheetDescription")}</SheetDescription>
 					</SheetHeader>
 					<div className="flex-1 space-y-4 px-4 md:px-6">
 						<MappingForm draft={draft} onChange={setDraft} disabled={controlsDisabled} />
@@ -153,7 +156,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 							Cancel
 						</Button>
 						<Button type="button" onClick={handleSubmit} disabled={controlsDisabled} data-testid="user-agent-mapping-submit-btn">
-							{isEditing ? "Save Changes" : "Add Mapping"}
+							{isEditing ? t("saveChanges") : t("userAgent.addMapping")}
 						</Button>
 					</SheetFooter>
 				</SheetContent>
@@ -210,7 +213,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 									</TableCell>
 									<TableCell>
 										<span className={mapping.is_active ? "text-sm text-emerald-700" : "text-muted-foreground text-sm"}>
-											{mapping.is_active ? "Active" : "Inactive"}
+											{mapping.is_active ? t("userAgent.active") : t("userAgent.inactive")}
 										</span>
 									</TableCell>
 									<TableCell className="text-right">
@@ -243,7 +246,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 											</DropdownMenu>
 											<AlertDialogContent>
 												<AlertDialogHeader>
-													<AlertDialogTitle>Are you sure you want to delete this mapping?</AlertDialogTitle>
+													<AlertDialogTitle>{t("userAgent.deleteConfirmTitle")}</AlertDialogTitle>
 													<AlertDialogDescription>
 														This action cannot be undone. This will permanently delete the user agent mapping.
 													</AlertDialogDescription>
@@ -376,6 +379,7 @@ function LogoInput({
 	onChange: (next: UserAgentMappingPayload) => void;
 	disabled?: boolean;
 }) {
+	const { t } = useTranslation("config");
 	const dataUrl = draft.logo && draft.logo_mime ? `data:${draft.logo_mime};base64,${draft.logo}` : "";
 	return (
 		<div className="flex items-center gap-2">
@@ -393,7 +397,7 @@ function LogoInput({
 							const file = event.target.files?.[0];
 							if (!file) return;
 							if (file.size > MAX_LOGO_BYTES) {
-								toast.error("Logo must be 256KB or smaller.");
+								toast.error(t("userAgent.toastLogoTooLarge"));
 								event.target.value = "";
 								return;
 							}
@@ -401,7 +405,7 @@ function LogoInput({
 								const logo = await fileToBase64(file);
 								onChange({ ...draft, logo, logo_mime: file.type || "application/octet-stream" });
 							} catch {
-								toast.error("Failed to read logo file.");
+								toast.error(t("userAgent.toastLogoReadFailed"));
 							}
 							event.target.value = "";
 						}}
@@ -440,14 +444,14 @@ function getMatchTypeLabel(matchType: UserAgentMappingMatchType): string {
 
 function validateDraft(draft?: UserAgentMappingPayload): UserAgentMappingPayload | null {
 	if (!draft || !draft.pattern.trim() || !draft.app.trim()) {
-		toast.error("Pattern and app are required.");
+		toast.error(i18n.t("userAgent.toastRequired", { ns: "config" }));
 		return null;
 	}
 	if (draft.match_type === "regex") {
 		try {
 			new RegExp(draft.pattern);
 		} catch {
-			toast.error("Regex pattern is invalid.");
+			toast.error(i18n.t("userAgent.toastInvalidRegex", { ns: "config" }));
 			return null;
 		}
 	}

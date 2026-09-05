@@ -4,6 +4,7 @@ import { toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
+import { useTranslation } from "react-i18next";
 
 interface PushGatewayConfig {
 	enabled?: boolean;
@@ -28,6 +29,7 @@ interface PrometheusViewProps {
 }
 
 export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewProps) {
+	const { t } = useTranslation("observability");
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
@@ -75,10 +77,10 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 				.unwrap()
 				.then(() => {
 					resolve();
-					toast.success("Prometheus configuration updated successfully");
+					toast.success(t("connectors.toast.prometheusUpdated"));
 				})
 				.catch((err) => {
-					toast.error("Failed to update Prometheus configuration", {
+					toast.error(t("connectors.toast.prometheusFailed"), {
 						description: getErrorMessage(err),
 					});
 					reject(err);

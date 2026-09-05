@@ -29,12 +29,14 @@ import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // A fallback chain is a handful of attempts, so one page covers every realistic
 // chain. Capped at the list endpoint's own maximum.
 const chainChildrenPageLimit = 1000;
 
 export default function LogsPage() {
+	const { t } = useTranslation("observability");
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -579,8 +581,8 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped, t),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped, t],
 	);
 
 	const columnIds = useMemo(
@@ -590,24 +592,24 @@ export default function LogsPage() {
 
 	const COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			request_type: "Type",
-			input: "Message",
-			provider: "Provider",
-			model: "Model",
-			app: "App",
-			latency: "Latency",
-			tokens: "Tokens",
-			cost: "Cost",
-			service_tier: "Service Tier",
-			virtual_key: "Virtual Key",
-			routing_rule: "Routing Rule",
-			team: "Team",
-			customer: "Customer",
-			user: "User",
-			business_unit: "Business Unit",
+			timestamp: t("labels.time"),
+			request_type: t("labels.type"),
+			input: t("labels.message"),
+			provider: t("labels.provider"),
+			model: t("labels.model"),
+			app: t("labels.app"),
+			latency: t("labels.latency"),
+			tokens: t("labels.tokens"),
+			cost: t("labels.cost"),
+			service_tier: t("labels.serviceTier"),
+			virtual_key: t("labels.virtualKey"),
+			routing_rule: t("labels.routingRule"),
+			team: t("labels.team"),
+			customer: t("labels.customer"),
+			user: t("labels.user"),
+			business_unit: t("labels.businessUnit"),
 		}),
-		[],
+		[t],
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(

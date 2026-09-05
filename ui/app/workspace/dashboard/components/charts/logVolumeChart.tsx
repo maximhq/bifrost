@@ -5,6 +5,7 @@ import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
 
 interface LogVolumeChartProps {
 	data: LogsHistogramResponse | null;
@@ -79,7 +80,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
