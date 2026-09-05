@@ -65,18 +65,6 @@ type ModelPricingAttributesEntry struct {
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 }
 
-// providerStoreTimeout bounds the config-store work the handlers below do on a
-// request's behalf. That work runs on a context.Background() context rather than
-// on the handler's *fasthttp.RequestCtx, because a RequestCtx is only valid for
-// the duration of the handler: fasthttp clears its user values and returns it to
-// a pool as soon as the top handler returns, and RequestCtx.Done() hands out the
-// process-wide Server.done channel that Server.ShutdownWithContext writes to. A
-// context database/sql keeps past the handler — it watches ctx.Done() on its own
-// goroutine — would be reading a RequestCtx fasthttp has already taken back.
-// Detaching also drops the shutdown-driven cancellation, hence the explicit
-// bound; 15s is what this file already gives its other detached calls.
-const providerStoreTimeout = 15 * time.Second
-
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
 	dbStore       configstore.ConfigStore
@@ -187,7 +175,18 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
 	if h.dbStore != nil {
 		var err error
-		storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+		// Config-store work runs on a context of this handler's own, never on the
+		// *fasthttp.RequestCtx. A RequestCtx is only valid for the duration of the
+		// handler: fasthttp clears its user values and hands it back to a pool as
+		// soon as the top handler returns, and RequestCtx.Done() returns the
+		// process-wide Server.done channel. database/sql keeps the context it is
+		// given past the call — it watches Done() on a goroutine of its own — so
+		// it would read a RequestCtx fasthttp has already taken back. No deadline
+		// is added on top: the RequestCtx carried none either, and a store call
+		// cancelled halfway leaves the client and the persisted config out of
+		// step. Cancelling on return is what keeps the watcher from outliving the
+		// handler. Every storeCtx below is this same pattern.
+		storeCtx, storeCancel := context.WithCancel(context.Background())
 		defer storeCancel()
 		providers, err = h.dbStore.GetProvidersConfig(storeCtx)
 		if err != nil {
@@ -243,7 +242,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 	var config *configstore.ProviderConfig
 	if h.dbStore != nil {
-		storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+		storeCtx, storeCancel := context.WithCancel(context.Background())
 		defer storeCancel()
 		config, err = h.dbStore.GetProviderConfig(storeCtx, provider)
 		if err != nil {
@@ -361,7 +360,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
-	storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+	storeCtx, storeCancel := context.WithCancel(context.Background())
 	defer storeCancel()
 	if err := h.inMemoryStore.AddProvider(storeCtx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
@@ -561,8 +560,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
 
-	// One bound covers this handler's store work, add and update alike.
-	storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+	// One context covers this handler's store work, add and update alike.
+	storeCtx, storeCancel := context.WithCancel(context.Background())
 	defer storeCancel()
 
 	// Add provider to store if it doesn't exist (upsert behavior)
@@ -649,7 +648,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+	storeCtx, storeCancel := context.WithCancel(context.Background())
 	defer storeCancel()
 	if err := h.modelsManager.RemoveProvider(storeCtx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
@@ -1179,7 +1178,7 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	// exact-match miss.
 	var params *tables.TableModelParameters
 	var err error
-	storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+	storeCtx, storeCancel := context.WithCancel(context.Background())
 	defer storeCancel()
 	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
 		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(storeCtx, modelParam)
@@ -1498,7 +1497,7 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	storeCtx, storeCancel := context.WithTimeout(context.Background(), providerStoreTimeout)
+	storeCtx, storeCancel := context.WithCancel(context.Background())
 	defer storeCancel()
 	if err := h.modelsManager.UpsertModelPricingAttributes(storeCtx, payload); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
