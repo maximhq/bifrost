@@ -26,6 +26,7 @@ import (
 type warpBackfillJobStore interface {
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 }
 
 // WarpHandler is the HTTP face of the Warp service. It parses requests, maps
@@ -105,6 +106,10 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.startBackfill, middlewares...))
 	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.backfillStatus, middlewares...))
 	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.cancelBackfill, middlewares...))
+	// A read-only summary for the tray. Unlike the backfill controls above it is
+	// not admin-gated: whether semantic search is usable is something everyone
+	// who can ask Warp a question needs to see.
+	r.GET("/api/warp/log-index/status", lib.ChainMiddlewares(h.logIndexStatus, middlewares...))
 
 	// Registered unconditionally, and 503 while Warp cannot answer.
 	//
@@ -240,6 +245,11 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 		job, err = h.backfillStore.GetSidekiqJob(ctx, id)
 	} else {
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		if err == nil && job == nil {
+			// Nothing running. A reloaded page still wants to see how the last
+			// backfill ended, so fall back to the newest job of any status.
+			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		}
 	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill status")
@@ -320,6 +330,114 @@ func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
 		status.Status = tables.SidekiqStatusCancelled
 	}
 	SendJSON(ctx, status)
+}
+
+// warpLogIndexStatus folds the vector store connection, the embedding
+// configuration and the latest indexing job into one state the tray can show.
+type warpLogIndexStatus struct {
+	// State is one of: unavailable (no vector store), not_configured (no
+	// embedding model), indexing (a backfill is in flight), failed (the last
+	// backfill failed), ready.
+	State                string              `json:"state"`
+	VectorStoreConnected bool                `json:"vector_store_connected"`
+	EmbeddingConfigured  bool                `json:"embedding_configured"`
+	Backfill             *warpBackfillStatus `json:"backfill,omitempty"`
+}
+
+const (
+	warpIndexStateUnavailable   = "unavailable"
+	warpIndexStateNotConfigured = "not_configured"
+	warpIndexStateIndexing      = "indexing"
+	warpIndexStateFailed        = "failed"
+	warpIndexStateReady         = "ready"
+)
+
+// logIndexStatus serves the tray's indexing summary.
+func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
+	view, err := h.service.ConfigView(ctx)
+	if errors.Is(err, warp.ErrUnavailable) {
+		// The same unavailable state getConfig reports, so the tray gets an
+		// answer it already knows how to render rather than a generic failure.
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Warp configuration is unavailable")
+		return
+	}
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to read Warp configuration")
+		return
+	}
+	status := warpLogIndexStatus{
+		VectorStoreConnected: view.VectorStoreConnected,
+		EmbeddingConfigured:  view.EmbeddingProvider != "" && view.EmbeddingModel != "",
+	}
+	switch {
+	case !status.VectorStoreConnected:
+		status.State = warpIndexStateUnavailable
+	case !status.EmbeddingConfigured:
+		status.State = warpIndexStateNotConfigured
+	default:
+		status.State = warpIndexStateReady
+	}
+	if h.backfillStore == nil || status.State != warpIndexStateReady {
+		SendJSON(ctx, status)
+		return
+	}
+	job, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	if err == nil && job == nil {
+		job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+	}
+	if err != nil {
+		// The index is still usable without the job history; the summary is
+		// worth more than an error here.
+		logger.Warn("failed to read Warp backfill job for index status: %v", err)
+		SendJSON(ctx, status)
+		return
+	}
+	// A job from a previous embedding space says nothing about the current one.
+	// GetLatestSidekiqJobByKind returns the newest Warp backfill regardless of
+	// the namespace it ran against, so after a namespace change the tray showed
+	// the old run's counts - or its failure - as the state of an index that had
+	// never been built.
+	if job != nil && !warpJobMatchesNamespace(job, view.LogVectorStoreNamespace) {
+		job = nil
+	}
+	if job != nil {
+		backfill := warpBackfillStatusFromRow(job)
+		// This route has no admin gate, unlike the backfill endpoints. LastError
+		// carries whatever the provider or vector store said, which can name
+		// endpoints, models and internal detail. An administrator debugging a
+		// stalled index needs exactly that text; an ordinary dashboard user needs
+		// the state and the counts, and gets those without the provider's words.
+		if !warpLocalAdmin(ctx) {
+			backfill.LastError = ""
+		}
+		status.Backfill = &backfill
+		switch job.Status {
+		case tables.SidekiqStatusPending, tables.SidekiqStatusRunning:
+			status.State = warpIndexStateIndexing
+		case tables.SidekiqStatusFailed:
+			status.State = warpIndexStateFailed
+		}
+	}
+	SendJSON(ctx, status)
+}
+
+// warpJobMatchesNamespace reports whether a backfill ran against the namespace
+// currently configured. A job whose metadata names no namespace predates the
+// field and is treated as matching, so an upgrade does not blank the tray.
+//
+// Metadata that does not parse is a different case and does not match: an
+// absent namespace is a job we know predates the field, while an unreadable one
+// is a job we know nothing about, and reporting its "failed" as the state of
+// the current index asserts something unsupported by anything on the row.
+func warpJobMatchesNamespace(job *tables.TableSidekiqJob, namespace string) bool {
+	var meta warp.BackfillJobMeta
+	if sonic.Unmarshal([]byte(job.Metadata), &meta) != nil {
+		return false
+	}
+	if strings.TrimSpace(meta.Namespace) == "" {
+		return true
+	}
+	return strings.TrimSpace(meta.Namespace) == strings.TrimSpace(namespace)
 }
 
 func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
