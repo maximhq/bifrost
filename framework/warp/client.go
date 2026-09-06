@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -27,17 +28,55 @@ import (
 // own spend does not appear in the gateway's logs. The usage figure on the done
 // event is the compensating control.
 
-// warpAccount is the minimal Account implementation over the stored Warp config.
+// transportProvider is the provider Warp speaks on the wire, which is not
+// the provider that ends up serving the request.
+//
+// The two are separate on purpose. Warp's base URL points at this Bifrost's
+// OpenAI-compatible mount, and a provider implementation builds its own path
+// from that base: the Anthropic one asks for /v1/messages, which under /openai
+// is not a route at all and comes back as "Method Not Allowed". Speaking OpenAI
+// to the compatibility layer and naming the real provider in the model string is
+// what lets Warp run on Anthropic, Bedrock or Vertex without needing a wire
+// format per provider.
+//
+// The consequence to know: a base URL pointed somewhere other than this Bifrost
+// has to be OpenAI-compatible. Every provider Bifrost fronts is reachable
+// through the default, so this only binds someone who has deliberately pointed
+// Warp elsewhere.
+func transportProvider() schemas.ModelProvider {
+	return schemas.OpenAI
+}
+
+// modelForRequest returns the model name to send upstream.
+//
+// With the default base URL Warp talks to this Bifrost, which routes on the
+// model name alone - so a bare "gpt-5.5" gets whichever provider Bifrost picks
+// for it, and Warp's configured provider is silently ignored. Sending
+// "provider/model" pins it, which is the difference between Warp's traffic
+// landing on the provider that was chosen for it and landing wherever the
+// deployment's routing happens to send that model name.
+//
+// A model that already carries a prefix is left alone, so an operator who typed
+// the qualified form gets exactly what they typed.
+func modelForRequest(config *schemas.WarpConfig) string {
+	if config.Provider == "" || strings.Contains(config.Model, "/") {
+		return config.Model
+	}
+	return string(config.Provider) + "/" + config.Model
+}
+
+// account is the minimal account implementation over the stored Warp config.
 type warpAccount struct {
 	config *schemas.WarpConfig
 }
 
-// GetConfiguredProviders reports the single provider Warp is configured to use.
+// getConfiguredProviders reports the wire protocol Warp speaks, not the provider
+// that serves the request - see transportProvider.
 func (a *warpAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{a.config.Provider}, nil
+	return []schemas.ModelProvider{transportProvider()}, nil
 }
 
-// GetKeysForProvider returns Warp's one key. The whitelist is "*" because the
+// getKeysForProvider returns Warp's one key. The whitelist is "*" because the
 // account serves exactly one model and the config already names it.
 func (a *warpAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
 	key := schemas.Key{
@@ -60,7 +99,7 @@ func (a *warpAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvi
 	return []schemas.Key{key}, nil
 }
 
-// GetConfigForProvider supplies Warp's network settings. BaseURL lives here
+// getConfigForProvider supplies Warp's network settings. BaseURL lives here
 // rather than per-request, which is one of the reasons Warp cannot share the
 // gateway's client.
 func (a *warpAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
@@ -100,10 +139,40 @@ func configSignature(config *schemas.WarpConfig) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%d", config.Provider, config.Model, config.BaseURL, config.APIKeyID, config.EffectiveRequestTimeoutSeconds())
 }
 
-// Chat resolves (building if needed) the instance for this config and returns
-// the function that runs one completion against it.
-func (c *Client) Chat(ctx context.Context, config *schemas.WarpConfig) ChatFunc {
-	return func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+// ConversationHeader labels Warp's own upstream calls with the thread they
+// belong to.
+//
+// The x-bf-lh- prefix is the logging plugin's own convention: everything after
+// it becomes a metadata key on the log row, filterable through
+// SearchFilters.MetadataFilters. With the default base URL Warp talks to this
+// Bifrost, so its research calls are logged like any other traffic - and a
+// question that took five model calls would otherwise land as five unrelated
+// rows with nothing tying them together.
+const ConversationHeader = "x-bf-lh-warp-conversation-id"
+
+// SessionHeader binds a thread's calls to one provider key.
+//
+// x-bf-session-id is Bifrost's session-stickiness header: requests carrying the
+// same value reuse the same key from the pool. A conversation is exactly the
+// unit that wants that - prompt caches, rate-limit buckets and any per-key state
+// are all keyed on the credential, so a thread that hops keys between turns
+// throws that away and pays full price for context it already sent.
+const SessionHeader = "x-bf-session-id"
+
+// UserAgent labels Warp's traffic so the logs can tell it apart.
+//
+// Bifrost derives a log row's app from the User-Agent, so this is what turns
+// Warp's own calls into a named client in the Logs view instead of an anonymous
+// share of "API". It matters more here than for a normal integration: Warp reads
+// the same table it writes to, so being able to see - and filter out - its own
+// traffic is what keeps its answers about the deployment rather than about
+// itself. Matched by schemas.Warp.
+const UserAgent = "bifrost-warp/1"
+
+// chat resolves (building if needed) the instance for this config and runs one
+// completion against it.
+func (c *Client) Chat(ctx context.Context, config *schemas.WarpConfig, conversationID string) ChatFunc {
+	return func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		instance, err := c.instanceFor(ctx, config)
 		if err != nil {
 			return nil, &schemas.BifrostError{
@@ -114,7 +183,16 @@ func (c *Client) Chat(ctx context.Context, config *schemas.WarpConfig) ChatFunc 
 		// snapshot preserved travels with the inference call too.
 		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 		defer cancel()
-		return instance.ChatCompletionRequest(bifrostCtx, req)
+		if conversationID != "" {
+			// Both headers carry the same value for different ends: one groups the
+			// thread's rows in the log table, the other keeps it on one key.
+			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				ConversationHeader: {conversationID},
+				SessionHeader:      {conversationID},
+				"User-Agent":       {UserAgent},
+			})
+		}
+		return instance.ResponsesRequest(bifrostCtx, req)
 	}
 }
 
@@ -155,7 +233,7 @@ func (c *Client) instanceFor(ctx context.Context, config *schemas.WarpConfig) (*
 	return client, nil
 }
 
-// Shutdown releases the instance at server stop.
+// shutdown releases the instance at server stop.
 func (c *Client) Shutdown() {
 	if instance := c.current.Swap(nil); instance != nil {
 		instance.client.Shutdown()

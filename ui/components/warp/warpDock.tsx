@@ -24,52 +24,63 @@ import { useWarp } from "@/lib/contexts/warpContext";
 export default function WarpDock({ children }: { children: React.ReactNode }) {
 	const warp = useWarp();
 	const isMobile = useIsMobile();
+	const isOpen = !!warp?.isOpen;
 
-	if (!warp?.isOpen) {
-		return <>{children}</>;
-	}
-
-	// Below the mobile breakpoint there is no room to sit beside the content, so
-	// the dock becomes a full-width sheet over it instead.
-	if (isMobile) {
-		return (
-			<>
-				{children}
-				<Sheet open onOpenChange={(open) => !open && warp.close()}>
-					<SheetContent side="right" className="w-full p-0 sm:max-w-md" data-testid="warp-dock-sheet">
-						<WarpPanel />
-					</SheetContent>
-				</Sheet>
-			</>
-		);
-	}
-
+	// One tree, always. An earlier version returned a bare fragment when closed
+	// and a wrapped split when open - React sees different element types at the
+	// same position, unmounts the entire page subtree and mounts it again on
+	// every toggle. That remount re-runs every query on the page, re-measures
+	// every chart, and briefly paints the old and new trees together.
+	//
+	// So the wrapper is unconditional and only the panel is conditional. Children
+	// keep their identity, and opening Warp costs one reflow instead of a full
+	// remount.
 	return (
-		// Fills the region below the topbar. min-h-0 lets the row shrink inside the
-		// column flex parent; without it the content card cannot scroll internally
-		// and pushes the layout taller than the viewport.
-		<div className="flex min-h-0 w-full min-w-0 flex-1" data-testid="warp-dock">
+		// overflow-x-clip contains the panel's slide-in. The animation is a
+		// translateX, so for its 200ms the panel sits to the right of its final
+		// position and pokes past this row's edge - which is real overflow, and the
+		// browser answers it with a horizontal scrollbar that appears and vanishes
+		// on every open.
+		//
+		// clip rather than hidden: hidden would make this a scroll container, which
+		// changes how sticky headers and nested scroll areas inside the page behave.
+		// clip suppresses the overflow without any of that.
+		<div className="flex min-h-0 w-full min-w-0 flex-1 overflow-x-clip" data-testid="warp-dock">
 			{/* min-w-0 is what lets the content column actually shrink. Without it a
 			    flex child refuses to go below its content's intrinsic width, and the
 			    dock would push the page off-screen instead of narrowing it. */}
 			<div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
-			<aside
-				// The slide is transform-only. Animating width would reflow the content
-				// column on every frame, and anything inside it that measures itself -
-				// charts, tables, virtualised lists - would re-run its observer for the
-				// whole animation. This way the layout settles once.
-				className="animate-in slide-in-from-right-4 fade-in-0 flex min-h-0 w-[400px] shrink-0 flex-col duration-200 ease-out will-change-transform xl:w-[460px]"
-				data-testid="warp-dock-panel"
-			>
-				{/* The same card treatment the page content and the logs/dashboard filter
-				    rail use: surface, radius, border and the mb-2/mr-2 gutter. Every
-				    panel in the app is an outlined card, so Warp is one too.
-				    overflow-hidden rather than the content card's overflow-auto - the
-				    panel scrolls its own transcript and must not also scroll as a whole. */}
-				<div className="dark:bg-card min-h-0 flex-1 overflow-hidden border border-gray-200 bg-white md:mr-2 md:mb-2 md:rounded-md dark:border-zinc-800">
-					<WarpPanel />
-				</div>
-			</aside>
+
+			{isOpen && !isMobile && (
+				<aside
+					// The slide is transform-only. Animating width would reflow the
+					// content column on every frame, and anything inside it that measures
+					// itself - charts, tables, virtualised lists - would re-run its
+					// observer for the whole animation.
+					className="animate-in slide-in-from-right-4 fade-in-0 flex min-h-0 w-[400px] shrink-0 flex-col duration-200 ease-out will-change-transform xl:w-[460px]"
+					data-testid="warp-dock-panel"
+				>
+					{/* The same card treatment the page content and the logs/dashboard
+					    filter rail use: surface, radius, border and the mb-2/mr-2 gutter.
+					    overflow-hidden rather than the content card's overflow-auto - the
+					    panel scrolls its own transcript and must not also scroll as a
+					    whole. */}
+					<div className="dark:bg-card min-h-0 flex-1 overflow-hidden border border-gray-200 bg-white md:mr-2 md:mb-2 md:rounded-md dark:border-zinc-800">
+						<WarpPanel />
+					</div>
+				</aside>
+			)}
+
+			{/* Below the mobile breakpoint there is no room to sit beside the content,
+			    so the panel becomes a sheet over it. Still inside the same wrapper, so
+			    the content column is untouched either way. */}
+			{isOpen && isMobile && (
+				<Sheet open onOpenChange={(open) => !open && warp?.close()}>
+					<SheetContent side="right" className="w-full p-0 sm:max-w-md" data-testid="warp-dock-sheet">
+						<WarpPanel />
+					</SheetContent>
+				</Sheet>
+			)}
 		</div>
 	);
 }

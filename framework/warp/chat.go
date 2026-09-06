@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -28,11 +29,19 @@ type Turn struct {
 	// Anything slower is hung, not slow, and holding the connection open past
 	// that helps nobody.
 	Budget time.Duration
-	// ConversationID is the thread this turn continues, or empty for a new one.
+	// ConversationID is the thread this turn belongs to. It is settled before
+	// the first model call rather than after the last one, because it travels
+	// upstream as a logging header: Warp's own traffic is logged like any other
+	// request, and without the id on the way out there is nothing to group those
+	// rows by afterwards - a thread's five model calls would sit in the log table
+	// as five unrelated requests.
 	ConversationID string
+	// IsNew records that this turn starts the thread, so history knows to create
+	// it. The id alone cannot say so any more, since it is never empty here.
+	IsNew bool
 
 	question string
-	messages []schemas.ChatMessage
+	messages []schemas.ResponsesMessage
 	config   *schemas.WarpConfig
 	chat     ChatFunc
 }
@@ -55,13 +64,19 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	if bodyBytes > MaxHistoryBytes {
 		return nil, fmt.Errorf("%w: %d bytes exceeds the %d byte limit", ErrConversationTooLong, bodyBytes, MaxHistoryBytes)
 	}
-	chat := s.chatFuncFor(ctx, config)
+	conversationID := strings.TrimSpace(request.ConversationID)
+	isNew := conversationID == ""
+	if isNew {
+		conversationID = uuid.NewString()
+	}
+	chat := s.chatFuncFor(ctx, config, conversationID)
 	if chat == nil {
 		return nil, ErrNoModelClient
 	}
 	return &Turn{
 		Budget:         time.Duration(config.EffectiveMaxIterations()*config.EffectiveRequestTimeoutSeconds()) * time.Second,
-		ConversationID: strings.TrimSpace(request.ConversationID),
+		ConversationID: conversationID,
+		IsNew:          isNew,
 		// The question is the last turn; history is everything before it.
 		question: request.Messages[len(request.Messages)-1].Content,
 		messages: messages,
@@ -90,7 +105,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	agent := NewAgent(turn.chat, s.logs, ScopeFromContext(runCtx), turn.config)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.logs, ScopeFromContext(runCtx), turn.config)
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)
 

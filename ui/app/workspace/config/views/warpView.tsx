@@ -6,37 +6,32 @@ import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { getProviderLabel } from "@/lib/constants/logs";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useGetWarpConfigQuery, useUpdateWarpConfigMutation } from "@/lib/store/apis/warpApi";
+import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import type { WarpConfigInput } from "@/lib/types/warp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useMemo } from "react";
-import { useForm } from "react-hook-form";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-
-interface WarpFormData {
-	enabled: boolean;
-	provider: string;
-	model: string;
-	base_url: string;
-	api_key_id: string;
-	max_iterations: number;
-	request_timeout_seconds: number;
-	system_prompt_suffix: string;
-}
 
 /**
  * Warp talks to Bifrost itself by default.
  *
- * Pointing base_url at the current origin means Warp reaches its model through
- * this deployment's own gateway, using the provider credentials already
- * configured here. That is why the API key below is optional: for the default
- * setup there is no second credential to supply.
+ * Pointing base_url at this deployment means Warp reaches its model through the
+ * gateway, using the provider credentials already configured here. That is why
+ * the API key below is optional: for the default setup there is no second
+ * credential to supply.
+ *
+ * The /openai suffix matters. Warp sends OpenAI-shaped requests, and the
+ * provider appends its own path - so the base has to be the origin's
+ * OpenAI-compatible mount, giving /openai/v1/responses. Pointed at the bare
+ * origin it would resolve to /v1/responses, which this server does not serve.
+ * Routing through the compatibility layer is also what keeps Warp working
+ * against any configured provider rather than only OpenAI.
  */
-const defaultBaseUrl = () => (typeof window === "undefined" ? "" : window.location.origin);
+const defaultBaseUrl = () => (typeof window === "undefined" ? "" : `${window.location.origin}/openai`);
 
 /**
  * Sentinel for "any key". Radix rejects an empty-string SelectItem value, so the
@@ -44,97 +39,107 @@ const defaultBaseUrl = () => (typeof window === "undefined" ? "" : window.locati
  */
 const WARP_ANY_KEY = "__any__";
 
-const EMPTY_FORM: WarpFormData = {
+const DEFAULT_MAX_ITERATIONS = 8;
+const DEFAULT_TIMEOUT_SECONDS = 120;
+
+/** Everything the form edits, in one place. */
+interface WarpFormState {
+	enabled: boolean;
+	provider: string;
+	model: string;
+	apiKeyID: string;
+	baseURL: string;
+	maxIterations: number;
+	requestTimeoutSeconds: number;
+	systemPromptSuffix: string;
+}
+
+const EMPTY_FORM: WarpFormState = {
 	enabled: false,
 	provider: "",
 	model: "",
-	base_url: "",
-	api_key_id: "",
-	max_iterations: 8,
-	request_timeout_seconds: 120,
-	system_prompt_suffix: "",
+	apiKeyID: "",
+	baseURL: "",
+	maxIterations: DEFAULT_MAX_ITERATIONS,
+	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+	systemPromptSuffix: "",
 };
 
+/**
+ * Warp's settings.
+ *
+ * Deliberately plain React state rather than react-hook-form.
+ *
+ * The provider, model and key controls are custom components with no <input> of
+ * their own, and every RHF binding tried for them - setValue plus watch,
+ * explicit register, Controller - left those three selects painting an empty
+ * value after a saved config loaded, while every field backed by a real input
+ * hydrated correctly. cachingView drives the same provider/model pair from plain
+ * state and works. One source of truth, one hydration point, nothing sitting
+ * between the value and the control.
+ */
 export default function WarpView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: config, isLoading: isLoadingConfig } = useGetWarpConfigQuery();
 	const { data: providersData } = useGetProvidersQuery();
-	const providers = useMemo(() => providersData ?? [], [providersData]);
-	const [updateWarpConfig, { isLoading }] = useUpdateWarpConfigMutation();
+	const [updateWarpConfig, { isLoading: isSaving }] = useUpdateWarpConfigMutation();
 
-	const {
-		register,
-		handleSubmit,
-		formState: { errors, isDirty },
-		reset,
-		watch,
-		setValue,
-	} = useForm<WarpFormData>({ defaultValues: EMPTY_FORM });
+	const [form, setForm] = useState<WarpFormState>(EMPTY_FORM);
 
-	const formValues = watch();
-	const enabled = watch("enabled");
+	const providers = providersData ?? [];
+	// Keys are provider-scoped, so the query waits for a provider rather than
+	// firing a request for "".
+	const { data: providerKeysData } = useGetProviderKeysQuery(form.provider, { skip: !form.provider });
+	const providerKeys = providerKeysData ?? [];
 
-	// The selects cannot carry react-hook-form validators the way the text inputs
-	// they replaced did, so completeness is checked here and surfaced on the save
-	// button. The server enforces the same rule; this only saves a round trip.
-	const missingRequired = enabled && (!formValues.provider || !formValues.model);
-
-	// Keys are provider-scoped, so the query waits for a provider. skipToken-style
-	// gating via `skip` keeps an unconfigured form from firing a request for "".
-	const { data: providerKeysData } = useGetProviderKeysQuery(formValues.provider, {
-		skip: !formValues.provider,
-	});
-	const providerKeys = useMemo(() => providerKeysData ?? [], [providerKeysData]);
-
-	// The three select-backed fields are written with setValue rather than spread
-	// from register(), so register them explicitly. Without this they sit outside
-	// react-hook-form's registry and whether they reach handleSubmit depends on
-	// internals - and a dropped provider saves an empty config that still reports
-	// success.
-	useEffect(() => {
-		register("provider");
-		register("model");
-		register("api_key_id");
-	}, [register]);
-
+	// One hydration point. Everything the form shows comes from here.
 	useEffect(() => {
 		if (!config) return;
-		reset({
+		setForm({
 			enabled: config.enabled,
 			provider: config.provider ?? "",
 			model: config.model ?? "",
-			base_url: config.base_url || defaultBaseUrl(),
-			api_key_id: config.api_key_id ?? "",
-			max_iterations: config.max_iterations,
-			request_timeout_seconds: config.request_timeout_seconds,
-			system_prompt_suffix: config.system_prompt_suffix ?? "",
+			apiKeyID: config.api_key_id ?? "",
+			baseURL: config.base_url || defaultBaseUrl(),
+			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
+			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
+			systemPromptSuffix: config.system_prompt_suffix ?? "",
 		});
-	}, [config, reset]);
+	}, [config]);
 
-	const hasChanges = useMemo(() => {
-		if (!config || !isDirty) return false;
-		return (
-			formValues.enabled !== config.enabled ||
-			formValues.provider !== (config.provider ?? "") ||
-			formValues.model !== (config.model ?? "") ||
-			formValues.base_url !== (config.base_url ?? "") ||
-			formValues.api_key_id !== (config.api_key_id ?? "") ||
-			formValues.max_iterations !== config.max_iterations ||
-			formValues.request_timeout_seconds !== config.request_timeout_seconds ||
-			formValues.system_prompt_suffix !== (config.system_prompt_suffix ?? "")
-		);
-	}, [config, formValues, isDirty]);
+	const update = <K extends keyof WarpFormState>(key: K, value: WarpFormState[K]) => setForm((current) => ({ ...current, [key]: value }));
 
-	const onSubmit = async (data: WarpFormData) => {
+	const hasChanges =
+		!!config &&
+		(form.enabled !== config.enabled ||
+			form.provider !== (config.provider ?? "") ||
+			form.model !== (config.model ?? "") ||
+			form.apiKeyID !== (config.api_key_id ?? "") ||
+			form.baseURL !== (config.base_url || defaultBaseUrl()) ||
+			form.maxIterations !== config.max_iterations ||
+			form.requestTimeoutSeconds !== config.request_timeout_seconds ||
+			form.systemPromptSuffix !== (config.system_prompt_suffix ?? ""));
+
+	// The server enforces the same rules; checking here only saves a round trip.
+	const missingRequired = form.enabled && (!form.provider || !form.model);
+	const baseURLInvalid = form.baseURL !== "" && !/^https?:\/\//.test(form.baseURL);
+	const iterationsInvalid = form.maxIterations < 1 || form.maxIterations > 20;
+	const timeoutInvalid = form.requestTimeoutSeconds < 1;
+	const invalid = missingRequired || baseURLInvalid || iterationsInvalid || timeoutInvalid;
+
+	const onSubmit = async (event: React.FormEvent) => {
+		event.preventDefault();
+		if (invalid || !hasChanges) return;
+
 		const payload: WarpConfigInput = {
-			enabled: data.enabled,
-			provider: data.provider.trim(),
-			model: data.model.trim(),
-			base_url: data.base_url.trim(),
-			api_key_id: data.api_key_id,
-			max_iterations: data.max_iterations,
-			request_timeout_seconds: data.request_timeout_seconds,
-			system_prompt_suffix: data.system_prompt_suffix,
+			enabled: form.enabled,
+			provider: form.provider.trim(),
+			model: form.model.trim(),
+			api_key_id: form.apiKeyID,
+			base_url: form.baseURL.trim(),
+			max_iterations: form.maxIterations,
+			request_timeout_seconds: form.requestTimeoutSeconds,
+			system_prompt_suffix: form.systemPromptSuffix,
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
@@ -146,15 +151,15 @@ export default function WarpView() {
 
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="warp-config-view">
-			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+			<form onSubmit={onSubmit} className="space-y-4">
 				<PageTitle title="Warp">
 					Warp answers questions about your Bifrost data in natural language. It runs on its own model, configured here and kept separate
 					from the providers Bifrost serves to your traffic.
 				</PageTitle>
 
-				{/* Alpha is stated on the settings page as well as in the panel: this is
-				    where someone decides whether to turn Warp on for everyone, so it is
-				    the moment the maturity signal actually informs a decision. */}
+				{/* Alpha is stated here as well as in the panel: this is where someone
+				    decides whether to turn Warp on for everyone, so it is the moment the
+				    maturity signal actually informs a decision. */}
 				<div className="flex items-center gap-2">
 					<Badge variant="secondary">ALPHA</Badge>
 					<p className="text-muted-foreground text-xs">Warp is early. Check its numbers against the dashboard before acting on them.</p>
@@ -177,15 +182,15 @@ export default function WarpView() {
 									id="warp-enabled"
 									size="md"
 									data-testid="warp-enabled-switch"
-									checked={formValues.enabled}
+									checked={form.enabled}
 									disabled={!hasSettingsUpdateAccess}
-									onCheckedChange={(checked) => setValue("enabled", checked, { shouldDirty: true })}
+									onCheckedChange={(checked) => update("enabled", checked)}
 								/>
 							</div>
-							{/* A complete but switched-off config saves happily and then leaves the
-                  panel saying Warp is unavailable, with nothing on this page admitting
-                  why. Say it here, next to the switch that causes it. */}
-							{!formValues.enabled && !!formValues.provider && !!formValues.model && (
+							{/* A complete but switched-off config saves happily and then leaves
+							    the panel saying Warp is unavailable, with nothing on this page
+							    admitting why. Say it here, next to the switch that causes it. */}
+							{!form.enabled && !!form.provider && !!form.model && (
 								<p className="text-muted-foreground text-xs" data-testid="warp-disabled-hint">
 									Everything below is filled in, but Warp stays hidden until this is on.
 								</p>
@@ -201,13 +206,19 @@ export default function WarpView() {
 								</p>
 							</div>
 							<Select
-								value={formValues.provider}
+								value={form.provider}
 								onValueChange={(value) => {
-									setValue("provider", value, { shouldDirty: true });
-									// Model and key are both provider-scoped, so values carried over
-									// from the previous provider would be silently invalid.
-									setValue("model", "", { shouldDirty: true });
-									setValue("api_key_id", "", { shouldDirty: true });
+									// Ignore an empty value. No item here has one, so Radix only
+									// emits "" when it decides the current value matches nothing -
+									// which happens for one render as the fetched provider list
+									// arrives and the fallback item below is swapped for the real
+									// one. Acting on it wipes the saved provider a moment after it
+									// hydrated, which is exactly what it looked like: the value
+									// loaded, then vanished.
+									if (!value) return;
+									// Model and key are provider-scoped, so values carried over from
+									// the previous provider would be silently invalid.
+									setForm((current) => ({ ...current, provider: value, model: "", apiKeyID: "" }));
 								}}
 								disabled={!hasSettingsUpdateAccess}
 							>
@@ -215,6 +226,19 @@ export default function WarpView() {
 									<SelectValue placeholder="Select provider" />
 								</SelectTrigger>
 								<SelectContent>
+									{/* The saved provider is listed even when it is missing from the
+									    fetched list - the list may still be loading, or the provider
+									    may have been removed since. Radix renders a Select with no
+									    matching item as its placeholder, which is indistinguishable
+									    from "nothing was ever saved". */}
+									{form.provider && !providers.some((provider) => provider.name === form.provider) && (
+										<SelectItem value={form.provider}>
+											<div className="flex items-center gap-2">
+												<RenderProviderIcon provider={form.provider as ProviderIconType} size="sm" className="h-4 w-4" />
+												<span>{getProviderLabel(form.provider)}</span>
+											</div>
+										</SelectItem>
+									)}
 									{providers
 										.filter((provider) => provider.name)
 										.map((provider) => (
@@ -240,11 +264,11 @@ export default function WarpView() {
 								inputId="warp-model"
 								data-testid="warp-model-select"
 								isSingleSelect
-								provider={formValues.provider || undefined}
-								value={formValues.model}
-								onChange={(model) => setValue("model", model, { shouldDirty: true })}
-								placeholder={formValues.provider ? "Search or type a model..." : "Select a provider first"}
-								disabled={!formValues.provider || !hasSettingsUpdateAccess}
+								provider={form.provider || undefined}
+								value={form.model}
+								onChange={(model) => update("model", model)}
+								placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
+								disabled={!form.provider || !hasSettingsUpdateAccess}
 							/>
 						</div>
 
@@ -257,18 +281,30 @@ export default function WarpView() {
 								</p>
 							</div>
 							<Select
-								value={formValues.api_key_id || WARP_ANY_KEY}
-								onValueChange={(value) => setValue("api_key_id", value === WARP_ANY_KEY ? "" : value, { shouldDirty: true })}
-								disabled={!formValues.provider || !hasSettingsUpdateAccess}
+								value={form.apiKeyID || WARP_ANY_KEY}
+								onValueChange={(value) => {
+									// Same reasoning as the provider select: "" is Radix losing track
+									// of the value, not a choice. The real "no key" answer is the
+									// sentinel.
+									if (!value) return;
+									update("apiKeyID", value === WARP_ANY_KEY ? "" : value);
+								}}
+								disabled={!form.provider || !hasSettingsUpdateAccess}
 							>
 								<SelectTrigger className="w-full" id="warp-api-key-id" data-testid="warp-api-key-select">
-									<SelectValue placeholder={formValues.provider ? "Any key" : "Select a provider first"} />
+									<SelectValue placeholder={form.provider ? "Any key" : "Select a provider first"} />
 								</SelectTrigger>
 								<SelectContent>
 									{/* Radix forbids an empty-string SelectItem value, so the unpinned
-									    default needs a sentinel, mapped back to "" before it reaches the
-									    form. Listing it first makes it the obvious default. */}
+									    default needs a sentinel, mapped back to "" before it leaves.
+									    Listing it first makes it the obvious default. */}
 									<SelectItem value={WARP_ANY_KEY}>Any key</SelectItem>
+									{/* Same reasoning as the provider list: a pinned key missing from
+									    the fetched set still has to show, or it silently reads as Any
+									    key here while staying pinned on the server. */}
+									{form.apiKeyID && !providerKeys.some((providerKey) => providerKey.id === form.apiKeyID) && (
+										<SelectItem value={form.apiKeyID}>{form.apiKeyID}</SelectItem>
+									)}
 									{providerKeys.map((providerKey) => (
 										<SelectItem key={providerKey.id} value={providerKey.id}>
 											{providerKey.name || providerKey.id}
@@ -276,10 +312,8 @@ export default function WarpView() {
 									))}
 								</SelectContent>
 							</Select>
-							{formValues.provider && providerKeys.length === 0 && (
-								<p className="text-muted-foreground text-xs">
-									This provider has no keys configured, which is fine if it does not need one.
-								</p>
+							{form.provider && providerKeys.length === 0 && (
+								<p className="text-muted-foreground text-xs">This provider has no keys configured, which is fine if it needs none.</p>
 							)}
 						</div>
 
@@ -296,13 +330,12 @@ export default function WarpView() {
 								type="text"
 								placeholder="https://llm.internal.example.com/v1"
 								data-testid="warp-base-url-input"
-								className={errors.base_url ? "border-destructive" : ""}
-								{...register("base_url", {
-									validate: (value) =>
-										!value || value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://",
-								})}
+								className={baseURLInvalid ? "border-destructive" : ""}
+								value={form.baseURL}
+								onChange={(event) => update("baseURL", event.target.value)}
+								disabled={!hasSettingsUpdateAccess}
 							/>
-							{errors.base_url && <p className="text-destructive text-sm">{errors.base_url.message}</p>}
+							{baseURLInvalid && <p className="text-destructive text-sm">URL must start with http:// or https://</p>}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
@@ -317,14 +350,12 @@ export default function WarpView() {
 								id="warp-max-iterations"
 								type="number"
 								data-testid="warp-max-iterations-input"
-								className={errors.max_iterations ? "border-destructive" : ""}
-								{...register("max_iterations", {
-									valueAsNumber: true,
-									min: { value: 1, message: "Must be at least 1" },
-									max: { value: 20, message: "Cannot exceed 20" },
-								})}
+								className={iterationsInvalid ? "border-destructive" : ""}
+								value={form.maxIterations}
+								onChange={(event) => update("maxIterations", Number(event.target.value))}
+								disabled={!hasSettingsUpdateAccess}
 							/>
-							{errors.max_iterations && <p className="text-destructive text-sm">{errors.max_iterations.message}</p>}
+							{iterationsInvalid && <p className="text-destructive text-sm">Must be between 1 and 20</p>}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
@@ -338,13 +369,12 @@ export default function WarpView() {
 								id="warp-request-timeout"
 								type="number"
 								data-testid="warp-request-timeout-input"
-								className={errors.request_timeout_seconds ? "border-destructive" : ""}
-								{...register("request_timeout_seconds", {
-									valueAsNumber: true,
-									min: { value: 1, message: "Must be at least 1 second" },
-								})}
+								className={timeoutInvalid ? "border-destructive" : ""}
+								value={form.requestTimeoutSeconds}
+								onChange={(event) => update("requestTimeoutSeconds", Number(event.target.value))}
+								disabled={!hasSettingsUpdateAccess}
 							/>
-							{errors.request_timeout_seconds && <p className="text-destructive text-sm">{errors.request_timeout_seconds.message}</p>}
+							{timeoutInvalid && <p className="text-destructive text-sm">Must be at least 1 second</p>}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
@@ -360,7 +390,9 @@ export default function WarpView() {
 								type="text"
 								placeholder="Costs are in USD. Team IDs map to squads in Notion."
 								data-testid="warp-system-prompt-suffix-input"
-								{...register("system_prompt_suffix")}
+								value={form.systemPromptSuffix}
+								onChange={(event) => update("systemPromptSuffix", event.target.value)}
+								disabled={!hasSettingsUpdateAccess}
 							/>
 						</div>
 					</div>
@@ -372,12 +404,8 @@ export default function WarpView() {
 							Choose a provider and model to enable Warp.
 						</p>
 					)}
-					<Button
-						type="submit"
-						disabled={!hasChanges || isLoading || missingRequired || !hasSettingsUpdateAccess}
-						data-testid="warp-save-btn"
-					>
-						{isLoading ? "Saving..." : "Save Changes"}
+					<Button type="submit" disabled={!hasChanges || isSaving || invalid || !hasSettingsUpdateAccess} data-testid="warp-save-btn">
+						{isSaving ? "Saving..." : "Save Changes"}
 					</Button>
 				</div>
 			</form>

@@ -1,3 +1,4 @@
+import type { WarpUsage } from "@/components/warp/warpStream.utils";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 /** One turn in an Warp conversation. */
@@ -8,6 +9,32 @@ export interface WarpTurn {
 	toolCalls?: WarpTurnToolCall[];
 	/** Set when the turn ended in an error, so the UI can render it differently. */
 	error?: string;
+	/**
+	 * On a user turn, the question this message answers.
+	 *
+	 * Kept so a bare "-7d" in the transcript stays legible: on its own it reads
+	 * as a non sequitur, and the question that prompted it has already scrolled
+	 * out of the composer.
+	 */
+	answeredQuestion?: string;
+	/**
+	 * What to show instead of `content`.
+	 *
+	 * Picking an option sends the hint Warp needs ("-30d") but that is not what
+	 * anyone chose - they chose "Last 30 days". Showing the wire value makes the
+	 * transcript read like a machine log of your own conversation.
+	 */
+	displayContent?: string;
+	/**
+	 * Tokens and spend for this exchange.
+	 *
+	 * Warp's own calls never appear in the logs it reads - deliberately, so it
+	 * does not corrupt the numbers it reports - so this is the only place its
+	 * cost is visible at all.
+	 */
+	usage?: WarpUsage;
+	/** Set when the turn ended by asking something rather than answering. */
+	question?: unknown;
 }
 
 export interface WarpTurnToolCall {
@@ -15,6 +42,8 @@ export interface WarpTurnToolCall {
 	name: string;
 	durationMs?: number;
 	failed?: boolean;
+	/** Why it failed, kept so a red tick can account for itself. */
+	error?: string;
 }
 
 interface WarpContextValue {
