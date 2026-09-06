@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -18,14 +19,17 @@ type fakeWarpVectorStore struct {
 	dimension  int
 	adds       map[string]map[string]interface{}
 	embeddings map[string][]float32
-	nearest    []vectorstore.SearchResult
-	queries    []vectorstore.Query
-	limit      int64
-	threshold  float64
+	// namespaceOf records which namespace each id was added to, so the
+	// paging read and deletes can be scoped the way the real store scopes them.
+	namespaceOf map[string]string
+	nearest     []vectorstore.SearchResult
+	queries     []vectorstore.Query
+	limit       int64
+	threshold   float64
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
-	return &fakeWarpVectorStore{adds: map[string]map[string]interface{}{}, embeddings: map[string][]float32{}}
+	return &fakeWarpVectorStore{adds: map[string]map[string]interface{}{}, embeddings: map[string][]float32{}, namespaceOf: map[string]string{}}
 }
 
 func (f *fakeWarpVectorStore) Ping(context.Context) error { return nil }
@@ -46,8 +50,44 @@ func (f *fakeWarpVectorStore) GetChunk(context.Context, string, string) (vectors
 func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
-func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
-	return nil, nil, nil
+
+// GetAll lists a namespace's entries in id order, one page, carrying vectors
+// only when the read asked for them - the same contract as the real store.
+func (f *fakeWarpVectorStore) GetAll(ctx context.Context, namespace string, _ []vectorstore.Query, _ []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := make([]string, 0, len(f.adds))
+	for id := range f.adds {
+		if f.namespaceOf[id] == namespace {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if cursor != nil {
+		for index, id := range ids {
+			if id == *cursor {
+				ids = ids[index+1:]
+				break
+			}
+		}
+	}
+	results := make([]vectorstore.SearchResult, 0, len(ids))
+	var next *string
+	for _, id := range ids {
+		if limit > 0 && int64(len(results)) == limit {
+			break
+		}
+		result := vectorstore.SearchResult{ID: id, Properties: f.adds[id]}
+		if vectorstore.IncludeVectorsRequested(ctx) {
+			result.Vector = f.embeddings[id]
+		}
+		results = append(results, result)
+		next = new(id)
+	}
+	if limit > 0 && int64(len(results)) < limit {
+		next = nil
+	}
+	return results, next, nil
 }
 func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	f.mu.Lock()
@@ -58,16 +98,43 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float3
 	return f.nearest, nil
 }
 func (f *fakeWarpVectorStore) RequiresVectors() bool { return true }
-func (f *fakeWarpVectorStore) Add(_ context.Context, _ string, id string, embedding []float32, metadata map[string]interface{}) error {
+func (f *fakeWarpVectorStore) Add(_ context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.adds[id] = metadata
 	f.embeddings[id] = embedding
+	f.namespaceOf[id] = namespace
 	return nil
 }
 func (f *fakeWarpVectorStore) Delete(context.Context, string, string) error { return nil }
-func (f *fakeWarpVectorStore) DeleteAll(context.Context, string, []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
-	return nil, nil
+func (f *fakeWarpVectorStore) DeleteAll(_ context.Context, namespace string, _ []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var deleted []vectorstore.DeleteResult
+	for id, ns := range f.namespaceOf {
+		if ns != namespace {
+			continue
+		}
+		delete(f.adds, id)
+		delete(f.embeddings, id)
+		delete(f.namespaceOf, id)
+		deleted = append(deleted, vectorstore.DeleteResult{ID: id})
+	}
+	return deleted, nil
+}
+
+// idsIn lists the ids stored under a namespace, sorted.
+func (f *fakeWarpVectorStore) idsIn(namespace string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := []string{}
+	for id, ns := range f.namespaceOf {
+		if ns == namespace {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 func (f *fakeWarpVectorStore) Close(context.Context, string) error { return nil }
 

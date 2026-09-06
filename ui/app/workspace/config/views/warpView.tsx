@@ -23,6 +23,7 @@ import { AlertTriangle, CheckCircle2, Database, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { embeddingSpaceChanged, supportsWarpEmbedding, validateWarpEmbedding, type WarpEmbeddingFields } from "./warpConfig.utils";
+import WarpTopicsSection from "./warpTopicsSection";
 
 /**
  * Warp talks to Bifrost itself by default.
@@ -747,6 +748,13 @@ export default function WarpView() {
 								<p className="text-muted-foreground text-right text-xs">Save configuration changes before starting a backfill.</p>
 							)}
 						</div>
+
+						<WarpTopicsSection
+							hasSettingsUpdateAccess={hasSettingsUpdateAccess}
+							configured={!!config?.configured}
+							vectorStoreConnected={!!config?.vector_store_connected}
+							hasChanges={hasChanges}
+						/>
 					</div>
 				)}
 

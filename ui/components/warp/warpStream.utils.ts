@@ -131,6 +131,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },
 	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
 	describe_scope: { running: "Validating scope", done: "Validated scope" },
+	list_topics: { running: "Listing topics", done: "Listed topics" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
 

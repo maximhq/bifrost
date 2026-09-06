@@ -202,10 +202,13 @@ func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []s
 func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
 	where := buildWeaviateFilter(queries)
 
+	additional := []graphql.Field{{Name: "id"}}
+	includeVectors := IncludeVectorsRequested(ctx)
+	if includeVectors {
+		additional = append(additional, graphql.Field{Name: "vector"})
+	}
 	fields := []graphql.Field{
-		{Name: "_additional", Fields: []graphql.Field{
-			{Name: "id"},
-		}},
+		{Name: "_additional", Fields: additional},
 	}
 	for _, field := range selectFields {
 		fields = append(fields, graphql.Field{Name: field})
@@ -272,6 +275,9 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 			if id, ok := additional["id"].(string); ok {
 				searchResult.ID = id
 				nextCursor = &id
+			}
+			if includeVectors {
+				searchResult.Vector = VectorFromAdditional(additional["vector"])
 			}
 		}
 

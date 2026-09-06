@@ -51,12 +51,14 @@ func embeddingConfigSignature(config *schemas.WarpConfig) string {
 	return fmt.Sprintf("%s|%s|%d|%s", config.EmbeddingProvider, config.EmbeddingModel, config.EmbeddingDimension, config.EffectiveLogVectorStoreNamespace())
 }
 
-// RegisterBackfill binds Warp's handler to the shared Sidekiq runner.
+// RegisterBackfill binds Warp's background jobs to the shared Sidekiq runner:
+// the embedding backfill and the topic clustering that reads what it wrote.
 func (s *Service) RegisterBackfill(runner *sidekiq.Runner) {
 	if runner == nil || s.indexer == nil || s.logs == nil {
 		return
 	}
 	runner.Register(BackfillJobKind, s.RunBackfillJob)
+	s.RegisterTopics(runner)
 }
 
 // BuildBackfillJobMeta freezes the selected window and embedding space, and

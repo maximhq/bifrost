@@ -74,6 +74,9 @@ type ToolDeps struct {
 	// named no scope of its own; it is not an access control, which queryscope
 	// already applies inside the store.
 	scope Scope
+	// topics answers list_topics from the computed clusters. Nil when there
+	// is no vector store.
+	topics TopicLister
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -464,6 +467,7 @@ func buildTools() []Tool {
 		queryModelsTool(),
 		describeFilterSpaceTool(),
 		describeScopeTool(),
+		listTopicsTool(),
 		askUserToolDef(),
 	}
 }

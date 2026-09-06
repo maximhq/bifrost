@@ -95,6 +95,7 @@ describe("warpToolLabel", () => {
 			"query_model_performance",
 			"describe_filter_space",
 			"describe_scope",
+			"list_topics",
 			"ask_user",
 		];
 		for (const tool of tools) {

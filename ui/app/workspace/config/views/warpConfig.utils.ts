@@ -33,3 +33,8 @@ export const embeddingSpaceChanged = (current: WarpEmbeddingFields, saved: WarpE
 	current.embeddingProvider !== saved.embeddingProvider ||
 	current.embeddingModel !== saved.embeddingModel ||
 	current.embeddingDimension !== saved.embeddingDimension;
+/** A Date as the value a datetime-local input expects, in local time. */
+export const localDateTimeValue = (date: Date): string => {
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};

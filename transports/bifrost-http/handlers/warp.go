@@ -83,6 +83,11 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	r.POST("/api/warp/log-index/backfill", lib.ChainMiddlewares(h.startBackfill, middlewares...))
 	r.GET("/api/warp/log-index/backfill/status", lib.ChainMiddlewares(h.backfillStatus, middlewares...))
 	r.POST("/api/warp/log-index/backfill/cancel", lib.ChainMiddlewares(h.cancelBackfill, middlewares...))
+	// Topic clustering runs over what the backfill and live indexing wrote,
+	// and is driven through the same job shape.
+	r.POST("/api/warp/log-index/topics", lib.ChainMiddlewares(h.startTopics, middlewares...))
+	r.GET("/api/warp/log-index/topics/status", lib.ChainMiddlewares(h.topicsStatus, middlewares...))
+	r.POST("/api/warp/log-index/topics/cancel", lib.ChainMiddlewares(h.cancelTopics, middlewares...))
 	// A read-only summary for the tray. Unlike the backfill controls above it is
 	// not admin-gated: whether semantic search is usable is something everyone
 	// who can ask Warp a question needs to see.
@@ -131,9 +136,34 @@ type warpBackfillStatus struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
-func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
+// warpJobSpec names one of Warp's background jobs for the shared handlers.
+type warpJobSpec struct {
+	kind      string
+	partition string
+	// noun is how the job is called in messages: "backfill", "topic clustering".
+	noun      string
+	buildMeta func(ctx context.Context, start, end time.Time) (string, error)
+}
+
+func (h *WarpHandler) backfillSpec() warpJobSpec {
+	return warpJobSpec{kind: warp.BackfillJobKind, partition: "warp_log_embeddings", noun: "backfill", buildMeta: h.service.BuildBackfillJobMeta}
+}
+
+func (h *WarpHandler) topicsSpec() warpJobSpec {
+	return warpJobSpec{kind: warp.TopicsJobKind, partition: "warp_log_topics", noun: "topic clustering", buildMeta: h.service.BuildTopicsJobMeta}
+}
+
+func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx)  { h.startJob(ctx, h.backfillSpec()) }
+func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) { h.jobStatus(ctx, h.backfillSpec()) }
+func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) { h.cancelJob(ctx, h.backfillSpec()) }
+func (h *WarpHandler) startTopics(ctx *fasthttp.RequestCtx)    { h.startJob(ctx, h.topicsSpec()) }
+func (h *WarpHandler) topicsStatus(ctx *fasthttp.RequestCtx)   { h.jobStatus(ctx, h.topicsSpec()) }
+func (h *WarpHandler) cancelTopics(ctx *fasthttp.RequestCtx)   { h.cancelJob(ctx, h.topicsSpec()) }
+
+// startJob enqueues one run of a Warp background job over a window.
+func (h *WarpHandler) startJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	if !warpLocalAdmin(ctx) {
-		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can backfill Warp embeddings")
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can start Warp "+spec.noun)
 		return
 	}
 	if h.sidekiqRunner == nil || h.backfillStore == nil {
@@ -145,7 +175,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "start_time and end_time must be RFC3339 timestamps")
 		return
 	}
-	if existing, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind); err != nil {
+	if existing, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, spec.kind); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to check running jobs")
 		return
 	} else if existing != nil {
@@ -153,7 +183,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, warpBackfillStatusFromRow(existing))
 		return
 	}
-	metadata, err := h.service.BuildBackfillJobMeta(ctx, request.StartTime, request.EndTime)
+	metadata, err := spec.buildMeta(ctx, request.StartTime, request.EndTime)
 	switch {
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -162,13 +192,13 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to prepare Warp backfill")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to prepare Warp "+spec.noun)
 		return
 	}
 	id := uuid.NewString()
 	createdBy, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
-	if err := h.sidekiqRunner.EnqueuePartitioned(ctx, id, warp.BackfillJobKind, "warp_log_embeddings", metadata, createdBy); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start Warp backfill")
+	if err := h.sidekiqRunner.EnqueuePartitioned(ctx, id, spec.kind, spec.partition, metadata, createdBy); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start Warp "+spec.noun)
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
@@ -179,9 +209,11 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, warpBackfillStatus{ID: id, Status: tables.SidekiqStatusPending})
 }
 
-func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
+// jobStatus reports one job by id, else the in-flight one, else the latest
+// of any status so a reloaded page still shows how the last run ended.
+func (h *WarpHandler) jobStatus(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	if !warpLocalAdmin(ctx) {
-		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp backfills")
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp "+spec.noun)
 		return
 	}
 	if h.backfillStore == nil {
@@ -194,15 +226,13 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 	if id != "" {
 		job, err = h.backfillStore.GetSidekiqJob(ctx, id)
 	} else {
-		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, spec.kind)
 		if err == nil && job == nil {
-			// Nothing running. A reloaded page still wants to see how the last
-			// backfill ended, so fall back to the newest job of any status.
-			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, spec.kind)
 		}
 	}
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill status")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp "+spec.noun+" status")
 		return
 	}
 	if job == nil {
@@ -216,9 +246,10 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, warpBackfillStatusFromRow(job))
 }
 
-func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
+// cancelJob stops one job by id, else the in-flight one.
+func (h *WarpHandler) cancelJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	if !warpLocalAdmin(ctx) {
-		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp backfills")
+		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp "+spec.noun)
 		return
 	}
 	if h.sidekiqRunner == nil || h.backfillStore == nil {
@@ -237,10 +268,10 @@ func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
 	if strings.TrimSpace(request.ID) != "" {
 		job, err = h.backfillStore.GetSidekiqJob(ctx, strings.TrimSpace(request.ID))
 	} else {
-		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
+		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, spec.kind)
 	}
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp backfill")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch Warp "+spec.noun)
 		return
 	}
 	if job == nil {
@@ -248,11 +279,12 @@ func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if _, err := h.sidekiqRunner.Cancel(ctx, job.ID); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel Warp backfill")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel Warp "+spec.noun)
 		return
 	}
 	if refreshed, err := h.backfillStore.GetSidekiqJob(ctx, job.ID); err == nil && refreshed != nil {
-		job = refreshed
+		SendJSON(ctx, warpBackfillStatusFromRow(refreshed))
+		return
 	}
 	SendJSON(ctx, warpBackfillStatusFromRow(job))
 }

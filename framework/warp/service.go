@@ -55,7 +55,17 @@ type Service struct {
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
+	topics       *TopicReader
 	backfillJobs BackfillJobStore
+}
+
+// topicLister returns the topic reader as the tool interface, or a nil
+// interface when there is none - a typed nil would pass the tool's nil check.
+func (s *Service) topicLister() TopicLister {
+	if s.topics == nil {
+		return nil
+	}
+	return s.topics
 }
 
 // Option configures a Service.
@@ -128,6 +138,9 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	}
 	if service.logs != nil {
 		service.client = NewClient(service.logger)
+	}
+	if service.store != nil && service.vectorStore != nil {
+		service.topics = NewTopicReader(service.store, service.vectorStore)
 	}
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
