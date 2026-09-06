@@ -492,6 +492,23 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
+	{IDs: []string{"add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
+}
+
+// migrationAddWarpConversationTables creates Warp's saved-chat storage.
+func migrationAddWarpConversationTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_conversation_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConversation{}, &tables.TableWarpMessage{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableWarpMessage{}, &tables.TableWarpConversation{})
+		},
+	})
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.

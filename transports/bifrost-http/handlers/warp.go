@@ -54,6 +54,16 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	if h.service.CanChat() {
 		r.POST("/api/warp/chat", lib.ChainMiddlewares(h.chat, middlewares...))
 	}
+
+	// History rides on the same middleware chain. Every route resolves its owner
+	// from the request context, so an unauthenticated deployment shares one
+	// history and an authenticated one gives each person their own, with no
+	// second code path between them.
+	if h.service.HasHistory() {
+		r.GET("/api/warp/conversations", lib.ChainMiddlewares(h.listConversations, middlewares...))
+		r.GET("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.getConversation, middlewares...))
+		r.DELETE("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.deleteConversation, middlewares...))
+	}
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller
