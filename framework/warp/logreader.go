@@ -24,6 +24,10 @@ import (
 type LogReader interface {
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 	GetLog(ctx context.Context, id string) (*logstore.Log, error)
+	// GetLogsByIDs hydrates vector-search candidates through the ordinary
+	// scoped log reader. Implementations must preserve the input order and omit
+	// rows that are missing or outside the caller's query scope.
+	GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error)
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 
 	GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error)
