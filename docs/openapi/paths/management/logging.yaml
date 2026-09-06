@@ -356,9 +356,30 @@ logs-filterdata:
   get:
     operationId: getAvailableFilterData
     summary: Get available filter data
-    description: Returns all unique filter data from logs (models, keys, virtual keys).
+    description: >-
+      Returns the distinct values each filter dimension offers, drawn from the
+      logs of roughly the last month.
     tags:
       - Logging
+    parameters:
+      - name: dimensions
+        in: query
+        description: >-
+          Comma-separated dimensions to return. One or more of `models`,
+          `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`,
+          `routing_engines`, `stop_reasons`, `apps`, `user_agents`, `teams`,
+          `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
+          Unrecognised values are ignored, and asking for none returns every
+          dimension.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: >-
+          Free-text search within the requested dimensions. Passing it bypasses
+          the response cache.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
     responses:
@@ -1438,6 +1459,76 @@ logs-rankings:
           application/json:
             schema:
               $ref: "../../schemas/management/logging.yaml#/ModelRankingResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-rankings-by-dimension:
+  get:
+    operationId: getDimensionRankings
+    summary: Get rankings by governance dimension
+    description: |
+      Returns the entities of one governance dimension ranked by spend, tokens
+      and request volume, with trend percentages versus the previous comparable
+      period. Requests carrying no value for the dimension are reported under an
+      `Unassigned` entry rather than dropped, so the rows reconcile with real
+      traffic.
+
+      Note that the accepted `dimension` values differ from the ones the
+      `/by-dimension` histogram endpoints take: rankings use `project` where the
+      histograms use `project_id`.
+    tags:
+      - Logging
+    parameters:
+      - name: dimension
+        in: query
+        required: true
+        description: The governance dimension to rank by.
+        schema:
+          $ref: "../../schemas/management/logging.yaml#/RankingDimension"
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/objects"
+      - $ref: "#/_histogram-parameters/selected_key_ids"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: '#/_histogram-parameters/project_ids'
+      - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/routing_engine_used"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_tokens"
+      - $ref: "#/_histogram-parameters/max_tokens"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/metadata_key"
+      - $ref: "#/_histogram-parameters/content_search"
+      - $ref: "#/_histogram-parameters/request_id"
+      - $ref: '#/_ranking-parameters/limit'
+      - $ref: '#/_ranking-parameters/all'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Dimension rankings retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/DimensionRankingResult"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":

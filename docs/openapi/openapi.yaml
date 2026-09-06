@@ -968,6 +968,18 @@ paths:
   /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id"
 
+  # Governance - Projects (Enterprise)
+  /api/governance/projects:
+    $ref: "./paths/management/projects.yaml#/projects"
+  /api/governance/projects/{project_id}:
+    $ref: "./paths/management/projects.yaml#/projects-by-id"
+  /api/governance/projects/{project_id}/members:
+    $ref: "./paths/management/projects.yaml#/projects-members"
+  /api/governance/projects/{project_id}/members/{member_id}:
+    $ref: "./paths/management/projects.yaml#/projects-member-by-id"
+  /api/governance/users/{user_id}/projects:
+    $ref: "./paths/management/projects.yaml#/users-projects"
+
   # Deprecated Governance aliases (Enterprise compatibility; remove in the following major release)
   /api/virtual-keys/{vk_id}/users:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-virtual-key-users"
@@ -1154,6 +1166,8 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-filterdata"
   /api/logs/rankings:
     $ref: "./paths/management/logging.yaml#/logs-rankings"
+  /api/logs/rankings/by-dimension:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-by-dimension"
   /api/logs/dashboard:
     $ref: "./paths/management/logging.yaml#/logs-dashboard"
   /api/logs/recalculate-cost:

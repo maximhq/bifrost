@@ -1463,13 +1463,23 @@ ModelConfig:
       description: Provider name (optional - applies to all providers if not specified)
     scope:
       type: string
-      description: Scope where this limit applies. `global` covers all traffic; `virtual_key` scopes to a single virtual key; `user` scopes to a single user (Enterprise only).
-      enum: [global, virtual_key, user]
+      description: >-
+        Scope where this limit applies. `global` covers all traffic;
+        `virtual_key` scopes to a single virtual key; `project` scopes to a
+        governance project (Enterprise only); `access_profile` rows are
+        materialized from an access profile and are read-only here, editable
+        only through the profile's own override endpoints (Enterprise only);
+        `user` is a legacy per-user scope that can no longer be created
+        (Enterprise only).
+      enum: [global, virtual_key, project, access_profile, user]
       default: global
     scope_id:
       type: string
       nullable: true
-      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+      description: >-
+        ID of the scope target, for example a virtual key id, a project id, or
+        the user's access-profile assignment id. Required when scope is not
+        `global`.
     scope_name:
       type: string
       nullable: true
@@ -1533,12 +1543,17 @@ CreateModelConfigRequest:
       description: Provider name (optional - applies to all providers if not specified)
     scope:
       type: string
-      description: Scope where this limit applies. Defaults to `global`.
-      enum: [global, virtual_key, user]
+      description: >-
+        Scope where this limit applies. Defaults to `global`. `project` targets
+        a governance project (Enterprise only). The legacy `user` scope is
+        refused on create; use an access profile instead.
+      enum: [global, virtual_key, project]
       default: global
     scope_id:
       type: string
-      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+      description: >-
+        ID of the scope target, for example a virtual key id or a project id.
+        Required when scope is not `global`.
     budgets:
       type: array
       description: Budget lines for this limit. Each entry must have a unique reset_duration.
