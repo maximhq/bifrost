@@ -32,6 +32,15 @@ type TableWarpConfig struct {
 
 	SystemPromptSuffix *string `gorm:"type:text" json:"system_prompt_suffix,omitempty"`
 
+	EmbeddingProvider               string  `gorm:"type:varchar(64)" json:"embedding_provider"`
+	EmbeddingModel                  string  `gorm:"type:varchar(255)" json:"embedding_model"`
+	EmbeddingAPIKeyID               string  `gorm:"type:varchar(255)" json:"embedding_api_key_id,omitempty"`
+	EmbeddingDimension              int     `gorm:"default:0" json:"embedding_dimension"`
+	LogVectorStoreNamespace         string  `gorm:"type:varchar(255)" json:"log_vector_store_namespace"`
+	SemanticSearchThreshold         float64 `gorm:"default:0" json:"semantic_search_threshold"`
+	SemanticSearchLimit             int     `gorm:"default:0" json:"semantic_search_limit"`
+	RetiredLogVectorStoreNamespaces *string `gorm:"type:text" json:"-"`
+
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }

@@ -60,6 +60,35 @@ WarpConfig:
         Appended to Warp's built-in system prompt. Additive only: an operator
         can teach Warp local naming conventions, but cannot remove the tool-use
         and scoping instructions the built-in prompt establishes.
+    embedding_provider:
+      type: string
+      description: Provider used to embed gateway conversations for semantic search.
+      example: openai
+    embedding_model:
+      type: string
+      description: Embedding model used for both indexing and queries.
+      example: text-embedding-3-small
+    embedding_api_key_id:
+      type: string
+      description: Optional reference to one of the embedding provider's configured keys.
+    embedding_dimension:
+      type: integer
+      minimum: 1
+      example: 1536
+    log_vector_store_namespace:
+      type: string
+      default: BifrostWarpLogs
+    semantic_search_threshold:
+      type: number
+      minimum: 0
+      exclusiveMinimum: true
+      maximum: 1
+      default: 0.8
+    semantic_search_limit:
+      type: integer
+      minimum: 1
+      maximum: 25
+      default: 10
   required:
     - configured
     - enabled
@@ -67,6 +96,12 @@ WarpConfig:
     - model
     - max_iterations
     - request_timeout_seconds
+    - embedding_provider
+    - embedding_model
+    - embedding_dimension
+    - log_vector_store_namespace
+    - semantic_search_threshold
+    - semantic_search_limit
 
 WarpConfigInput:
   type: object
@@ -106,6 +141,32 @@ WarpConfigInput:
       description: Zero means "use the default".
     system_prompt_suffix:
       type: string
+    embedding_provider:
+      type: string
+      description: Required when `enabled` is true.
+    embedding_model:
+      type: string
+      description: Required when `enabled` is true.
+    embedding_api_key_id:
+      type: string
+    embedding_dimension:
+      type: integer
+      minimum: 0
+      description: Must be positive when `enabled` is true.
+    log_vector_store_namespace:
+      type: string
+      default: BifrostWarpLogs
+    semantic_search_threshold:
+      type: number
+      minimum: 0
+      exclusiveMinimum: true
+      maximum: 1
+      default: 0.8
+    semantic_search_limit:
+      type: integer
+      minimum: 1
+      maximum: 25
+      default: 10
 
 WarpUnavailable:
   type: object
