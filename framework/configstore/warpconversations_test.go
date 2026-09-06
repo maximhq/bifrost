@@ -203,3 +203,37 @@ func TestWarpConversationMessageCounts(t *testing.T) {
 	require.Equal(t, 2, counts["c2"])
 	require.NotContains(t, counts, "missing")
 }
+
+// The history list shows what each thread cost. One grouped query returns the
+// totals for every listed thread, the same way message counts are fetched, so
+// the list never issues a sum per row.
+func TestWarpConversationUsageTotals(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"c1", "c2"} {
+		require.NoError(t, store.CreateWarpConversation(ctx, &tables.TableWarpConversation{ID: id, OwnerID: "u", Title: id, CreatedAt: now, UpdatedAt: now}))
+	}
+	require.NoError(t, store.AppendWarpMessages(ctx, "u", "c1", []tables.TableWarpMessage{
+		{ID: "c1-u1", Role: "user", Content: "q", CreatedAt: now},
+		{ID: "c1-a1", Role: "assistant", Content: "a", TotalTokens: 100, Cost: 0.01, CreatedAt: now},
+		{ID: "c1-u2", Role: "user", Content: "q2", CreatedAt: now},
+		{ID: "c1-a2", Role: "assistant", Content: "a2", TotalTokens: 50, Cost: 0.005, CreatedAt: now},
+	}))
+	require.NoError(t, store.AppendWarpMessages(ctx, "u", "c2", []tables.TableWarpMessage{
+		{ID: "c2-u1", Role: "user", Content: "q", CreatedAt: now},
+		{ID: "c2-a1", Role: "assistant", Content: "a", CreatedAt: now},
+	}))
+
+	totals, err := store.SumWarpMessageUsage(ctx, []string{"c1", "c2", "missing"})
+	require.NoError(t, err)
+	require.InDelta(t, 0.015, totals["c1"].Cost, 1e-9)
+	require.Equal(t, 150, totals["c1"].TotalTokens)
+	require.Zero(t, totals["c2"].Cost)
+	_, listed := totals["missing"]
+	require.False(t, listed)
+
+	empty, err := store.SumWarpMessageUsage(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}

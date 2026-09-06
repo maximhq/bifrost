@@ -21,6 +21,10 @@ type scriptedModel struct {
 	// lastInput is the conversation as the model last saw it, which is what
 	// provider-side validity assertions have to inspect.
 	lastInput []schemas.ResponsesMessage
+	// lastTools and lastInstructions capture the request parameters, so a test
+	// can assert what the model was offered on a given step.
+	lastTools        []schemas.ResponsesTool
+	lastInstructions string
 }
 
 // respond is the ChatFunc the agent drives.
@@ -28,6 +32,13 @@ func (m *scriptedModel) respond(_ context.Context, req *schemas.BifrostResponses
 	m.calls++
 	if req != nil {
 		m.lastInput = req.Input
+		if req.Params != nil {
+			m.lastTools = req.Params.Tools
+			m.lastInstructions = ""
+			if req.Params.Instructions != nil {
+				m.lastInstructions = *req.Params.Instructions
+			}
+		}
 	}
 	if m.err != nil {
 		return nil, m.err
@@ -533,4 +544,85 @@ func TestWarpAgentStopsExecutingPastTheCap(t *testing.T) {
 
 	collectEvents(t, agent, context.Background())
 	require.Equal(t, MaxToolCallsPerTurn, fake.statsCalls, "calls past the cap must not reach the log store")
+}
+
+// The last research step is the model's final chance to say something. It is
+// asked without tools, so it cannot spend that step on one more query, and
+// whatever it says is delivered as a partial answer rather than an error. A
+// reader gets "here is what I found, here is what I could not check" instead
+// of a red box that discards everything the steps before it learned.
+func TestWarpAgentFinalStepAnswersPartially(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("one", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
+		ToolTurn("two", "count_logs", `{"filters":{}}`),
+		TextTurn("About $12 so far. I could not check last week."),
+	}}
+	agent := newTestAgent(model, &fakeLogReader{}, 3)
+
+	events := collectEvents(t, agent, context.Background())
+
+	require.Equal(t, 3, model.calls)
+	require.Empty(t, model.lastTools, "the final step must not offer tools")
+	require.Contains(t, model.lastInstructions, "final step")
+	last := events[len(events)-1]
+	require.Equal(t, EventDone, last.Type)
+	require.Equal(t, FinishReasonPartial, last.FinishReason)
+	require.Equal(t, 3, last.Iterations)
+	var text string
+	for _, event := range events {
+		if event.Type == EventDelta {
+			text += event.Delta
+		}
+		require.NotEqual(t, EventError, event.Type)
+	}
+	require.Contains(t, text, "About $12")
+}
+
+// The same tool with the same arguments returns the same result, so running
+// it again only burns a step. The repeat is refused with a pointer to the
+// earlier step and the store is not touched a second time.
+func TestWarpAgentRefusesRepeatedToolCall(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("first", "count_logs", `{"filters":{}}`),
+		ToolTurn("again", "count_logs", `{"filters":{}}`),
+		TextTurn("There were 3 requests."),
+	}}
+	fake := &fakeLogReader{}
+	agent := newTestAgent(model, fake, 5)
+
+	events := collectEvents(t, agent, context.Background())
+
+	require.Equal(t, 1, fake.statsCalls, "the repeat must not reach the store")
+	var ends []Event
+	for _, event := range events {
+		if event.Type == EventToolCallEnd {
+			ends = append(ends, event)
+		}
+	}
+	require.Len(t, ends, 2)
+	require.False(t, ends[0].Failed)
+	require.True(t, ends[1].Failed)
+	require.Contains(t, ends[1].ToolError, "step 1")
+	require.Equal(t, EventDone, events[len(events)-1].Type)
+}
+
+// A topic question ("what do people ask about?") has no aggregate that answers
+// it, and the slicing rule for large counts turns it into an endless
+// count-count-list rhythm. The prompt has to name the bounded approach and
+// forbid the two loop shapes explicitly.
+func TestWarpSystemPromptGuidesTopicQuestionsAndForbidsRepeats(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, "what people ask about")
+	require.Contains(t, content, "one bounded sample")
+	require.Contains(t, content, "at most three slices")
+	require.Contains(t, content, "Never call a tool again with the same arguments")
+}
+
+// The links only help if the model uses them. The prompt has to name the two
+// fields and forbid inventing URLs of its own.
+func TestWarpSystemPromptRequiresDashboardLinks(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+	require.Contains(t, content, "logs_link")
+	require.Contains(t, content, "Never invent a link")
 }

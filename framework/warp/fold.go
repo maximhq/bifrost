@@ -38,6 +38,8 @@ func (f *fold) apply(event Event) {
 		if event.ConversationID != "" {
 			f.response.ConversationID = event.ConversationID
 		}
+	case EventQuestion:
+		f.response.Question = event.Question
 	case EventError:
 		f.response.Error = &ChatError{Code: event.Code, Message: event.Message}
 	}

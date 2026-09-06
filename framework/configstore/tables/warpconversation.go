@@ -44,6 +44,14 @@ type TableWarpMessage struct {
 	// it is only ever read and written whole, alongside its message.
 	ToolCallsJSON string `gorm:"type:text" json:"-"`
 	Error         string `gorm:"type:text" json:"error,omitempty"`
+	// FinishReason records how the turn ended ("partial" when Warp ran out of
+	// research steps and answered with what it had). Empty for user turns and
+	// for answers that settled normally.
+	FinishReason string `gorm:"type:varchar(32)" json:"finish_reason,omitempty"`
+	// TotalTokens and Cost are what the answer cost to produce. Filed per
+	// message so the history list can sum a thread's spend in one query.
+	TotalTokens int     `gorm:"not null;default:0" json:"total_tokens,omitempty"`
+	Cost        float64 `gorm:"not null;default:0" json:"cost,omitempty"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 }

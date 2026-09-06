@@ -53,6 +53,15 @@ type LogReader interface {
 	// endpoint already serves. The caller adapts this one method; the other
 	// seventeen match exactly.
 	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	// GetAvailableTeams, GetAvailableCustomers and GetAvailableBusinessUnits
+	// list the id/name pairs seen in logged traffic - the same distinct lookups
+	// the Logs filter bar uses. describe_scope reads these rather than ranking
+	// each dimension: a ranking on the enterprise hierarchy path fans every row
+	// out through JSON-array columns, which took tens of seconds on a large
+	// table, all to learn which names exist.
+	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
 }
 
 // KeyPair is an id paired with the name it is known by.

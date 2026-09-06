@@ -309,6 +309,25 @@ func (s *RDBConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind s
 	return &job, nil
 }
 
+// GetLatestSidekiqJobByKind returns the most recently created job of the given
+// kind in any status, or nil when none was ever enqueued. Status pages use it to
+// keep showing the last outcome (including a failure and its cause) after the
+// job has left the in-flight set, so a reload does not blank the result.
+func (s *RDBConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	var job tables.TableSidekiqJob
+	err := s.DB().WithContext(ctx).
+		Where("kind = ?", kind).
+		Order("created_at DESC").
+		First(&job).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
 // MarkStaleSidekiqJobsFailed flips any running job whose heartbeat (updated_at) is
 // older than staleBefore to failed. This is the safety net for a goroutine or node
 // that died without marking its job: the job stops looking "running" and becomes

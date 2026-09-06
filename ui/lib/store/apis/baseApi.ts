@@ -212,6 +212,7 @@ export const baseApi = createApi({
 		"EdgeConfig",
 		"Notifications",
 		"WarpConfig",
+		"WarpConversations",
 	],
 	endpoints: () => ({}),
 });
