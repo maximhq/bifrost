@@ -23,6 +23,14 @@ export interface WarpConfig {
 	max_iterations: number;
 	request_timeout_seconds: number;
 	system_prompt_suffix?: string;
+	embedding_provider: string;
+	embedding_model: string;
+	embedding_api_key_id?: string;
+	embedding_dimension: number;
+	log_vector_store_namespace: string;
+	semantic_search_threshold: number;
+	semantic_search_limit: number;
+	vector_store_connected: boolean;
 }
 
 /** The write body. Every field round-trips; nothing here is write-only. */
@@ -35,6 +43,13 @@ export interface WarpConfigInput {
 	max_iterations?: number;
 	request_timeout_seconds?: number;
 	system_prompt_suffix?: string;
+	embedding_provider: string;
+	embedding_model: string;
+	embedding_api_key_id?: string;
+	embedding_dimension: number;
+	log_vector_store_namespace: string;
+	semantic_search_threshold?: number;
+	semantic_search_limit?: number;
 }
 
 /**
@@ -43,4 +58,28 @@ export interface WarpConfigInput {
  * its settings, while a deployment with no log store has nothing to read and no
  * in-panel remedy.
  */
-export type WarpUnavailableReason = "not_configured" | "no_log_store";
+export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";
+
+export interface WarpBackfillInput {
+	start_time: string;
+	end_time: string;
+}
+
+export type WarpBackfillState = "idle" | "pending" | "running" | "completed" | "failed" | "cancelled" | "cancelling";
+
+export interface WarpBackfillStatus {
+	id?: string;
+	status: WarpBackfillState;
+	start_time?: string;
+	end_time?: string;
+	total: number;
+	scanned: number;
+	indexed: number;
+	skipped: number;
+	failed: number;
+	last_error?: string;
+	message?: string;
+	created_at?: string;
+	started_at?: string;
+	completed_at?: string;
+}
