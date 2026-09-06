@@ -78,7 +78,8 @@ import "@enterprise/lib/registrations/userPicker";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
 
-const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
+const formatResetDuration = (duration: string) =>
+	i18n.t(`virtualKeys.resetDurations.${duration}`, { ns: "models", defaultValue: resetDurationLabels[duration] || duration });
 
 type ExportScope = "current_page" | "all";
 
@@ -111,7 +112,11 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				: isExhausted
 					? t("virtualKeys.exhausted", { ns: "models" })
 					: t("virtualKeys.active", { ns: "models" });
-		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
+		const assignedTo = vk.team
+			? t("virtualKeys.teamNamed", { ns: "models", name: vk.team.name })
+			: vk.customer
+				? t("virtualKeys.customerNamed", { ns: "models", name: vk.customer.name })
+				: "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
@@ -165,16 +170,17 @@ function FilterClearButton({
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
+	const { t } = useTranslation("models");
 	const { assignedUsers } = useVirtualKeyUsage(vk);
 	const assignedUser = assignedUsers[0];
 
 	let label: string | null = null;
 	if (vk.team) {
-		label = `Team: ${vk.team.name}`;
+		label = t("virtualKeys.teamNamed", { name: vk.team.name });
 	} else if (vk.customer) {
-		label = `Customer: ${vk.customer.name}`;
+		label = t("virtualKeys.customerNamed", { name: vk.customer.name });
 	} else if (assignedUser) {
-		label = `User: ${assignedUser.name || assignedUser.email}`;
+		label = t("virtualKeys.userNamed", { name: assignedUser.name || assignedUser.email });
 	}
 
 	if (!label) {
@@ -715,7 +721,7 @@ export default function VirtualKeysTable({
 				<DialogContent className="sm:max-w-[425px]">
 					<DialogHeader className="pb-0">
 						<DialogTitle>{t("virtualKeys.exportTitle")}</DialogTitle>
-						<DialogDescription>Download as CSV with current filters and sorting applied.</DialogDescription>
+						<DialogDescription>{t("virtualKeys.exportDialogDescription")}</DialogDescription>
 					</DialogHeader>
 					<div className="space-y-4">
 						<div className="space-y-2">
@@ -732,7 +738,7 @@ export default function VirtualKeysTable({
 									)}
 								>
 									<span className="font-medium">{t("virtualKeys.currentPage")}</span>
-									<span className="text-muted-foreground text-xs">{virtualKeys.length} entries</span>
+									<span className="text-muted-foreground text-xs">{t("virtualKeys.entriesCount", { count: virtualKeys.length })}</span>
 								</button>
 								<button
 									type="button"
@@ -745,7 +751,7 @@ export default function VirtualKeysTable({
 									)}
 								>
 									<span className="font-medium">{t("virtualKeys.allEntries")}</span>
-									<span className="text-muted-foreground text-xs">{totalCount} total</span>
+									<span className="text-muted-foreground text-xs">{t("virtualKeys.entriesTotal", { count: totalCount })}</span>
 								</button>
 							</div>
 						</div>
@@ -753,13 +759,13 @@ export default function VirtualKeysTable({
 						{exportScope === "all" && (
 							<div className="space-y-2">
 								<Label htmlFor="export-max-limit" className="text-sm">
-									Max entries <span className="text-muted-foreground font-normal">(optional)</span>
+									{t("virtualKeys.maxEntries")} <span className="text-muted-foreground font-normal">{t("virtualKeys.optional")}</span>
 								</Label>
 								<Input
 									id="export-max-limit"
 									type="number"
 									min="1"
-									placeholder={`Leave blank for all ${totalCount}`}
+									placeholder={t("virtualKeys.leaveBlankForAll", { count: totalCount })}
 									value={exportMaxLimit}
 									onChange={(e) => setExportMaxLimit(e.target.value)}
 									data-testid="vk-export-max-limit"
@@ -811,11 +817,7 @@ export default function VirtualKeysTable({
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("virtualKeys.rotateSelectedTitle")}</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
-							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values stop working immediately
-							unless a rotation cooldown is configured, in which case they remain valid until the cooldown ends.
-						</AlertDialogDescription>
+						<AlertDialogDescription>{t("virtualKeys.rotateSelectedDescription", { count: selectedCount })}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel data-testid="vk-bulk-rotate-cancel-btn">{tc("cancel")}</AlertDialogCancel>
@@ -1021,7 +1023,7 @@ export default function VirtualKeysTable({
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												{showExpiredBadge ? (
 													<Badge variant="destructive" className="text-xs">
-														Expired
+														{t("virtualKeys.expired")}
 													</Badge>
 												) : (
 													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
@@ -1052,8 +1054,11 @@ export default function VirtualKeysTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("virtualKeys.rangeOf", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -1071,7 +1076,7 @@ export default function VirtualKeysTable({
 							<div className="flex items-center gap-1">
 								<span>{t("virtualKeys.page")}</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("virtualKeys.pageOf", { total: Math.ceil(totalCount / limit) })}</span>
 							</div>
 
 							<Button

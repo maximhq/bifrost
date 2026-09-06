@@ -336,7 +336,7 @@ const SidebarItemView = ({
 							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
 							const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 							const SubItemIcon = subItem.icon;
-							const subId = subItem.id;
+							const subId = subItem.testId ?? subItem.id;
 							const inner = (
 								<div className="flex items-center gap-2">
 									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -410,7 +410,7 @@ const SidebarItemView = ({
 								{subItem.hasAccess === false ? (
 									<SidebarMenuSubButton
 										data-nav-url={subItemHref}
-										data-testid={`sidebar-subitem-disabled-${subItem.id}`}
+										data-testid={`sidebar-subitem-disabled-${subItem.testId ?? subItem.id}`}
 										className={subItemClassName}
 									>
 										{subInner}
@@ -421,7 +421,7 @@ const SidebarItemView = ({
 											to={subItemHref}
 											preload="intent"
 											data-nav-url={subItemHref}
-											data-testid={`sidebar-subitem-link-${subItem.id}`}
+											data-testid={`sidebar-subitem-link-${subItem.testId ?? subItem.id}`}
 										>
 											{subInner}
 										</Link>
@@ -841,10 +841,10 @@ export default function AppSidebar() {
 					},
 					{
 						id: "governance.projects",
-						title: "Projects",
+						title: t("nav.projects"),
 						url: "/workspace/governance/projects",
 						icon: SquareKanban,
-						description: "Scope requests to a project's access and budget",
+						description: t("navDesc.projects"),
 						hasAccess: hasProjectsAccess,
 					},
 					{

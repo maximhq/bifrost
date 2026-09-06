@@ -411,17 +411,17 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	if (!total || !usage?.prompt_tokens_details) return undefined;
 	const cachedRead = usage?.prompt_tokens_details.cached_read_tokens ?? 0;
 	const cachedWrite = usage?.prompt_tokens_details.cached_write_tokens ?? 0;
-	const lines = ["Input tokens include cached tokens."];
+	const lines = [i18n.t("logs.detail.inputTokensIncludeCached", { ns: "observability" })];
 	if (cachedRead >= 0 || cachedWrite >= 0) {
-		lines.push(`Uncached input: ${formatExactNumber(total - cachedRead - cachedWrite)}`);
+		lines.push(i18n.t("logs.detail.uncachedInput", { ns: "observability", value: formatExactNumber(total - cachedRead - cachedWrite) }));
 	}
 	if (cachedRead >= 0) {
-		lines.push(`Cache read: ${formatExactNumber(cachedRead)}`);
+		lines.push(i18n.t("logs.detail.cacheRead", { ns: "observability", value: formatExactNumber(cachedRead) }));
 	}
 	if (cachedWrite >= 0) {
-		lines.push(`Cache write: ${formatExactNumber(cachedWrite)}`);
+		lines.push(i18n.t("logs.detail.cacheWrite", { ns: "observability", value: formatExactNumber(cachedWrite) }));
 	}
-	lines.push(`Input tokens: ${formatExactNumber(total)}`);
+	lines.push(i18n.t("logs.detail.inputTokensTotal", { ns: "observability", value: formatExactNumber(total) }));
 	return lines.join("\n");
 };
 
@@ -2206,7 +2206,7 @@ export function LogDetailView({
 									{log.cost == null && (log.children_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
-											label="Settled Cost"
+											label={t("logs.settledCost")}
 											value={formatCostPrecise(log.children_cost)}
 										/>
 									)}
@@ -2435,11 +2435,11 @@ export function LogDetailView({
 								<>
 									<DottedSeparator />
 									<div className="space-y-4">
-										<BlockHeader title="Video Details" />
+										<BlockHeader title={t("logs.detail.videoDetails")} />
 										{videoDebug.video_id && (
 											<LogEntryDetailsView
 												className="w-full"
-												label="Video ID"
+												label={t("logs.detail.videoId")}
 												value={
 													<span className="flex items-center gap-1">
 														<code className="font-mono text-xs">{videoDebug.video_id}</code>
@@ -2451,18 +2451,16 @@ export function LogDetailView({
 										{videoAccounting && (
 											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 												{videoAccounting.seconds != null && (
-													<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
+													<LogEntryDetailsView className="w-full" label={t("logs.detail.billedSeconds")} value={String(videoAccounting.seconds)} />
 												)}
-												{videoAccounting.size && <LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />}
+												{videoAccounting.size && <LogEntryDetailsView className="w-full" label={t("logs.detail.resolution")} value={videoAccounting.size} />}
 												{videoAccounting.output_count != null && (
-													<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
+													<LogEntryDetailsView className="w-full" label={t("logs.detail.clipsBilled")} value={String(videoAccounting.output_count)} />
 												)}
 											</div>
 										)}
 										{videoAccounting?.incomplete && (
-											<p className="text-muted-foreground text-xs">
-												Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
-											</p>
+											<p className="text-muted-foreground text-xs">{t("logs.detail.incompletePricing")}</p>
 										)}
 									</div>
 								</>

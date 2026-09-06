@@ -538,9 +538,7 @@ export const createColumns = (
 								{/* The expand chevron only exists in the grouped view, so pointing at
 								    it anywhere else sends people looking for a control that is not there. */}
 								<TooltipContent>
-									{groupedView
-										? "Settled after this request completed. Expand the row to see it."
-										: "Settled after this request completed, on its own row."}
+									{groupedView ? t("logs.settledTooltipGrouped") : t("logs.settledTooltipFlat")}
 								</TooltipContent>
 							</Tooltip>
 						);
