@@ -48,6 +48,16 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		// The Anthropic integration emits the provider-generic forced tool choice "any".
+		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
+		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
+		// without mutating the caller's parameters.
+		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
+			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) {
+			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
+				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
+			}
+		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)

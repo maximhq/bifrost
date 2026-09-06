@@ -312,6 +312,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
+		// The Anthropic integration emits the provider-generic forced tool choice "any".
+		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
+		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
+		// without mutating the caller's parameters.
+		if tc := req.ResponsesParameters.ToolChoice; tc != nil && tc.ResponsesToolChoiceStr != nil &&
+			*tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeAny) {
+			req.ResponsesParameters.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeRequired)),
+			}
+		}
 
 		// Handle reasoning parameter: OpenAI uses effort-based reasoning
 		// Priority: effort (native) > max_tokens (estimated)
