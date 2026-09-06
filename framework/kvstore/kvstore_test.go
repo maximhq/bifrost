@@ -98,3 +98,107 @@ func TestStoreClose(t *testing.T) {
 		t.Fatalf("expected ErrClosed on get, got: %v", err)
 	}
 }
+
+func TestStoreCompareAndSwapStringWithTTL(t *testing.T) {
+	store, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SetWithTTL("binding", "a", time.Hour); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+	if swapped, err := store.CompareAndSwapStringWithTTL("binding", "wrong", "b", time.Hour); err != nil || swapped {
+		t.Fatalf("mismatched CAS should lose without error, swapped=%v err=%v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwapStringWithTTL("binding", "a", "b", time.Hour); err != nil || !swapped {
+		t.Fatalf("matching CAS should win, swapped=%v err=%v", swapped, err)
+	}
+	if value, err := store.Get("binding"); err != nil || value != "b" {
+		t.Fatalf("expected replacement b, got %v err=%v", value, err)
+	}
+}
+
+func TestStoreCompareAndSwapStringWithTTLDoesNotResurrectMissingOrExpired(t *testing.T) {
+	store, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	if swapped, err := store.CompareAndSwapStringWithTTL("missing", "a", "b", time.Hour); err != nil || swapped {
+		t.Fatalf("missing CAS should lose without error, swapped=%v err=%v", swapped, err)
+	}
+	if err := store.SetWithTTL("expired", "a", time.Nanosecond); err != nil {
+		t.Fatalf("set expired failed: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if swapped, err := store.CompareAndSwapStringWithTTL("expired", "a", "b", time.Hour); err != nil || swapped {
+		t.Fatalf("expired CAS should lose without resurrection, swapped=%v err=%v", swapped, err)
+	}
+}
+
+func TestStoreCompareAndSwapStringWithTTLHandlesJSONBytes(t *testing.T) {
+	store, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	store.mu.Lock()
+	store.data["json"] = entry{value: []byte(`"a"`), writtenAt: time.Now().UnixNano()}
+	store.mu.Unlock()
+	if swapped, err := store.CompareAndSwapStringWithTTL("json", "a", "b", time.Hour); err != nil || !swapped {
+		t.Fatalf("JSON string CAS should win, swapped=%v err=%v", swapped, err)
+	}
+}
+
+func TestStoreCompareAndSwapStringWithTTLRejectsDelegatedStore(t *testing.T) {
+	store, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+	store.SetDelegate(testSyncDelegate{})
+	if swapped, err := store.CompareAndSwapStringWithTTL("binding", "a", "b", time.Hour); !errors.Is(err, ErrConditionalUnsupported) || swapped {
+		t.Fatalf("delegated CAS should fail closed, swapped=%v err=%v", swapped, err)
+	}
+}
+
+type testSyncDelegate struct{}
+
+func (testSyncDelegate) OnSet(string, []byte, int64, int64) {}
+func (testSyncDelegate) OnDelete(string, int64)             {}
+
+func TestStoreDelegateAttachConcurrentWithCAS(t *testing.T) {
+	store, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_ = store.Set("binding", "a")
+	start := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for i := 0; i < 1000; i++ {
+			store.SetDelegate(testSyncDelegate{})
+			store.SetDelegate(nil)
+		}
+	}()
+	close(start)
+	for i := 0; i < 1000; i++ {
+		store.SupportsProcessLocalCAS()
+		// Delegate attachment may reject CAS; other errors are unexpected.
+		if _, err := store.CompareAndSwapStringWithTTL("binding", "a", "a", time.Hour); err != nil && !errors.Is(err, ErrConditionalUnsupported) {
+			t.Errorf("unexpected CAS error during delegate attachment: %v", err)
+		}
+	}
+	<-done
+	store.SetDelegate(testSyncDelegate{})
+	if ok, e := store.CompareAndSwapStringWithTTL("binding", "a", "b", time.Hour); ok || !errors.Is(e, ErrConditionalUnsupported) {
+		t.Fatalf("CAS accepted delegated store: %v %v", ok, e)
+	}
+}

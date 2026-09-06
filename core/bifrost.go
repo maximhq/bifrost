@@ -100,6 +100,7 @@ type Bifrost struct {
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
+	stickyQuotaFailover bool                                // trusted opt-in for process-local sticky chat quota migration
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -238,19 +239,20 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 	bifrost := &Bifrost{
-		ctx:           bifrostCtx,
-		cancel:        cancel,
-		account:       config.Account,
-		llmPlugins:    atomic.Pointer[[]schemas.LLMPlugin]{},
-		mcpPlugins:    atomic.Pointer[[]schemas.MCPPlugin]{},
-		requestQueues: sync.Map{},
-		waitGroups:    sync.Map{},
-		keySelector:   config.KeySelector,
-		keyPoolFilter: config.KeyPoolFilter,
-		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
-		logger:        config.Logger,
-		kvStore:       config.KVStore,
-		modelCatalog:  config.ModelCatalog,
+		ctx:                 bifrostCtx,
+		cancel:              cancel,
+		account:             config.Account,
+		llmPlugins:          atomic.Pointer[[]schemas.LLMPlugin]{},
+		mcpPlugins:          atomic.Pointer[[]schemas.MCPPlugin]{},
+		requestQueues:       sync.Map{},
+		waitGroups:          sync.Map{},
+		keySelector:         config.KeySelector,
+		keyPoolFilter:       config.KeyPoolFilter,
+		mcpCredStore:        credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
+		logger:              config.Logger,
+		kvStore:             config.KVStore,
+		stickyQuotaFailover: config.EnableStickyKeyQuotaFailover,
+		modelCatalog:        config.ModelCatalog,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -6124,6 +6126,7 @@ func executeRequestWithRetries[T any](
 	model string,
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
+	retryObservers ...stickyRetryObserver,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
 
@@ -6564,6 +6567,8 @@ func executeRequestWithRetries[T any](
 			logger.Debug("encountered error that should be retried: %s", errMessage)
 		}
 
+		quotaRetryEligible := isStickyQuotaRetry(bifrostError)
+
 		// Fill FailReason on any failed attempt (retryable or terminal). The trail field
 		// answers "why was this key skipped?", so for rotation-triggering status codes the
 		// status itself is the truthful answer — provider Type labels can be misleading
@@ -6573,7 +6578,7 @@ func executeRequestWithRetries[T any](
 		if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 			reason := "unknown"
 			switch {
-			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 429:
+			case quotaRetryEligible:
 				reason = "rate_limit_error"
 			case bifrostError.StatusCode != nil && (*bifrostError.StatusCode == 401 || *bifrostError.StatusCode == 403):
 				reason = "authentication_error"
@@ -6599,6 +6604,7 @@ func executeRequestWithRetries[T any](
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
+			quotaRetryEligible = false
 			extraAttempts++
 			shouldRetry = true
 			logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
@@ -6607,6 +6613,11 @@ func executeRequestWithRetries[T any](
 
 		if !shouldRetry {
 			break
+		}
+		for _, observer := range retryObservers {
+			if observer != nil {
+				observer.observeRetry(bifrostError, quotaRetryEligible)
+			}
 		}
 
 		// Track key state so the next keyProvider call excludes this key. Permanent
@@ -6880,6 +6891,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
 		// batch/file/container operations that manage their own key lists.
 		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
+		var retryObserver stickyRetryObserver
 
 		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
@@ -6965,74 +6977,83 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// governance/alias resolution) is worker-side work; the per-attempt pick
 					// is the separate "key.selection" span.
 					keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
-					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
-					bifrost.endCoreSpan(keyPoolSpan)
-					if keyPoolErr != nil {
-						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
-						req.Err <- schemas.BifrostError{
-							IsBifrostError: false,
-							Error: &schemas.ErrorField{
-								Message: keyPoolErr.Error(),
-								Error:   keyPoolErr,
-							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:               provider.GetProviderKey(),
-								RequestType:            req.RequestType,
-								OriginalModelRequested: model,
-								ResolvedModelUsed:      model,
-							},
-						}
-						continue
+					var stickyPlan *stickyKeyPlan
+					var stickyHandled bool
+					var stickyPlanErr error
+					if bifrost.stickyQuotaFailover && stickyChatPayloadEligible(req.BifrostRequest.ChatRequest) {
+						stickyPlan, stickyHandled, stickyPlanErr = bifrost.buildStickyKeyPlan(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 					}
-
-					if len(supportedKeys) == 0 {
-						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
-					} else if !canRotate {
-						// Fixed key (explicit ID/name, session stickiness): always
-						// return the same key — *unless* it has been marked permanently
-						// dead this request, in which case surface errAllKeysDead so the
-						// caller emits 502 upstream_credentials_exhausted instead of
-						// burning the remaining retries on the same bad credential.
-						fixedKey := supportedKeys[0]
-						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							if deadKeyIDs[fixedKey.ID] {
-								return schemas.Key{}, errAllKeysDead
+					if stickyHandled {
+						bifrost.endCoreSpan(keyPoolSpan)
+						if stickyPlanErr != nil {
+							bifrost.logger.Debug("error building sticky key plan for model %s: %v", model, stickyPlanErr)
+							req.Err <- schemas.BifrostError{
+								IsBifrostError: false,
+								Error: &schemas.ErrorField{
+									Message: stickyPlanErr.Error(),
+									Error:   stickyPlanErr,
+								},
+								ExtraFields: schemas.BifrostErrorExtraFields{
+									Provider:               provider.GetProviderKey(),
+									RequestType:            req.RequestType,
+									OriginalModelRequested: model,
+									ResolvedModelUsed:      model,
+								},
 							}
-							return fixedKey, nil
+							continue
 						}
+						keyProvider = stickyPlan.keyProvider()
+						retryObserver = stickyPlan
 					} else {
-						// Rotating pool: weighted selection with per-cycle exclusion.
-						// Captures supportedKeys, bifrost.keySelector, provider/model by value.
-						pool := supportedKeys
-						provKey := provider.GetProviderKey()
-						mdl := model
-						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							available := make([]schemas.Key, 0, len(pool))
-							for _, k := range pool {
-								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
-									continue
-								}
-								available = append(available, k)
+						supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+						bifrost.endCoreSpan(keyPoolSpan)
+						if keyPoolErr != nil {
+							bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
+							req.Err <- schemas.BifrostError{
+								IsBifrostError: false,
+								Error: &schemas.ErrorField{
+									Message: keyPoolErr.Error(),
+									Error:   keyPoolErr,
+								},
+								ExtraFields: schemas.BifrostErrorExtraFields{
+									Provider:               provider.GetProviderKey(),
+									RequestType:            req.RequestType,
+									OriginalModelRequested: model,
+									ResolvedModelUsed:      model,
+								},
 							}
-							if bifrost.keyPoolFilter != nil {
-								if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-									bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-								} else {
-									available = filtered
+							continue
+						}
+
+						if len(supportedKeys) == 0 {
+							// SkipKeySelection path — keyProvider stays nil, zero Key is used.
+						} else if !canRotate {
+							// Fixed key (explicit ID/name, session stickiness): always
+							// return the same key — *unless* it has been marked permanently
+							// dead this request, in which case surface errAllKeysDead so the
+							// caller emits 502 upstream_credentials_exhausted instead of
+							// burning the remaining retries on the same bad credential.
+							fixedKey := supportedKeys[0]
+							keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+								if deadKeyIDs[fixedKey.ID] {
+									return schemas.Key{}, errAllKeysDead
 								}
+								return fixedKey, nil
 							}
-							if len(available) == 0 {
-								// No non-dead keys remain in this cycle. If every key has been
-								// marked permanently dead, give up — retrying won't help.
-								// Otherwise reset usedKeyIDs and start a fresh weighted round
-								// across the still-live (non-dead) keys; a previously
-								// rate-limited key may have free quota by now.
+						} else {
+							// Rotating pool: weighted selection with per-cycle exclusion.
+							// Captures supportedKeys, bifrost.keySelector, provider/model by value.
+							pool := supportedKeys
+							provKey := provider.GetProviderKey()
+							mdl := model
+							keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+								available := make([]schemas.Key, 0, len(pool))
 								for _, k := range pool {
-									if !deadKeyIDs[k.ID] {
-										available = append(available, k)
+									if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+										continue
 									}
+									available = append(available, k)
 								}
-								liveCount := len(available) // non-dead keys before the filter runs
 								if bifrost.keyPoolFilter != nil {
 									if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
 										bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
@@ -7041,16 +7062,36 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 									}
 								}
 								if len(available) == 0 {
-									if liveCount > 0 {
-										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
+									// No non-dead keys remain in this cycle. If every key has been
+									// marked permanently dead, give up — retrying won't help.
+									// Otherwise reset usedKeyIDs and start a fresh weighted round
+									// across the still-live (non-dead) keys; a previously
+									// rate-limited key may have free quota by now.
+									for _, k := range pool {
+										if !deadKeyIDs[k.ID] {
+											available = append(available, k)
+										}
 									}
-									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
+									liveCount := len(available) // non-dead keys before the filter runs
+									if bifrost.keyPoolFilter != nil {
+										if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
+											bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
+										} else {
+											available = filtered
+										}
+									}
+									if len(available) == 0 {
+										if liveCount > 0 {
+											return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
+										}
+										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
+									}
+									for id := range usedKeyIDs {
+										delete(usedKeyIDs, id)
+									}
 								}
-								for id := range usedKeyIDs {
-									delete(usedKeyIDs, id)
-								}
+								return bifrost.keySelector(req.Context, available, provKey, mdl)
 							}
-							return bifrost.keySelector(req.Context, available, provKey, mdl)
 						}
 					}
 				}
@@ -7195,7 +7236,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					})
 				}
 				return streamCh, streamErr
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger, retryObserver)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
@@ -7213,7 +7254,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				applyRawCaptureSignals(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger, retryObserver)
 		}
 
 		// For streaming with an error, route release through the LAST attempt's

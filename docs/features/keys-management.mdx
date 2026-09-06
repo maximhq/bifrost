@@ -28,6 +28,43 @@ Random selection ensures statistical distribution over time
 3. Select key based on cumulative weight ranges
 4. If selected key fails, automatic fallback to next available key
 
+## Session stickiness and quota failover
+
+Send `x-bf-session-id` to reuse a provider key for a session. By default, retries keep
+the same key, preserving affinity even when another key has available quota.
+
+Operators can opt in to quota-driven key migration for self-contained Chat
+Completions requests:
+
+```bash
+BIFROST_ENABLE_STICKY_KEY_QUOTA_FAILOVER=true
+```
+
+Set this environment variable on the HTTP gateway process and restart it. It defaults
+to `false`; invalid boolean values prevent startup. Request headers and configuration
+reloads cannot change the setting. Go SDK callers can set
+`BifrostConfig.EnableStickyKeyQuotaFailover` when calling `bifrost.Init`.
+
+When an eligible request encounters a rate-limit or quota failure and has a retry
+remaining, Bifrost can move its binding to another eligible key in the same provider
+and model pool. Later eligible requests reuse the winning key. This requires at least
+two eligible keys, a positive retry budget, and a KV store implementing the optional
+conditional string-update capability. The built-in store supports this locally;
+a delegated cluster store retains strict selection. This is not cluster-wide failover.
+
+Eligibility is deliberately conservative. Plain text, function-tool transcripts,
+inline media and ordinary cache hints are supported. Explicit key pins, raw or opaque
+payloads, remote files/images, provider-issued resource references, reasoning history,
+refusals, annotations and server-side tools retain the existing selection path.
+Responses and Anthropic Messages are excluded. Authentication, billing, permission,
+network and server errors do not cause this migration. A stream that has already
+exposed valid data is never replayed by this feature.
+
+Opt-in Chat bindings use a separate namespace, so their migration does not move
+legacy bindings used by other request types. The first eligible request may seed its
+binding from an existing legacy session key. Disabling the option restores strict
+legacy selection; it does not copy the migrated binding back.
+
 ## Model Whitelisting and Filtering
 
 Keys can be restricted to specific models for access control and cost management:

@@ -140504,6 +140504,202 @@
           ]
         }
       ]
+    },
+    {
+      "name": "69. Sticky quota failover (isolated opt-in fixture)",
+      "description": "Opt-in HTTP regression contract for typed chat sticky-key quota migration. SKIPPED unless stickyFailoverFixture=enabled. Requires an isolated SDK-initialized gateway with trusted sticky-key failover enabled, local atomic KV with no cluster delegate, max_retries>=1, deterministic initial selector choosing key A, and two eligible keys. Configure stickyFailoverModel as provider/model and stickyFailoverPinnedKeyID as A. Mock upstream A returns HTTP 429 sticky-quota-error (also as first SSE error for streaming); B returns valid OpenAI chat/SSE with marker sticky-healthy-key. Use no real provider credentials. A missing fixture is a skip, not a pass. Do not skip 429/5xx after opt-in: those are regression outcomes. The standard HTTP gateway exposes the initialization-only operator flag BIFROST_ENABLE_STICKY_KEY_QUOTA_FAILOVER=true; SDK fixtures can also initialize the flag directly. Core tests cover concurrency, persistence and negative paths; this collection adds a wire-contract template, not evidence of a live fixture run.",
+      "item": [
+        {
+          "name": "openai fixture chat - sticky-quota-failover",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('stickyFailoverFixture') !== 'enabled') { pm.execution.skipRequest(); return; }",
+                  "if (!pm.variables.get('stickyFailoverModel') || !pm.variables.get('stickyFailoverPinnedKeyID')) { throw new Error('isolated sticky failover fixture variables required'); }",
+                  "pm.variables.set('stickyFailoverSession', 'harness-sticky-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('sticky quota migrates to healthy key - sticky-quota-failover', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.equal('sticky-healthy-key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{stickyFailoverSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{stickyFailoverModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return the fixture marker.\"\n    }\n  ],\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai fixture stream - sticky-quota-failover",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('stickyFailoverFixture') !== 'enabled') { pm.execution.skipRequest(); return; }",
+                  "if (!pm.variables.get('stickyFailoverModel') || !pm.variables.get('stickyFailoverPinnedKeyID')) { throw new Error('isolated sticky failover fixture variables required'); }",
+                  "pm.variables.set('stickyFailoverSession', 'harness-sticky-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('quota first chunk migrates before output - sticky-quota-failover', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include('data:');",
+                  "  pm.expect(pm.response.text()).to.include('sticky-healthy-key');",
+                  "  pm.expect(pm.response.text()).to.include('[DONE]');",
+                  "  pm.expect(pm.response.text()).to.not.include('sticky-quota-error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{stickyFailoverSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{stickyFailoverModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return the fixture marker.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai fixture pin - sticky-quota-failover [EXPECT-4XX]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('stickyFailoverFixture') !== 'enabled') { pm.execution.skipRequest(); return; }",
+                  "if (!pm.variables.get('stickyFailoverModel') || !pm.variables.get('stickyFailoverPinnedKeyID')) { throw new Error('isolated sticky failover fixture variables required'); }",
+                  "pm.variables.set('stickyFailoverSession', 'harness-sticky-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explicit pin retains quota failure - sticky-quota-failover', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(429);",
+                  "  pm.expect(pm.response.text()).to.not.include('sticky-healthy-key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{stickyFailoverSession}}"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{stickyFailoverPinnedKeyID}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{stickyFailoverModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return the fixture marker.\"\n    }\n  ],\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

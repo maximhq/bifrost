@@ -36,7 +36,13 @@ type BifrostConfig struct {
 	KeySelector        KeySelector   // Custom key selector function
 	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
-	ModelCatalog       ModelInfoProvider
+	// EnableStickyKeyQuotaFailover opts trusted callers into process-local
+	// failover for self-contained session-sticky chat requests after quota errors.
+	// It is disabled by default and requires the optional conditional KV store
+	// capability; it is not a cluster-wide guarantee.
+	// This is an initialization-only option; ReloadConfig does not change it.
+	EnableStickyKeyQuotaFailover bool
+	ModelCatalog                 ModelInfoProvider
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.

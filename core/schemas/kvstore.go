@@ -12,6 +12,18 @@ type KVStore interface {
 	Delete(key string) (bool, error)
 }
 
+// ConditionalStringKVStore is an optional process-local compare-and-swap
+// capability for string bindings. Implementations must only replace an
+// existing, unexpired value that equals expected; a missing or expired value
+// must never be resurrected by a conditional write.
+//
+// The capability is intentionally separate from KVStore. A KVStore may be
+// backed by a delegated cluster implementation whose local CAS cannot provide
+// the process-local semantics required by sticky-key failover.
+type ConditionalStringKVStore interface {
+	CompareAndSwapStringWithTTL(key, expected, replacement string, ttl time.Duration) (bool, error)
+}
+
 const (
 	DefaultSessionStickyTTL = time.Hour
 )

@@ -2668,6 +2668,15 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 //   - GET /metrics: For Prometheus metrics
 func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	var err error
+	// This is an operator-only, process-lifetime opt-in. Request headers and
+	// database config reloads cannot broaden which requests may migrate keys.
+	stickyQuotaFailover := false
+	if raw := os.Getenv("BIFROST_ENABLE_STICKY_KEY_QUOTA_FAILOVER"); raw != "" {
+		stickyQuotaFailover, err = strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("BIFROST_ENABLE_STICKY_KEY_QUOTA_FAILOVER must be a boolean")
+		}
+	}
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRuntimeVersion, s.Version)
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
@@ -2782,22 +2791,23 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
 	account := lib.NewBaseAccount(s.Config)
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
-		Account:            account,
-		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
-		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
-		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
-		MCPConfig:          mcpConfig,
-		OAuth2Provider:     s.Config.OAuthProvider,
-		MCPHeadersProvider: s.Config.MCPHeadersProvider,
-		Logger:             logger,
-		KVStore:            s.Config.KVStore,
-		ModelCatalog:       s.Config.ModelCatalog,
+		Account:                      account,
+		InitialPoolSize:              s.Config.ClientConfig.InitialPoolSize,
+		DropExcessRequests:           s.Config.ClientConfig.DropExcessRequests,
+		LLMPlugins:                   s.Config.GetLoadedLLMPlugins(),
+		MCPPlugins:                   s.Config.GetLoadedMCPPlugins(),
+		MCPConfig:                    mcpConfig,
+		OAuth2Provider:               s.Config.OAuthProvider,
+		MCPHeadersProvider:           s.Config.MCPHeadersProvider,
+		Logger:                       logger,
+		KVStore:                      s.Config.KVStore,
+		ModelCatalog:                 s.Config.ModelCatalog,
+		EnableStickyKeyQuotaFailover: stickyQuotaFailover,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
-	logger.Info("bifrost client initialized")
+	logger.Info("bifrost client initialized (sticky quota failover: %t)", stickyQuotaFailover)
 	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
 	// but this ensures order consistency if the loading path changes in the future)
 	s.Client.ReorderPlugins(s.Config.GetPluginOrder())

@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	ErrClosed     = errors.New("kvstore is closed")
-	ErrEmptyKey   = errors.New("key cannot be empty")
-	ErrNotFound   = errors.New("key not found")
-	ErrInvalidTTL = errors.New("ttl cannot be negative")
+	ErrClosed                 = errors.New("kvstore is closed")
+	ErrEmptyKey               = errors.New("key cannot be empty")
+	ErrNotFound               = errors.New("key not found")
+	ErrInvalidTTL             = errors.New("ttl cannot be negative")
+	ErrConditionalUnsupported = errors.New("conditional string CAS is unsupported")
 )
 
 const (
@@ -51,9 +52,16 @@ type Store struct {
 	stopOnce  sync.Once
 	cleanupWg sync.WaitGroup
 
-	delegate  SyncDelegate
+	delegate  atomic.Pointer[delegateHolder]
 	decoders  map[string]TypeDecoder
 	decoderMu sync.RWMutex
+}
+
+// SupportsProcessLocalCAS reports whether conditional string writes are safe
+// for the process-local sticky-key feature. Delegated stores are deliberately
+// excluded because their local mutex does not coordinate cluster writers.
+func (s *Store) SupportsProcessLocalCAS() bool {
+	return s.delegate.Load() == nil
 }
 
 // SyncDelegate is notified of all mutations, enabling cross-node replication.
@@ -72,8 +80,18 @@ type TypeDecoder func(data []byte) (any, error)
 
 // SetDelegate plugs in the cluster sync implementation.
 func (s *Store) SetDelegate(d SyncDelegate) {
-	s.delegate = d
+	// Serialize attachment with conditional writes, then publish an immutable
+	// holder for lock-free callback snapshots. Callbacks still run outside mu.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d == nil {
+		s.delegate.Store(nil)
+	} else {
+		s.delegate.Store(&delegateHolder{d})
+	}
 }
+
+type delegateHolder struct{ SyncDelegate }
 
 // RegisterDecoder registers a decoder for keys matching the given prefix.
 // Used by the receiving side to reconstruct concrete types from gossip payloads.
@@ -116,6 +134,7 @@ func (s *Store) Set(key string, value any) error {
 // SetWithTTL stores a value with an explicit TTL.
 // ttl=0 means no expiration.
 func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
+	delegate := s.delegate.Load()
 	if err := s.validateMutable(key, ttl); err != nil {
 		return err
 	}
@@ -129,7 +148,7 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	var valueJSON []byte
 	var err error
 
-	if s.delegate != nil {
+	if delegate != nil {
 		valueJSON, err = sonic.Marshal(value)
 		if err != nil {
 			return err
@@ -144,8 +163,8 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	}
 	s.mu.Unlock()
 
-	if s.delegate != nil {
-		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	if delegate != nil {
+		delegate.OnSet(key, valueJSON, now, expiresAt)
 	}
 
 	return nil
@@ -155,6 +174,7 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 // Returns true if the key was set, false if the key already existed.
 // ttl=0 means no expiration.
 func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+	delegate := s.delegate.Load()
 	if err := s.validateMutable(key, ttl); err != nil {
 		return false, err
 	}
@@ -168,7 +188,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	var valueJSON []byte
 	var err error
 
-	if s.delegate != nil {
+	if delegate != nil {
 		valueJSON, err = sonic.Marshal(value)
 		if err != nil {
 			return false, err
@@ -176,7 +196,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 
 	s.mu.Lock()
-	
+
 	// Check if key exists and is not expired
 	if existing, ok := s.data[key]; ok {
 		if !isExpired(existing, now) {
@@ -185,7 +205,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 		}
 		// Key exists but is expired, allow overwrite
 	}
-	
+
 	// Key doesn't exist or is expired, set it
 	s.data[key] = entry{
 		value:     value,
@@ -194,10 +214,58 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 	s.mu.Unlock()
 
-	if s.delegate != nil {
-		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	if delegate != nil {
+		delegate.OnSet(key, valueJSON, now, expiresAt)
 	}
 
+	return true, nil
+}
+
+// CompareAndSwapStringWithTTL replaces an existing, unexpired string value
+// only when it equals expected. Missing and expired entries are never
+// resurrected. This capability is process-local; delegated stores fail closed
+// because local CAS cannot establish a cluster-wide ordering guarantee.
+func (s *Store) CompareAndSwapStringWithTTL(key, expected, replacement string, ttl time.Duration) (bool, error) {
+	if err := s.validateMutable(key, ttl); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.delegate.Load() != nil {
+		return false, ErrConditionalUnsupported
+	}
+	if s.closed.Load() {
+		return false, ErrClosed
+	}
+	now := time.Now().UnixNano()
+	e, ok := s.data[key]
+	if !ok || isExpired(e, now) {
+		if ok && isExpired(e, now) {
+			delete(s.data, key)
+		}
+		return false, nil
+	}
+
+	var current string
+	switch value := e.value.(type) {
+	case string:
+		current = value
+	case []byte:
+		if err := sonic.Unmarshal(value, &current); err != nil {
+			current = string(value)
+		}
+	default:
+		return false, nil
+	}
+	if current != expected {
+		return false, nil
+	}
+
+	expiresAt := int64(0)
+	if ttl > 0 {
+		expiresAt = now + int64(ttl)
+	}
+	s.data[key] = entry{value: replacement, writtenAt: now, expiresAt: expiresAt}
 	return true, nil
 }
 
@@ -257,6 +325,7 @@ func (s *Store) Get(key string) (any, error) {
 
 // GetAndDelete retrieves and deletes a key atomically.
 func (s *Store) GetAndDelete(key string) (any, error) {
+	delegate := s.delegate.Load()
 	if key == "" {
 		return nil, ErrEmptyKey
 	}
@@ -276,14 +345,15 @@ func (s *Store) GetAndDelete(key string) (any, error) {
 	if !ok || isExpired(e, now) {
 		return nil, ErrNotFound
 	}
-	if s.delegate != nil {
-		s.delegate.OnDelete(key, now)
+	if delegate != nil {
+		delegate.OnDelete(key, now)
 	}
 	return e.value, nil
 }
 
 // Delete removes a key.
 func (s *Store) Delete(key string) (bool, error) {
+	delegate := s.delegate.Load()
 	if key == "" {
 		return false, ErrEmptyKey
 	}
@@ -303,8 +373,8 @@ func (s *Store) Delete(key string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if s.delegate != nil {
-		s.delegate.OnDelete(key, deletedAt)
+	if delegate != nil {
+		delegate.OnDelete(key, deletedAt)
 	}
 	return true, nil
 }
