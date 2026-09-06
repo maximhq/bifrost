@@ -86,6 +86,14 @@ func TestWarpConfigWithoutStoreIs503(t *testing.T) {
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
 }
 
+func TestWarpConfigPutWithoutVectorStoreIs503(t *testing.T) {
+	store := &recordingWarpStore{}
+	ctx := adminCtx(validWarpConfigJSON)
+	newTestWarpHandler(store).putConfig(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), string(schemas.WarpUnavailableNoVectorStore))
+}
+
 // The wire shape the settings page depends on: a key reference is a plain
 // field, and defaults are resolved rather than sent as zero.
 func TestWarpConfigGetBodyShape(t *testing.T) {
