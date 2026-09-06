@@ -535,7 +535,7 @@ export default function DashboardPage() {
 										{t("dashboard.tabs.buRankings")}
 									</TabsTrigger>
 									<TabsTrigger className="shrink-0" value="project-rankings" data-testid="dashboard-tab-project-rankings">
-										Project Rankings
+										{t("dashboard.tabs.projectRankings")}
 									</TabsTrigger>
 									<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
 										{t("dashboard.tabs.appRankings")}
@@ -745,7 +745,7 @@ export default function DashboardPage() {
 									filters={filters}
 									active={activeTab === "project-rankings" || exportingAll}
 									dimension="project"
-									dimensionLabel="Project"
+									dimensionLabel={t("labels.project")}
 									testIdPrefix="dashboard-project-rankings"
 									dataKey="projectRankingsData"
 									pdfMode={isExportingTab("project-rankings")}

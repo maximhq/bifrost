@@ -31,6 +31,7 @@
 		"customer": "客户",
 		"user": "用户",
 		"businessUnit": "业务单元",
+		"project": "项目",
 		"copy": "复制",
 		"copied": "已复制！",
 		"close": "关闭",
@@ -139,6 +140,9 @@
 		"collapseFallbackChain": "折叠关联行",
 		"expandFallbackChain": "展开 {{count}} 条关联行",
 		"settledBatchCost": "该批次已结算费用，仅计费一次。",
+		"settledCost": "已结算费用",
+		"settledTooltipGrouped": "在此请求完成后结算。展开该行即可查看。",
+		"settledTooltipFlat": "在此请求完成后结算，显示在独立行上。",
 		"groupTooltip": "将回退尝试与关联请求归组到原始根请求下。展开任意行可查看完整请求链。\n\n对于超大日志表，分组视图可能比平铺视图更慢。",
 		"stats": {
 			"totalRequests": "总请求数",
@@ -167,7 +171,7 @@
 			"p95": "p95"
 		},
 		"empty": {
-			"unexpectedError": "An unexpected error occurred",
+			"unexpectedError": "发生了意外错误",
 			"logStoreNotConfigured": "看起来尚未在配置文件中配置日志存储。",
 			"title": "60 秒内完成接入",
 			"subtitle": "发送第一条请求即可开始",
@@ -244,7 +248,18 @@
 			"copyRequestBodySuccess": "请求体已复制到剪贴板",
 			"copyRequestBodyFailed": "复制请求体失败",
 			"copyNotForTranscription": "转录请求不支持复制请求体",
-			"copyOnlyForSupported": "复制请求体仅适用于 chat、responses、compaction、speech、文本补全与 embedding 请求"
+			"copyOnlyForSupported": "复制请求体仅适用于 chat、responses、compaction、speech、文本补全与 embedding 请求",
+			"inputTokensIncludeCached": "输入令牌包含缓存令牌。",
+			"uncachedInput": "未缓存输入：{{value}}",
+			"cacheRead": "缓存读取：{{value}}",
+			"cacheWrite": "缓存写入：{{value}}",
+			"inputTokensTotal": "输入令牌：{{value}}",
+			"videoDetails": "视频详情",
+			"videoId": "视频 ID",
+			"billedSeconds": "计费秒数",
+			"resolution": "分辨率",
+			"clipsBilled": "计费片段数",
+			"incompletePricing": "按未公布费率计价，或使用了提供商未确认的维度，因此此费用可能偏低。"
 		},
 		"media": {
 			"pause": "暂停",
@@ -277,7 +292,7 @@
 			"totalCost": "总费用"
 		},
 		"empty": {
-			"unexpectedError": "An unexpected error occurred",
+			"unexpectedError": "发生了意外错误",
 			"logStoreNotConfigured": "看起来尚未在配置文件中配置日志存储。",
 			"title": "开始使用 MCP 工具执行",
 			"subtitle": "执行第一次 MCP 工具调用后即可看到日志",

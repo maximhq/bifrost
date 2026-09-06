@@ -31,6 +31,7 @@
 		"customer": "Customer",
 		"user": "User",
 		"businessUnit": "Business Unit",
+		"project": "Project",
 		"copy": "Copy",
 		"copied": "Copied!",
 		"close": "Close",
@@ -139,6 +140,9 @@
 		"collapseFallbackChain": "Collapse linked rows",
 		"expandFallbackChain": "Expand {{count}} linked rows",
 		"settledBatchCost": "Settled cost of this batch, billed once.",
+		"settledCost": "Settled Cost",
+		"settledTooltipGrouped": "Settled after this request completed. Expand the row to see it.",
+		"settledTooltipFlat": "Settled after this request completed, on its own row.",
 		"groupTooltip": "Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.\n\nThis grouped view may load more slowly than the flat view for very large log tables.",
 		"stats": {
 			"totalRequests": "Total Requests",
@@ -244,7 +248,18 @@
 			"copyRequestBodySuccess": "Request body copied to clipboard",
 			"copyRequestBodyFailed": "Failed to copy request body",
 			"copyNotForTranscription": "Copy request body is not available for transcription requests",
-			"copyOnlyForSupported": "Copy request body is only available for chat, responses, compaction, speech, text completion, and embedding requests"
+			"copyOnlyForSupported": "Copy request body is only available for chat, responses, compaction, speech, text completion, and embedding requests",
+			"inputTokensIncludeCached": "Input tokens include cached tokens.",
+			"uncachedInput": "Uncached input: {{value}}",
+			"cacheRead": "Cache read: {{value}}",
+			"cacheWrite": "Cache write: {{value}}",
+			"inputTokensTotal": "Input tokens: {{value}}",
+			"videoDetails": "Video Details",
+			"videoId": "Video ID",
+			"billedSeconds": "Billed Seconds",
+			"resolution": "Resolution",
+			"clipsBilled": "Clips Billed",
+			"incompletePricing": "Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short."
 		},
 		"media": {
 			"pause": "Pause",
