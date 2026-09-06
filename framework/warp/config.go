@@ -108,6 +108,15 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if embeddingSpaceChanged(previous, input) && previous.LogVectorStoreNamespace == input.LogVectorStoreNamespace {
 		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when embedding provider, model, or dimension changes", ErrInvalidConfig)
 	}
+	if embeddingSpaceChanged(previous, input) && s.backfillJobs != nil {
+		active, activeErr := s.backfillJobs.GetInFlightSidekiqJobByKind(ctx, BackfillJobKind)
+		if activeErr != nil {
+			return ConfigView{}, activeErr
+		}
+		if active != nil {
+			return ConfigView{}, ErrBackfillInProgress
+		}
+	}
 	if embeddingSpaceChanged(previous, input) && strings.TrimSpace(previous.LogVectorStoreNamespace) != "" {
 		retired = appendUnique(retired, previous.LogVectorStoreNamespace)
 	}
