@@ -246,3 +246,18 @@ func SanitizeUserField(user *string) *string {
 	}
 	return user
 }
+
+// toolChoiceAnySupported reports whether the target accepts the provider-generic
+// forced tool choice "any" on the wire. Mistral's API accepts "any" natively,
+// including Mistral models served through Vertex, so the OpenAI-only rewrite of
+// "any" to "required" must not run for those destinations.
+func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.Mistral:
+		return true
+	case schemas.Vertex:
+		return schemas.IsMistralModel(model)
+	default:
+		return false
+	}
+}

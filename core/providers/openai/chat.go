@@ -51,9 +51,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// The Anthropic integration emits the provider-generic forced tool choice "any".
 		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
 		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
-		// without mutating the caller's parameters.
+		// without mutating the caller's parameters. Destinations that accept "any"
+		// natively keep it.
 		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
-			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) {
+			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) &&
+			!toolChoiceAnySupported(bifrostReq.Provider, bifrostReq.Model) {
 			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
 				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
 			}

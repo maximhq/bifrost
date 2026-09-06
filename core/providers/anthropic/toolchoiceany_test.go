@@ -6,8 +6,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// Anthropic accepts "any" natively, so the OpenAI-only normalization of "any"
-// to "required" must not change what Anthropic receives.
+// TestConvertResponsesToolChoiceToAnthropic_ForcedChoicesStayAny verifies that
+// Anthropic, which accepts "any" natively, still receives type "any" for both
+// forced string choices; the OpenAI-only normalization must not affect it.
 func TestConvertResponsesToolChoiceToAnthropic_ForcedChoicesStayAny(t *testing.T) {
 	for _, value := range []string{"any", "required"} {
 		t.Run(value, func(t *testing.T) {
