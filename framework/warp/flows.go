@@ -33,7 +33,7 @@ func queryLogsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -64,6 +64,7 @@ func queryLogsTool() Tool {
 				"rows":           rows,
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
+				"scope":          scopeNote(filters, deps.scope),
 			}, nil
 		},
 	}
@@ -124,7 +125,7 @@ func queryMetricsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -141,6 +142,7 @@ func queryMetricsTool() Tool {
 			}
 
 			out := map[string]any{
+				"scope": scopeNote(filters, deps.scope),
 				"window": map[string]string{
 					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
 					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
@@ -274,7 +276,7 @@ func queryVirtualKeysTool() Tool {
 // answer needs.
 func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, dimension logstore.RankingDimension) (any, error) {
 	now := Now()
-	filters, err := filterArg(args, now)
+	filters, err := filterArg(args, now, deps.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +286,7 @@ func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, d
 	if err != nil {
 		return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 	}
-	return result, nil
+	return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope)}, nil
 }
 
 // ------------------------------------------------ flow 5: providers and models
@@ -306,7 +308,7 @@ func queryModelsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -317,7 +319,7 @@ func queryModelsTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings}
+			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope)}
 
 			if boolArg(args, "include_performance") {
 				bucket, err := bucketSize(filters)
