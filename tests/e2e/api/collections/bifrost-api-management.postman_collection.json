@@ -88,7 +88,7 @@
           "}",
           "",
           "// Handle MCP client errors (client not found after Add failed)",
-          "var mcpClientRequests = ['Add MCP Client', 'Reconnect MCP Client', 'Update MCP Client', 'Delete MCP Client'];",
+          "var mcpClientRequests = ['Add MCP Client', 'Reconnect MCP Client', 'Update MCP Client', 'Delete MCP Client', 'Create MCP Client (vMCP setup)', 'Delete MCP Client (vMCP cleanup)'];",
           "if (mcpClientRequests.indexOf(requestName) !== -1) {",
           "  if (code === 404) {",
           "    pass = true;",
@@ -1944,6 +1944,46 @@
     },
     {
       "key": "vk_budget_max_limit",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_client_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_slug",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_client_slug",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_derived_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_derived_name",
       "value": "",
       "type": "string"
     }
@@ -4411,6 +4451,945 @@
                 "mcp",
                 "client",
                 "{{mcp_client_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Virtual MCPs",
+      "item": [
+        {
+          "name": "Create MCP Client (vMCP setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vmcp_client_id', 'vmcp_client_' + Date.now());",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  client_id: pm.collectionVariables.get('vmcp_client_id'),",
+                  "  name: 'VMCPToolClient' + Date.now(),",
+                  "  connection_type: 'http',",
+                  "  connection_string: { value: 'http://localhost:3001/', env_var: '', from_env: false },",
+                  "  auth_type: 'none',",
+                  "  is_ping_available: false,",
+                  "  needs_session_stickiness: true",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The server must know this client for the vMCP tool-spec validation below to pass.",
+                  "// If the test MCP server on :3001 is down, Add returns 4xx and the global status",
+                  "// allowlist tolerates it (this name is registered there).",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && b) {",
+                  "  pm.test('vMCP setup client connected', function () { pm.expect(String(b.message)).to.match(/connected/i); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual Key (vMCP setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ name: 'vMCP Test VK ' + Date.now(), is_active: true });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "if ((code === 200 || code === 201) && b) {",
+                  "  if (b.virtual_key && b.virtual_key.id) pm.collectionVariables.set('vmcp_vk_id', b.virtual_key.id);",
+                  "  pm.test('vMCP setup VK created', function () { pm.expect(b.virtual_key).to.be.an('object'); pm.expect(b.virtual_key.id).to.be.ok; });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List MCP Clients (capture slug)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Capture the setup client's server-derived endpoint_slug so the collision test",
+                  "// below can prove the /mcp/<slug> namespace is shared with direct MCP clients.",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var list = (b && b.clients) || [];",
+                  "var mine = list.filter(function (c) { return c.config && c.config.client_id === pm.collectionVariables.get('vmcp_client_id'); })[0];",
+                  "if (mine && mine.config && mine.config.endpoint_slug) pm.collectionVariables.set('vmcp_client_slug', mine.config.endpoint_slug);",
+                  "pm.test('setup MCP client has a derived endpoint_slug', function () {",
+                  "  pm.expect(mine, 'setup client present in list').to.be.an('object');",
+                  "  pm.expect(mine.config.endpoint_slug, 'endpoint_slug').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('vmcp_name', 'vMCP E2E ' + stamp);",
+                  "pm.collectionVariables.set('vmcp_slug', 'vmcp-e2e-' + stamp);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: pm.collectionVariables.get('vmcp_name'),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_slug'),",
+                  "  description: 'Created by the API management e2e suite',",
+                  "  enabled: true,",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create Virtual MCP returns 201', function () { pm.expect(pm.response.code).to.equal(201); });",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var v = b && b.virtual_mcp;",
+                  "pm.test('Create Virtual MCP response shape', function () {",
+                  "  pm.expect(v).to.be.an('object');",
+                  "  pm.expect(v.id).to.be.a('number');",
+                  "  pm.expect(v.name).to.equal(pm.collectionVariables.get('vmcp_name'));",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "  pm.expect(v.enabled).to.equal(true);",
+                  "  pm.expect(v.tools).to.be.an('array').with.length.greaterThan(0);",
+                  "  pm.expect(v.tools[0].mcp_client_id).to.equal(pm.collectionVariables.get('vmcp_client_id'));",
+                  "  pm.expect(v.tools[0].tool_names).to.eql(['*']);",
+                  "  pm.expect(v.virtual_key_ids).to.be.an('array');",
+                  "});",
+                  "if (v && v.id !== undefined) pm.collectionVariables.set('vmcp_id', v.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP (Derived Slug)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No endpoint_slug: the server derives it from the name (Slugify: lowercase, non-alnum",
+                  "// collapses to '-'). Keep the name alphanumeric so the derived slug is just its lowercase.",
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('vmcp_derived_name', 'vMCPDerived' + stamp);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: pm.collectionVariables.get('vmcp_derived_name'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['query', 'get_page'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create Virtual MCP (Derived Slug) returns 201', function () { pm.expect(pm.response.code).to.equal(201); });",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var v = b && b.virtual_mcp;",
+                  "pm.test('endpoint_slug is derived from the name, tool_names round-trip', function () {",
+                  "  pm.expect(v).to.be.an('object');",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_derived_name').toLowerCase());",
+                  "  pm.expect(v.enabled).to.equal(true);",
+                  "  pm.expect(v.tools[0].tool_names).to.eql(['query', 'get_page']);",
+                  "});",
+                  "if (v && v.id !== undefined) pm.collectionVariables.set('vmcp_derived_id', v.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get Virtual MCP returns the created vMCP', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.id).to.equal(Number(pm.collectionVariables.get('vmcp_id')));",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Virtual MCPs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps?limit=100&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List Virtual MCPs envelope', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.virtual_mcps).to.be.an('array');",
+                  "  pm.expect(b.count).to.be.a('number');",
+                  "  pm.expect(b.total_count).to.be.a('number');",
+                  "  pm.expect(b.limit).to.be.a('number');",
+                  "  pm.expect(b.offset).to.be.a('number');",
+                  "  var id = Number(pm.collectionVariables.get('vmcp_id'));",
+                  "  pm.expect(b.virtual_mcps.map(function (x) { return x.id; })).to.include(id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Virtual MCP",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\":\"Updated by the e2e suite\",\"enabled\":false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update Virtual MCP applies changes, keeps slug', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.enabled).to.equal(false);",
+                  "  pm.expect(v.description).to.equal('Updated by the e2e suite');",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Duplicate Slug (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'vMCP Dup ' + Date.now(),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_slug'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Duplicate endpoint_slug is rejected with 409', function () {",
+                  "  pm.expect(pm.response.code).to.equal(409);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.error && b.error.message, 'error message').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Slug Collides With MCP Client (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The /mcp/<slug> namespace is shared: a vMCP cannot claim a slug already used by a direct MCP client.",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'vMCP Client Slug Clash ' + Date.now(),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_client_slug'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Slug already used by a direct MCP client is rejected with 409', function () {",
+                  "  pm.expect(pm.response.code).to.equal(409);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Missing Name (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"tools\":[]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing name is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Unknown Client (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"vMCP Bad Client\",\"tools\":[{\"mcp_client_id\":\"does-not-exist\",\"tool_names\":[\"*\"]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unknown mcp_client_id is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP Invalid Id (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/not-a-number",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "not-a-number"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get on a non-numeric id returns 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\":\"nope\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach Virtual Key to Virtual MCP",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Attach VK succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP After Attach",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Attached VK appears in virtual_key_ids', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.virtual_key_ids).to.include(pm.collectionVariables.get('vmcp_vk_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Detach Virtual Key from Virtual MCP",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Detach VK succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete Virtual MCP succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP (Derived Slug cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_derived_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_derived_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Virtual Key (vMCP cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Client (vMCP cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{vmcp_client_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{vmcp_client_id}}"
               ]
             }
           }
