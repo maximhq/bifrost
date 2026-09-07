@@ -30,6 +30,7 @@ func TestOpenRouter(t *testing.T) {
 		TextModel:            "google/gemini-2.5-flash",
 		EmbeddingModel:       "qwen/qwen3-embedding-4b",
 		ReasoningModel:       "openai/gpt-oss-120b",
+		PromptCachingModel:   "anthropic/claude-sonnet-4", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
 		TranscriptionModel:   "openai/gpt-4o-mini-transcribe",
 		SpeechSynthesisModel: "openai/gpt-audio-mini",
 		Scenarios: llmtests.TestScenarios{
@@ -50,6 +51,7 @@ func TestOpenRouter(t *testing.T) {
 			FileURL:                    false, // Responses API times out (300s+) with file input
 			CompleteEnd2End:            false, // OpenRouter's responses API is in Beta
 			Reasoning:                  true,
+			PromptCaching:              true, // Gates the three tool-block scenarios; two of them issue Responses requests, which is what #6290 broke
 			ListModels:                 true,
 			StructuredOutputs:          true, // Structured outputs with nullable enum support
 			Embedding:                  true,
