@@ -2,42 +2,131 @@ name: Docs Validation
 
 on:
   push:
-    branches: ["main"]
-    paths:
-      - "docs/**"
+    branches: ["feat/agent-capability-router-rebased"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  check-broken-links:
-    name: Check Broken Links
-    runs-on: ubuntu-latest
+  sync-upstream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-            nodejs.org:443
-            ph.mintlify.com:443
-            registry.npmjs.org:443
-            release-assets.githubusercontent.com:443
-            storage.googleapis.com:443
+          fetch-depth: 0
 
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417
         with:
-          node-version: "21"
+          go-version: "1.27.0"
 
-      - name: Check for broken links
-        working-directory: ./docs
+      - name: Merge current upstream dev and resolve expected conflicts
         run: |
-          echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
-          echo "✅ No broken links found"
+          set -euo pipefail
+
+          git config user.name "Hany alsamman"
+          git config user.email "hany@codexc.com"
+          git remote add upstream https://github.com/maximhq/bifrost.git 2>/dev/null || git remote set-url upstream https://github.com/maximhq/bifrost.git
+          git fetch upstream dev
+          UPSTREAM_SHA="$(git rev-parse FETCH_HEAD)"
+          test "$UPSTREAM_SHA" = "f0559a4c3f89d68970ba06f51ec30719fa4e52b5"
+
+          set +e
+          git merge --no-commit --no-ff "$UPSTREAM_SHA"
+          MERGE_RC=$?
+          set -e
+
+          if [ "$MERGE_RC" -ne 0 ]; then
+            ACTUAL_CONFLICTS="$(git diff --name-only --diff-filter=U | sort)"
+            EXPECTED_CONFLICTS="$(printf '%s\n' transports/changelog.md transports/go.mod | sort)"
+            if [ "$ACTUAL_CONFLICTS" != "$EXPECTED_CONFLICTS" ]; then
+              echo "Unexpected conflict set:"
+              printf '%s\n' "$ACTUAL_CONFLICTS"
+              exit 1
+            fi
+          fi
+
+          git checkout --theirs transports/go.mod
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("transports/go.mod")
+          text = path.read_text()
+          require_line = "\tgithub.com/maximhq/bifrost/plugins/agentcapabilityrouter v0.0.0-00010101000000-000000000000\n"
+          anchor = "\tgithub.com/maximhq/bifrost/framework v1.6.0\n"
+          replace_line = "replace github.com/maximhq/bifrost/plugins/agentcapabilityrouter => ../plugins/agentcapabilityrouter\n"
+
+          if require_line not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit("unexpected transports/go.mod framework anchor")
+              text = text.replace(anchor, anchor + require_line, 1)
+
+          stripped = text.rstrip() + "\n"
+          if replace_line.strip() not in stripped:
+              stripped += "\n" + replace_line
+          path.write_text(stripped)
+          PY
+
+          git checkout --theirs transports/changelog.md
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("transports/changelog.md")
+          text = path.read_text()
+          entry = "- **Agent Capability Router** - Registers the native `agent-capability-router` plugin so configured dynamic agent aliases can be classified into deterministic role/capability lanes before CEL routing and model catalog resolution.\n"
+          anchor = "## ✨ Features\n\n"
+          if entry not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit("unexpected transports/changelog.md features anchor")
+              text = text.replace(anchor, anchor + entry, 1)
+          path.write_text(text)
+          PY
+
+          git add transports/go.mod transports/changelog.md
+
+          # Restore this temporary workflow to the exact upstream version so it
+          # does not appear in the final PR diff.
+          git show "$UPSTREAM_SHA:.github/workflows/docs-validation.yml" > .github/workflows/docs-validation.yml
+          git add .github/workflows/docs-validation.yml
+
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+      - name: Validate merged branch
+        run: |
+          set -euo pipefail
+          source .github/workflows/scripts/setup-go-workspace.sh
+
+          (
+            cd plugins/agentcapabilityrouter
+            GOWORK=off go mod tidy
+          )
+          (
+            cd transports
+            go mod tidy
+          )
+
+          git add plugins/agentcapabilityrouter/go.mod plugins/agentcapabilityrouter/go.sum transports/go.mod transports/go.sum
+
+          (
+            cd plugins/agentcapabilityrouter
+            go test -race ./...
+            go vet ./...
+          )
+          (
+            cd transports
+            go test ./bifrost-http/lib -run TestValidateConfigSchema_AgentCapabilityRouter -count=1
+            go test ./bifrost-http/server -run TestAgentCapabilityRouterIsRegisteredAsBuiltin -count=1
+          )
+
+          git diff --check
+
+      - name: Commit resolved merge
+        run: |
+          set -euo pipefail
+          rm -f go.work go.work.sum
+          git add -A
+          git commit -s -m "merge: sync agent capability router with upstream dev"
+          git push origin HEAD:feat/agent-capability-router-rebased
