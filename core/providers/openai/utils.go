@@ -248,13 +248,15 @@ func SanitizeUserField(user *string) *string {
 	return user
 }
 
-// toolChoiceAnySupported reports whether the target accepts the provider-generic
-// forced tool choice "any" on the wire. Mistral's API accepts "any" natively,
-// including Mistral models served through Vertex, so the OpenAI-only rewrite of
-// "any" to "required" must not run for those destinations.
+// toolChoiceAnySupported is the name-based fallback for
+// ModelCaps.ToolChoiceAnySupported, used when the datasheet says nothing. It
+// reports whether the target accepts the provider-generic forced tool choice
+// "any" on the wire. Mistral accepts it natively (including Mistral models
+// served through Vertex), and Fireworks documents it with "required" as an
+// alias; every other OpenAI-compatible destination rejects it with a 400.
 func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 	switch provider {
-	case schemas.Mistral:
+	case schemas.Mistral, schemas.Fireworks:
 		return true
 	case schemas.Vertex:
 		return schemas.IsMistralModel(model)

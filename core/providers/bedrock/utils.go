@@ -632,7 +632,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled {
+		// Fable 5.1+ rejects a forced tool_choice outright, so the synthetic tool
+		// is left unpinned there too and reached under Converse's default "auto".
+		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled &&
+			caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -2333,6 +2336,12 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			// (mirrors the synthetic-tool gate in convertChatParameters).
 			if toolChoice != nil && toolChoice.Tool != nil &&
 				!caps.ToolChoiceStructSupported(!schemas.IsLlamaModelFamily(ctx, model)) {
+				toolChoice = nil
+			}
+			// Fable 5.1+ rejects forced tool use outright; drop both spellings so
+			// the model answers under Converse's default "auto".
+			if toolChoice != nil && (toolChoice.Any != nil || toolChoice.Tool != nil) &&
+				!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 				toolChoice = nil
 			}
 			if toolChoice != nil {

@@ -48,6 +48,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
+		// answers under the default "auto" rather than the provider returning a 400.
+		if openaiReq.ChatParameters.ToolChoice.IsForced() &&
+			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel)) {
+			openaiReq.ChatParameters.ToolChoice = nil
+		}
 		// The Anthropic integration emits the provider-generic forced tool choice "any".
 		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
 		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
@@ -55,7 +61,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// natively keep it.
 		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
 			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) &&
-			!toolChoiceAnySupported(bifrostReq.Provider, bifrostReq.Model) {
+			!caps.ToolChoiceAnySupported(toolChoiceAnySupported(bifrostReq.Provider, capModel)) {
 			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
 				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
 			}

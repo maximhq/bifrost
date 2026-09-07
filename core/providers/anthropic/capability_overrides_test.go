@@ -322,3 +322,119 @@ func TestWebFetchVersion_OverrideAbsent_FallbackTakesOver(t *testing.T) {
 	assert.Equal(t, AnthropicToolTypeWebFetch20260309, webFetchTypeFor(t, "claude-opus-4-6-20250514"))
 	assert.Equal(t, AnthropicToolTypeWebFetch20250910, webFetchTypeFor(t, "claude-haiku-4-5-20251001"))
 }
+
+// Forced tool choice: Claude Fable 5.1 and Mythos 5.1 removed it, so
+// tool_choice "any" and "tool" return a 400. Both converters drop a forced
+// choice instead, leaving the model on the default "auto". The Responses
+// converter is shared with the count_tokens path, which enforces the same
+// validation upstream.
+
+func forcedToolChoiceResponsesRequest(model string, tc *schemas.ResponsesToolChoice) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")},
+		}},
+		Params: &schemas.ResponsesParameters{ToolChoice: tc},
+	}
+}
+
+func forcedToolChoiceChatRequest(model string, tc *schemas.ChatToolChoice) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    model,
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")},
+		}},
+		Params: &schemas.ChatParameters{ToolChoice: tc},
+	}
+}
+
+func TestForcedToolChoice_DroppedOnFable51(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		t.Run(model+" responses any", func(t *testing.T) {
+			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
+				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
+			require.NoError(t, err)
+			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
+		})
+
+		t.Run(model+" responses named tool", func(t *testing.T) {
+			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
+				&schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction, Name: schemas.Ptr("get_weather")}}))
+			require.NoError(t, err)
+			assert.Nil(t, req.ToolChoice, "forced tool pin must be dropped on %s", model)
+		})
+
+		t.Run(model+" chat required", func(t *testing.T) {
+			req, err := ToAnthropicChatRequest(ctx, forcedToolChoiceChatRequest(model,
+				&schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")}))
+			require.NoError(t, err)
+			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
+		})
+	}
+
+	t.Run("auto survives", func(t *testing.T) {
+		req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-fable-5-1",
+			&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("auto")}))
+		require.NoError(t, err)
+		require.NotNil(t, req.ToolChoice)
+		assert.Equal(t, "auto", req.ToolChoice.Type)
+	})
+
+	t.Run("none survives", func(t *testing.T) {
+		req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-fable-5-1",
+			&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("none")}))
+		require.NoError(t, err)
+		require.NotNil(t, req.ToolChoice)
+		assert.Equal(t, "none", req.ToolChoice.Type)
+	})
+}
+
+func TestForcedToolChoice_KeptOnFable5(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	// Fable 5 (and every earlier Claude) still supports forced tool use.
+	req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-fable-5",
+		&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
+	require.NoError(t, err)
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "any", req.ToolChoice.Type)
+
+	req, err = ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-opus-5",
+		&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}))
+	require.NoError(t, err)
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "any", req.ToolChoice.Type)
+}
+
+func TestForcedToolChoice_DatasheetOutranksFallback(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	t.Run("row re-enables forced tool use on fable 5.1", func(t *testing.T) {
+		yes := true
+		setOverride(t, "claude-fable-5-1", schemas.ModelCapabilities{SupportsForcedToolChoice: &yes})
+
+		req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-fable-5-1",
+			&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
+		require.NoError(t, err)
+		require.NotNil(t, req.ToolChoice)
+		assert.Equal(t, "any", req.ToolChoice.Type)
+	})
+
+	t.Run("row disables forced tool use on a model the fallback allows", func(t *testing.T) {
+		no := false
+		setOverride(t, "claude-opus-5", schemas.ModelCapabilities{SupportsForcedToolChoice: &no})
+
+		req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-opus-5",
+			&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
+		require.NoError(t, err)
+		assert.Nil(t, req.ToolChoice)
+	})
+}

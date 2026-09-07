@@ -297,6 +297,25 @@ func (c ModelCaps) ToolChoiceStructSupported(fallback bool) bool {
 	return fallback
 }
 
+// ToolChoiceAnySupported reports whether the endpoint accepts the forced tool
+// choice "any" on the wire. Providers without it need it spelled "required".
+func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
+	if c.record != nil && c.record.ToolChoiceAnySupported != nil {
+		return *c.record.ToolChoiceAnySupported
+	}
+	return fallback
+}
+
+// SupportsForcedToolChoice reports whether the model accepts a forced tool
+// choice at all — Anthropic "any"/"tool", OpenAI "required"/named function.
+// Models without it need the choice dropped so they answer under "auto".
+func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
+	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
+		return *c.record.SupportsForcedToolChoice
+	}
+	return fallback
+}
+
 // SyntheticSOToolChoiceOmitted reports whether the synthetic structured-output
 // tool must be left unpinned, letting the model reach it under "auto" instead.
 func (c ModelCaps) SyntheticSOToolChoiceOmitted(fallback bool) bool {
