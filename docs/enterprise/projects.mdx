@@ -432,7 +432,7 @@ Projects can be declared in `governance.projects`, which is useful for seeding t
 ```
 
 <Note>
-Membership cannot be declared in the file. A project declared here starts with no members, and the schema rejects a `members` key. Add the roster from the dashboard or the API. Virtual MCP assignments are likewise dashboard and API only.
+Membership cannot be declared in the file. A project declared here starts with no members, and the schema rejects a `members` key. Add the roster from the dashboard or the API. Virtual MCPs can be assigned with `virtual_mcps`, but only by database-assigned id, so a file meant to be portable across environments should leave those to the dashboard or the API too.
 </Note>
 
 Projects are reconciled by **name**: a name the database does not have is created, and a name it does have is updated only when the declaration has actually changed, so dashboard edits survive until the file changes. Edits keep spend, and a child the file stops declaring is removed. With `source_of_truth` set to `config.json`, declarations always overwrite the database and projects the file does not declare are deleted, members included.
