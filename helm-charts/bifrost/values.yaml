@@ -936,6 +936,7 @@ bifrost:
       #   accounting_mode: "both"          # both | project_only | principal_only
       #   split_policy: "none"             # none (shared caps) | equal (each member gets an equal share); open projects must use none
       #   calendar_aligned: false          # Snap budget and rate-limit windows to calendar boundaries
+      #   allow_all_providers: false       # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
       #   budgets:
       #     - max_limit: 5000
       #       reset_duration: "1M"
@@ -1333,6 +1334,7 @@ bifrost:
     #   description: "Default platform profile"
     #   is_active: true
     #   calendar_aligned: false  # Snap all budget/rate-limit resets to calendar boundaries
+    #   allow_all_providers: false  # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
     #   tags: ["platform", "default"]
     #   budgets:
     #     - id: "ap-budget-1"
