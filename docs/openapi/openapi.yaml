@@ -807,6 +807,8 @@ paths:
     $ref: "./paths/management/mcp.yaml#/client-by-id"
   /api/mcp/client/{id}/reconnect:
     $ref: "./paths/management/mcp.yaml#/client-reconnect"
+  /api/mcp/client/{id}/refresh-tools:
+    $ref: "./paths/management/mcp.yaml#/client-refresh-tools"
   /api/mcp/client/{id}/complete-oauth:
     $ref: "./paths/management/mcp.yaml#/client-complete-oauth"
   /api/mcp/client/{id}/initiate-verification:
