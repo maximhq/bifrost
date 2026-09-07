@@ -1087,6 +1087,14 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 				continue
 			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Claude verifies the signature on every thinking block it is
+				// handed back and rejects an unsigned one in every serialisation
+				// (#6624), so the block cannot be replayed at all; the turn's
+				// text and tool calls still go through. Nova keeps receiving
+				// unsigned blocks with the field omitted, as before.
+				if reasoningSignatureForBedrock(detail.Signature) == nil && converseRequiresSignedReasoning(model) {
+					continue
+				}
 				// Text must never reach Bedrock as nil. It is
 				// `*string json:"text,omitempty"`, so a nil pointer drops the key
 				// from the request rather than sending an explicit null, and
@@ -1916,6 +1924,17 @@ func converseReasoningShape(model string) schemas.BedrockReasoningShape {
 		fallback = schemas.BedrockReasoningShapeRedacted
 	}
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockReasoningShape(fallback)
+}
+
+// converseRequiresSignedReasoning reports whether the model verifies reasoning
+// signatures on Converse, in which case a reasoningText block with no signature
+// must be dropped from the replay rather than sent (#6624). Claude does; Nova,
+// MiniMax and DeepSeek accept an unsigned block with the field omitted.
+//
+// Same resolution as converseReasoningShape: the datasheet row wins when it
+// says anything, the model family answers otherwise.
+func converseRequiresSignedReasoning(model string) bool {
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
