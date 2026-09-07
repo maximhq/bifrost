@@ -428,6 +428,8 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 	})
 }
 
+// TestToOpenAIResponsesRequest_NormalizesReasoningEffort verifies that reasoning effort
+// normalization is correctly applied during ToOpenAIResponsesRequest conversion.
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))

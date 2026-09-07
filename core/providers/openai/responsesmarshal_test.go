@@ -157,6 +157,8 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 	}
 }
 
+// TestNormalizeOpenAIReasoningEffort verifies reasoning effort normalization across
+// OpenAI and third-party models, including minimal, xhigh, and max clamping.
 func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1165,6 +1167,8 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 	}
 }
 
+// TestIsOpenAIReasoningModel verifies that OpenAI reasoning models (including o-series,
+// GPT-5, GPT-6, and Astra families, with and without provider prefixes) are correctly identified.
 func TestIsOpenAIReasoningModel(t *testing.T) {
 	tests := []struct {
 		name  string
