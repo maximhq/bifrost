@@ -373,27 +373,28 @@ Configure the auto-approval policy in your MCP client's own settings:
 Bifrost automatically monitors the health of connected MCP clients:
 
 **How it works:**
-- **Ping Mechanism:** Every 10 seconds (configurable), sends a ping to each connected client
-- **Check Timeout:** Each ping has a 5-second timeout
-- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `unstable`
-- **State Tracking:** Real-time state updates (connected ↔ disconnected)
-- **Manual Reconnection:** Once disconnected by failed health checks, requires manual reconnect via API or UI. One exception: when a live tool call hits a clean upstream auth rejection, Bifrost force-refreshes the credential and reconnects in the background on its own (see [Auth failure recovery](./tool-execution#auth-failure-recovery))
+- **What a check does:** a ping (when the server supports one) plus a `tools/list` over the same connection, so one pass covers both liveness and tool-list refresh
+- **Adaptive cadence:** once a client is healthy, checks run on its tool sync interval (10 minutes by default). While a client is `unstable` they run every 10 seconds, so recovery is detected quickly
+- **Check timeout:** each ping or `tools/list` attempt is bounded at 5 seconds and retried with backoff inside the check
+- **Failure threshold:** a single failed check marks the client `unstable`. There is no consecutive-failure counter across checks; the retries inside each check are what absorb an ordinary blip
+- **Automatic recovery:** a failed check reconnects the client in the background, so a session the server expired, a dropped SSE stream, or a `stdio` server whose process exited is replaced without anyone intervening. For `http` and `sse` the replacement is dialled before the old connection is dropped, so calls keep flowing throughout. `stdio` and in-process clients close first instead, because two subprocesses would double resource use and clash over anything held exclusively, such as a port bind or a lockfile
+- **Tool calls repair too:** a call that fails because the credential was rejected or the session is gone triggers the same reconnect immediately, and usually retries the caller's own request on the healed connection (see [Auth failure recovery](./tool-execution#auth-failure-recovery))
+- **`unstable` does not hide tools:** it reflects Bifrost's own checks, never the outcome of real tool calls, and tool calls keep being attempted normally throughout
 - **`needs_reauth` is sticky:** clients whose OAuth credential permanently died are parked in `needs_reauth`, health checks won't flip them back, and Reconnect is disabled for them; an admin must [reauthorize](./auth/oauth#reauthorization) instead
 
-**Configuration:**
+**Configuration:** the cadence is the only knob. Set it per client with `tool_sync_interval` on a `client_configs[]` entry, or globally under the `mcp` section:
+
 ```json
 {
   "mcp": {
-    "health_monitor_config": {
-      "check_interval": "10s",
-      "check_timeout": "5s",
-      "max_consecutive_failures": 5
-    }
+    "tool_sync_interval": "10m"
   }
 }
 ```
 
-When a client is disconnected after 5 consecutive failed health checks, tools from that client become unavailable. You can manually reconnect using the API or Go SDK:
+Both take a Go duration string (`"30s"`, `"10m"`). A bare number is read as **nanoseconds**, so `10` means 10ns rather than 10 minutes, and the global additionally has to be a whole number of minutes. A per-client `0` or unset value inherits the global; an unset global means 10 minutes. See [State reference](./connections) for what each state means and how recovery works per connection mode.
+
+Recovery is automatic, but you can also force a reconnect yourself for any client except one sitting in `needs_reauth`, which needs [reauthorization](./auth/oauth#reauthorization) rather than another redial:
 
 **Gateway API:**
 ```bash
