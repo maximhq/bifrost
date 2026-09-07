@@ -77,8 +77,9 @@ export const createMCPColumns = (
 		header: "App",
 		size: 140,
 		cell: ({ row }) => {
-			const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
-			const icon = row.original.app ? customAppIcons[row.original.app] || app.icon : app.icon;
+			const appKey = row.original.app || row.original.app_key;
+			const app = appKey ? mapAppToClientApp(appKey) : mapUserAgentToApp(row.original.user_agent);
+			const icon = appKey ? customAppIcons[appKey] || app.icon : app.icon;
 			return (
 				<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
 					{icon ? <img src={icon} alt={app.name} width={14} height={14} loading="lazy" decoding="async" /> : null}
