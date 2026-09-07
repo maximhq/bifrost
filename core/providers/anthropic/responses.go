@@ -99,6 +99,10 @@ const (
 	anthropicInputJSONBufferToolSearch anthropicInputJSONBufferKind = "tool_search"
 )
 
+// Each Anthropic thinking block becomes its own reasoning item, so it holds a single
+// summary block. summary_index is required on every reasoning_summary_* event.
+const anthropicReasoningSummaryIndex = 0
+
 func (state *AnthropicResponsesStreamState) beginInputJSONBuffer(index *int, kind anthropicInputJSONBufferKind) {
 	if index == nil {
 		return
@@ -1839,6 +1843,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Delta:          chunk.Delta.Thinking,
 					}
 					if itemID != "" {
@@ -1859,6 +1864,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Signature:      chunk.Delta.Signature, // Use signature field instead of delta
 					}
 					if itemID != "" {
@@ -2440,6 +2446,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Text:           &doneText,
 					}
 					if itemID != "" {
