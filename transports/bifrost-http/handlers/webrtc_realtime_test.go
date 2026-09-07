@@ -15,6 +15,17 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+type testKVSyncDelegate struct {
+	destination *kvstore.Store
+	err         error
+}
+
+func (d *testKVSyncDelegate) OnSet(key string, valueJSON []byte, writtenAt int64, expiresAt int64) {
+	d.err = d.destination.SetRemote(key, valueJSON, writtenAt, expiresAt)
+}
+
+func (d *testKVSyncDelegate) OnDelete(string, int64) {}
+
 type testHandlerStore struct {
 	kv *kvstore.Store
 }
@@ -236,6 +247,48 @@ func TestLookupRealtimeEphemeralKeyMappingKeepsEntryUntilTTLExpiry(t *testing.T)
 	}
 	if raw == nil {
 		t.Fatal("expected mapping to remain in KV store")
+	}
+}
+
+func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(t *testing.T) {
+	t.Parallel()
+
+	source, err := kvstore.New(kvstore.Config{})
+	if err != nil {
+		t.Fatalf("kvstore.New() source error = %v", err)
+	}
+	defer source.Close()
+
+	destination, err := kvstore.New(kvstore.Config{})
+	if err != nil {
+		t.Fatalf("kvstore.New() destination error = %v", err)
+	}
+	defer destination.Close()
+
+	delegate := &testKVSyncDelegate{destination: destination}
+	source.SetDelegate(delegate)
+
+	body, err := json.Marshal(map[string]any{
+		"value":      "ek_test_replicated",
+		"expires_at": time.Now().Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	cacheRealtimeEphemeralKeyMapping(source, body, "key_123", "sk-bf-test")
+	if delegate.err != nil {
+		t.Fatalf("replicating mapping error = %v", delegate.err)
+	}
+
+	mapping, ok := lookupRealtimeEphemeralKeyMapping(destination, "ek_test_replicated")
+	if !ok {
+		t.Fatal("expected replicated mapping")
+	}
+	if mapping.KeyID != "key_123" {
+		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
+	}
+	if mapping.VirtualKey != "sk-bf-test" {
+		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
 	}
 }
 
