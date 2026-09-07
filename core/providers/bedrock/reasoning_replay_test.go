@@ -135,6 +135,23 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 			wantSignatures: []*string{&signature},
 		},
 		{
+			// What the STREAMING path now closes a reasoning block with
+			// (responses.go, output_item.done): the accumulated summary text plus the
+			// signature that signs it. The signature has to land on the block, or the
+			// replayed turn reaches Converse unsigned.
+			name: "streaming shape: summary text plus encrypted content",
+			msg: &schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{{Text: "First I check the docs."}},
+					EncryptedContent: &signature,
+				},
+			},
+			wantBlocks:     1,
+			wantTexts:      []string{"First I check the docs."},
+			wantSignatures: []*string{&signature},
+		},
+		{
 			name: "summary only",
 			msg: &schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),

@@ -32,6 +32,8 @@ type BedrockResponsesStreamState struct {
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
 	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
+	ReasoningTextBuffers      map[int]*strings.Builder                                       // Maps output_index to accumulated reasoning text for reasoning done events
+	ReasoningSignatures       map[int]string                                                 // Maps output_index to the reasoning block's replay token (signature or redacted blob)
 	OutputItems               map[int]*schemas.ResponsesMessage                              // Maps output_index to the completed output item, for response.completed's Output array
 	CurrentOutputIndex        int                                                            // Current output index counter
 	MessageID                 *string                                                        // Message ID (generated)
@@ -60,6 +62,8 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			CompletedOutputIndices:    make(map[int]bool),
 			AnnotationIndices:         make(map[int]int),
 			TextBuffers:               make(map[int]*strings.Builder),
+			ReasoningTextBuffers:      make(map[int]*strings.Builder),
+			ReasoningSignatures:       make(map[int]string),
 			OutputItems:               make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
@@ -133,6 +137,16 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 		state.TextBuffers = make(map[int]*strings.Builder)
 	} else {
 		clear(state.TextBuffers)
+	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.ReasoningTextBuffers)
+	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	} else {
+		clear(state.ReasoningSignatures)
 	}
 	if state.OutputItems == nil {
 		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
@@ -227,6 +241,16 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.TextBuffers)
 	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.ReasoningTextBuffers)
+	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	} else {
+		clear(state.ReasoningSignatures)
+	}
 	if state.OutputItems == nil {
 		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
 	} else {
@@ -240,6 +264,77 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.UsedStructuredOutputTool = false
+}
+
+// Each Bedrock reasoning block becomes its own reasoning item, so it holds a single
+// summary block. summary_index is required on every reasoning_summary_* event.
+const bedrockReasoningSummaryIndex = 0
+
+// accumulateBedrockReasoningText buffers a reasoning delta so the terminal events can
+// carry the summary text in full instead of an empty string.
+func accumulateBedrockReasoningText(state *BedrockResponsesStreamState, outputIndex int, text string) {
+	if state == nil || text == "" {
+		return
+	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	}
+	if state.ReasoningTextBuffers[outputIndex] == nil {
+		state.ReasoningTextBuffers[outputIndex] = &strings.Builder{}
+	}
+	state.ReasoningTextBuffers[outputIndex].WriteString(text)
+}
+
+// recordBedrockReasoningSignature stores a reasoning block's replay token so the item that
+// closes the block can carry it, whichever close path gets there first.
+func recordBedrockReasoningSignature(state *BedrockResponsesStreamState, outputIndex int, delta *BedrockReasoningContentText) {
+	if state == nil || delta == nil {
+		return
+	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	}
+	if delta.Signature != nil && *delta.Signature != "" {
+		state.ReasoningSignatures[outputIndex] = *delta.Signature
+	} else if delta.RedactedContent != nil && *delta.RedactedContent != "" {
+		state.ReasoningSignatures[outputIndex] = *delta.RedactedContent
+	}
+}
+
+// takeBedrockReasoningSummary builds the completed reasoning item's summary and replay
+// token from what the block accumulated, clearing both.
+//
+// The two travel together on purpose: replay signs the FIRST summary entry with
+// encrypted_content, so summary text emitted without its signature reaches Converse as an
+// unsigned reasoning block -- which Bedrock rejects. A block with no text keeps the empty
+// summary, leaving the signature-only replay shape untouched.
+func takeBedrockReasoningSummary(state *BedrockResponsesStreamState, outputIndex int) ([]schemas.ResponsesReasoningSummary, *string) {
+	summary := []schemas.ResponsesReasoningSummary{}
+	if state == nil {
+		return summary, nil
+	}
+	var signature *string
+	if sig, ok := state.ReasoningSignatures[outputIndex]; ok && sig != "" {
+		sigCopy := sig
+		signature = &sigCopy
+		delete(state.ReasoningSignatures, outputIndex)
+	}
+	return summary, signature
+}
+
+// takeBedrockReasoningText returns the reasoning text accumulated for an output index and
+// clears it, so a block closed by one of several close paths cannot be emitted twice.
+func takeBedrockReasoningText(state *BedrockResponsesStreamState, outputIndex int) string {
+	if state == nil {
+		return ""
+	}
+	buf := state.ReasoningTextBuffers[outputIndex]
+	if buf == nil {
+		return ""
+	}
+	text := buf.String()
+	delete(state.ReasoningTextBuffers, outputIndex)
+	return text
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
@@ -361,14 +456,15 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				// For reasoning items, content_index is always 0
 				reasoningContentIndex := 0
 
-				// Emit reasoning_summary_text.done
-				emptyText := ""
+				// Emit reasoning_summary_text.done with the text accumulated for this block
+				reasoningText := takeBedrockReasoningText(state, prevOutputIndex)
 				reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(prevOutputIndex),
 					ContentIndex:   &reasoningContentIndex,
-					Text:           &emptyText,
+					SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
+					Text:           &reasoningText,
 				}
 				if itemID != "" {
 					reasoningDoneResponse.ItemID = &itemID
@@ -378,7 +474,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				// Emit content_part.done for reasoning
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text: &emptyText,
+					Text: &reasoningText,
 				}
 				partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
@@ -396,12 +492,20 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				statusCompleted := "completed"
 				messageType := schemas.ResponsesMessageTypeReasoning
 				role := schemas.ResponsesInputMessageRoleAssistant
+				reasoningSummary, reasoningReplayToken := takeBedrockReasoningSummary(state, prevOutputIndex)
+				if reasoningText != "" {
+					reasoningSummary = append(reasoningSummary, schemas.ResponsesReasoningSummary{
+						Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+						Text: reasoningText,
+					})
+				}
 				doneItem := &schemas.ResponsesMessage{
 					Type:   &messageType,
 					Role:   &role,
 					Status: &statusCompleted,
 					ResponsesReasoning: &schemas.ResponsesReasoning{
-						Summary: []schemas.ResponsesReasoningSummary{},
+						Summary:          reasoningSummary,
+						EncryptedContent: reasoningReplayToken,
 					},
 				}
 				if itemID != "" {
@@ -750,14 +854,15 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 						// For reasoning items, content_index is always 0
 						reasoningContentIndex := 0
 
-						// Emit reasoning_summary_text.done
-						emptyText := ""
+						// Emit reasoning_summary_text.done with the text accumulated for this block
+						reasoningText := takeBedrockReasoningText(state, prevOutputIndex)
 						reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
 							Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 							SequenceNumber: sequenceNumber + len(responses),
 							OutputIndex:    schemas.Ptr(prevOutputIndex),
 							ContentIndex:   &reasoningContentIndex,
-							Text:           &emptyText,
+							SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
+							Text:           &reasoningText,
 						}
 						if itemID != "" {
 							reasoningDoneResponse.ItemID = &itemID
@@ -767,7 +872,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 						// Emit content_part.done for reasoning
 						part := &schemas.ResponsesMessageContentBlock{
 							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: &emptyText,
+							Text: &reasoningText,
 						}
 						partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 							Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
@@ -785,12 +890,20 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 						statusCompleted := "completed"
 						messageType := schemas.ResponsesMessageTypeReasoning
 						role := schemas.ResponsesInputMessageRoleAssistant
+						reasoningSummary, reasoningReplayToken := takeBedrockReasoningSummary(state, prevOutputIndex)
+						if reasoningText != "" {
+							reasoningSummary = append(reasoningSummary, schemas.ResponsesReasoningSummary{
+								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+								Text: reasoningText,
+							})
+						}
 						doneItem := &schemas.ResponsesMessage{
 							Type:   &messageType,
 							Role:   &role,
 							Status: &statusCompleted,
 							ResponsesReasoning: &schemas.ResponsesReasoning{
-								Summary: []schemas.ResponsesReasoningSummary{},
+								Summary:          reasoningSummary,
+								EncryptedContent: reasoningReplayToken,
 							},
 						}
 						if itemID != "" {
@@ -1034,6 +1147,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				} else if reasoningDelta.RedactedContent != nil {
 					item.ResponsesReasoning.EncryptedContent = reasoningDelta.RedactedContent
 				}
+				recordBedrockReasoningSignature(state, outputIndex, reasoningDelta)
 
 				// Track that this content index is a reasoning block
 				state.ReasoningContentIndices[contentBlockIndex] = true
@@ -1068,11 +1182,13 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 
 				// If there's text content, also emit the delta
 				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
+					accumulateBedrockReasoningText(state, outputIndex, *reasoningDelta.Text)
 					deltaResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
+						SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
 						Delta:          reasoningDelta.Text,
 						ItemID:         &itemID,
 					}
@@ -1083,12 +1199,14 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 			} else {
 				// Subsequent reasoning deltas - just emit the delta
 				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
+					accumulateBedrockReasoningText(state, outputIndex, *reasoningDelta.Text)
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
+						SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
 						Delta:          reasoningDelta.Text,
 					}
 					if itemID != "" {
@@ -1099,12 +1217,14 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 
 				// Handle signature deltas
 				if reasoningDelta.Signature != nil {
+					recordBedrockReasoningSignature(state, outputIndex, reasoningDelta)
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
+						SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
 						Signature:      reasoningDelta.Signature, // Use signature field instead of delta
 					}
 					if itemID != "" {
@@ -1451,14 +1571,15 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		// For reasoning items, content_index is always 0 (reasoning content is the first and only content part)
 		reasoningContentIndex := 0
 
-		// Emit reasoning_summary_text.done
-		emptyText := ""
+		// Emit reasoning_summary_text.done with the text accumulated for this block
+		reasoningText := takeBedrockReasoningText(state, outputIndex)
 		reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    schemas.Ptr(outputIndex),
 			ContentIndex:   &reasoningContentIndex,
-			Text:           &emptyText,
+			SummaryIndex:   schemas.Ptr(bedrockReasoningSummaryIndex),
+			Text:           &reasoningText,
 		}
 		if itemID != "" {
 			reasoningDoneResponse.ItemID = &itemID
@@ -1468,7 +1589,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		// Emit content_part.done for reasoning
 		part := &schemas.ResponsesMessageContentBlock{
 			Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-			Text: &emptyText,
+			Text: &reasoningText,
 		}
 		partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
@@ -1486,12 +1607,20 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		statusCompleted := "completed"
 		messageType := schemas.ResponsesMessageTypeReasoning
 		role := schemas.ResponsesInputMessageRoleAssistant
+		reasoningSummary, reasoningReplayToken := takeBedrockReasoningSummary(state, outputIndex)
+		if reasoningText != "" {
+			reasoningSummary = append(reasoningSummary, schemas.ResponsesReasoningSummary{
+				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				Text: reasoningText,
+			})
+		}
 		doneItem := &schemas.ResponsesMessage{
 			Type:   &messageType,
 			Role:   &role,
 			Status: &statusCompleted,
 			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
+				Summary:          reasoningSummary,
+				EncryptedContent: reasoningReplayToken,
 			},
 		}
 		if itemID != "" {
@@ -4853,9 +4982,9 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 	}
 
 	if signature != nil {
-		// A signature with no accompanying thinking text. This is what the
-		// streaming ingress path emits (an empty summary plus the signature in
-		// encrypted_content), so it is what a client faithfully replaying a
+		// A signature with no accompanying thinking text. This is what the streaming
+		// ingress path emits for a text-less reasoning block (an empty summary plus the
+		// signature in encrypted_content), so it is what a client faithfully replaying a
 		// streamed turn sends back.
 		//
 		// An empty Text is the only text available here -- the client never
