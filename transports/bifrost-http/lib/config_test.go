@@ -15815,7 +15815,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // customers
 			nil, nil, // teams
 			nil, nil, // virtual keys
-			nil, nil, // routing rules
+			nil, nil, nil, // routing rules (add, update, delete)
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
