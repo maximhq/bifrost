@@ -561,7 +561,51 @@ type ProviderConfig struct {
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 }
+
+// PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
+// requests that carry none.
+//
+// Agentic clients (Codex above all) send no cache markers, so providers that default
+// to implicit caching slide the cached prefix onto the latest message: every turn
+// rewrites the whole growing prompt at the cache-write rate and reads almost nothing
+// back. On Anthropic models nothing caches at all without an explicit marker.
+//
+// This is off by default and deliberately so. Bifrost otherwise never invents a
+// breakpoint - the four-marker ceiling is scarce and spending one the caller did not
+// ask for is a cost decision that belongs to the operator, not to the gateway. See
+// clampAnthropicCacheBreakpoints in core/providers/anthropic/utils.go.
+type PromptCacheConfig struct {
+	// AutoInject marks the first cacheable content block when the caller supplied no
+	// markers of its own. The first block is the prefix an agent loop replays verbatim
+	// every turn, which is what makes turn 2 onward a cache read rather than a write.
+	AutoInject bool `json:"auto_inject"`
+	// TTL is the lifetime requested for injected markers ("1h"). Empty means the
+	// provider default (5m on Anthropic). Providers that cannot carry a TTL ignore it.
+	TTL *string `json:"ttl,omitempty"`
+	// InjectionPoints targets specific messages instead of the first cacheable block.
+	// When non-empty it REPLACES the AutoInject strategy rather than adding to it.
+	// Mirrors LiteLLM's cache_control_injection_points.
+	InjectionPoints []CacheControlInjectionPoint `json:"cache_control_injection_points,omitempty"`
+}
+
+// CacheControlInjectionPoint names one place to mark. A point must carry at least one
+// of Role or Index; a point with neither matches nothing and is skipped.
+type CacheControlInjectionPoint struct {
+	// Location is "message". Reserved for future targets (tools, system) so the config
+	// shape does not have to change when they arrive.
+	Location string `json:"location"`
+	// Role matches messages by role ("system", "user", "assistant", "developer").
+	Role *string `json:"role,omitempty"`
+	// Index matches by position. Negative values count from the end, so -1 is the last
+	// message. Out-of-range indices match nothing rather than erroring - a conversation
+	// shorter than the configured index is normal, not a misconfiguration.
+	Index *int `json:"index,omitempty"`
+}
+
+// CacheControlInjectionLocationMessage is the only Location value currently honoured.
+const CacheControlInjectionLocationMessage = "message"
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {

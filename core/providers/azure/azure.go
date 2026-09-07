@@ -667,6 +667,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -699,7 +700,6 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -918,10 +918,16 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 						continue
 					}
 
-					// Azure sends JSON-wrapped responses for speech streaming
-					// Parse the JSON to extract the response type and audio data
+					// Azure sends JSON-wrapped responses for speech streaming.
+					// Parse the JSON to extract the response type and audio data.
+					// Timed as the "response-parse" stream phase (per-event JSON decode);
+					// the unmarshal maps straight into the Bifrost type, so there is no
+					// distinct convert step to time here.
 					var response schemas.BifrostSpeechStreamResponse
-					if err := sonic.Unmarshal(audioData, &response); err != nil {
+					parseStart := time.Now()
+					err := sonic.Unmarshal(audioData, &response)
+					schemas.AddStreamParse(ctx, time.Since(parseStart))
+					if err != nil {
 						// If JSON parsing fails, check if this might be an error response
 						// Quick check for error field (allocation-free using sonic.Get)
 						if errorNode, _ := sonic.Get(audioData, "error"); errorNode.Exists() {
@@ -1045,7 +1051,6 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1062,7 +1067,8 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	request *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1134,7 +1140,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageEdit performs an image edit request to Azure's API.
@@ -1203,7 +1208,6 @@ func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, post
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageVariation is not supported by the Azure provider.

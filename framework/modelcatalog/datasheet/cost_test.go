@@ -2044,7 +2044,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					HitType:  &hitType,
 				},
@@ -2079,7 +2079,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     true,
 					HitType:      &hitType,
 					ProviderUsed: &embProvider,
@@ -2117,7 +2117,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
 					ModelUsed:    &embModel,
@@ -2140,7 +2140,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					// No ProviderUsed, ModelUsed, InputTokens
 				},
@@ -2178,7 +2178,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitIsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2221,7 +2221,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2239,6 +2239,66 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
 	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+}
+
+// TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail verifies the routing
+// classification embed lands on the additional side under its own detail line,
+// so a breakdown that also carries a guardrail or cache sidecar stays
+// attributable to the call that incurred each part. The scalar CalculateCost is
+// pinned alongside the breakdown: callers that only read the total must see the
+// same billing decision the categories describe.
+func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+
+	newResponse := func(countTowardBudgets bool) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.ChatCompletionRequest,
+					RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+					RoutingMetadata: &schemas.BifrostRoutingMetadata{
+						Calls: []schemas.BifrostRoutingCall{embedRoutingCall(500, countTowardBudgets)},
+					},
+				},
+			},
+		}
+	}
+
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Routing embed: 500*2e-8 = 0.00001.
+	assert.InDelta(t, 0.01251, s.CalculateCost(newResponse(true), nil), 1e-12)
+
+	bd := s.CalculateCostBreakdown(newResponse(true), nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.RoutingCost, 1e-12)
+	assert.Zero(t, bd.AdditionalCostDetails.GuardrailCost, "a routing embed must not be reported as a guardrail call")
+	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+
+	// The detail line tracks the cost actually charged: a request that never
+	// opted routing into budget attribution carries neither, and the embed drops
+	// out of the total rather than being billed silently.
+	assert.InDelta(t, 0.0125, s.CalculateCost(newResponse(false), nil), 1e-12)
+
+	optedOut := s.CalculateCostBreakdown(newResponse(false), nil)
+	require.NotNil(t, optedOut)
+	assert.Zero(t, optedOut.AdditionalCost)
+	if optedOut.AdditionalCostDetails != nil {
+		assert.Zero(t, optedOut.AdditionalCostDetails.RoutingCost)
+	}
 }
 
 // TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge verifies the
@@ -2267,7 +2327,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge(t *testing.
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2310,7 +2370,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsRequestSurcharge(t *testing
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2347,7 +2407,7 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 		CompletionTokens: 50,
 		TotalTokens:      150,
 	})
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.Anthropic,
 			JudgeModel:       "claude-judge",
@@ -2384,7 +2444,7 @@ func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 		makeKey("gpt-judge", "openai", "chat"): pricing,
 	})
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.OpenAI,
 			JudgeModel:    "gpt-judge",
@@ -2410,8 +2470,8 @@ func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
 	})
 	hitType := "direct"
 	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
-	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o-mini",
@@ -2465,7 +2525,7 @@ func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *test
 		},
 	}))
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.Anthropic,
 			JudgeModel:    "claude-judge",
@@ -5321,6 +5381,177 @@ func TestParseImageDimensions(t *testing.T) {
 		assert.Equal(t, 0, w, bad)
 		assert.Equal(t, 0, h, bad)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// RoutingCallCost / CalculateCost's routing branch
+//
+// A request that classifies via semantic and then falls back to the llm
+// classifier makes two billable calls. These tests pin that both are priced —
+// individually and summed — regardless of whether one, the other, or both are
+// present, and that CalculateCost attributes each call's cost independently
+// of the other call's CountTowardBudgets flag.
+// ---------------------------------------------------------------------------
+
+func routingCostTestStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+		makeKey("claude-haiku-4-5", "anthropic", "chat"): {
+			Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000005),
+		},
+	})
+}
+
+func embedRoutingCall(inputTokens int, countTowardBudgets bool) schemas.BifrostRoutingCall {
+	provider, model, tokens := "openai", "text-embedding-3-small", inputTokens
+	return schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &model, InputTokens: &tokens,
+		CountTowardBudgets: countTowardBudgets,
+	}
+}
+
+func llmRoutingCall(inputTokens, outputTokens int, countTowardBudgets bool) schemas.BifrostRoutingCall {
+	provider, model, in, out := "anthropic", "claude-haiku-4-5", inputTokens, outputTokens
+	return schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &model, InputTokens: &in, OutputTokens: &out,
+		CountTowardBudgets: countTowardBudgets,
+	}
+}
+
+func TestRoutingCallCost_EmbedOnly(t *testing.T) {
+	s := routingCostTestStore()
+	// 200 tokens * 0.00000002/token
+	assert.InDelta(t, 0.000004, s.RoutingCallCost(embedRoutingCall(200, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_LLMOnly(t *testing.T) {
+	s := routingCostTestStore()
+	// 30 input * 0.000001 + 8 output * 0.000005
+	want := 30*0.000001 + 8*0.000005
+	assert.InDelta(t, want, s.RoutingCallCost(llmRoutingCall(30, 8, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_CostPerRequest(t *testing.T) {
+	s := routingCostTestStore()
+	embeddingPricingKey := makeKey("text-embedding-3-small", "openai", "embedding")
+	embeddingPricing := s.pricingData[embeddingPricingKey]
+	embeddingPricing.CostPerRequest = bifrost.Ptr(0.01)
+	s.pricingData[embeddingPricingKey] = embeddingPricing
+	llmPricingKey := makeKey("claude-haiku-4-5", "anthropic", "chat")
+	llmPricing := s.pricingData[llmPricingKey]
+	llmPricing.CostPerRequest = bifrost.Ptr(0.02)
+	s.pricingData[llmPricingKey] = llmPricing
+
+	// The flat fee is added once to each internal provider call, independently
+	// of whether the call is the semantic embedding or LLM classifier.
+	assert.InDelta(t, 0.01+200*0.00000002, s.RoutingCallCost(embedRoutingCall(200, true), nil), 1e-12)
+	assert.InDelta(t, 0.02+30*0.000001+8*0.000005, s.RoutingCallCost(llmRoutingCall(30, 8, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_IgnoresParentSelectedKey(t *testing.T) {
+	s := routingCostTestStore()
+	providerID := "openai"
+	selectedKeyID := "parent-key"
+	model := "text-embedding-3-small"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "routing-provider",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          model,
+			RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+		{
+			ID:               "routing-parent-provider-key",
+			ScopeKind:        string(ScopeKindProviderKey),
+			ProviderKeyID:    &selectedKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          model,
+			RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+			PricingPatchJSON: `{"input_cost_per_token":99}`,
+		},
+	}))
+
+	// The provider-scoped override applies, but the parent request's
+	// provider-key override must not leak into the routing call.
+	assert.InDelta(t, 10*3, s.RoutingCallCost(embedRoutingCall(10, true), &LookupScopes{
+		Provider:      "openai",
+		SelectedKeyID: selectedKeyID,
+	}), 1e-12)
+}
+
+// TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag pins the
+// regression this whole redesign fixes: CalculateCost's routing branch must
+// price and sum every routing metadata call, and each call's own
+// CountTowardBudgets flag — not one flag for the whole stamp — decides
+// whether that call's cost folds into the request's total.
+func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *testing.T) {
+	s := routingCostTestStore()
+	embedCost := 200 * 0.00000002
+	llmCost := 30*0.000001 + 8*0.000005
+
+	baseResp := func(routingMetadata *schemas.BifrostRoutingMetadata) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:     schemas.ChatCompletionRequest,
+					RoutingInfo:     routingInfoFor(schemas.OpenAI, "gpt-4o-mini"),
+					RoutingMetadata: routingMetadata,
+				},
+			},
+		}
+	}
+	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model: "gpt-4o-mini", Provider: "openai", Mode: "chat",
+		InputCostPerToken: bifrost.Ptr(0.0), OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+
+	t.Run("both calls opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, true),
+			llmRoutingCall(30, 8, true),
+		}})
+		assert.InDelta(t, embedCost+llmCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("only the embed call opted in — the fix for the overwrite bug", func(t *testing.T) {
+		// Before the fix, a single-slot routing metadata record meant the llm call (written
+		// second) silently replaced the embed call's usage; the embed's cost was
+		// unrecoverable even though it explicitly opted into budget attribution.
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, true),
+			llmRoutingCall(30, 8, false),
+		}})
+		assert.InDelta(t, embedCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("only the llm call opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, false),
+			llmRoutingCall(30, 8, true),
+		}})
+		assert.InDelta(t, llmCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("neither opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, false),
+			llmRoutingCall(30, 8, false),
+		}})
+		assert.Equal(t, 0.0, s.CalculateCost(resp, nil))
+	})
+
+	t.Run("nil routing debug", func(t *testing.T) {
+		resp := baseResp(nil)
+		assert.Equal(t, 0.0, s.CalculateCost(resp, nil))
+	})
 }
 
 // --- Video pricing dimensions (the settlement-time pricing basis) ---

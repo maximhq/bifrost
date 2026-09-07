@@ -42,7 +42,7 @@ func strPtr(s string) *string {
 }
 
 func newTestGenericRouter() *GenericRouter {
-	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
+	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, &testLogger{})
 }
 
 func newTestBifrostContext() *schemas.BifrostContext {

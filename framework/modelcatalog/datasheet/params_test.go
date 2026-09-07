@@ -1,10 +1,15 @@
 package datasheet
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 func TestModelParameterCandidates(t *testing.T) {
@@ -143,4 +148,59 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 			t.Fatalf("applied hook fired %d times on an empty feed, want 0", fired)
 		}
 	})
+}
+
+// paramsOnlyConfigStore answers model-parameter reads and nothing else. The
+// embedded interface is nil, so any other call panics rather than passing.
+type paramsOnlyConfigStore struct {
+	configstore.ConfigStore
+	rows map[string]string // model key -> raw JSON
+}
+
+func (s paramsOnlyConfigStore) GetModelParametersByModel(_ context.Context, model string) (*configstoreTables.TableModelParameters, error) {
+	data, ok := s.rows[model]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	return &configstoreTables.TableModelParameters{Model: model, Data: data}, nil
+}
+
+// normalizeProvider folds every "*bedrock*" row provider onto "bedrock", so a
+// bedrock_mantle lookup matched nothing and every capability check on that
+// provider silently fell back — routing /v1/responses natively for models the
+// sheet only lists on /v1/chat/completions.
+func TestLoadModelCapabilities_MatchesBedrockMantleRows(t *testing.T) {
+	const model = "openai.gpt-oss-safeguard-20b"
+	rows := map[string]string{
+		model:                     `{"provider":"bedrock","mode":"chat"}`,
+		"bedrock_mantle/" + model: `{"provider":"bedrock_mantle","mode":"chat","supported_endpoints":["/v1/chat/completions"]}`,
+	}
+	s := NewTestStore(nil)
+	s.configStore = paramsOnlyConfigStore{rows: rows}
+	s.SetSupportedParamsForTest(map[string][]string{"bedrock_mantle/" + model: {"temperature"}})
+
+	caps, err := s.LoadModelCapabilities(context.Background(), schemas.BedrockMantle, model)
+	if err != nil {
+		t.Fatalf("LoadModelCapabilities: %v", err)
+	}
+	if caps == nil {
+		t.Fatal("no capabilities for a bedrock_mantle model the sheet has a row for")
+	}
+	if !slices.Equal(caps.SupportedEndpoints, []string{"/v1/chat/completions"}) {
+		t.Fatalf("SupportedEndpoints = %v, want the bedrock_mantle row's", caps.SupportedEndpoints)
+	}
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return caps })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	if schemas.ResolveModelCaps(schemas.BedrockMantle, model).SupportsResponsesEndpoint(true) {
+		t.Error("responses reported as supported for a chat-completions-only model")
+	}
+
+	// The plain bedrock row still resolves for a bedrock lookup.
+	bedrockCaps, err := s.LoadModelCapabilities(context.Background(), schemas.Bedrock, model)
+	if err != nil {
+		t.Fatalf("LoadModelCapabilities(bedrock): %v", err)
+	}
+	if bedrockCaps == nil || len(bedrockCaps.SupportedEndpoints) != 0 {
+		t.Errorf("bedrock lookup resolved to %+v, want the plain bedrock row", bedrockCaps)
+	}
 }

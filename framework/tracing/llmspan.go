@@ -214,6 +214,7 @@ func PopulateContextAttributes(
 	teamID, teamName string,
 	customerID, customerName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	userID, userName, userEmail string,
 	numberOfRetries, fallbackIndex int,
 ) {
@@ -246,6 +247,12 @@ func PopulateContextAttributes(
 	}
 	if businessUnitName != "" {
 		attrs[schemas.AttrBifrostBusinessUnitName] = businessUnitName
+	}
+	if projectID != "" {
+		attrs[schemas.AttrBifrostProjectID] = projectID
+	}
+	if projectName != "" {
+		attrs[schemas.AttrBifrostProjectName] = projectName
 	}
 	if userID != "" {
 		attrs[schemas.AttrBifrostUserID] = userID

@@ -130,6 +130,7 @@ func TestFindUniqueName_NoCollision(t *testing.T) {
 	client := &tables.TableMCPClient{
 		Name:           "existing_client",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -157,6 +158,7 @@ func TestFindUniqueName_WithCollision(t *testing.T) {
 	client1 := &tables.TableMCPClient{
 		Name:           "my_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -168,6 +170,7 @@ func TestFindUniqueName_WithCollision(t *testing.T) {
 	client2 := &tables.TableMCPClient{
 		Name:           "my_tool1",
 		ClientID:       "client-2",
+		EndpointSlug:   "client-2",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -195,6 +198,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client1 := &tables.TableMCPClient{
 		Name:           "test_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -205,6 +209,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client2 := &tables.TableMCPClient{
 		Name:           "test_tool1",
 		ClientID:       "client-2",
+		EndpointSlug:   "client-2",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -215,6 +220,7 @@ func TestFindUniqueName_MultipleCollisions(t *testing.T) {
 	client3 := &tables.TableMCPClient{
 		Name:           "test_tool2",
 		ClientID:       "client-3",
+		EndpointSlug:   "client-3",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -241,6 +247,7 @@ func TestFindUniqueName_NormalizationAndCollision(t *testing.T) {
 	client := &tables.TableMCPClient{
 		Name:           "my_tool",
 		ClientID:       "client-1",
+		EndpointSlug:   "client-1",
 		ConnectionType: "stdio",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -289,6 +296,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "mcp client",
 			ClientID:       "client-1",
+			EndpointSlug:   "client-1",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -296,6 +304,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "mcp-client",
 			ClientID:       "client-2",
+			EndpointSlug:   "client-2",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -303,6 +312,7 @@ func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {
 		{
 			Name:           "1mcp-client",
 			ClientID:       "client-3",
+			EndpointSlug:   "client-3",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -392,6 +402,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "mcp client",
 			ClientID:       "client-1",
+			EndpointSlug:   "client-1",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -399,6 +410,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "mcp-client",
 			ClientID:       "client-2",
+			EndpointSlug:   "client-2",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -406,6 +418,7 @@ func TestFindUniqueName_MigrationScenarioWithInMemoryTracking(t *testing.T) {
 		{
 			Name:           "1mcp-client",
 			ClientID:       "client-3",
+			EndpointSlug:   "client-3",
 			ConnectionType: "stdio",
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
@@ -1863,6 +1876,39 @@ func TestMigrationBackfillEmptyVirtualKeyConfigs(t *testing.T) {
 	assert.NotEmpty(t, vkHash, "VK config_hash should be recomputed after backfill")
 }
 
+func TestMigrationBackfillVirtualKeyAllowAllProvidersHash(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Clear the migration tracking so the backfill runs against our seeded row.
+	db.Exec(`DELETE FROM migrations WHERE id = 'backfill_vk_allow_all_providers_hash'`)
+
+	// Existing VK with allow_all_providers=false and a stale config_hash from before the field
+	// joined GenerateVirtualKeyHash.
+	err := db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, allow_all_providers, config_hash, encryption_status, created_at, updated_at)
+		VALUES ('vk-aap-hash-1', 'aap-vk', 'vk-value', true, false, 'stale_hash', 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	err = migrationBackfillVirtualKeyAllowAllProvidersHash(ctx, db, testMigrationLogger)
+	require.NoError(t, err)
+
+	var vkHash string
+	err = db.Table("governance_virtual_keys").Select("config_hash").
+		Where("id = ?", "vk-aap-hash-1").Scan(&vkHash).Error
+	require.NoError(t, err)
+	assert.NotEqual(t, "stale_hash", vkHash, "config_hash should be recomputed, not the stale value")
+
+	// The recomputed hash must match GenerateVirtualKeyHash for the row as read back.
+	var vk tables.TableVirtualKey
+	err = db.Preload("ProviderConfigs").Preload("ProviderConfigs.Keys").Preload("MCPConfigs").
+		Where("id = ?", "vk-aap-hash-1").First(&vk).Error
+	require.NoError(t, err)
+	expected, err := GenerateVirtualKeyHash(vk)
+	require.NoError(t, err)
+	assert.Equal(t, expected, vkHash, "config_hash should match GenerateVirtualKeyHash output")
+}
+
 func TestTriggerMigrationsAddsVKProviderConfigBlacklistColumnBeforeBackfill(t *testing.T) {
 	_, db := setupFullMigrationDB(t)
 	ctx := context.Background()
@@ -2208,6 +2254,43 @@ func TestMigrationReplaceEnableLiteLLMWithCompatColumns(t *testing.T) {
 
 	assert.False(t, rows[1].CompatConvertTextToChat, "row with litellm=false should have compat_convert_text_to_chat=false")
 	assert.False(t, rows[1].CompatShouldConvertParams, "compat_should_convert_params should default to false")
+}
+
+func TestMigrationAddCompatAzureDeepseekColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+
+	err = db.AutoMigrate(&tables.TableClientConfig{})
+	require.NoError(t, err)
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+
+	now := time.Now()
+	err = db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	require.NoError(t, migrationAddCompatAzureDeepseekColumn(ctx, db, testMigrationLogger))
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_azure_deepseek"))
+
+	// The conversion was unconditional before the toggle existed, so existing rows are
+	// backfilled to true rather than picking up the column's false default.
+	type row struct {
+		CompatAzureDeepseek bool `gorm:"column:compat_azure_deepseek"`
+	}
+	var rows []row
+	err = db.Table("config_client").Select("compat_azure_deepseek").Order("id").Find(&rows).Error
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].CompatAzureDeepseek, "existing rows must keep the conversion enabled")
 }
 
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
@@ -3036,6 +3119,341 @@ func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
 		"the fiscal quarter definition must survive the refused rollback")
 }
 
+func setupComplexityExemplarMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableGovernanceConfig{}))
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func seedComplexityAnalyzerConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func seedComplexitySemanticConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexitySemanticConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func readRawComplexityAnalyzerConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error)
+	return entry.Value
+}
+
+func readRawComplexitySemanticConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexitySemanticConfigKey).Error)
+	return entry.Value
+}
+
+func TestMigrationBackfillDefaultComplexityExemplars(t *testing.T) {
+	ctx := context.Background()
+	defaults := legacyComplexityExemplarsV2()
+
+	t.Run("backfills defaults without replacing administrator state", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testSemanticAnalyzerConfig()
+		config.Keywords = ComplexityEditableKeywordConfig{
+			SimpleKeywords:  []string{"custom simple"},
+			MediumKeywords:  []string{"custom medium", defaults.SimpleKeywords[0]},
+			ComplexKeywords: []string{"custom complex"},
+		}
+		config.ConfigHashes = ComplexityAnalyzerConfigHashes{
+			TierBoundaries:   "tier-hash",
+			SimpleKeywords:   "simple-hash",
+			MediumKeywords:   "medium-hash",
+			ComplexKeywords:  "complex-hash",
+			SemanticSettings: "semantic-hash",
+		}
+		config.EmbeddingFingerprint = "stale-fingerprint"
+
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+		semanticRaw, err := encodeComplexitySemanticConfigRow(config.Normalized())
+		require.NoError(t, err)
+		seedComplexitySemanticConfig(t, db, string(semanticRaw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		// Exemplars live in the semantic row, so that is where the backfill lands.
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		got := &ComplexityAnalyzerConfig{Keywords: semanticRow.Keywords}
+
+		// The semantic settings survive, but the fingerprint recorded against the
+		// old exemplars must not: the exemplars just changed.
+		assert.Equal(t, config.Normalized().Semantic, semanticRow.Semantic)
+		assert.Equal(t, "semantic-hash", semanticRow.ConfigHashes.SemanticSettings)
+		assert.Empty(t, semanticRow.EmbeddingFingerprint, "changed exemplars must invalidate the stored embedding fingerprint")
+
+		// The analyzer row is untouched: it belongs to the lexical classifier,
+		// and nothing about exemplars concerns it.
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+
+		assert.Contains(t, got.Keywords.SimpleKeywords, "custom simple")
+		assert.Contains(t, got.Keywords.MediumKeywords, "custom medium")
+		assert.Contains(t, got.Keywords.ComplexKeywords, "custom complex")
+
+		// An administrator already assigned this shipped phrase to MEDIUM. The
+		// migration must not duplicate or move it back to its default SIMPLE tier.
+		crossTierDefault := normalizeComplexityExemplarKey(defaults.SimpleKeywords[0])
+		assert.NotContains(t, got.Keywords.SimpleKeywords, crossTierDefault)
+		assert.Contains(t, got.Keywords.MediumKeywords, crossTierDefault)
+
+		for _, phrase := range defaults.SimpleKeywords[1:] {
+			assert.Contains(t, got.Keywords.SimpleKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.MediumKeywords {
+			assert.Contains(t, got.Keywords.MediumKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, got.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	t.Run("keeps an already complete config byte-for-byte unchanged", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testComplexityAnalyzerConfig()
+		config.Keywords = defaults
+		config.EmbeddingFingerprint = "keep-fingerprint"
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+		semanticRaw, err := encodeComplexitySemanticConfigRow(config.Normalized())
+		require.NoError(t, err)
+		seedComplexitySemanticConfig(t, db, string(semanticRaw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+		// Nothing was added, so the fingerprint stays valid and untouched.
+		assert.Equal(t, string(semanticRaw), readRawComplexitySemanticConfig(t, db))
+	})
+
+	// A pre-split build of this version kept the semantic block inside the
+	// analyzer row. It has to travel to the semantic row with the exemplars,
+	// otherwise the split itself is what loses it.
+	t.Run("carries a pre-split semantic block into the semantic row", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"min_similarity": 0.3
+			},
+			"_config_hashes": {"semantic_settings": "carried-hash"}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		require.NotNil(t, semanticRow.Semantic, "the semantic block must survive the split")
+		assert.Equal(t, schemas.ModelProvider("openai"), semanticRow.Semantic.Provider)
+		assert.Equal(t, 0.3, semanticRow.Semantic.MinSimilarity)
+		assert.Equal(t, "carried-hash", semanticRow.ConfigHashes.SemanticSettings)
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+	})
+
+	// A build further up the stack can write semantic fields this version has no
+	// name for. That must cost the unreadable section, not the whole migration.
+	t.Run("skips an unreadable semantic block without failing", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"a_field_from_a_higher_branch": "llm"
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		assert.Nil(t, semanticRow.Semantic)
+		// The exemplars still made it across.
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+	})
+
+	// The fallback selector lives in the semantic block and the classifier it
+	// names lives in the llm block, so an unreadable llm block leaves the
+	// selector pointing at nothing -- which Validate rejects, costing the whole
+	// backfill rather than just the block that could not be read.
+	t.Run("disables the llm fallback when the llm block is unreadable", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"min_similarity": 0.3,
+				"fallback": "llm"
+			},
+			"llm": {
+				"provider": "openai",
+				"model": "gpt-4o-mini",
+				"a_field_from_a_higher_branch": true
+			},
+			"_config_hashes": {"semantic_settings": "semantic-hash", "llm_settings": "llm-hash"}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		require.NotNil(t, semanticRow.Semantic, "the readable semantic block still carries over")
+		assert.Nil(t, semanticRow.LLM, "an unreadable llm block cannot be carried")
+		assert.Equal(t, ComplexitySemanticFallbackNone, semanticRow.Semantic.Fallback,
+			"the fallback must not name a classifier that was dropped")
+		// Both section hashes go, so a config.json still asking for the llm
+		// fallback re-applies both blocks on the next boot.
+		assert.Empty(t, semanticRow.ConfigHashes.SemanticSettings)
+		assert.Empty(t, semanticRow.ConfigHashes.LLMSettings)
+		// The settings that had nothing to do with the fallback survive.
+		assert.Equal(t, schemas.ModelProvider("openai"), semanticRow.Semantic.Provider)
+		assert.Equal(t, 0.3, semanticRow.Semantic.MinSimilarity)
+		// And the backfill this migration exists for still happened.
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, semanticRow.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	// The semantic row itself can be unreadable for the same reason: a build
+	// further up the stack writes a field this version has no name for, and
+	// ComplexitySemanticConfig rejects unknown fields. Failing takes every
+	// migration queued behind this one down with it, and rebuilding the row from
+	// the pre-split analyzer row would overwrite content this version simply
+	// cannot see. The backfill is dropped and the row is left byte-for-byte alone.
+	t.Run("leaves an unreadable semantic row untouched without failing", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			}
+		}`)
+		unreadable := `{"keywords":{"simple_keywords":["from a higher branch"]},` +
+			`"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","a_field_from_a_higher_branch":"llm"}}`
+		seedComplexitySemanticConfig(t, db, unreadable)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		assert.JSONEq(t, unreadable, readRawComplexitySemanticConfig(t, db),
+			"a row this version cannot decode must not be rewritten from the pre-split analyzer row")
+	})
+
+	// The upgrade path: an installation that predates the split has phrases in
+	// its analyzer row and no semantic row at all. Those phrases are what it has
+	// been routing with, so they seed the semantic row instead of being replaced
+	// by the defaults.
+	t.Run("seeds the semantic row from a pre-split analyzer row", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.15, "medium_complex": 0.35, "complex_reasoning": 0.6},
+			"keywords": {
+				"code_keywords": ["function"],
+				"reasoning_keywords": ["step by step"],
+				"technical_keywords": ["architecture"],
+				"simple_keywords": ["hello"]
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+
+		// The operator's own phrases carry over, mapped onto the three tiers.
+		assert.Nil(t, semanticRow.Semantic, "the seeded row had no semantic block to carry")
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "hello")
+		assert.Contains(t, semanticRow.Keywords.MediumKeywords, "function")
+		assert.Contains(t, semanticRow.Keywords.MediumKeywords, "architecture")
+		assert.Contains(t, semanticRow.Keywords.ComplexKeywords, "step by step")
+
+		// And the curated defaults are appended alongside them.
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, semanticRow.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	// The section hashes record which config-file sections have already been
+	// applied. The semantic row owns the keyword sections after the split, so
+	// seeding it has to carry their hashes across too: losing them would make an
+	// unchanged config file look newly applied and reapply its keyword sections
+	// over the phrases this installation has been routing with.
+	t.Run("carries the pre-split section hashes onto the semantic row", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.15, "medium_complex": 0.35, "complex_reasoning": 0.6},
+			"keywords": {
+				"simple_keywords": ["hello"],
+				"medium_keywords": ["function"],
+				"complex_keywords": ["step by step"]
+			},
+			"_config_hashes": {
+				"tier_boundaries": "hash-tiers",
+				"simple_keywords": "hash-simple",
+				"medium_keywords": "hash-medium",
+				"complex_keywords": "hash-complex",
+				"semantic_settings": "hash-semantic"
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+
+		assert.Equal(t, "hash-simple", semanticRow.ConfigHashes.SimpleKeywords)
+		assert.Equal(t, "hash-medium", semanticRow.ConfigHashes.MediumKeywords)
+		assert.Equal(t, "hash-complex", semanticRow.ConfigHashes.ComplexKeywords)
+		assert.Equal(t, "hash-semantic", semanticRow.ConfigHashes.SemanticSettings)
+	})
+}
+
 // TestMigrationAddBatchJobsAttributionColumns verifies the upgrade path: an existing
 // batch_jobs table gains the requester-identity columns without disturbing the rows
 // already in it (which simply have no identity to recover).
@@ -3426,4 +3844,94 @@ func TestMigrationAddProviderJobKindColumns_Rollback(t *testing.T) {
 			assert.Equal(t, int64(1), count, "rolling back the schema must not drop the batch rows")
 		})
 	}
+}
+
+// TestMigrationClearPluginConfigHashes verifies the migration wipes every stored plugin
+// config hash, including one the released config_hash migration populated from the row.
+// That is what puts the rows in the "no config.json baseline" state startup relies on, so
+// UI/API edits are not reverted on the first boot after upgrade.
+func TestMigrationClearPluginConfigHashes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TablePlugin{}))
+
+	ctx := context.Background()
+	require.NoError(t, db.Create(&tables.TablePlugin{
+		Name: "with-hash", Enabled: true, ConfigHash: "hash-from-released-migration",
+	}).Error)
+	require.NoError(t, db.Create(&tables.TablePlugin{
+		Name: "without-hash", Enabled: true,
+	}).Error)
+
+	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
+
+	var plugins []tables.TablePlugin
+	require.NoError(t, db.Order("name").Find(&plugins).Error)
+	require.Len(t, plugins, 2)
+	for _, plugin := range plugins {
+		require.Empty(t, plugin.ConfigHash, "plugin %s should have no baseline after the migration", plugin.Name)
+	}
+
+	// Running it again must be a no-op rather than an error (gormigrate skips by ID, but the
+	// statement itself has to stay safe to replay).
+	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddGithubCopilotConfigColumns_NonRollbackable pins that rolling these
+// columns back is refused rather than performed. github_copilot_private_key holds a GitHub
+// App private key, which GitHub lets you download exactly once: dropping the column does
+// not merely lose a config value, it forces the operator to generate a new key on GitHub
+// and re-install it. The columns are additive, so an older binary ignores them safely and
+// there is nothing a rollback needs to undo.
+func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	columns := []string{
+		"github_copilot_app_id",
+		"github_copilot_installation_id",
+		"github_copilot_repository_id",
+		"github_copilot_private_key",
+		"github_copilot_github_domain",
+	}
+
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+	for _, column := range columns {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, column))
+	}
+
+	require.NoError(t, migrationAddGithubCopilotConfigColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
+			"migration should have added %s", column)
+	}
+
+	// A key carrying App credentials is exactly the state a rollback would destroy.
+	seed := &tables.TableKey{
+		Name:       "copilot-rollback",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-rollback-1",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----"),
+		},
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	err := rollbackGithubCopilotConfigColumns(db)
+	require.Error(t, err, "rollback must refuse: dropping the columns destroys an unrecoverable App private key")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, column := range columns {
+		assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
+			"a refused rollback must leave %s intact", column)
+	}
+
+	var got tables.TableKey
+	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&got).Error)
+	require.NotNil(t, got.GithubCopilotKeyConfig)
+	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
+		"the private key must survive the refused rollback")
 }

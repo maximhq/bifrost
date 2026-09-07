@@ -32,12 +32,46 @@ type VirtualKeyQueryParams struct {
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
 type ModelConfigsQueryParams struct {
-	Limit    int
-	Offset   int
-	Search   string
-	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	Limit  int
+	Offset int
+	Search string
+	// Scope optionally filters to an exact scope value (e.g. "global",
+	// "virtual_key").
+	//
+	// Deprecated: use Scopes, which can carry more than one. Kept so existing
+	// callers of this published module keep compiling and behaving identically; a
+	// value set here is OR-ed together with anything in Scopes.
+	Scope string
+	// Scopes optionally filters to one or more exact scope values. Several values
+	// are OR-ed, which lets a UI present one filter option covering scopes a user
+	// thinks of as the same thing — e.g. rows scoped to a user directly and rows
+	// materialized onto them from an access profile. Empty (with Scope also empty)
+	// means no scope filter.
+	Scopes   []string
 	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
+}
+
+// effectiveScopes returns the scope values to filter on, merging the deprecated
+// single Scope with Scopes and dropping blanks and duplicates. Returns nil when
+// neither is set, meaning "no scope filter".
+func (p ModelConfigsQueryParams) effectiveScopes() []string {
+	seen := make(map[string]struct{}, len(p.Scopes)+1)
+	out := make([]string, 0, len(p.Scopes)+1)
+	for _, s := range append([]string{p.Scope}, p.Scopes...) {
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
@@ -97,6 +131,13 @@ type MCPClientsQueryParams struct {
 	// one of VirtualKeyIDs.
 	OnlyAllowedByDefault bool     // include clients allowed by default (column allow_on_all_virtual_keys)
 	VirtualKeyIDs        []string // include clients explicitly assigned to any of these VK IDs
+}
+
+// VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
+type VirtualMCPsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string // matches name (case-insensitive)
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -308,6 +349,11 @@ type ConfigStore interface {
 	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
 	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
 	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
+	// ResetComplexityAnalyzerConfig restores the tier boundaries and phrase lists from the
+	// supplied defaults, preserves every other section of the stored record, and returns what
+	// was persisted. Read and save share one transaction so a concurrent edit to a preserved
+	// section cannot be overwritten.
+	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -343,6 +389,29 @@ type ConfigStore interface {
 	CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
+
+	// GetVirtualMCPs returns every Virtual MCP definition (enabled and disabled), tools decoded, for
+	// the governance cache. GetVirtualMCPAssignments returns each VK's assigned definition IDs, keyed
+	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
+	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
+	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
+
+	// Virtual MCP CRUD. CreateVirtualMCP fills endpoint_slug from the name when unset and enforces
+	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
+	CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
+	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	DeleteVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error)
+	// GetVirtualKeyIDsForVirtualMCPs returns assigned virtual-key IDs for a set of Virtual MCPs in one
+	// query, grouped by Virtual MCP ID. Used by the list view to avoid a per-row lookup.
+	GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error)
+	// GetVirtualMCPIDsForVirtualKey returns the IDs of the Virtual MCPs a virtual key is assigned to,
+	// the reverse of GetVirtualKeyIDsForVirtualMCP, so the VK detail view can show its assignments.
+	GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error)
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
@@ -415,6 +484,10 @@ type ConfigStore interface {
 	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 	// DeleteModelConfigsForScope deletes all model configs (and their owned budgets/rate-limits) for a scope owner. Must run inside the owner-delete transaction.
 	DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error
+	// GetModelConfigsForScope loads all model configs (with Budgets/RateLimit) for a scope owner
+	// within the given transaction, so a caller mid-transaction sees its own uncommitted writes
+	// (e.g. deletions staged earlier in the same tx) rather than the last-committed state.
+	GetModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error)
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
@@ -667,14 +740,18 @@ type ConfigStore interface {
 	// per-user-named methods on this merged table, see GetOauthUserTokenByMode's
 	// comment), this is not scoped away from 'shared' — the tokenID handed in
 	// always comes from an internal lookup already, never an arbitrary
-	// caller-supplied ID.
-	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// caller-supplied ID. reason is recorded as the row's StatusReason (the
+	// provider's rejection, e.g. "provider rejected the refresh (HTTP 400,
+	// invalid_grant: Token has been expired or revoked)") so the UI and the
+	// client's connection-failure record can say what actually failed rather
+	// than only that the row is no longer usable.
+	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
 	// invalidates every existing holder's cached credential (shared, per-user,
 	// vk, session, admin alike), not just the shared one.
-	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error
 	// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
 	// 'needs_reauth' on a token_exchange client's retained admin bootstrap
 	// credential (auth_mode='admin', mcp_client_id=<id>, oauth_config_id='' —
@@ -687,7 +764,7 @@ type ConfigStore interface {
 	// cached in-memory only, never persisted (see GetExchangedAccessToken's
 	// doc comment) — the admin row is the only persisted state a
 	// token_exchange config edit can invalidate.
-	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error
+	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error
 	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
 	// place when ANY of them differs from what's stored (client_id,
 	// client_secret, authorize_url, token_url, registration_url, resource,

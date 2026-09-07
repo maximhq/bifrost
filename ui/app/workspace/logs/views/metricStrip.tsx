@@ -30,12 +30,15 @@ import {
 const positive = "text-[#16794f] dark:text-[#3fbd85]";
 const negative = "text-[#c0392b] dark:text-[#e8705f]";
 const warning = "text-[#d98324] dark:text-[#eaa14f]";
-const muted = "text-[#6f6f6a] dark:text-[#a5a5a0]";
-const label = "text-[#8b8b85] dark:text-[#9a9a94]";
-const value = "text-[#1a1a19] dark:text-[#f2f2f0]";
-const track = "bg-[#ededea] dark:bg-[#33332f]";
-const divider = "bg-[#ededea] dark:bg-[#33332f]";
-const surface = "bg-white dark:bg-[#1a1a19]";
+// The neutrals come from the theme tokens rather than the mock's own greys: the
+// strip sits inside a `bg-card` panel, and a hard-coded warm near-black surface
+// read as a foreign block against the app's cooler card colour in dark mode.
+const muted = "text-muted-foreground";
+const label = "text-muted-foreground";
+const value = "text-foreground";
+const track = "bg-muted";
+const divider = "bg-border";
+const surface = "bg-card";
 const fill = "bg-[#16794f] dark:bg-[#3fbd85]";
 const tokensIn = "bg-[#4c6fdc] dark:bg-[#7f9bf0]";
 const tokensOut = "bg-[#a8bcf2] dark:bg-[#c3d2f7]";
@@ -241,10 +244,15 @@ function Segment({
 			{/* NumberFlow reserves 0.25em above and below its digits for the mask that
 			    fades a rolling number in and out, which left 16px of dead space in a
 			    row whose line-height is already the type size. A shorter mask still
-			    fades the roll and gives the segment back that height. */}
+			    fades the roll and gives the segment back that height.
+
+			    The row is pinned to 1.5em - tall enough for the shortened mask and the
+			    trailing unit - so the placeholder dash occupies exactly the height the
+			    rendered figure will, and the strip does not resize when data lands. It
+			    stays a block (not a flex row) so `truncate` keeps working. */}
 			<div
 				className={cn(
-					"truncate font-mono text-[28px] leading-none font-medium tracking-[-0.02em]",
+					"h-[1.5em] truncate font-mono text-xl leading-[1.5em] font-medium tracking-[-0.02em] sm:text-2xl",
 					"[--number-flow-mask-height:0.15em]",
 					ready ? value : muted,
 				)}
@@ -254,14 +262,17 @@ function Segment({
 			</div>
 			{/* min-w-0 lets the trailing figure shrink rather than push past the
 			    segment's padding and collide with the divider. */}
-			<div className="flex min-w-0 items-center gap-2">{ready ? footer : null}</div>
+			{/* Fixed height so the strip does not grow when the footer shapes arrive -
+			    the placeholder state renders nothing here but must reserve the same
+			    row the sparklines and meters occupy. */}
+			<div className="flex h-4 min-w-0 items-center gap-2">{ready ? footer : null}</div>
 		</div>
 	);
 }
 
 /** The small unit that trails a value, e.g. the % in "68.27%". */
 function Unit({ children }: { children: React.ReactNode }) {
-	return <span className={cn("text-[18px]", label)}>{children}</span>;
+	return <span className={cn("text-base", label)}>{children}</span>;
 }
 
 function Trailing({ children, className }: { children: React.ReactNode; className: string }) {
@@ -367,7 +378,7 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 	return (
 		<Card
 			className={cn(
-				"shrink-0 overflow-hidden rounded-sm border-[#e4e4e0] py-0 shadow-[0_1px_2px_rgba(0,0,0,.03)] dark:border-[#33332f]",
+				"shrink-0 overflow-hidden rounded-sm py-0 shadow-none",
 				// gap-px over a divider-coloured surface renders the hairlines, so they
 				// stay correct at every breakpoint instead of relying on nth-child math.
 				"grid grid-cols-2 gap-px md:grid-cols-3 lg:grid-cols-6",

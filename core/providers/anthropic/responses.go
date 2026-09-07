@@ -3802,7 +3802,11 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 	case schemas.ResponsesStreamResponseTypePing:
 		streamResp.Type = AnthropicStreamEventTypePing
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a turn cut short by the output-token cap
+	// or a content filter still has to close with message_delta + message_stop, or the
+	// client is left holding a half-written tool_use with no stop_reason to explain it.
+	case schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 		// If a message_delta was already emitted from the upstream event, only emit message_stop
 		// to avoid sending a duplicate message_delta to the client.
@@ -3822,6 +3826,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			if bifrostResp.Response.StopReason != nil {
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
 					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
+					StopSequence: nil,
+				}
+			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
+				// A truncated turn carrying only incomplete_details must not report end_turn.
+				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
+					StopReason:   schemas.Ptr(reason),
 					StopSequence: nil,
 				}
 			}
@@ -3922,12 +3932,21 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
-	case schemas.ResponsesStreamResponseTypeError:
+	// response.failed is terminal as well, and Anthropic spells a failed turn as an
+	// error event rather than message_stop. Dropping it stalls the client silently.
+	case schemas.ResponsesStreamResponseTypeError,
+		schemas.ResponsesStreamResponseTypeFailed:
 		streamResp.Type = AnthropicStreamEventTypeError
+		message := ""
 		if bifrostResp.Message != nil {
+			message = *bifrostResp.Message
+		} else if bifrostResp.Response != nil && bifrostResp.Response.Error != nil {
+			message = bifrostResp.Response.Error.Message
+		}
+		if message != "" {
 			streamResp.Error = &AnthropicStreamError{
 				Type:    "error",
-				Message: *bifrostResp.Message,
+				Message: message,
 			}
 		}
 
@@ -4236,7 +4255,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.Text != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
+			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {

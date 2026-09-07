@@ -272,7 +272,7 @@ If a tool call isn't executing as expected, the fastest sanity check is to swap 
 
 ## Using Bifrost as an MCP Gateway
 
-Bifrost can also act as an [MCP server](/mcp/gateway), aggregating every MCP tool you've connected (filesystem, GitHub, web search, databases, etc.) behind a single `/mcp` endpoint. Pointing Claude Code at it means one config entry instead of N, plus per-VK tool filtering, centralized governance, and observability for every tool call.
+Bifrost can also act as an [MCP server](/mcp/overview#bifrost-as-an-mcp-gateway), aggregating every MCP tool you've connected (filesystem, GitHub, web search, databases, etc.) behind a single `/mcp` endpoint. Pointing Claude Code at it means one config entry instead of N, plus per-VK tool filtering, centralized governance, and observability for every tool call.
 
 ### Adding Bifrost as an MCP server
 
@@ -340,7 +340,7 @@ You can attach a VK even when you don't strictly need per-user auth — it's how
 
 When the same Claude Code instance routes inference through Bifrost's LLM gateway **and** connects to `/mcp`, the same tool can reach the model twice — once because the LLM gateway auto-injects every configured MCP tool, and once because Claude Code's own MCP client discovers it via `/mcp`. Bifrost auto-dedupes tools for Claude Code specifically, but turning the inject toggle off is still recommended — it cleanly separates the two paths and matches what other MCP-host clients expect.
 
-See [Recommended: disable auto tool injection](/mcp/gateway#recommended-disable-auto-tool-injection) for the toggle.
+See [Recommended: disable auto tool injection](/mcp/overview#recommended-disable-auto-tool-injection) for the toggle.
 
 ### Verifying
 

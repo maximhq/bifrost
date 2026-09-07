@@ -257,6 +257,8 @@ type TableVirtualKey struct {
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
+	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`

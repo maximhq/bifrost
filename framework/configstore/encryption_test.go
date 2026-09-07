@@ -123,8 +123,8 @@ func TestEncryptPlaintextRows_EncryptsAllTables(t *testing.T) {
 		true, "redis", `{"host":"redis.example.com","password":"secret"}`, now, now)
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, ?, 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'plain_text', ?, ?)`,
 		"test-plugin", true, `{"api_key":"plugin-secret"}`, now, now)
 
 	// Run the startup encryption pass
@@ -320,8 +320,8 @@ func TestEncryptPlaintextPlugins(t *testing.T) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, ?, 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'plain_text', ?, ?)`,
 		"batch-plugin", true, `{"secret":"value"}`, now, now)
 
 	count, err := store.encryptPlaintextPlugins(ctx)
@@ -341,8 +341,8 @@ func TestEncryptPlaintextPlugins_SkipsEmptyConfig(t *testing.T) {
 
 	// Insert plugin with empty config — should NOT be picked up by the query
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, '{}', 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, '{}', 'plain_text', ?, ?)`,
 		"empty-config-plugin", true, now, now)
 
 	count, err := store.encryptPlaintextPlugins(ctx)

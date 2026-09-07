@@ -234,7 +234,20 @@ users-by-id:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+              allOf:
+                - $ref: '../../schemas/management/common.yaml#/MessageResponse'
+                - type: object
+                  properties:
+                    redivision_job_ids:
+                      type: array
+                      items:
+                        type: string
+                      description: >-
+                        One queued job per equal-split governance project the
+                        user belonged to, since removing them enlarges every
+                        remaining member's slice of every cap. Present only when
+                        such projects were affected. Progress is reported on the
+                        `redivision_progress` WebSocket channel under each id.
       '400':
         description: Bad request (e.g. cannot delete yourself)
         content:

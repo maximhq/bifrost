@@ -208,13 +208,90 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 			VideoID: videoID,
 			Status:  status,
 			Accounting: &schemas.VideoAccountingDebug{
-				Seconds:     dims.Seconds,
-				Size:        dims.Size,
-				OutputCount: dims.OutputCount,
-				Incomplete:  incomplete,
+				Seconds:      dims.Seconds,
+				Size:         dims.Size,
+				OutputCount:  dims.OutputCount,
+				Incomplete:   incomplete,
+				RequestType:  videoRequestTypeFor(dims.RequestType),
+				ProviderCost: dims.ProviderCost,
 			},
 		}
 	}
+}
+
+// videoRequestTypeFor is what videoObjectFor used to return: the creating request
+// type, normalized so an unset or unexpected value still prices as a generation.
+func videoRequestTypeFor(requestType schemas.RequestType) schemas.RequestType {
+	switch requestType {
+	case schemas.VideoRemixRequest, schemas.VideoEditRequest:
+		return requestType
+	default:
+		return schemas.VideoGenerationRequest
+	}
+}
+
+// RepriceFromLog recomputes a settled video's cost from the dimensions it was
+// priced with, which live in video_debug rather than in token_usage: a video's
+// price comes from seconds, resolution and clip count, none of which are tokens.
+func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error) {
+	if entry.VideoDebugParsed == nil && entry.VideoDebug != "" {
+		if err := entry.DeserializeFields(); err != nil {
+			return nil, nil
+		}
+	}
+	// Accounting being set is what marks the settlement. The submission row carries
+	// video_debug too, and Object cannot decide it either — every poll is also a
+	// video_retrieve.
+	if entry.VideoDebugParsed == nil || entry.VideoDebugParsed.Accounting == nil {
+		return nil, nil
+	}
+	accounting := entry.VideoDebugParsed.Accounting
+
+	// A provider that reported its own cost is right about its own bill. Without
+	// this a full reprice would quietly replace an exact figure with an estimate.
+	if accounting.ProviderCost != nil && *accounting.ProviderCost > 0 {
+		return &RepricedCost{Cost: *accounting.ProviderCost}, nil
+	}
+
+	// A failed generation settled at a real price of zero, not an absent one.
+	// Repricing must not resurrect it as unpriceable for every backfill to retry.
+	if entry.VideoDebugParsed.Status == schemas.VideoStatusFailed {
+		return &RepricedCost{}, nil
+	}
+
+	requestType := accounting.RequestType
+	if requestType == "" {
+		// Rows written before RequestType was recorded kept the creating type in
+		// Object. Reading it back keeps them repriceable at the rates they used.
+		requestType = schemas.RequestType(entry.Object)
+		if requestType == schemas.VideoRetrieveRequest {
+			requestType = schemas.VideoGenerationRequest
+		}
+	}
+
+	scopes := PricingScopesForLog(entry)
+	details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
+		Model:       entry.Model,
+		RequestType: requestType,
+		Seconds:     accounting.Seconds,
+		Size:        accounting.Size,
+		OutputCount: accounting.OutputCount,
+	}, schemas.ModelProvider(entry.Provider), &scopes)
+	if !details.Priced {
+		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
+	}
+
+	// Incomplete is left as settlement wrote it: it can stand for dimensions the
+	// provider never confirmed, which repricing cannot see and must not claim closed.
+	debugJSON, err := sonic.Marshal(entry.VideoDebugParsed)
+	if err != nil {
+		return nil, fmt.Errorf("serialize video_debug for log %s: %w", entry.ID, err)
+	}
+	return &RepricedCost{
+		Cost:        details.Cost,
+		DebugJSON:   string(debugJSON),
+		DebugColumn: "video_debug",
+	}, nil
 }
 
 // HydrateFromLog reads this kind's detail back off an already-written aggregate row,
@@ -335,13 +412,14 @@ func isTerminalVideoStatus(status schemas.VideoStatus) bool {
 	}
 }
 
-// videoObjectFor labels the aggregate row with the request type that created the
-// job, so a later repricing pass reaches the same rates this settlement used.
-func videoObjectFor(requestType schemas.RequestType) schemas.RequestType {
-	switch requestType {
-	case schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		return requestType
-	default:
-		return schemas.VideoGenerationRequest
-	}
+// videoObjectFor labels the aggregate row as the settlement it is, mirroring the
+// batch_results row a settled batch writes: the submission keeps the request type
+// that created it, and the row carrying the bill is named for the read that
+// produced it. Two rows sharing video_generation read as two generations.
+//
+// Object therefore no longer names the rates this was priced at, so the creating
+// request type is recorded in VideoAccountingDebug.RequestType for repricing —
+// the same move batch makes with BatchAccountingDebug.Endpoint.
+func videoObjectFor(schemas.RequestType) schemas.RequestType {
+	return schemas.VideoRetrieveRequest
 }

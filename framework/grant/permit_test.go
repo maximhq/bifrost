@@ -66,13 +66,13 @@ func TestNewPermit(t *testing.T) {
 		weight = 999
 
 		gotProvider := permit.ProviderPermits()[0]
-		assert.Equal(t, []string{"gpt-4o"}, gotProvider.AllowedModels)
-		assert.Equal(t, []string{"o3"}, gotProvider.BlacklistedModels)
-		assert.Equal(t, []string{"key-1"}, gotProvider.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"gpt-4o"}, gotProvider.AllowedModels)
+		assert.Equal(t, schemas.BlackList{"o3"}, gotProvider.BlacklistedModels)
+		assert.Equal(t, schemas.WhiteList{"key-1"}, gotProvider.KeyIDs)
 		require.NotNil(t, gotProvider.Weight)
 		assert.Equal(t, 0.4, *gotProvider.Weight)
 
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools)
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools)
 	})
 
 	t.Run("mutating what a getter returned does not alter what a later reader sees", func(t *testing.T) {
@@ -98,12 +98,12 @@ func TestNewPermit(t *testing.T) {
 
 		again := permit.ProviderPermits()[0]
 		assert.Equal(t, "openai", again.Provider)
-		assert.Equal(t, []string{"gpt-4o"}, again.AllowedModels)
+		assert.Equal(t, schemas.WhiteList{"gpt-4o"}, again.AllowedModels)
 		require.NotNil(t, again.Weight)
 		assert.Equal(t, 0.4, *again.Weight)
 
 		assert.Equal(t, "github-id", permit.MCPPermits()[0].Client)
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools)
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools)
 	})
 
 	t.Run("no lists is no lists", func(t *testing.T) {
@@ -223,14 +223,14 @@ func TestProviderPermitFor(t *testing.T) {
 	t.Run("the first provider permit for the provider", func(t *testing.T) {
 		found := providerPermitFor(permit, "openai")
 		require.NotNil(t, found)
-		assert.Equal(t, []string{"key-a"}, found.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-a"}, found.KeyIDs)
 		assert.Nil(t, providerPermitFor(permit, "cohere"))
 	})
 
 	t.Run("the first that sets a weight", func(t *testing.T) {
 		found := weightedProviderPermitFor(permit, "openai")
 		require.NotNil(t, found)
-		assert.Equal(t, []string{"key-b"}, found.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-b"}, found.KeyIDs)
 		assert.Nil(t, weightedProviderPermitFor(permit, "bedrock"), "held, and unweighted")
 		assert.Nil(t, weightedProviderPermitFor(permit, "cohere"))
 	})

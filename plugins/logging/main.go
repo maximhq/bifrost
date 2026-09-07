@@ -230,6 +230,8 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
 	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
 	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
 	if userID != "" {
 		entry.UserID = &userID
 	}
@@ -241,6 +243,12 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	}
 	if businessUnitID != "" {
 		entry.BusinessUnitID = &businessUnitID
+	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
 	}
 }
 
@@ -275,10 +283,10 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
-// guardrailDebugForLog returns the request's guardrail debug snapshot.
-func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailDebug {
-	if debug, ok := schemas.GuardrailDebugFromContext(ctx); ok {
-		return debug
+// guardrailMetadataForLog returns the request's guardrail metadata snapshot.
+func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailMetadata {
+	if metadata, ok := schemas.GuardrailMetadataFromContext(ctx); ok {
+		return metadata
 	}
 	if result == nil {
 		return nil
@@ -286,20 +294,43 @@ func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	return result.GetExtraFields().GuardrailDebug.Clone()
 }
 
+// routingMetadataForLog returns the request's routing-classification metadata
+// snapshot — the semantic classification embed, the llm classification
+// completion, or both. Classification runs once in PreRequestHook, before any
+// retry or fallback attempt, so the context snapshot is stable across every
+// PostLLMHook call for this request; unlike applyInternalCallCosts, this is
+// not gated to the initial attempt because it feeds display, not billing.
+func routingMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingMetadata {
+	if metadata, ok := schemas.RoutingMetadataFromContext(ctx); ok {
+		return metadata
+	}
+	if result == nil {
+		return nil
+	}
+	return result.GetExtraFields().RoutingMetadata.Clone()
+}
+
 // applyInternalCallCosts adds sidecar costs when no response exists to carry them.
-func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailDebug *schemas.BifrostGuardrailDebug) {
+func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailMetadata *schemas.BifrostGuardrailMetadata) {
 	if entry == nil || p.pricingManager == nil {
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	var cacheCost, guardrailCost float64
-	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
-		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+	var cacheCost, guardrailCost, routingCost float64
+	if cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx); ok {
+		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheMetadata, pricingScopes)
 	}
-	if guardrailDebug != nil {
-		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+	if guardrailMetadata != nil {
+		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailMetadata, pricingScopes)
 	}
-	cost := cacheCost + guardrailCost
+	if routingMetadata, ok := schemas.InitialAttemptRoutingMetadataFromContext(ctx); ok {
+		for _, call := range routingMetadata.Calls {
+			if call.CountTowardBudgets {
+				routingCost += p.pricingManager.CalculateRoutingCallCost(call, pricingScopes)
+			}
+		}
+	}
+	cost := cacheCost + guardrailCost + routingCost
 	if cost <= 0 {
 		return
 	}
@@ -309,22 +340,23 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		*entry.Cost += cost
 	}
 
-	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// All three are additional-side sidecar costs. Merge onto the usage carrier's
 	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
 	// write the additional_cost column directly. Don't synthesize a carrier: that
 	// suppresses the deferred-usage watcher.
 	sidecar := &schemas.BifrostCost{TotalCost: cost}
-	if cacheCost > 0 || guardrailCost > 0 {
-		sidecar.AdditionalCost = cacheCost + guardrailCost
+	if cacheCost > 0 || guardrailCost > 0 || routingCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost + routingCost
 		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
 			SemanticCacheCost: cacheCost,
 			GuardrailCost:     guardrailCost,
+			RoutingCost:       routingCost,
 		}
 	}
 	if entry.TokenUsageParsed != nil {
 		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
 	} else {
-		entry.AdditionalCost += cacheCost + guardrailCost
+		entry.AdditionalCost += cacheCost + guardrailCost + routingCost
 	}
 }
 
@@ -934,7 +966,7 @@ type LogMessage struct {
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
-	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
+	SemanticCacheDebug *schemas.BifrostCacheMetadata      // For semantic cache operations; field spelling is retained for compatibility
 	UpdateData         *UpdateLogData                     // For update operations
 	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
 	RoutingEngineLogs  string                             // Formatted routing engine decision logs
@@ -1751,9 +1783,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
-	guardrailDebug := guardrailDebugForLog(ctx, result)
-	if result != nil && guardrailDebug != nil {
-		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
+	guardrailMetadata := guardrailMetadataForLog(ctx, result)
+	if result != nil && guardrailMetadata != nil {
+		result.GetExtraFields().GuardrailDebug = guardrailMetadata.Clone()
+	}
+	routingMetadata := routingMetadataForLog(ctx, result)
+	if result != nil && routingMetadata != nil {
+		result.GetExtraFields().RoutingMetadata = routingMetadata.Clone()
 	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
@@ -1799,11 +1835,38 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 				entry.MetadataParsed["isAsyncRequest"] = true
 			}
+			if projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID); projectID != "" {
+				entry.ProjectID = &projectID
+			}
+			if projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName); projectName != "" {
+				entry.ProjectName = &projectName
+			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
+			// Read here rather than with the rest of the governance fields below:
+			// this branch runs before the non-final-chunk fast path, and it is only
+			// reached on an error with no pending entry, so the lookups stay off the
+			// path that fast path exists to keep cheap.
+			complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+			complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+			sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
+			complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
+			if complexityTier != "" {
+				entry.ComplexityTier = &complexityTier
+			}
+			if complexityMechanism != "" {
+				entry.ComplexityMechanism = &complexityMechanism
+			}
+			if sessionID != "" {
+				entry.SessionID = &sessionID
+			}
+			if hasComplexityScore {
+				entry.ComplexityScore = &complexityScore
+			}
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
-			entry.GuardrailDebugParsed = guardrailDebug
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			entry.GuardrailDebugParsed = guardrailMetadata
+			entry.RoutingMetadataParsed = routingMetadata
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1862,6 +1925,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+	sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
+	complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
 	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
 	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
@@ -1875,6 +1942,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
 
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
@@ -1891,7 +1960,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
-	entry.GuardrailDebugParsed = guardrailDebug
+	entry.GuardrailDebugParsed = guardrailMetadata
+	entry.RoutingMetadataParsed = routingMetadata
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -1921,7 +1991,19 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ServerSideFallbackModel = &m
 		}
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	if complexityTier != "" {
+		entry.ComplexityTier = &complexityTier
+	}
+	if complexityMechanism != "" {
+		entry.ComplexityMechanism = &complexityMechanism
+	}
+	if sessionID != "" {
+		entry.SessionID = &sessionID
+	}
+	if hasComplexityScore {
+		entry.ComplexityScore = &complexityScore
+	}
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
@@ -1999,7 +2081,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
-		p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
@@ -2056,15 +2138,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// A stream error can arrive with a response chunk, bypassing Path A.
 			// Preserve provider-billed usage and the sidecar calls in that case.
 			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = logStatusSuccess
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			// Without an accumulated response, CalculateCost cannot see cache or
-			// guardrail debug. Normal accumulated streams already include both.
-			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
+			// guardrail metadata. Normal accumulated streams already include both.
+			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
@@ -2072,6 +2154,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Read off the raw final-chunk ExtraFields, not the rebuilt streamResponse.
 			if result != nil {
 				applyUpstreamOverheadToEntry(entry, result.GetExtraFields())
+				applyServedModel(entry, result)
 			}
 		}
 		if entry.ErrorDetailsParsed != nil {
@@ -2128,6 +2211,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		} else {
 			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
 		}
+		applyServedModel(entry, result)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = logStatusError
@@ -2142,11 +2226,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	// Calculate cost
-	var cacheDebug *schemas.BifrostCacheDebug
+	var cacheMetadata *schemas.BifrostCacheMetadata
 	if result != nil {
-		cacheDebug = result.GetExtraFields().CacheDebug
+		cacheMetadata = result.GetExtraFields().CacheDebug
 	}
-	entry.CacheDebugParsed = cacheDebug
+	entry.CacheDebugParsed = cacheMetadata
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
@@ -2535,11 +2619,13 @@ func overheadBucketName(s *schemas.Span) string {
 // bucket; provider/upstream spans still subtract from their parent's self-time.
 //
 // The remaining overhead (the stamped total, minus the measured plugin/internal
-// self-time) is attributed to a final "core" bucket: transport parsing, routing, and
-// request/response marshalling that Bifrost does outside any plugin span. It is
-// derived from overheadMs (which already excludes upstream), not from the root
-// span's self-time, so it never picks up streaming socket reads. Buckets are
-// returned with microsecond values, measured spans first (chronological) then core.
+// self-time) is attributed to a residual "scheduling" bucket: the goroutine-scheduling
+// latency between phases plus any glue no phase span has captured yet. Now that
+// request/response conversion, marshal, and parse each have their own phase span, this
+// residual is small. It is derived from overheadMs (which already excludes upstream),
+// not from the root span's self-time, so it never picks up streaming socket reads.
+// Buckets are returned with microsecond values, measured spans first (chronological)
+// then the scheduling residual.
 // computeOverheadBreakdown returns the per-phase buckets, the measured Bifrost-CPU
 // total in ms (the sum of those buckets), and whether this was a streaming request.
 // For streams the caller uses measuredMs as the overhead (see Inject): total-upstream
@@ -2641,13 +2727,11 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 			if total := cpuMs + writeMs; total > 0 {
 				addStreamBucketMs("stream-client-write", bp*writeMs/total)
 				addStreamBucketMs("convertor.stream-out", bp*cpuMs/total)
-			} else {
-				addStreamBucketMs("stream-backpressure", bp)
 			}
 		}
 		// Worker->caller goroutine-hop latency (unary path): scheduling wall-time
 		// inside the overhead window that sits on no span. Carve it into its own
-		// bucket so it stops inflating "core". The reverse hop is the queue-wait span.
+		// "worker-handoff" bucket. The reverse hop is the queue-wait span.
 		if ms, ok := traceAttrFloatMs(attrs, schemas.AttrBifrostWorkerHandoffMs); ok {
 			addStreamBucketMs("worker-handoff", ms)
 		}
@@ -2655,13 +2739,13 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 
 	// Provider-agnostic catch-all. Every provider call runs inside an llm.call span
 	// (SpanKindLLMCall), which is not itself a bucket but envelops the upstream network
-	// call plus ALL provider-side glue: request conversion/marshal/signing, response
-	// read/decompress/parse, header and endpoint work. Its self-time (wall minus the
-	// child phase spans) is therefore exactly upstream + whatever provider work no phase
-	// span captured. Subtracting the measured upstream leaves that uncaptured remainder,
-	// surfaced as "provider-internal" so a brand-new provider — or an unspanned step in
-	// an existing one — can never silently inflate "core"; it lands here instead, and its
-	// size tells us a provider needs finer spans. Summed across attempts: retries create
+	// call plus ALL provider-side glue. The hot pieces (request conversion/marshal/signing,
+	// response read/decompress/parse) now have their own phase spans; its self-time (wall
+	// minus the child phase spans) is therefore upstream plus whatever provider work no
+	// phase span captured. Subtracting the measured upstream leaves that uncaptured
+	// remainder, surfaced as "provider-internal" so a brand-new provider (or an unspanned
+	// step in an existing one) lands here, and its size tells us a provider needs finer
+	// spans. Summed across attempts: retries create
 	// one llm.call span each, and upstream latency likewise accumulates across them.
 	//
 	// STREAMING IS EXCLUDED. For a streamed response the llm.call span is DEFERRED — it
@@ -2728,19 +2812,13 @@ func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overhead
 	// Unary requests: whatever overhead is left over after every instrumented phase is
 	// the residual between phases — goroutine-scheduling latency (the request hops across
 	// the HTTP, core-pipeline and provider-worker goroutines) plus any not-yet-spanned
-	// transport edge. Now that the code phases are instrumented, this is small and
-	// dominated by scheduling, so it is surfaced as "scheduling" rather than an opaque
-	// "core". Skip when measured spans already exceed the total (upstream over-counting):
-	// a negative value is a diagnostic signal, not a bucket, surfaced in the UI footer.
+	// transport edge.
 	//
 	// STREAMING IS EXCLUDED. For a stream, total-upstream is NOT Bifrost overhead: it
 	// includes the off-CPU relay/scheduler wait the request goroutine spends parked
 	// between provider chunks (confirmed ~2% CPU under load). All actual Bifrost CPU is
 	// already measured in the buckets above (parse/convert accumulators, aggregated
-	// per-chunk plugin timing, transport marshal/write). Emitting a residual bucket there
-	// would resurrect the misleading "scheduling = 95% of overhead" figure. Instead the
-	// caller takes measuredMs as the stream's overhead and folds the off-CPU remainder
-	// into upstream, so latency = upstream + overhead still holds.
+	// per-chunk plugin timing, transport marshal/write).
 	if overheadOK && !isStreaming {
 		schedulingUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
 		if schedulingUs > 0.5 {

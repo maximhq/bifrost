@@ -31,7 +31,7 @@ type cacheState struct {
 	// ShortCircuited is set when PreLLMHook served the response from cache
 	// (returned a non-nil LLMPluginShortCircuit). PostLLMHook uses this to
 	// skip the entire cache-write path: only the FINAL replay chunk carries
-	// CacheDebug.CacheHit=true, so shouldSkipCaching() can't catch the
+	// cache metadata's CacheHit=true, so shouldSkipCaching() can't catch the
 	// non-final chunks on its own — without this flag they'd flow into
 	// addStreamingResponse and trigger a duplicate write at the same
 	// directCacheID (Weaviate 422 "id already exists").

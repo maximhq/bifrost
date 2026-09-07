@@ -1451,8 +1451,18 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 
 // BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
 // or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
-// then clears Read/Write timeouts and MaxConnDuration so fasthttp does not
-// pre-empt a healthy stream. StreamResponseBody is forced on.
+// then clears Read/Write timeouts so fasthttp does not pre-empt a healthy
+// stream. StreamResponseBody is forced on.
+//
+// MaxConnDuration is deliberately preserved. It is checked once per request
+// before the request is written (fasthttp client.go:3110) and only sets
+// Connection: close on the outgoing request, so it cannot cut a live stream.
+// What it does do is force an over-age connection to be closed rather than
+// returned to HostClient.conns. That is the streaming pool's only age-based
+// eviction: the idle cleaner evicts on lastUseTime alone, so a connection that
+// keeps being handed out never goes idle and never leaves the pool. Zeroing this
+// is what turned a transient connection fault into one that persisted until the
+// process was restarted.
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
@@ -1464,7 +1474,6 @@ func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.ReadTimeout = 0
 	c.WriteTimeout = 0
-	c.MaxConnDuration = 0
 	c.StreamResponseBody = true
 	return c
 }
@@ -1531,55 +1540,238 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
-// text/event-stream. In that case, peek at the first field prefix without consuming
-// it so the downstream SSE parser sees the full stream.
-func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
+// nonSSESampleLimit bounds how much of an unusable body is retained for
+// diagnostics. Large enough to hold a provider error envelope whole, small
+// enough to sit on an error object and in a log line.
+const nonSSESampleLimit = 8 * 1024
+
+// nonSSEMessageLimit bounds how much of the sample is inlined into the error
+// message. The full sample still travels on RawResponse.
+const nonSSEMessageLimit = 512
+
+// sseProbeWindow is how many leading bytes are inspected when looking for an SSE
+// field name. Enough for a UTF-8 BOM, a little whitespace, and "retry:".
+const sseProbeWindow = 16
+
+// StreamBodyKind classifies why a 200 response could not be consumed as SSE.
+// These are genuinely different failures and were previously all reported as
+// "provider returned non-SSE response", which sent operators looking for a
+// malformed provider body when the stream had in fact timed out or been closed.
+type StreamBodyKind int
+
+const (
+	// StreamBodyNonSSE: the body was readable but is not SSE (e.g. a JSON error
+	// envelope returned with a 200).
+	StreamBodyNonSSE StreamBodyKind = iota
+	// StreamBodyEmpty: a 200 with no body at all.
+	StreamBodyEmpty
+	// StreamBodyIdleTimeout: no first byte arrived within the idle window.
+	StreamBodyIdleTimeout
+	// StreamBodyClosed: the stream was closed before the first byte arrived.
+	StreamBodyClosed
+	// StreamBodyReadError: the first read failed for some other reason.
+	StreamBodyReadError
+)
+
+func (k StreamBodyKind) String() string {
+	switch k {
+	case StreamBodyNonSSE:
+		return "non-sse"
+	case StreamBodyEmpty:
+		return "empty"
+	case StreamBodyIdleTimeout:
+		return "idle-timeout"
+	case StreamBodyClosed:
+		return "closed"
+	case StreamBodyReadError:
+		return "read-error"
+	default:
+		return "unknown"
+	}
+}
+
+// NonSSEStreamBody describes a 200 response that could not be consumed as SSE,
+// carrying the evidence needed to diagnose it: the provider Content-Type, a
+// bounded sample of what actually arrived, and the underlying read error.
+type NonSSEStreamBody struct {
+	Kind        StreamBodyKind
+	ContentType string
+	Sample      []byte
+	ReadErr     error
+}
+
+// Err renders the failure as an error. The non-SSE wording is deliberately
+// preserved verbatim so existing log searches keep matching.
+func (b *NonSSEStreamBody) Err() error {
+	switch b.Kind {
+	case StreamBodyIdleTimeout:
+		return fmt.Errorf("no data received on the stream before the idle timeout (content-type %q): %w", b.ContentType, ErrStreamIdleTimeout)
+	case StreamBodyClosed:
+		return fmt.Errorf("stream closed before the first byte arrived (content-type %q): %w", b.ContentType, ErrStreamClosed)
+	case StreamBodyEmpty:
+		return fmt.Errorf("provider returned an empty body for streaming request (content-type %q)", b.ContentType)
+	case StreamBodyReadError:
+		return fmt.Errorf("failed to read the streaming response body (content-type %q): %w", b.ContentType, b.ReadErr)
+	default:
+		excerpt := b.Sample
+		if len(excerpt) > nonSSEMessageLimit {
+			excerpt = excerpt[:nonSSEMessageLimit]
+		}
+		return fmt.Errorf("provider returned non-SSE response for streaming request (content-type %q): %s", b.ContentType, excerpt)
+	}
+}
+
+// DrainNonSSEStreamReader decides whether a 200 body can be handed to the SSE
+// parser. Some OpenAI-compatible backends return valid SSE frames without a
+// text/event-stream Content-Type, so the first field prefix is peeked without
+// consuming it and the full stream still reaches the parser.
+//
+// Returns (reader, nil) when the body is usable. Otherwise it returns
+// (nil, info): the body is drained so the connection can be released cleanly,
+// and info carries a bounded sample of it. Discarding that sample outright is
+// what previously left this failure with no raw response to inspect.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, *NonSSEStreamBody) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
+	// The provider declared SSE: hand the stream over untouched, exactly as
+	// before. Probing here would swallow a stream truncated before its first
+	// byte, which the SSE loop reports as a connection failure the retry loop
+	// can act on (see TestChatStreamTruncatedPreFirstByte). This guard only
+	// exists for bodies whose Content-Type does not say SSE, which is where the
+	// old code produced a misleading "non-SSE" verdict.
 	if strings.Contains(ct, "text/event-stream") {
-		return reader, false
+		return reader, nil
 	}
 	if reader == nil {
-		return nil, true
+		return nil, &NonSSEStreamBody{Kind: StreamBodyEmpty, ContentType: ct}
 	}
 
 	br := bufio.NewReaderSize(reader, sseInitialBufSize)
-	if hasSSEPrefix(br) {
-		return br, false
+	looksSSE, readErr := hasSSEPrefix(br)
+	if looksSSE {
+		return br, nil
 	}
 
-	_, _ = io.Copy(io.Discard, br)
-	return nil, true
-}
-
-func hasSSEPrefix(reader *bufio.Reader) bool {
-	first, err := reader.Peek(1)
-	if err != nil || len(first) == 0 {
-		return false
-	}
-	switch first[0] {
-	case ':', '\n', '\r':
-		return true
-	case 'd':
-		return peekHasPrefix(reader, []byte("data:"))
-	case 'e':
-		return peekHasPrefix(reader, []byte("event:"))
-	case 'i':
-		return peekHasPrefix(reader, []byte("id:"))
-	case 'r':
-		return peekHasPrefix(reader, []byte("retry:"))
+	info := &NonSSEStreamBody{ContentType: ct, ReadErr: readErr}
+	switch {
+	case readErr == nil:
+		info.Kind = StreamBodyNonSSE
+		info.Sample = drainWithSample(br)
+	case errors.Is(readErr, ErrStreamIdleTimeout):
+		info.Kind = StreamBodyIdleTimeout
+	case errors.Is(readErr, ErrStreamClosed):
+		info.Kind = StreamBodyClosed
+	case errors.Is(readErr, io.EOF):
+		info.Kind = StreamBodyEmpty
 	default:
-		return false
+		info.Kind = StreamBodyReadError
 	}
+	return nil, info
 }
 
-func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
-	n := min(reader.Buffered(), len(prefix))
+// drainWithSample consumes the body, keeping the first nonSSESampleLimit bytes.
+// The remainder is discarded rather than buffered: the point is to leave the
+// connection drained without letting an arbitrarily large body into memory.
+func drainWithSample(r io.Reader) []byte {
+	var sample bytes.Buffer
+	if _, err := io.Copy(&sample, io.LimitReader(r, nonSSESampleLimit)); err != nil {
+		return sample.Bytes()
+	}
+	_, _ = io.Copy(io.Discard, r)
+	return sample.Bytes()
+}
+
+// hasSSEPrefix reports whether the buffered stream opens with an SSE field name,
+// and returns the read error when the first byte could not be obtained so the
+// caller can tell a timeout apart from a genuinely non-SSE body.
+//
+// It blocks only for the first byte. Everything after that is inspected from
+// whatever has already been buffered, so a slow but valid stream still starts.
+func hasSSEPrefix(reader *bufio.Reader) (bool, error) {
+	first, err := reader.Peek(1)
+	if err != nil {
+		return false, err
+	}
+	if len(first) == 0 {
+		return false, nil
+	}
+
+	n := min(reader.Buffered(), sseProbeWindow)
+	window, err := reader.Peek(n)
+	if err != nil {
+		return false, err
+	}
+	// A UTF-8 BOM and leading horizontal whitespace are both things real
+	// upstreams emit, and neither makes the stream unreadable. Skipped by
+	// reslicing the peeked window so no byte is consumed.
+	//
+	// Either can also arrive split across reads, leaving a window that says
+	// nothing about the stream: all trimmable, or ending part-way through the
+	// BOM, which trimSSELeading cannot strip until all three bytes are here.
+	// Peek one more byte at a time rather than write a valid SSE body off as
+	// non-SSE. sseProbeWindow bounds how far this goes, and the idle-timeout
+	// reader bounds the wait, so a stalled upstream surfaces as
+	// StreamBodyIdleTimeout instead of a wrong verdict.
+	trimmed := trimSSELeading(window)
+	for inconclusiveSSELeading(trimmed) {
+		if n >= sseProbeWindow {
+			return false, nil
+		}
+		n++
+		if window, err = reader.Peek(n); err != nil {
+			return false, err
+		}
+		trimmed = trimSSELeading(window)
+	}
+	window = trimmed
+	switch window[0] {
+	case ':', '\n', '\r':
+		return true, nil
+	}
+	for _, name := range sseFieldNames {
+		if hasFoldedPrefix(window, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+var sseFieldNames = [][]byte{
+	[]byte("data:"),
+	[]byte("event:"),
+	[]byte("id:"),
+	[]byte("retry:"),
+}
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// trimSSELeading reslices b past a UTF-8 BOM and any leading spaces or tabs.
+// Newlines are left alone: they are valid SSE openings in their own right.
+func trimSSELeading(b []byte) []byte {
+	b = bytes.TrimPrefix(b, utf8BOM)
+	return bytes.TrimLeft(b, " \t")
+}
+
+// inconclusiveSSELeading reports whether b - already past trimSSELeading - still
+// says nothing about what the stream is. Two cases: nothing survived the trim,
+// or what survived is a strict prefix of the BOM, which trimSSELeading leaves
+// alone because it cannot know yet whether the remaining bytes complete a BOM or
+// begin some other content.
+func inconclusiveSSELeading(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	return len(b) < len(utf8BOM) && bytes.HasPrefix(utf8BOM, b)
+}
+
+// hasFoldedPrefix compares case-insensitively over as much of name as b holds,
+// so a short first read still identifies the field rather than being written off
+// as non-SSE.
+func hasFoldedPrefix(b, name []byte) bool {
+	n := min(len(b), len(name))
 	if n == 0 {
 		return false
 	}
-	peeked, err := reader.Peek(n)
-	return err == nil && bytes.Equal(peeked, prefix[:n])
+	return bytes.EqualFold(b[:n], name[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
@@ -1718,9 +1910,9 @@ func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.S
 // StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
 // response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
 // request-side conversion so total conversion time is attributed together, instead of
-// the response half folding into core. Symmetric to the request path: response-parse
-// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
-// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+// the response half folding into provider-internal. Symmetric to the request path:
+// response-parse times the JSON decode, this times the struct->unified mapping. Wrapped
+// at the primary response call sites; secondary paths fold into provider-internal. EndSpan is nil-safe.
 func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, "convertor")
 }
@@ -1733,8 +1925,8 @@ func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHa
 }
 
 // StartPhaseSpan opens a nil-safe internal overhead phase span with an arbitrary name,
-// so provider/auth code outside this package can carve its own work out of the residual
-// "core" bucket. name becomes the breakdown bucket; keep it stable and descriptive
+// so provider/auth code outside this package can carve its own work out of the overhead
+// residual. name becomes the breakdown bucket; keep it stable and descriptive
 // (e.g. "request-sign", "credentials-fetch", "response-finalize"). EndSpan is nil-safe.
 func StartPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
 	return startPhaseSpan(ctx, name)
@@ -2020,7 +2212,7 @@ func EnrichError(
 // Used at the primary completion call sites (chat / responses / text) where parse
 // time is on the latency hot path; the ctx-less HandleProviderResponse remains for
 // the many secondary sites (files, batches, containers) whose parse time is not
-// worth a span and simply folds into the "core" bucket.
+// worth a span and simply folds into provider-internal.
 func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
 		// Inspect the named bifrostErr so a failed parse ends the span as an error
@@ -2941,58 +3133,59 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 
 	go func() {
 		defer close(closed)
+		// closeBodyStream can panic when the connection is already gone: fasthttp's
+		// CloseWithError nil-derefs in (*HostClient).CloseConn. The ownership claim
+		// below makes that ordering unlikely, but this runs in its own goroutine,
+		// so an unrecovered panic takes the whole process down instead of ending
+		// one stream (same reasoning as the idle-timeout timer path in
+		// NewIdleTimeoutReader). Log the value so an unrelated panic leaves a trace.
+		defer func() {
+			if rec := recover(); rec != nil {
+				if logger == nil {
+					logger = getLogger()
+				}
+				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
+			}
+		}()
 		select {
 		case <-ctx.Done():
-			// Atomically claim the close. Only one owner (this goroutine, the
-			// idle-timeout timer, or ReleaseStreamingResponse) may close the
-			// non-idempotent fasthttp body stream: a second CloseWithError
-			// re-runs releaseRequestStream, double-Putting the pooled
-			// requestStream so a later request aliases it concurrently and
-			// panics with a negative chunkLeft slice bound. GetAndSetValue is a
-			// single locked compare-and-swap, unlike the previous racy
-			// Value-then-SetValue check.
+			// Claim the close so only one owner (this goroutine, the idle-timeout
+			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+			// close against ReleaseStreamingResponse's drain; fasthttp itself is
+			// idempotent here (clientStreamBody.CloseWithError is guarded by a
+			// sync.Once), so a lost race is no longer destructive.
 			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 				return
 			}
-			// Context cancelled or deadline exceeded - close the body stream to unblock reads
-			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-				if err := wce.CloseWithError(ctx.Err()); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			}
+			// Closing here interrupts a read that is still in flight. That is safe
+			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+			// streaming reads before releasing pooled resources", #2353), where
+			// clientStreamBody interrupts the connection and then waits on its
+			// readLock before returning the *requestStream and the connection's
+			// *bufio.Reader to their pools.
+			//
+			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+			// underneath an active reader, so a later request acquired an aliased
+			// object and read another request's bytes. That is maximhq/bifrost#6143,
+			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+			// under -race on any fasthttp without that fix.
+			closeBodyStream(bodyStream, ctx.Err())
 		case <-done:
-			// Race between done and ctx.Done: the streaming goroutine has reached its defer
-			// chain (Read has returned), and ctx is also cancelled. The body may already be
-			// at EOF and fasthttp may have released the underlying conn to the idle pool.
-			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
-			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
-			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
-			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
+			// The streaming goroutine reached its defer chain and ctx is also
+			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+			// a body nobody wants, and so a half-read connection is closed rather
+			// than returned to the idle pool.
 			if ctx.Err() != nil {
-				// Same atomic claim as the ctx.Done branch: skip if another
-				// owner already closed/released the stream.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
-				if closer, ok := bodyStream.(io.Closer); ok {
-					if err := closer.Close(); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-					if err := wce.CloseWithError(ctx.Err()); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				}
+				closeBodyStream(bodyStream, ctx.Err())
 			}
 		}
 	}()
 	return func() {
 		close(done)
-		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+		<-closed // Wait for the close to finish before ReleaseStreamingResponse runs.
 	}
 }
 
@@ -3321,6 +3514,39 @@ func HandleStreamTimeout(
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
 }
 
+// ProcessAndSendNonSSEStreamError reports a 200 response that could not be read
+// as SSE. Unlike ProcessAndSendError it preserves the evidence: the captured
+// body sample travels on RawResponse when raw capture is enabled, and the
+// provider Content-Type is named in the message. Without this the failure
+// reached operators with no body and no raw response to look at.
+func ProcessAndSendNonSSEStreamError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	info *NonSSEStreamBody,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	err := info.Err()
+	// This is an upstream failure, not a Bifrost one: executeRequestWithRetries
+	// peeks at the first stream chunk and halts before retry classification when
+	// IsBifrostError is set, so leaving it false lets the 502 take the transient
+	// retry path and lets a rate-limit envelope in the message rotate keys.
+	bifrostError := &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: err.Error(),
+			Error:   err,
+		},
+	}
+	if len(info.Sample) > 0 && ShouldSendBackRawResponse(ctx, false) {
+		bifrostError.ExtraFields.RawResponse = string(info.Sample)
+	}
+	attachBilledUsageFromContext(ctx, bifrostError)
+	ProcessAndSendBifrostError(ctx, postHookRunner, bifrostError, responseChan, logger, postHookSpanFinalizer)
+}
+
 // ProcessAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -3533,11 +3759,30 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 	}()
+	// Cancelled or timed out: abandon the connection instead of draining it.
+	// Draining here would read the rest of an upstream response nobody wants,
+	// holding the connection for the remainder of the stream. Closing with a
+	// non-nil error makes fasthttp's callback take CloseConn rather than
+	// ReleaseConn (client.go:3176), so a half-read connection is never returned
+	// to the idle pool. The response itself is left to GC for the same reason as
+	// the early return above: fasthttp.ReleaseResponse would Reset and fire the
+	// close callback a second time.
+	if ctx.Err() != nil {
+		closeBodyStream(bodyStream, ctx.Err())
+		return
+	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	//
+	// Skipped when the reader already consumed the body to EOF: there is nothing
+	// left to drain, and on a keep-alive connection io.Copy blocks in
+	// parseChunkSize waiting for a chunk the upstream will never send, which
+	// deadlocks this deferred cleanup and stops the stream channel from closing.
+	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close

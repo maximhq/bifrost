@@ -55,7 +55,7 @@ func TestBuildMCPSpanAttrsSemconvAndGovernance(t *testing.T) {
 		t.Error("error.type must not be present on a non-error span's attrs")
 	}
 	// Absent optional governance dims must not appear as empty labels.
-	for _, absent := range []string{"customer_id", "business_unit_id", "team_id"} {
+	for _, absent := range []string{"customer_id", "business_unit_id", "project_id", "team_id"} {
 		if _, ok := got[absent]; ok {
 			t.Errorf("absent dimension %q should be omitted, got %q", absent, got[absent])
 		}

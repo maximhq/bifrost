@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveRawJsonNoticeState } from "./logDetailView.utils";
+import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 const base = {
 	hasProvidersAccess: true,
@@ -46,5 +46,50 @@ describe("resolveRawJsonNoticeState", () => {
 		expect(
 			resolveRawJsonNoticeState({ ...base, providers: [{ name: "anthropic", store_raw_request_response: false }] }),
 		).toBe("unknown");
+	});
+});
+
+describe("parseRoutingDecisionLine", () => {
+	it("reads timestamp, engine, level and message from a line written with a level", () => {
+		expect(
+			parseRoutingDecisionLine("[1756881000842] [core] [warn] - Fallback anthropic/claude-sonnet-4-5 skipped: missing provider config"),
+		).toEqual({
+			timestamp: 1756881000842,
+			engine: "core",
+			level: "warn",
+			message: "Fallback anthropic/claude-sonnet-4-5 skipped: missing provider config",
+		});
+	});
+
+	it("parses a line stored before the level was recorded with a null level", () => {
+		expect(parseRoutingDecisionLine("[1756881000412] [loadbalancing] - Selected provider openai for model gpt-4o-mini")).toEqual({
+			timestamp: 1756881000412,
+			engine: "loadbalancing",
+			level: null,
+			message: "Selected provider openai for model gpt-4o-mini",
+		});
+	});
+
+	it("does not mistake a bracketed message prefix on an old line for a level", () => {
+		expect(parseRoutingDecisionLine("[1756881000412] [governance] - [vk-prod] - allow-list applied")).toMatchObject({
+			engine: "governance",
+			level: null,
+			message: "[vk-prod] - allow-list applied",
+		});
+	});
+
+	it("keeps the message intact when it starts with a bracket on a levelled line", () => {
+		expect(parseRoutingDecisionLine("[1756881000412] [governance] [info] - [vk-prod] - allow-list applied")).toMatchObject({
+			level: "info",
+			message: "[vk-prod] - allow-list applied",
+		});
+	});
+
+	it("treats an unknown level token as no level", () => {
+		expect(parseRoutingDecisionLine("[1756881000412] [core] [fatal] - boom").level).toBeNull();
+	});
+
+	it("falls back to the raw line when it does not match the trail shape", () => {
+		expect(parseRoutingDecisionLine("free-form note")).toEqual({ timestamp: null, engine: null, level: null, message: "free-form note" });
 	});
 });

@@ -1026,9 +1026,13 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					},
 				}
 
-				// Preserve signature if present
+				// Preserve the replay token if present. Anthropic sends a signature,
+				// OpenAI and xAI send an opaque redactedContent blob; both ride on
+				// EncryptedContent and the shape decides how it is emitted back.
 				if reasoningDelta.Signature != nil {
 					item.ResponsesReasoning.EncryptedContent = reasoningDelta.Signature
+				} else if reasoningDelta.RedactedContent != nil {
+					item.ResponsesReasoning.EncryptedContent = reasoningDelta.RedactedContent
 				}
 
 				// Track that this content index is a reasoning block
@@ -3430,6 +3434,37 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 		}
 	}
 
+	// settlePendingReasoning parks reasoning that no assistant item claimed onto the
+	// assistant turn it was produced in, before a user turn is emitted after it.
+	//
+	// pendingReasoningContentBlocks is consumed by an assistant message or a tool-call
+	// flush, and by nothing else -- so reasoning left over when a user turn arrives used
+	// to survive the buffer and be prepended to the NEXT assistant message instead. That
+	// happens whenever an assistant turn ends on a thinking block (adaptive thinking, a
+	// max_tokens truncation, or a trailing block the ingress dropped), and it shifts
+	// every later turn's reasoning one turn forward, silently. Bedrock refuses the
+	// result once the turn it lands in is a tool continuation:
+	//
+	//	messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest
+	//	assistant message cannot be modified. These blocks must remain as they were in
+	//	the original response.
+	//
+	// Appending rather than prepending is deliberate: the blocks trail the content
+	// already in that turn, which is where the client sent them.
+	settlePendingReasoning := func() {
+		if len(pendingReasoningContentBlocks) == 0 {
+			return
+		}
+		if len(bedrockMessages) > 0 && bedrockMessages[len(bedrockMessages)-1].Role == BedrockMessageRoleAssistant {
+			last := &bedrockMessages[len(bedrockMessages)-1]
+			last.Content = append(last.Content, pendingReasoningContentBlocks...)
+		}
+		// With no assistant turn to return them to the blocks are dropped: reasoning
+		// cannot ride a user turn, and inventing an assistant turn for it would put a
+		// message on the wire the client never sent.
+		pendingReasoningContentBlocks = nil
+	}
+
 	// Helper to flush pending tool call blocks into a single assistant message using state manager
 	flushPendingToolCalls := func() {
 		if stateManager.HasPendingToolCalls() {
@@ -3536,6 +3571,19 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
+			// A tool result opens a user turn, so reasoning still buffered here belongs to
+			// the assistant turn behind it, not to the next one (see settlePendingReasoning).
+			//
+			// Gated on there being no tool call waiting, because a pending call is itself
+			// the claimant: the standard [thinking, tool_use] turn reaches this point with
+			// both buffered, and the flush below prepends the reasoning to the tool-use
+			// message it belongs in front of. Settling first stole it from that flush and
+			// dropped it -- the previous message is the user turn that opened the loop --
+			// which silently deleted the thinking block from every ordinary agent turn.
+			if !stateManager.HasPendingToolCalls() {
+				settlePendingReasoning()
+			}
+
 			// Register tool result in state manager
 			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
 				resultContent := []BedrockContentBlock{}
@@ -3719,6 +3767,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			// about, just one flush site further along.
 			flushPendingToolCalls()
 
+			// A non-assistant message opens a new turn, so reasoning the flush above did
+			// not claim belongs to the assistant turn behind it (see settlePendingReasoning).
+			if role != schemas.ResponsesInputMessageRoleAssistant {
+				settlePendingReasoning()
+			}
+
 			// Emit any pending results after tool calls
 			if stateManager.HasPendingResults() {
 				pendingResults := stateManager.GetPendingResults()
@@ -3797,7 +3851,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 
 			// Handle reasoning as content in next assistant message
 			// For now, just add to pending content blocks
-			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg)
+			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model))
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 			}
@@ -4212,6 +4266,7 @@ func createTextMessage(
 func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var outputMessages []schemas.ResponsesMessage
 	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
+	var reasoningRedactedContent *string
 
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
@@ -4326,6 +4381,10 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					Text:      block.ReasoningContent.ReasoningText.Text,
 					Signature: block.ReasoningContent.ReasoningText.Signature,
 				})
+			} else if block.ReasoningContent.RedactedContent != nil {
+				// Opaque blob: carried on the reasoning message rather than as a
+				// content block, since there is no prose for one to hold.
+				reasoningRedactedContent = block.ReasoningContent.RedactedContent
 			}
 		} else if block.ToolUse != nil {
 			// Tool use content
@@ -4683,12 +4742,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	}
 
 	// Handle reasoning blocks - prepend reasoning message if we collected any
-	if len(reasoningContentBlocks) > 0 {
+	if len(reasoningContentBlocks) > 0 || reasoningRedactedContent != nil {
 		reasoningMessage := schemas.ResponsesMessage{
 			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: reasoningRedactedContent,
 			},
 			Content: &schemas.ResponsesMessageContent{
 				ContentBlocks: reasoningContentBlocks,
@@ -4713,7 +4773,23 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 //
 // once per replayed assistant turn. See reasoning_replay_test.go, which pins the
 // invariant at both the struct and the serialised-wire level.
-func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
+func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape) []BedrockContentBlock {
+	if shape == schemas.BedrockReasoningShapeRedacted {
+		// These models reject reasoningText in every form -- with a signature,
+		// without one, empty or not -- with an opaque 500. Only the blob carried
+		// on EncryptedContent is replayable; emitting nothing beats emitting a
+		// shape the model cannot accept.
+		if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil ||
+			*msg.ResponsesReasoning.EncryptedContent == "" {
+			return nil
+		}
+		return []BedrockContentBlock{{
+			ReasoningContent: &BedrockReasoningContent{
+				RedactedContent: msg.ResponsesReasoning.EncryptedContent,
+			},
+		}}
+	}
+
 	var reasoningBlocks []BedrockContentBlock
 
 	// Track whether the content blocks actually produced reasoning rather than
@@ -4819,6 +4895,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					bedrockBlock.Image = imageSource
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
+				// Redacted-shape models carry their blob on the reasoning message,
+				// never on a content block, so there is nothing here to replay.
+				if converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted {
+					continue
+				}
 				if block.Text != nil {
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{

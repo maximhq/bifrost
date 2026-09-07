@@ -260,7 +260,16 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseHuggingFaceImageError(resp), latency)
 	}
 
+	// Time the body read/decompress as the response-finalize phase.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
@@ -501,7 +510,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	var rawResponse interface{}
 	var rawRequest interface{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bifrostResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, bifrostResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -673,8 +682,17 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 		}
 	}
 
-	// Unmarshal directly to BifrostEmbeddingResponse with custom logic
+	// Unmarshal directly to BifrostEmbeddingResponse with custom logic.
+	// Time the decode as the response-parse phase.
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
 	bifrostResponse, convErr := UnmarshalHuggingFaceEmbeddingResponse(responseBody, request.Model)
+	if pt != nil {
+		if convErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
 	if convErr != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1183,14 +1201,20 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 				}
 			}
 
-			// Parse fal-ai response
+			// Parse fal-ai response. Timed as the "response-parse" stream phase (per-event JSON decode).
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
+			parseStart := time.Now()
+			umErr := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", umErr))
 				continue
 			}
-			// Extract images from response (handles both Data.Images and top-level Images)
+			// Extract images from response (handles both Data.Images and top-level Images).
+			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
+			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
 				// Create a fresh chunk for each image to avoid data race
@@ -1567,14 +1591,20 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 				}
 			}
 
-			// Parse fal-ai response
+			// Parse fal-ai response. Timed as the "response-parse" stream phase (per-event JSON decode).
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
+			parseStart := time.Now()
+			umErr := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", umErr))
 				continue
 			}
-			// Extract images from response (handles both Data.Images and top-level Images)
+			// Extract images from response (handles both Data.Images and top-level Images).
+			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
+			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
 				// Create a fresh chunk for each image to avoid data race

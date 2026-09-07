@@ -589,7 +589,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	return (
 		<Sheet open={open} onOpenChange={(o) => (o ? onOpenChange(true) : handleCloseDrawer())}>
 			<SheetContent side="right" className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-0 pt-4 sm:max-w-2xl">
-				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="">{editingOverride ? "Edit Pricing Override" : "Create Pricing Override"}</SheetTitle>
 				</SheetHeader>
 

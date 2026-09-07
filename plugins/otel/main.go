@@ -754,7 +754,7 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 // PostLLMHook records the cache-hit metric. Every other metric is derived from the
 // completed trace in recordMetricsFromTrace, but semantic-cache hits short-circuit the
 // request in a PreHook before any llm.call span exists, so the cache signal never reaches
-// a span. We therefore read CacheDebug straight off the response here, mirroring how the
+// a span. We therefore read cache metadata through the compatibility response field here, mirroring how the
 // Prometheus telemetry plugin and the Datadog plugin emit this metric.
 //
 // This is the ONLY place RecordCacheHit is called — do not also emit it from
@@ -1048,6 +1048,8 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 		customerNames,
 		buIDs,
 		buNames,
+		getStringAttr(attrs, schemas.AttrBifrostProjectID),
+		getStringAttr(attrs, schemas.AttrBifrostProjectName),
 	)
 }
 
@@ -1078,6 +1080,8 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		customerNames,
 		buIDs,
 		buNames,
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	)
 }
 
@@ -1113,6 +1117,8 @@ var mcpGovernanceLabelMap = map[string]string{
 	schemas.AttrBifrostCustomerName:     "customer_name",
 	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
 	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+	schemas.AttrBifrostProjectID:        "project_id",
+	schemas.AttrBifrostProjectName:      "project_name",
 }
 
 // recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called

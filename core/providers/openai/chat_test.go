@@ -1581,6 +1581,7 @@ func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
 	}{
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
+		{name: "Ollama", provider: schemas.Ollama},
 	}
 
 	for _, tt := range tests {

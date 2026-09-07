@@ -113,6 +113,7 @@ func acceptsMinimalEffort(model string) bool {
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6-astra") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
 		strings.Contains(modelLower, "glm-5.2")
 }
@@ -245,4 +246,19 @@ func SanitizeUserField(user *string) *string {
 		return nil
 	}
 	return user
+}
+
+// toolChoiceAnySupported reports whether the target accepts the provider-generic
+// forced tool choice "any" on the wire. Mistral's API accepts "any" natively,
+// including Mistral models served through Vertex, so the OpenAI-only rewrite of
+// "any" to "required" must not run for those destinations.
+func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.Mistral:
+		return true
+	case schemas.Vertex:
+		return schemas.IsMistralModel(model)
+	default:
+		return false
+	}
 }

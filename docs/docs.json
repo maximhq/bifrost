@@ -60,7 +60,9 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": ["overview"]
+            "pages": [
+              "overview"
+            ]
           },
           {
             "group": "Quick Start",
@@ -100,7 +102,9 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["release-cadence"]
+            "pages": [
+              "release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
@@ -111,16 +115,18 @@
             ]
           },
           {
-            "group":"Migrate from other Gateway",
-            "icon":"arrow-up",
-            "pages":[
+            "group": "Migrate from other Gateway",
+            "icon": "arrow-up",
+            "pages": [
               "migration-guides/litellm"
             ]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": ["integrations/what-is-an-integration"]
+            "pages": [
+              "integrations/what-is-an-integration"
+            ]
           },
           {
             "group": "Providers & Guides",
@@ -143,6 +149,7 @@
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
+                  "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/mistral",
@@ -182,6 +189,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/connections",
+              "mcp/virtual-mcps",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -199,7 +207,6 @@
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway",
               "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
@@ -215,7 +222,10 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
+                "pages": [
+                  "plugins/writing-go-plugin",
+                  "plugins/writing-wasm-plugin"
+                ]
               },
               "plugins/migration-guide"
             ]
@@ -245,7 +255,10 @@
               },
               "features/telemetry",
               "features/otel",
+              "features/observability/content-logging",
+              "features/observability/latency-breakdown",
               "features/semantic-caching",
+              "features/prompt-caching",
               "features/skills-repository",
               {
                 "group": "Prompt Repository",
@@ -258,7 +271,10 @@
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
               }
             ]
           }
@@ -271,7 +287,9 @@
           {
             "group": "Getting Started",
             "icon": "rocket",
-            "pages": ["enterprise/overview"]
+            "pages": [
+              "enterprise/overview"
+            ]
           },
           {
             "group": "Moving from OSS",
@@ -287,12 +305,17 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["enterprise/release-cadence"]
+            "pages": [
+              "enterprise/release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["enterprise/migration-guides/v2.0.0", "enterprise/migration-guides/v1.4.0"]
+            "pages": [
+              "enterprise/migration-guides/v2.0.0",
+              "enterprise/migration-guides/v1.4.0"
+            ]
           },
           {
             "group": "Features",
@@ -302,7 +325,9 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+              "enterprise/virtual-mcps",
               "enterprise/mcp-tool-groups",
+              "enterprise/projects",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -352,7 +377,9 @@
           {
             "group": "Security",
             "icon": "shield",
-            "pages": ["security"]
+            "pages": [
+              "security"
+            ]
           }
         ]
       },
@@ -362,27 +389,42 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": ["edge/overview", "edge/how-it-works"]
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
           },
           {
             "group": "Governance & Control",
             "icon": "shield-halved",
-            "pages": ["edge/app-governance", "edge/mcp-governance", "edge/security"]
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
           },
           {
             "group": "Admin controls",
             "icon": "sliders",
-            "pages": ["edge/admin-devices", "edge/admin-approvals", "edge/admin-configurations"]
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
           },
           {
             "group": "Deployment",
             "icon": "cloud-arrow-up",
-            "pages": ["edge/deployment-mdm"]
+            "pages": [
+              "edge/deployment-mdm"
+            ]
           },
           {
             "group": "Reference",
             "icon": "list",
-            "pages": ["edge/supported-applications"]
+            "pages": [
+              "edge/supported-applications"
+            ]
           }
         ]
       },
@@ -393,7 +435,10 @@
           {
             "group": "Runbooks",
             "icon": "book-open",
-            "pages": ["runbooks/claude-code-bedrock", "runbooks/codex-bedrock"]
+            "pages": [
+              "runbooks/claude-code-bedrock",
+              "runbooks/codex-bedrock"
+            ]
           },
           {
             "group": "CLI Agents & Editors",
@@ -446,7 +491,9 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": ["integrations/genai-sdk/overview"]
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -462,37 +509,50 @@
                 "group": "Okta",
                 "icon": "/media/okta-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-okta/oidc", "enterprise/setting-up-okta/scim"]
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
               },
               {
                 "group": "Microsoft Entra",
                 "icon": "microsoft",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-entra/oidc"]
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
               },
               {
                 "group": "Zitadel",
                 "icon": "/media/zitadel-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-zitadel/oidc"]
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
               },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-keycloak/oidc"]
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
               },
               {
                 "group": "Google Workspace",
                 "icon": "google",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-google-workspace"]
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
               },
               {
                 "group": "Auth0",
                 "icon": "/media/auth0-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-auth0/oidc"]
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
               },
               {
                 "group": "Generic OIDC",
@@ -546,8 +606,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
-              "features/observability/splunk",
-              "features/observability/content-logging"
+              "features/observability/splunk"
             ]
           },
           {
@@ -663,7 +722,9 @@
           {
             "group": "Authentication",
             "icon": "key",
-            "pages": ["api/procuring-api-keys"]
+            "pages": [
+              "api/procuring-api-keys"
+            ]
           },
           {
             "group": "Inference",
@@ -671,17 +732,23 @@
               {
                 "group": "Models",
                 "expanded": false,
-                "pages": ["GET /v1/models"]
+                "pages": [
+                  "GET /v1/models"
+                ]
               },
               {
                 "group": "Chat Completions",
                 "expanded": false,
-                "pages": ["POST /v1/chat/completions"]
+                "pages": [
+                  "POST /v1/chat/completions"
+                ]
               },
               {
                 "group": "Text Completions",
                 "expanded": false,
-                "pages": ["POST /v1/completions"]
+                "pages": [
+                  "POST /v1/completions"
+                ]
               },
               {
                 "group": "Responses",
@@ -698,22 +765,31 @@
               {
                 "group": "OCR",
                 "expanded": false,
-                "pages": ["POST /v1/ocr"]
+                "pages": [
+                  "POST /v1/ocr"
+                ]
               },
               {
                 "group": "Rerank",
                 "expanded": false,
-                "pages": ["POST /v1/rerank"]
+                "pages": [
+                  "POST /v1/rerank"
+                ]
               },
               {
                 "group": "Embeddings",
                 "expanded": false,
-                "pages": ["POST /v1/embeddings"]
+                "pages": [
+                  "POST /v1/embeddings"
+                ]
               },
               {
                 "group": "Audio",
                 "expanded": false,
-                "pages": ["POST /v1/audio/speech", "POST /v1/audio/transcriptions"]
+                "pages": [
+                  "POST /v1/audio/speech",
+                  "POST /v1/audio/transcriptions"
+                ]
               },
               {
                 "group": "Images",
@@ -739,12 +815,16 @@
               {
                 "group": "Count Tokens",
                 "expanded": false,
-                "pages": ["POST /v1/responses/input_tokens"]
+                "pages": [
+                  "POST /v1/responses/input_tokens"
+                ]
               },
               {
                 "group": "Compaction",
                 "expanded": false,
-                "pages": ["POST /v1/responses/compact"]
+                "pages": [
+                  "POST /v1/responses/compact"
+                ]
               },
               {
                 "group": "Batch",
@@ -1064,7 +1144,9 @@
               {
                 "group": "Health",
                 "expanded": false,
-                "pages": ["GET /health"]
+                "pages": [
+                  "GET /health"
+                ]
               },
               {
                 "group": "Configuration",
@@ -1195,12 +1277,16 @@
                   "GET /api/logs/histogram/cost/by-provider",
                   "GET /api/logs/histogram/tokens/by-provider",
                   "GET /api/logs/histogram/latency/by-provider",
+                  "GET /api/logs/histogram/throughput",
+                  "GET /api/logs/histogram/throughput/by-provider",
                   "GET /api/logs/histogram/cost/by-dimension",
                   "GET /api/logs/histogram/tokens/by-dimension",
                   "GET /api/logs/histogram/latency/by-dimension",
                   "GET /api/logs/dropped",
                   "GET /api/logs/filterdata",
                   "GET /api/logs/rankings",
+                  "GET /api/logs/rankings/by-dimension",
+                  "GET /api/logs/rankings/users",
                   "GET /api/logs/dashboard",
                   "POST /api/logs/recalculate-cost",
                   "GET /api/logs/recalculate-cost/status",
@@ -1274,12 +1360,20 @@
               {
                 "group": "Vault",
                 "expanded": false,
-                "pages": ["POST /api/vault/flush-cache"]
+                "pages": [
+                  "POST /api/vault/flush-cache"
+                ]
               },
               {
                 "group": "Infrastructure",
                 "expanded": false,
-                "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics"]
+                "pages": [
+                  "GET /ws",
+                  "GET /mcp",
+                  "POST /mcp",
+                  "GET /metrics",
+                  "POST /inspect"
+                ]
               },
               {
                 "group": "Webhooks",
@@ -1300,7 +1394,10 @@
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": ["GET /api/notifications", "POST /api/notifications"]
+                "pages": [
+                  "GET /api/notifications",
+                  "POST /api/notifications"
+                ]
               }
             ]
           },
@@ -1324,10 +1421,7 @@
                   "GET /api/governance/teams/{team_id}/customers",
                   "POST /api/governance/teams/{team_id}/customers",
                   "DELETE /api/governance/teams/{team_id}/customers/{customer_id}",
-                  "GET /api/governance/customers/{customer_id}/teams",
-                  "GET /api/governance/business-units/{business_unit_id}/teams",
-                  "POST /api/governance/business-units/{business_unit_id}/teams",
-                  "DELETE /api/governance/business-units/{business_unit_id}/teams/{team_id}"
+                  "GET /api/governance/customers/{customer_id}/teams"
                 ]
               },
               {
@@ -1348,6 +1442,7 @@
                   "PUT /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
                   "DELETE /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
                   "GET /api/governance/users/{user_id}/virtual-keys",
+                  "POST /api/governance/users/{user_id}/virtual-keys",
                   "GET /api/governance/users/email/{email}/virtual-keys"
                 ]
               },
@@ -1372,6 +1467,7 @@
                   "DELETE /api/governance/users/{user_id}",
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
+                  "GET /api/governance/users/me/vk-creation-policy",
                   "PUT /api/governance/users/{user_id}/role",
                   "POST /api/governance/users/{user_id}/governance",
                   "PUT /api/governance/users/{user_id}/governance",
@@ -1387,6 +1483,9 @@
                   "GET /api/governance/business-units/{business_unit_id}",
                   "PUT /api/governance/business-units/{business_unit_id}",
                   "DELETE /api/governance/business-units/{business_unit_id}",
+                  "GET /api/governance/business-units/{business_unit_id}/users",
+                  "POST /api/governance/business-units/{business_unit_id}/users",
+                  "DELETE /api/governance/business-units/{business_unit_id}/users/{user_id}",
                   "POST /api/governance/business-units/{business_unit_id}/governance",
                   "PUT /api/governance/business-units/{business_unit_id}/governance",
                   "DELETE /api/governance/business-units/{business_unit_id}/governance",
@@ -1424,6 +1523,22 @@
                 ]
               },
               {
+                "group": "Projects",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/projects",
+                  "POST /api/governance/projects",
+                  "GET /api/governance/projects/{project_id}",
+                  "PUT /api/governance/projects/{project_id}",
+                  "DELETE /api/governance/projects/{project_id}",
+                  "GET /api/governance/projects/{project_id}/members",
+                  "POST /api/governance/projects/{project_id}/members",
+                  "PUT /api/governance/projects/{project_id}/members/{member_id}",
+                  "DELETE /api/governance/projects/{project_id}/members/{member_id}",
+                  "GET /api/governance/users/{user_id}/projects"
+                ]
+              },
+              {
                 "group": "RBAC",
                 "expanded": false,
                 "pages": [
@@ -1453,7 +1568,10 @@
               {
                 "group": "Budgets & Rate Limits",
                 "expanded": false,
-                "pages": ["GET /api/governance/budgets", "GET /api/governance/rate-limits"]
+                "pages": [
+                  "GET /api/governance/budgets",
+                  "GET /api/governance/rate-limits"
+                ]
               },
               {
                 "group": "Model Configs",
@@ -1507,7 +1625,9 @@
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
                   "PUT /api/routing/complexity-analyzer-config",
-                  "POST /api/routing/complexity-analyzer-config/reset"
+                  "POST /api/routing/complexity-analyzer-config/reset",
+                  "GET /api/routing/complexity-analyzer-status",
+                  "POST /api/routing/complexity-analyzer-status/retry"
                 ]
               }
             ]
@@ -1539,7 +1659,9 @@
               {
                 "group": "Customers",
                 "expanded": false,
-                "pages": ["GET /api/customers/{customer_id}/teams"]
+                "pages": [
+                  "GET /api/customers/{customer_id}/teams"
+                ]
               },
               {
                 "group": "RBAC",
@@ -1888,7 +2010,10 @@
               },
               {
                 "group": "September 2025",
-                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
+                "pages": [
+                  "changelogs/v1.2.22",
+                  "changelogs/v1.2.21"
+                ]
               }
             ]
           },
@@ -1994,7 +2119,10 @@
               "changelogs/cli-v0.10.6",
               {
                 "group": "May 2026",
-                "pages": ["changelogs/cli-v0.10.5", "changelogs/cli-v0.10.4"]
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
               },
               {
                 "group": "March 2026",
@@ -2108,6 +2236,10 @@
   },
   "redirects": [
     {
+      "source": "/enterprise/mcp-tool-groups",
+      "destination": "/enterprise/virtual-mcps"
+    },
+    {
       "source": "/migration-guides/governance-api-namespace",
       "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
     },
@@ -2185,11 +2317,15 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/gateway-url",
-      "destination": "/mcp/gateway"
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/mcp/gateway",
+      "destination": "/mcp/overview"
     },
     {
       "source": "/mcp/oauth",

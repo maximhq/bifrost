@@ -449,6 +449,10 @@
                 "shouldConvertParams": {
                   "type": "boolean",
                   "description": "Converts model parameter values that are not supported by the model."
+                },
+                "azureDeepseek": {
+                  "type": "boolean",
+                  "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses."
                 }
               },
               "additionalProperties": false
@@ -957,7 +961,8 @@
                         "parasail",
                         "perplexity",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "databricks"
                       ]
                     },
                     "embedding_model": {
@@ -1912,6 +1917,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider with a config row keeps its model allow/blacklist, budgets, rate limits, and key selection; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
                   "provider_configs": {
                     "type": "array",
                     "items": {
@@ -2107,6 +2116,33 @@
                   },
                   "store_raw_request_response": {
                     "type": "boolean"
+                  },
+                  "prompt_cache": {
+                    "type": "object",
+                    "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+                    "properties": {
+                      "auto_inject": {
+                        "type": "boolean",
+                        "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+                      },
+                      "ttl": {
+                        "type": "string",
+                        "enum": ["1h"],
+                        "description": "Lifetime for injected markers; omit for the provider default"
+                      },
+                      "cache_control_injection_points": {
+                        "type": "array",
+                        "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "location": { "type": "string", "enum": ["message"] },
+                            "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
+                            "index": { "type": "integer", "description": "Negative values count from the end" }
+                          }
+                        }
+                      }
+                    }
                   }
                 },
                 "required": ["name"]
@@ -2181,71 +2217,272 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'. The optional session block retains the highest tier observed for a session.",
               "properties": {
+                "session": {
+                  "type": "object",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+                    }
+                  },
+                  "required": ["enabled"],
+                  "additionalProperties": false
+                },
+                "semantic": {
+                  "type": "object",
+                  "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the classifier; it embeds the per-tier keyword lists as reference phrases.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to generate embeddings for complexity classification (must have an enabled key)"
+                    },
+                    "embedding_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model used to generate embeddings for complexity classification"
+                    },
+                    "timeout": {
+                      "description": "Per-request embedding timeout (duration string like '1.5s', or milliseconds as a number; default: 1.5s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "min_similarity": {
+                      "type": "number",
+                      "minimum": 0,
+                      "exclusiveMaximum": 1,
+                      "description": "Similarity floor a nearest-phrase match must clear before its tier is used (default: 0, nearest phrase always wins). Compared against the backend's own score scale, so retune when switching vector stores."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are combined (oldest first) into the embedded text (default: 1). Only user turns count; system prompts and assistant replies are never embedded."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+                    },
+                    "vector_store": {
+                      "type": "string",
+                      "enum": ["embedded", "vector_store"],
+                      "description": "Where phrase embeddings are stored: 'embedded' uses the built-in chromem store; 'vector_store' uses the configured top-level vectorStore and falls back to embedded when none is configured (default: embedded)."
+                    },
+                    "fallback": {
+                      "type": "string",
+                      "enum": ["none", "llm"],
+                      "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (default) records the request as skipped; 'llm' asks the chat model configured in the sibling llm block, which is required when this is set."
+                    }
+                  },
+                  "required": ["provider", "embedding_model"],
+                  "additionalProperties": false
+                },
+                "llm": {
+                  "type": "object",
+                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to run the classification chat completion (must have an enabled key)"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                    },
+                    "timeout": {
+                      "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "maxLength": 4000,
+                      "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The gateway always appends a fixed tier-name and response-format reinforcement."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only)."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+                    }
+                  },
+                  "required": ["provider", "model"],
+                  "additionalProperties": false
+                },
                 "tier_boundaries": {
                   "type": "object",
+                  "deprecated": true,
+                  "description": "Deprecated lexical-classifier score thresholds. Optional and accepted for upgrades, but ignored by semantic classification.",
                   "properties": {
                     "simple_medium": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification"
                     },
                     "medium_complex": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification. Must remain greater than simple_medium when the legacy block is supplied."
                     },
                     "complex_reasoning": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Retired REASONING-tier boundary. It is ignored during configuration load because REASONING was merged into COMPLEX; accepted only so older values continue to validate."
                     }
                   },
-                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "required": ["simple_medium", "medium_complex"],
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "type": "object",
-                  "properties": {
-                    "code_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. A request is embedded and takes the tier of its nearest phrase. In split mode these lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
+                      "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+                      "additionalProperties": false
                     },
-                    "reasoning_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                    {
+                      "type": "object",
+                      "deprecated": true,
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
-                    },
-                    "technical_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
-                    },
-                    "simple_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
+                      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
-                  "additionalProperties": false
+                  ]
                 }
               },
-              "required": ["tier_boundaries", "keywords"],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "session": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": ["enabled"]
+                      }
+                    },
+                    "required": ["session"]
+                  },
+                  "then": {
+                    "required": ["semantic"]
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "semantic": {
+                        "properties": {
+                          "fallback": {
+                            "const": "llm"
+                          }
+                        },
+                        "required": ["fallback"]
+                      }
+                    },
+                    "required": ["semantic"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                }
+              ],
+              "required": ["keywords"],
               "additionalProperties": false
             }
           },
@@ -4380,6 +4617,12 @@
             "enabled": {
               "type": "boolean"
             },
+            "hiddenRequestTypes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Request types hidden from dashboard/API reads. Logs are still stored."
+            },
             "type": {
               "type": "string",
               "enum": ["", "sqlite", "postgres", "clickhouse"]
@@ -4486,13 +4729,20 @@
                   }
                 },
                 {
-                  "not": {
-                    "required": ["password", "passwordCommand"]
-                  }
-                },
-                {
-                  "not": {
-                    "required": ["existingSecret", "passwordCommand"]
+                  "if": {
+                    "required": ["passwordCommand"]
+                  },
+                  "then": {
+                    "properties": {
+                      "password": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      },
+                      "existingSecret": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      }
+                    }
                   }
                 }
               ],
@@ -4762,13 +5012,20 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  },
+                  "existingSecret": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  }
+                }
               }
             }
           ]
@@ -4851,7 +5108,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
         },
         "weaviate": {
           "type": "object",
@@ -5164,6 +5421,20 @@
               "then": {
                 "required": ["indexHost"]
               }
+            }
+          }
+        },
+        "chromem": {
+          "type": "object",
+          "description": "Chromem configuration — embedded in-process vector store (no external service). The top-level vectorStore.enabled controls activation. Renders into vector_store.config in config.json.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory for file persistence; omit for a memory-only store that re-populates on restart"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Gzip-compress persisted documents (only used when path is set)"
             }
           }
         }
@@ -5589,6 +5860,33 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
+        },
+        "prompt_cache": {
+          "type": "object",
+          "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+          "properties": {
+            "auto_inject": {
+              "type": "boolean",
+              "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+            },
+            "ttl": {
+              "type": "string",
+              "enum": ["1h"],
+              "description": "Lifetime for injected markers; omit for the provider default"
+            },
+            "cache_control_injection_points": {
+              "type": "array",
+              "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "location": { "type": "string", "enum": ["message"] },
+                  "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
+                  "index": { "type": "integer", "description": "Negative values count from the end" }
+                }
+              }
+            }
+          }
         },
         "custom_provider_config": {
           "type": "object",

@@ -14,7 +14,6 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -808,10 +807,10 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
 	}
-	// The headers captured at upgrade are all this connection will ever present.
-	if virtualKey, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); virtualKey != "" {
-		lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, virtualKey))
-	}
+	// The headers captured at upgrade are all this connection will ever present, so the identity is
+	// settled here the way the HTTP path settles it, a connection that presented nothing included:
+	// governance refuses a request nobody settled, and a keyless connection is not that.
+	lib.SettleIdentity(ctx)
 
 	// Forward x-bf-* headers
 	matcher := (*lib.HeaderMatcher)(nil)

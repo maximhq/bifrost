@@ -23,7 +23,7 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 	switch {
 	case strings.HasSuffix(path, "/chat/completions"),
 		strings.HasSuffix(path, "/completions"):
-		return extractOAIChatUsage(body)
+		return ExtractOAIChatUsage(body)
 
 	case strings.HasSuffix(path, "/responses"):
 		return extractOAIResponsesUsage(body)
@@ -125,7 +125,7 @@ type oaiChatUsageWrapper struct {
 	ServiceTier *string                  `json:"service_tier"`
 }
 
-func extractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
+func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	if len(body) == 0 {
 		return nil
 	}

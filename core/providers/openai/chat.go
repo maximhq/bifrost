@@ -48,6 +48,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		// The Anthropic integration emits the provider-generic forced tool choice "any".
+		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
+		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
+		// without mutating the caller's parameters. Destinations that accept "any"
+		// natively keep it.
+		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
+			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) &&
+			!toolChoiceAnySupported(bifrostReq.Provider, bifrostReq.Model) {
+			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
+				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
+			}
+		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
@@ -105,6 +117,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
+		// field and ignore max_completion_tokens.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
+	case schemas.Ollama:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Ollama's chat-completions endpoints still use the legacy max_tokens
 		// field and ignore max_completion_tokens.
 		if openaiReq.MaxCompletionTokens != nil {
 			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens

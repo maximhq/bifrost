@@ -97,6 +97,7 @@ var filterDataMatViewBackedDims = map[string]struct{}{
 	filterDimRoutingRules:   {},
 	filterDimRoutingEngines: {},
 	filterDimStopReasons:    {},
+	filterDimToolCallNames:  {},
 	filterDimTeams:          {},
 	filterDimCustomers:      {},
 	filterDimUsers:          {},
@@ -182,12 +183,14 @@ const (
 	filterDimRoutingRules   = "routing_rules"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
+	filterDimToolCallNames  = "tool_call_names"
 	filterDimApps           = "apps"
 	filterDimUserAgents     = "user_agents"
 	filterDimTeams          = "teams"
 	filterDimCustomers      = "customers"
 	filterDimUsers          = "users"
 	filterDimBusinessUnits  = "business_units"
+	filterDimProjects       = "projects"
 	filterDimMetadataKeys   = "metadata_keys"
 )
 
@@ -202,9 +205,9 @@ const (
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
-	filterDimBusinessUnits, filterDimMetadataKeys,
+	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
@@ -312,9 +315,6 @@ func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 	if parentRequestID := string(ctx.QueryArgs().Peek("parent_request_id")); strings.TrimSpace(parentRequestID) != "" {
 		return parentRequestID
 	}
-	if sessionID := string(ctx.QueryArgs().Peek("session_id")); strings.TrimSpace(sessionID) != "" {
-		return sessionID
-	}
 	return ""
 }
 
@@ -369,34 +369,34 @@ func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// LLM Log retrieval with filtering, search, and pagination
-	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
-	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.getLogSessionSummaryByID, middlewares...))
-	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.getLogSessionByID, middlewares...))
+	r.GET("/api/logs", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogs), middlewares...))
+	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionSummaryByID), middlewares...))
+	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionByID), middlewares...))
 	r.GET("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.listUserAgentMappings, middlewares...))
 	r.POST("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.createUserAgentMapping, middlewares...))
 	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
 	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
-	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
-	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
-	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.getLogsCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/models", lib.ChainMiddlewares(h.getLogsModelHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency", lib.ChainMiddlewares(h.getLogsLatencyHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost/by-provider", lib.ChainMiddlewares(h.getLogsProviderCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens/by-provider", lib.ChainMiddlewares(h.getLogsProviderTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency/by-provider", lib.ChainMiddlewares(h.getLogsProviderLatencyHistogram, middlewares...))
-	r.GET("/api/logs/histogram/throughput", lib.ChainMiddlewares(h.getLogsThroughputHistogram, middlewares...))
-	r.GET("/api/logs/histogram/throughput/by-provider", lib.ChainMiddlewares(h.getLogsProviderThroughputHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionLatencyHistogram, middlewares...))
+	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogByID), middlewares...))
+	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsStats), middlewares...))
+	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/models", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsModelHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsLatencyHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderLatencyHistogram), middlewares...))
+	r.GET("/api/logs/histogram/throughput", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsThroughputHistogram), middlewares...))
+	r.GET("/api/logs/histogram/throughput/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderThroughputHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionLatencyHistogram), middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
-	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
-	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
-	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.getDimensionRankings, middlewares...))
+	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getAvailableFilterData), middlewares...))
+	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getModelRankings), middlewares...))
+	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDimensionRankings), middlewares...))
 	// Consolidated, public-facing dashboard payload (all of the above in one call)
-	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.getDashboard, middlewares...))
+	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDashboard), middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
@@ -650,18 +650,26 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
+	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -914,18 +922,26 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
+	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -1108,6 +1124,26 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	}
 }
 
+// parseComplexityFilters extracts the structured complexity filters shared by
+// log search, aggregate, and histogram endpoints.
+func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
+		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
+	}
+	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
+		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
+	}
+}
+
+// parseToolCallNamesFilter reads the comma-separated tool_call_names query
+// param into filters. Shared by every handler that honours log filters so the
+// list, stats, histogram and ranking endpoints stay in sync.
+func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if names := string(ctx.QueryArgs().Peek("tool_call_names")); names != "" {
+		filters.ToolCallNames = parseCommaSeparated(names)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1151,18 +1187,26 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
 		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
+	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
+		filters.ProjectIDs = parseCommaSeparated(projectIDs)
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
+	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -1368,11 +1412,11 @@ func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.Reques
 func parseDimension(ctx *fasthttp.RequestCtx) (logstore.HistogramDimension, bool) {
 	dim := logstore.HistogramDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent")
 		return "", false
 	}
 	if !logstore.ValidHistogramDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: provider, team_id, customer_id, user_id, business_unit_id, project_id, app, user_agent", dim))
 		return "", false
 	}
 	return dim, true
@@ -1497,11 +1541,11 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, user")
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent")
 		return
 	}
 	if !logstore.ValidRankingDimensions[dim] {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, user", dim))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, project, user, virtual_key, app, user_agent", dim))
 		return
 	}
 
@@ -1522,13 +1566,15 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 
 // dashboardRankingDimensions is the fixed set of dimensions returned in the
 // consolidated dashboard payload, mirroring the dimension-ranking tabs on the
-// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit).
+// /workspace/dashboard page (Team, User, Virtual Key, Customer, Business Unit,
+// Project).
 var dashboardRankingDimensions = []logstore.RankingDimension{
 	logstore.RankingDimensionTeam,
 	logstore.RankingDimensionUser,
 	logstore.RankingDimensionVirtualKey,
 	logstore.RankingDimensionCustomer,
 	logstore.RankingDimensionBusinessUnit,
+	logstore.RankingDimensionProject,
 }
 
 const dashboardMCPTopToolsLimit = 10
@@ -1737,11 +1783,14 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := shouldUseFilterDataCache(ctx, query) && h.shouldCacheFilterDimensions(dims)
+	hiddenTypes := logstore.HiddenRequestTypesFromContext(ctx)
+	// Hidden types require raw-table dropdown queries even on PostgreSQL, so
+	// cache those responses and partition them by the configured visibility.
+	useCache := shouldUseFilterDataCache(ctx, query) && (len(hiddenTypes) > 0 || h.shouldCacheFilterDimensions(dims))
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s|hidden=%q", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","), hiddenTypes)
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.filterDataCache.load(cacheKey)
@@ -1765,12 +1814,14 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRules   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
+		toolCallNames  []string
 		apps           []string
 		userAgents     []string
 		teams          []logging.KeyPair
 		customers      []logging.KeyPair
 		users          []logging.KeyPair
 		businessUnits  []logging.KeyPair
+		projects       []logging.KeyPair
 		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
@@ -1864,6 +1915,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableToolCallNames(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			toolCallNames = result
+			mu.Unlock()
+			return nil
+		})
+	}
 	if _, ok := want[filterDimApps]; ok {
 		g.Go(func() error {
 			result, err := h.logManager.GetAvailableApps(gCtx, defaultFilterDataLimit, query)
@@ -1932,6 +1995,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			}
 			mu.Lock()
 			businessUnits = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimProjects]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableProjects(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			projects = result
 			mu.Unlock()
 			return nil
 		})
@@ -2070,6 +2145,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	if _, ok := want[filterDimStopReasons]; ok {
 		payload[filterDimStopReasons] = stopReasons
 	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		payload[filterDimToolCallNames] = toolCallNames
+	}
 	if _, ok := want[filterDimApps]; ok {
 		payload[filterDimApps] = apps
 	}
@@ -2087,6 +2165,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimBusinessUnits]; ok {
 		payload[filterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[filterDimProjects]; ok {
+		payload[filterDimProjects] = projects
 	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		if metadataKeys == nil {

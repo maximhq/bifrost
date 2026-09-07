@@ -1,257 +1,292 @@
 ---
-title: "Databricks AI Gateway"
-description: "Route requests through Databricks AI Gateway using Unified (MLflow) or Native (Anthropic Messages) APIs as custom providers in Bifrost"
+title: "Databricks"
+description: "Databricks Model Serving (Foundation Model APIs) and Unity AI Gateway model services - chat, streaming, embeddings, Responses API, PAT and OAuth M2M authentication"
 icon: "database"
 ---
 
 ## Overview
 
-[Databricks AI Gateway](https://docs.databricks.com/en/ai-gateway/index.html) (Beta) is a governance layer on top of Databricks Model Serving that adds rate limiting, usage tracking, and inference logging to your LLM endpoints. Bifrost connects to AI Gateway endpoints as custom providers.
+Databricks serves foundation models through two surfaces, both reachable under your workspace host and both OpenAI-compatible on the wire. Bifrost's `databricks` provider covers both behind one provider, so you configure a workspace once and address models by name.
 
-### Unified vs Native APIs
+| Surface | Base path | Model name looks like | What it covers |
+|---------|-----------|-----------------------|----------------|
+| **Model Serving** (Foundation Model APIs) | `/serving-endpoints` | `databricks-claude-sonnet-4-5` | Every pay-per-token endpoint, provisioned-throughput endpoints, and the OpenAI Responses API |
+| **Unity AI Gateway** (model services) | `/ai-gateway/mlflow/v1` | `system.ai.claude-sonnet-4-5` or `<catalog>.<schema>.<service>` | Ready-to-use `system.ai` models and user-created Unity Catalog model services, governed by Unity Catalog |
 
-AI Gateway exposes two categories of APIs on every endpoint:
+Key characteristics:
 
-- **Unified APIs** - Provider-agnostic, OpenAI-compatible interfaces powered by MLflow. You can swap the underlying model without changing client code. Path: `/mlflow/v1/chat/completions`.
-- **Native APIs** - Provider-specific interfaces that give full access to a provider's latest features. For Anthropic, the path is `/anthropic/v1/messages`.
+- **One provider, two surfaces** - the surface is chosen per request, by model name or by an explicit setting
+- **OpenAI-compatible** - Bifrost uses its shared OpenAI converters, so tool calling, structured outputs and streaming work unchanged
+- **Responses API** - served natively on Model Serving, so coding agents (Claude Code, Cursor, Codex CLI) work through Bifrost
+- **Two auth methods** - a personal access token, or OAuth machine-to-machine with a service principal (Databricks' production recommendation)
+- **Governance tags** - optionally forward Bifrost virtual key / team / customer names to Databricks usage tracking
 
-In Bifrost, each API category maps to a different custom provider base format:
+### Supported Operations
 
-| API Category | Bifrost Base Format | Chat | Chat (stream) | Responses | Responses (stream) | Text | Coding Agents | List Models |
-|--------------|---------------------|------|---------------|-----------|---------------------|------|---------------|-------------|
-| **Unified** (MLflow) | `openai` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ (via Unity Catalog) |
-| **Native** (Anthropic Messages) | `anthropic` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-
-<Warning>
-The **Unified (MLflow) API** is a pure chat completions interface - it does **not** support the Responses API. Coding agents like Claude Code, Cursor, or Codex CLI that depend on the Responses API will **not** work through the Unified API.
-
-Use the **Native Anthropic Messages API** if you need Responses API support, coding agent compatibility, or text completions.
-</Warning>
-
-### Prerequisites
-
-Before configuring Bifrost, you need:
-
-1. A Databricks workspace with **Unity Catalog enabled** and AI Gateway access turned on by an account admin via **Account Console > Previews**
-2. An AI Gateway endpoint with at least one model destination - create one from the **AI Gateway** page in the Databricks sidebar
-3. The endpoint's AI Gateway URL - visible at the top of the endpoint overview page, in the format:
-   ```
-   https://<workspace-id>.ai-gateway.cloud.databricks.com
-   ```
-4. A Databricks Personal Access Token (PAT) - generate one from **Settings > Developer > Access tokens** in your Databricks workspace, or click **Generate Access Token** at the bottom of the endpoint page
-
-<img src="/media/databricks-endpoint-overview.png" alt="Databricks AI Gateway endpoint overview page showing the API format dropdown and Generate Access Token button" />
-
----
-
-# 1. Unified API (MLflow Chat Completions)
-
-The Unified API exposes an OpenAI-compatible chat completions interface through AI Gateway's MLflow layer. Use this when you only need chat completions.
-
-### How it works
-
-AI Gateway exposes every endpoint at a `/mlflow/v1/chat/completions` path. Because this follows the OpenAI spec, Bifrost treats it as an OpenAI-compatible custom provider. The full endpoint URL looks like:
-
-```
-https://<workspace-id>.ai-gateway.cloud.databricks.com/mlflow/v1/chat/completions
-```
-
-You register only the base portion (`/mlflow`) as the custom provider's Base URL - Bifrost appends the standard `/v1/chat/completions` path automatically.
-
-## Step 1: Create the Custom Provider
-
-In Bifrost, go to **Models > Model Providers** in the sidebar. Click **Add New Provider** and select **Custom provider...** at the bottom of the dropdown.
-
-In the **Add Custom Provider** dialog, fill in:
-
-| Field | Value |
-|-------|-------|
-| **Name** | Your choice (e.g., `databricks-mlflow`) |
-| **Base Format** | Select `OpenAI` from the dropdown |
-| **Base URL** | `https://<workspace-id>.ai-gateway.cloud.databricks.com/mlflow` |
-| **Is Keyless?** | Toggle on |
-
-## Step 2: Configure List Models (Optional)
-
-The default `/v1/models` path does not work against the AI Gateway URL. To enable model listing, point it at the **Unity Catalog** API on your Databricks workspace instead.
-
-In the **Allowed Request Types** section of the dialog:
-
-1. Find the **List Models** toggle (make sure it's enabled)
-2. Click the **settings icon** (gear) next to List Models - this opens the **Custom Path or URL** popover
-3. Enter your workspace's Unity Catalog models endpoint:
-
-```
-https://<your-databricks-workspace-url>/api/2.1/unity-catalog/models
-```
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `<base>/chat/completions` |
+| Responses API | ✅ | ✅ | `/serving-endpoints/responses` (Model Serving); emulated via chat on AI Gateway |
+| Embeddings | ✅ | - | `<base>/embeddings` |
+| List Models | ✅ | - | Served from Bifrost's model catalog; no workspace API is called |
+| Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
+| Batch / Files | ❌ | ❌ | - |
 
 <Note>
-The Unity Catalog URL uses your **Databricks workspace URL** (e.g., `https://adb-1234567890.azuredatabricks.net`), which is a different host from the AI Gateway URL (`*.ai-gateway.cloud.databricks.com`).
+Custom MLflow models served at `/serving-endpoints/{name}/invocations` take a per-model input schema rather than a canonical chat or embedding request, so they are outside this provider's scope. Use a [custom provider](/providers/custom-providers) with a request path override for those.
 </Note>
 
-<img src="/media/databricks-add-provider-mlflow.png" alt="Add Custom Provider dialog configured for MLflow with the List Models custom path popover showing the Unity Catalog URL" />
+## Prerequisites
 
-Click **Add** to save the custom provider.
+1. A Databricks workspace. Its URL looks like `https://dbc-1234abcd-5678.cloud.databricks.com` (AWS), `https://adb-1234567890.azuredatabricks.net` (Azure), or `https://1234567890.gcp.databricks.com` (GCP).
+2. Credentials, either:
+   - a **personal access token**, from **Settings > Developer > Access tokens**; or
+   - an **OAuth M2M service principal** client ID and secret, from **Settings > Identity and access > Service principals**. Databricks recommends this for production.
+3. Access to at least one model:
+   - **Model Serving**: pay-per-token endpoints are preconfigured in most workspaces; availability varies by region.
+   - **Unity AI Gateway**: every account user can query `system.ai` models with no setup. Querying a user-created model service needs `USE CATALOG`, `USE SCHEMA` and `EXECUTE` on it.
 
-## Step 3: Add the Authorization Header
-
-After saving, your new provider appears in the **Configured Providers** list on the left. Select it, then click **Edit Provider Config** (the settings icon in the top-right corner) to open the provider configuration panel.
-
-1. Switch to the **Network** tab
-2. Scroll down to the **Extra Headers** table
-3. Add a new row:
-   - **Name** column: `Authorization`
-   - **Value** column: `Bearer <your-databricks-pat>`
-4. Click **Save Network Configuration**
-
-<img src="/media/databricks-network-mlflow.png" alt="Provider configuration Network tab showing the Authorization header in Extra Headers for the MLflow provider" />
-
-## Step 4: Send Requests
-
-Use your custom provider prefix with any model name registered as a destination on your AI Gateway endpoint:
+## Setup & Configuration
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
 
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "databricks-mlflow/<your-endpoint-model>",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+1. Navigate to **Models** > **Model Providers**. Look for **Databricks** under **Configured Providers**. If it is missing, click **Add New Provider** and select **Databricks**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Enter your **Workspace URL** directly or as an environment variable (for example, `env.DATABRICKS_WORKSPACE_URL`). A scheme and trailing slash are fine.
+5. Choose an **Inference Surface**. Leave it on **Auto** unless you want to pin one surface — see [Choosing a surface](#choosing-a-surface).
+6. Pick an **Authentication Method**:
+   - **Personal Access Token** - paste the token or use `env.DATABRICKS_TOKEN`.
+   - **OAuth M2M (Service Principal)** - enter the client ID and secret. Leave the token blank.
+7. Optionally enable **Forward Governance Tags** to attribute usage on the Databricks side.
+8. Set **Allowed Models** to **All Models** (default) or a specific allowlist.
+9. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json (personal access token)">
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-key-1",
+          "value": "env.DATABRICKS_TOKEN",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "auto"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
+
+</Tab>
+<Tab title="config.json (OAuth M2M)">
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-service-principal",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "auto",
+            "client_id": "env.DATABRICKS_CLIENT_ID",
+            "client_secret": "env.DATABRICKS_CLIENT_SECRET",
+            "forward_gateway_tags": true
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Leave the key's `value` unset on the OAuth path. Bifrost mints a token from `https://<workspace>/oidc/v1/token` with a `client_credentials` grant, caches it, and refreshes it before expiry — one token per credential set, not one per request.
 
 </Tab>
 <Tab title="Go SDK">
 
 ```go
-response, err := client.ChatCompletionRequest(
-    schemas.NewBifrostContext(ctx, schemas.NoDeadline),
-    &schemas.BifrostChatRequest{
-        Provider: "databricks-mlflow",
-        Model:    "<your-endpoint-model>",
-        Input:    messages,
+schemas.Key{
+    Value:  *schemas.NewSecretVar("env.DATABRICKS_TOKEN"),
+    Models: []string{"*"},
+    Weight: 1.0,
+    DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+        WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
+        APIFormat:    schemas.DatabricksAPIFormatAuto,
     },
-)
+}
 ```
 
 </Tab>
 </Tabs>
 
----
+### Key configuration reference
 
-# 2. Native API (Anthropic Messages)
+| Field | Required | Description |
+|-------|----------|-------------|
+| `workspace_url` | ✅ | Databricks workspace URL. A scheme and trailing path are tolerated. |
+| `api_format` | | `auto` (default), `model_serving`, or `ai_gateway`. See below. |
+| `client_id` | | OAuth M2M service principal client ID. Set with `client_secret`. |
+| `client_secret` | | OAuth M2M service principal secret. Set with `client_id`. |
+| `forward_gateway_tags` | | Forward Bifrost governance labels as Databricks request tags. Default `false`. |
 
-The Native API exposes an Anthropic-compatible messages interface through AI Gateway. Use this when you need the Responses API, text completions, or coding agent support (Claude Code, Cursor, Codex CLI).
+A key needs either a `value` (personal access token) or both `client_id` and `client_secret`. Setting only one half of the service principal pair is rejected at configuration time.
 
-### How it works
+## Choosing a surface
 
-AI Gateway exposes every endpoint at an `/anthropic/v1/messages` path that follows the Anthropic API spec. Bifrost treats this as an Anthropic-compatible custom provider. The full endpoint URL looks like:
+With `api_format: "auto"` (the default) the model name decides:
 
-```
-https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic/v1/messages
-```
+- A name containing a dot — `system.ai.claude-sonnet-4-5`, or a `<catalog>.<schema>.<service>` Unity Catalog model service — routes to the **Unity AI Gateway**.
+- Any other name — `databricks-claude-sonnet-4-5`, or your own serving endpoint name — routes to **Model Serving**.
 
-You register only the base portion (`/anthropic`) as the custom provider's Base URL - Bifrost appends the standard Anthropic paths automatically.
+Set `api_format` explicitly to pin one surface. For production, an explicit setting is safer than relying on the naming convention.
 
-## Step 1: Create the Custom Provider
+Model aliases need no extra configuration: alias resolution rewrites the model to its upstream `model_id` before the provider sees it, so the surface is chosen from the upstream name.
 
-In Bifrost, go to **Models > Model Providers** in the sidebar. Click **Add New Provider** and select **Custom provider...** at the bottom of the dropdown.
-
-In the **Add Custom Provider** dialog, fill in:
-
-| Field | Value |
-|-------|-------|
-| **Name** | Your choice (e.g., `databricks-anthropic`) |
-| **Base Format** | Select `Anthropic` from the dropdown |
-| **Base URL** | `https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic` |
-| **Is Keyless?** | Toggle on |
-
-## Step 2: Disable List Models
-
-AI Gateway's model listing endpoint uses an OpenAI-compatible format, which is incompatible with the Anthropic base format. You must disable it.
-
-In the **Allowed Request Types** section of the dialog, find the **List Models** toggle and turn it **off**.
-
-<img src="/media/databricks-add-provider-anthropic.png" alt="Add Custom Provider dialog configured for Anthropic Messages with List Models toggled off" />
-
-Click **Add** to save the custom provider.
-
-## Step 3: Add the Authorization Header
-
-After saving, select your new provider from the **Configured Providers** list and click **Edit Provider Config** to open the configuration panel.
-
-1. Switch to the **Network** tab
-2. Scroll down to the **Extra Headers** table
-3. Add a new row:
-   - **Name** column: `Authorization`
-   - **Value** column: `Bearer <your-databricks-pat>`
-4. Click **Save Network Configuration**
-
-<img src="/media/databricks-network-anthropic.png" alt="Provider configuration Network tab showing the Authorization header in Extra Headers for the Anthropic provider" />
-
-## Step 4: Send Requests
-
-Use your custom provider prefix with any model name registered as a destination on your AI Gateway endpoint:
+## Usage
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Model Serving">
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "databricks-anthropic/<your-endpoint-model>",
+    "model": "databricks/databricks-claude-sonnet-4-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
 </Tab>
-<Tab title="Go SDK">
+<Tab title="Unity AI Gateway">
 
-```go
-response, err := client.ChatCompletionRequest(
-    schemas.NewBifrostContext(ctx, schemas.NoDeadline),
-    &schemas.BifrostChatRequest{
-        Provider: "databricks-anthropic",
-        Model:    "<your-endpoint-model>",
-        Input:    messages,
-    },
-)
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/system.ai.claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```
+
+</Tab>
+<Tab title="Embeddings">
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/databricks-gte-large-en",
+    "input": "What is Databricks?"
+  }'
+```
+
+</Tab>
+<Tab title="Responses API">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/databricks-gpt-5",
+    "input": "What is a mixture of experts model?"
+  }'
+```
+
+The Responses API is native on Model Serving. On the Unity AI Gateway, which is chat-only, Bifrost emulates it by converting to Chat Completions.
 
 </Tab>
 </Tabs>
 
-### Coding Agent Compatibility
+### Provider-specific parameters
 
-The Native Anthropic Messages API works with Claude Code and other coding agents that depend on the Responses API. Point your coding agent at your Bifrost instance and use the `databricks-anthropic/<model>` prefix to route through your AI Gateway endpoint.
+Databricks accepts fields Bifrost does not model canonically, such as `service_tier` for priority pay-per-token inference. Send them as top-level fields and Bifrost forwards them:
 
----
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/databricks-claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "service_tier": "priority"
+  }'
+```
 
-## Choosing the Right API
+### Parameter support per model
 
-| Consideration | Unified (MLflow) | Native (Anthropic Messages) |
-|---------------|-------------------|-----------------------------|
-| **Chat Completions** | ✅ | ✅ |
-| **Streaming** | ✅ | ✅ |
-| **Responses API** | ❌ | ✅ |
-| **Text Completions** | ❌ | ✅ |
-| **Coding Agents** (Claude Code, Cursor, Codex) | ❌ | ✅ |
-| **List Models** | ✅ (via Unity Catalog) | ❌ |
-| **Provider-agnostic** (swap models without code changes) | ✅ | ❌ |
-| **Bifrost Base Format** | `openai` | `anthropic` |
+Bifrost's parameter set is wider than any single Databricks endpoint accepts, and both surfaces answer an unknown field with a 400 rather than ignoring it. Each optional parameter is therefore checked against the Bifrost datasheet record for the model behind the endpoint before the request goes out:
 
-<Note>
-You can create **two separate custom providers** - one per API category - pointing to the same AI Gateway endpoint. Use the Unified provider for chat completions with model listing, and the Native Anthropic provider for Responses API or coding agents.
-</Note>
+| Parameter | Dropped when the datasheet says |
+| --- | --- |
+| `reasoning_effort` | the model does not take an effort label |
+| `temperature`, `top_p`, `top_k` | `supports_sampling_params: false` — the adaptive-thinking Claude endpoints reject them |
+| `tool_choice` | `supports_tool_choice: false` |
+| `parallel_tool_calls` | `supports_parallel_function_calling: false` |
+| `response_format` (`text.format` on Responses) | `supports_response_schema: false` |
+| `stop`, `presence_penalty`, `frequency_penalty` | the field is listed in `unsupported_fields` |
 
----
+A model the datasheet does not describe keeps every field except `reasoning_effort` — Databricks endpoint names are workspace-defined, so there is nothing to identify an unknown endpoint by, and a silent drop is worse than an upstream error you can read.
+
+`reasoning_effort` resolves through `unsupported_fields` → `supports_reasoning_effort` (or a published effort ladder) → a `reasoning_effort` entry in the row's parameters → the model reasons and is not Claude-family. Claude endpoints on Databricks reason through a thinking budget and reject an effort label, so it is dropped there. A requested effort is clamped onto the levels the model publishes.
+
+Anthropic-native fields — `context_management`, `cache_control`, `speed`, `inference_geo`, `task_budget`, `container`, `mcp_servers` — are always dropped, whatever the model. Both Databricks surfaces are OpenAI-shaped and reject them even on Claude endpoints.
+
+### Provisioned throughput
+
+A provisioned-throughput endpoint uses the same request format as a pay-per-token one. Address it by its endpoint name on the Model Serving surface — no separate configuration.
+
+## Usage attribution
+
+With `forward_gateway_tags` enabled, Bifrost sends the resolved governance labels to Databricks on each request:
+
+```http
+Databricks-Ai-Gateway-Request-Tags: {"customer":"acme","team":"platform","virtual_key":"vk-prod"}
+```
+
+Databricks records these against the request for its own usage tracking, so Databricks-side cost reporting can be sliced the same way Bifrost's is. Only display names are sent, never user identifiers. A tag header you supply yourself (via an `x-bf-eh-databricks-ai-gateway-request-tags` request header) takes precedence.
+
+Bifrost's own telemetry is unaffected and remains the cross-provider view.
+
+## Cost tracking
+
+Databricks pricing depends on the model, the serving configuration (pay-per-token vs provisioned throughput), the service tier, and cached-token behaviour. Bifrost prices Databricks requests from the model catalog rather than a flat provider rate. Databricks returns the standard OpenAI-shaped `usage` object, including `reasoning_tokens` and `cache_read_input_tokens` / `cache_creation_input_tokens` where the model supports them.
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---------|-------|
+| `databricks workspace url is not set` | No `workspace_url` on the key. `config.json` and the UI require it; only the Go SDK also accepts a provider-level `base_url` as the workspace host. |
+| `databricks key has no credentials` | Neither a key `value` nor a complete service principal pair. |
+| 403 with `PERMISSION_DENIED` | The principal lacks `EXECUTE` on the model service, or query access to the serving endpoint. Bifrost surfaces this as an authorization error rather than a missing model. |
+| 404 on a model that exists | The request went to the wrong surface. Set `api_format` explicitly. |
+| A model is missing from the model list | Databricks models are listed from Bifrost's model catalog, not from the workspace. Any serving endpoint or model service can still be called by name; `api_format` only affects routing, not listing. |
+
+## Legacy AI Gateway endpoints
+
+Earlier Databricks workspaces expose a Beta-generation AI Gateway on a separate host, `https://<workspace-id>.ai-gateway.cloud.databricks.com`, with the MLflow surface at `/mlflow/v1` rather than `/ai-gateway/mlflow/v1`.
+
+That host is not addressable by this provider's base paths. To use it, configure a [custom provider](/providers/custom-providers) with `base_provider_type: openai` and a Base URL of `https://<workspace-id>.ai-gateway.cloud.databricks.com/mlflow`, keyless, with an `Authorization: Bearer <PAT>` extra header. For the native Anthropic Messages surface on that host, use a second custom provider with `base_provider_type: anthropic` and a Base URL of `.../anthropic`, with List Models disabled.
 
 ## Reference Links
 
-- [Databricks AI Gateway Documentation](https://docs.databricks.com/en/ai-gateway/index.html)
-- [Create an AI Gateway Endpoint](https://docs.databricks.com/en/ai-gateway/create-endpoint.html)
-- [Databricks Personal Access Tokens](https://docs.databricks.com/en/dev-tools/auth/pat.html)
-- [Custom Providers in Bifrost](/providers/custom-providers)
+- [Query model APIs (model services)](https://docs.databricks.com/aws/en/ai-gateway/query-model-services)
+- [Databricks Foundation Model APIs](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/)
+- [Foundation model REST API reference](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference)
+- [Supported foundation models on Model Serving](https://docs.databricks.com/aws/en/machine-learning/model-serving/foundation-model-overview)
+- [OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
+- [Track model usage](https://docs.databricks.com/aws/en/ai-gateway/usage-tracking)

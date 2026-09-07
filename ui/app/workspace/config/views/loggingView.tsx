@@ -1,10 +1,12 @@
 import PageTitle from "@/components/pageTitle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { RequestTypeLabels } from "@/lib/constants/logs";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -13,7 +15,7 @@ import { toast } from "sonner";
 
 export default function LoggingView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
-	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const { data: bifrostConfig, isLoading: isConfigLoading, isError: isConfigError } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
@@ -107,6 +109,38 @@ export default function LoggingView() {
 						/>
 					</div>
 					{needsRestart && <RestartWarning />}
+				</div>
+
+				<div className="min-w-0 space-y-3 rounded-sm border p-4" data-testid="workspace-hidden-request-types">
+					<div className="space-y-0.5">
+						<p className="text-sm font-medium">Hidden Request Types</p>
+						<p className="text-muted-foreground text-sm">
+							These request types are stored normally but excluded from Logs and Dashboard views. Configure them with{" "}
+							<code className="text-xs">logs_store.hidden_request_types</code> or{" "}
+							<code className="text-xs">storage.logsStore.hiddenRequestTypes</code> in Helm.
+						</p>
+					</div>
+					{bifrostConfig?.hidden_request_types.length ? (
+						<div className="flex flex-wrap gap-2">
+							{bifrostConfig.hidden_request_types.map((requestType) => (
+								<Badge key={requestType} variant="secondary" title={requestType} className="max-w-full truncate">
+									{Object.hasOwn(RequestTypeLabels, requestType)
+										? RequestTypeLabels[requestType as keyof typeof RequestTypeLabels]
+										: requestType}
+								</Badge>
+							))}
+						</div>
+					) : bifrostConfig ? (
+						<p className="text-muted-foreground text-sm">All request types are visible.</p>
+					) : isConfigError ? (
+						<p className="text-destructive text-sm" role="alert">
+							Unable to load hidden request types.
+						</p>
+					) : (
+						<p className="text-muted-foreground text-sm" aria-live="polite">
+							{isConfigLoading ? "Loading configuration…" : "Configuration unavailable."}
+						</p>
+					)}
 				</div>
 
 				{/* Disable Content Logging - Only show when logging is enabled */}

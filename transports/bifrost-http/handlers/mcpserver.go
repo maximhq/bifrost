@@ -50,6 +50,18 @@ type MCPGatewayAdmitter interface {
 	AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError)
 }
 
+// mcpSlugResolver is the optional capability behind a /mcp/<slug> endpoint: it resolves the tools a
+// request may see for the Virtual MCP or MCP client the slug names, gated on the caller's grant.
+// Satisfied by the same admitter that resolves gateway access. Absent (or nil) means there is no
+// governance store to resolve against, so /mcp/<slug> is refused.
+type mcpSlugResolver interface {
+	// VirtualMCPToolAccess returns the served tool include-list and whether the slug's Virtual MCP is
+	// assigned to the request's key (assigned=false → 403). Tools are narrowed to the request's access.
+	VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool)
+	// MCPClientToolAccess is the same for a single MCP client the slug names (ok=false → 403).
+	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
+}
+
 // VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
 // letting the JWT auth path avoid a per-request database read. Satisfied by the
 // governance plugin's in-memory store. Optional: when nil (or a cache miss), the
@@ -142,6 +154,9 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
 	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
+	// Virtual MCP endpoints: same handlers, narrowed to the slug's vMCP in admit.
+	r.POST("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
+	r.GET("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
 }
 
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
@@ -514,8 +529,33 @@ func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused)}
 	}
 
+	// A /mcp/<slug> endpoint serves one Virtual MCP or one MCP client: gate on the caller's grant and
+	// narrow the tools to it. The plain /mcp route carries no slug and serves the full access.
+	if slug, _ := ctx.UserValue("slug").(string); slug != "" {
+		return h.admitBySlug(bifrostCtx, slug, access)
+	}
+
 	stampToolAccess(bifrostCtx, access)
 	return nil
+}
+
+// admitBySlug narrows an already-admitted request to the Virtual MCP or MCP client its slug names,
+// stamping the served tools; 403 if the caller may reach neither.
+func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
+	resolver, ok := h.admitter.(mcpSlugResolver)
+	if !ok {
+		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
+	}
+	// Slugs are unique across both namespaces, so try the Virtual MCP first, then a single client.
+	if served, assigned := resolver.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		return nil
+	}
+	if served, ok := resolver.MCPClientToolAccess(bifrostCtx, slug, access); ok {
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		return nil
+	}
+	return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
 }
 
 // admitAccess asks governance what the request may reach. Without an admitter there is nothing to

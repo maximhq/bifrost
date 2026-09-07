@@ -2096,6 +2096,11 @@ type AdditionalCostDetails struct {
 	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail judge-call cost
 	MCPCost           float64 `json:"mcp_cost,omitempty"`            // MCP tool-execution cost
 	SemanticCacheCost float64 `json:"semantic_cache_cost,omitempty"` // Semantic-cache embedding-lookup cost
+	// RoutingCost is the cost of the internal classification calls the routing
+	// plugin makes for a request, covering every such call the request opted into
+	// budget attribution — today the semantic classification embed. It matches the
+	// AdditionalCost those calls contribute.
+	RoutingCost float64 `json:"routing_cost,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost. It accepts
@@ -2243,6 +2248,7 @@ func (a *AdditionalCostDetails) add(b *AdditionalCostDetails) *AdditionalCostDet
 		GuardrailCost:     a.GuardrailCost + b.GuardrailCost,
 		MCPCost:           a.MCPCost + b.MCPCost,
 		SemanticCacheCost: a.SemanticCacheCost + b.SemanticCacheCost,
+		RoutingCost:       a.RoutingCost + b.RoutingCost,
 	}
 }
 

@@ -43,6 +43,7 @@ SELECT
     COALESCE(team_id, '') AS team_id,
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(project_id, '') AS project_id,
     COALESCE(alias, '') AS alias,
     COALESCE(canonical_model_name, '') AS canonical_model_name,
     COALESCE(user_agent, '') AS user_agent,
@@ -90,7 +91,7 @@ SELECT
     COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
 `
 
 // cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
@@ -108,7 +109,7 @@ const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name, user_agent, app)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, project_id, alias, canonical_model_name, user_agent, app)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -127,6 +128,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"team_id",
 	"customer_id",
 	"business_unit_id",
+	"project_id",
 	"alias",
 	"canonical_model_name",
 	"throughput_completion_tokens",
@@ -294,6 +296,13 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"routing_engines_used"}, scopeRequiredColumns...),
 	},
 	{
+		name:            "mv_filter_tool_call_names",
+		selectExpr:      "tool_call_names, " + scopeProjection,
+		whereExpr:       "tool_call_names IS NOT NULL AND tool_call_names != ''",
+		uniqueIdx:       "tool_call_names, " + scopeIdxColumns,
+		requiredColumns: append([]string{"tool_call_names"}, scopeRequiredColumns...),
+	},
+	{
 		name:            "mv_filter_selected_keys",
 		selectExpr:      "selected_key_id AS id, selected_key_name AS name, " + scopeProjection,
 		whereExpr:       "selected_key_id IS NOT NULL AND selected_key_id != '' AND selected_key_name IS NOT NULL AND selected_key_name != ''",
@@ -352,6 +361,15 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
+		// One project per request, so a plain scalar pair like users and
+		// virtual keys; nothing to fan out.
+		name:            "mv_filter_projects",
+		selectExpr:      "project_id AS id, project_name AS name, " + scopeProjection,
+		whereExpr:       "project_id IS NOT NULL AND project_id != '' AND project_name IS NOT NULL AND project_name != ''",
+		uniqueIdx:       "id, name, " + scopeIdxColumns,
+		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
+	},
+	{
 		name:            "mv_filter_apps",
 		selectExpr:      "app, " + scopeProjection,
 		whereExpr:       "app IS NOT NULL AND app != ''",
@@ -378,6 +396,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
 	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
+	{"project_id", "project_name"}:             "mv_filter_projects",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
@@ -594,6 +613,11 @@ func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// matViewNeedsRebuild reports whether the view the name resolves to on this
+// connection's search_path is missing a required column. Resolution goes
+// through to_regclass rather than a bare relname match so a same-named view
+// in another schema of the database (another tenant's, or a test schema
+// beside production's), neither masks a missing view nor lends it columns.
 func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requiredColumns []string) (bool, error) {
 	var exists bool
 	if err := conn.QueryRowContext(ctx, `
@@ -601,7 +625,7 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 			SELECT 1
 			FROM pg_class
 			WHERE relkind = 'm'
-			  AND relname = $1
+			  AND oid = to_regclass($1)
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -612,10 +636,8 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 
 	rows, err := conn.QueryContext(ctx, `
 		SELECT a.attname
-		FROM pg_class c
-		JOIN pg_attribute a ON a.attrelid = c.oid
-		WHERE c.relkind = 'm'
-		  AND c.relname = $1
+		FROM pg_attribute a
+		WHERE a.attrelid = to_regclass($1)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -668,13 +690,17 @@ func ensureIndexes(ctx context.Context, conn *sql.Conn, defs []matviewIndexDef) 
 		if idx.unique {
 			validityExpr = "pi.indisvalid AND pi.indisunique"
 		}
+		// The view is resolved through the search_path (to_regclass), and an
+		// index lives in its table's schema, so this sees only the index on
+		// the view this connection would refresh, not a same-named one in
+		// another schema, which would otherwise count as ready and leave the
+		// real view without the unique index REFRESH CONCURRENTLY needs.
 		var indexReady bool
 		if err := conn.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT COALESCE(bool_and(%s), false)
-			FROM pg_class pc
-			JOIN pg_index pi ON pi.indrelid = pc.oid
+			FROM pg_index pi
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
-			WHERE pc.relname = $1
+			WHERE pi.indrelid = to_regclass($1)
 			  AND ic.relname = $2
 		`, validityExpr), idx.view, idx.name).Scan(&indexReady); err != nil {
 			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
@@ -956,16 +982,20 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 
 // canUseMatViewFilters returns true if the given filters can be served from
 // mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
-// metadata, numeric ranges) require the raw logs table.
+// session ID, metadata, numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.RequestID == "" &&
 		f.ParentRequestID == "" &&
+		f.SessionID == "" &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
+		len(f.ToolCallNames) == 0 &&
 		len(f.StopReasons) == 0 &&
+		len(f.ComplexityTiers) == 0 &&
+		len(f.ComplexityMechanisms) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
@@ -1099,6 +1129,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	if len(f.BusinessUnitIDs) > 0 {
 		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
 	}
+	if len(f.ProjectIDs) > 0 {
+		q = q.Where("project_id IN ?", f.ProjectIDs)
+	}
 	if len(f.Apps) > 0 {
 		q = q.Where("app IN ?", f.Apps)
 	}
@@ -1162,7 +1195,7 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 	}
 
 	var interior int64
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
 	q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
 	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&interior); err != nil {
@@ -1232,7 +1265,7 @@ func isDegenerateHybridWindow(start, end *time.Time) bool {
 // counts sum a consistent population across the matview and raw halves.
 func (s *RDBLogStore) countRawTerminal(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (int64, error) {
 	var count int64
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, dimFilters)
 	q = q.Where(timePredicate, timeArgs...)
 	if len(dimFilters.Status) == 0 {
@@ -1253,7 +1286,7 @@ func (s *RDBLogStore) countRawTerminal(ctx context.Context, dimFilters SearchFil
 // eligibility and excludes in-flight rows on every path.
 func (s *RDBLogStore) countRawNonTerminal(ctx context.Context, filters SearchFilters) (int64, error) {
 	var count int64
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, filters)
 	q = q.Where("status IN ?", nonTerminalLogStatuses)
 	if err := q.Count(&count).Error; err != nil {
@@ -1296,7 +1329,7 @@ func (a *matViewStatsAgg) add(b matViewStatsAgg) {
 // fully contained in the window.
 func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters SearchFilters, start, end *time.Time) (matViewStatsAgg, error) {
 	var agg matViewStatsAgg
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
 	q = applyInteriorBucketWindow(q, start, end)
 	err := q.Select(`
@@ -1320,7 +1353,7 @@ func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters Se
 // halves of the hybrid aggregate the same population.
 func (s *RDBLogStore) rawTerminalStatsAgg(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (matViewStatsAgg, error) {
 	var agg matViewStatsAgg
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, dimFilters)
 	q = q.Where(timePredicate, timeArgs...)
 	if len(dimFilters.Status) == 0 {
@@ -1415,7 +1448,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 
 	// Cache hits come from the same hybrid aggregate (materialized in
 	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
-	// no more full-window raw scan. CacheDebugCount reproduces
+	// no more full-window raw scan. The cache metadata count reproduces
 	// aggregateCacheHits' nil contract: when no row in the window carried
 	// valid cache_debug JSON, the fields stay nil so they are omitted from
 	// the JSON payload, matching the raw path.
@@ -1467,7 +1500,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 
 	rawBucketed := func(timePredicate string, timeArgs ...any) ([]histAgg, error) {
 		var rows []histAgg
-		q := s.ScopedDB(ctx).Model(&Log{})
+		q := s.scopedLogsDB(ctx).Model(&Log{})
 		q = s.applyFilters(q, dimFilters)
 		q = q.Where(timePredicate, timeArgs...)
 		q = q.Where("status IN ?", terminalLogStatuses)
@@ -1493,7 +1526,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		merge(rows)
 	} else {
 		var results []histAgg
-		q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		q = s.applyMatViewFilters(q, dimFilters)
 		q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
 		if err := q.Select(fmt.Sprintf(`
@@ -1565,7 +1598,7 @@ func (s *RDBLogStore) getTokenHistogramFromMatView(ctx context.Context, filters 
 		TotalTokens      int64 `gorm:"column:total_tkns"`
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1609,7 +1642,7 @@ func (s *RDBLogStore) getCostHistogramFromMatView(ctx context.Context, filters S
 		Model           string  `gorm:"column:model"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1665,7 +1698,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		ErrorCount      int64  `gorm:"column:error_count"`
 		CancelledCount  int64  `gorm:"column:cancelled_count"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1732,7 +1765,7 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	// Weighted average of percentiles across hourly buckets
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1790,7 +1823,7 @@ func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, fil
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only: status is a matview dimension, so this restricts
 	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
@@ -1837,7 +1870,7 @@ func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Cont
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only — see getThroughputHistogramFromMatView.
 	q = q.Where("status = ?", "success")
@@ -1895,7 +1928,7 @@ func (s *RDBLogStore) getProviderCostHistogramFromMatView(ctx context.Context, f
 		Provider        string  `gorm:"column:provider"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1950,7 +1983,7 @@ func (s *RDBLogStore) getProviderTokenHistogramFromMatView(ctx context.Context, 
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2024,7 +2057,7 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2092,7 +2125,7 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 		DimValue        string  `gorm:"column:dim_value"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2154,7 +2187,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2233,7 +2266,7 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2306,7 +2339,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
 	q = q.Select(`
@@ -2358,7 +2391,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
@@ -2429,7 +2462,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		TotalTokens int64   `gorm:"column:total_tkns"`
 		TotalCost   float64 `gorm:"column:total_cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
 	// Same ceiling as the raw path in GetUserRankings: the row scope alone does
@@ -2473,7 +2506,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, "user_id")
@@ -2530,7 +2563,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	}
 
 	var results []row
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
 	// Same ceiling as the raw path in GetDimensionRankings. Only non-bucketed
@@ -2559,7 +2592,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 			ID   string `gorm:"column:id"`
 			Name string `gorm:"column:name"`
 		}
-		if err := s.ScopedDB(ctx).Model(&Log{}).
+		if err := s.scopedLogsDB(ctx).Model(&Log{}).
 			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
 			Where(fmt.Sprintf("%s IN ?", idCol), ids).
 			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
@@ -2591,7 +2624,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, idCol)
@@ -2643,7 +2676,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 // of which path served the request.
 func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var models []string
-	q := s.ScopedDB(ctx).Table("mv_filter_models").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_models").
 		Distinct("model").
 		Where("model != ''")
 	if query != "" {
@@ -2658,7 +2691,7 @@ func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context, limit in
 // getDistinctAliasesFromMatView returns unique alias values from mv_filter_aliases.
 func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var aliases []string
-	q := s.ScopedDB(ctx).Table("mv_filter_aliases").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_aliases").
 		Distinct("alias").
 		Where("alias != ''")
 	if query != "" {
@@ -2673,7 +2706,7 @@ func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context, limit i
 // getDistinctStopReasonsFromMatView returns unique stop reasons from mv_filter_stop_reasons.
 func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var stopReasons []string
-	q := s.ScopedDB(ctx).Table("mv_filter_stop_reasons").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_stop_reasons").
 		Distinct("stop_reason").
 		Where("stop_reason != ''")
 	if query != "" {
@@ -2688,7 +2721,7 @@ func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, lim
 // getDistinctUserAgentsFromMatView returns unique raw User-Agent strings from mv_filter_user_agents.
 func (s *RDBLogStore) getDistinctUserAgentsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var userAgents []string
-	q := s.ScopedDB(ctx).Table("mv_filter_user_agents").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_user_agents").
 		Distinct("user_agent").
 		Where("user_agent != ''")
 	if query != "" {
@@ -2703,7 +2736,7 @@ func (s *RDBLogStore) getDistinctUserAgentsFromMatView(ctx context.Context, limi
 // getDistinctAppsFromMatView returns unique backend-detected app labels from mv_filter_apps.
 func (s *RDBLogStore) getDistinctAppsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var apps []string
-	q := s.ScopedDB(ctx).Table("mv_filter_apps").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_apps").
 		Distinct("app").
 		Where("app != ''")
 	if query != "" {
@@ -2725,7 +2758,7 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 		return nil, false, nil
 	}
 	var results []KeyPairResult
-	q := s.ScopedDB(ctx).Table(view).Where("id != ''")
+	q := s.scopedLogsDB(ctx).Table(view).Where("id != ''")
 	// User matview stores name = id and the view-level WHERE already filters
 	// empty ids; other matviews include name and we additionally guard against
 	// stragglers with empty names.
@@ -2763,7 +2796,7 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 // mv_filter_routing_engines.
 func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var rawValues []string
-	q := s.ScopedDB(ctx).Table("mv_filter_routing_engines").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_routing_engines").
 		Distinct("routing_engines_used").
 		Where("routing_engines_used != ''")
 	if query != "" {
@@ -2786,6 +2819,20 @@ func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, 
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func (s *RDBLogStore) getDistinctToolCallNamesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
+	var rawValues []string
+	q := s.scopedLogsDB(ctx).Table("mv_filter_tool_call_names").
+		Distinct("tool_call_names").
+		Where("tool_call_names != ''")
+	if query != "" {
+		q = q.Where("tool_call_names ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Pluck("tool_call_names", &rawValues).Error; err != nil {
+		return nil, err
+	}
+	return splitCommaListValues(rawValues, query, limit), nil
 }
 
 // ---------------------------------------------------------------------------

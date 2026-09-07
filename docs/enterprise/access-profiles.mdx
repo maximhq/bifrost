@@ -6,7 +6,9 @@ icon: "id-card"
 
 ## Overview
 
-An **Access Profile** is a reusable policy template that describes what a user,team or business unit is allowed to do once they are granted access. When you assign a profile to an entity (directly or by attaching it to a role they hold), Bifrost Enterprise creates a per-user copy of the policy and automatically issues a virtual key for them. The virtual key carries the policy's provider list, model whitelist, budgets, rate limits, and MCP tool access. Users never need to be handed raw keys, and operators never need to write keys by hand.
+An **Access Profile** is a reusable policy template that describes what a user,team or business unit is allowed to do once they are granted access. When you assign a profile to an entity (directly or by attaching it to a role they hold), Bifrost Enterprise creates a per-user copy of the policy and automatically issues a virtual key for them. Every request made with that key is governed by the profile's provider list, model whitelist, budgets, rate limits, and MCP tool access. Because the profile is consulted on each request, editing it takes effect straight away - there is no need to reissue anyone's key. Users never need to be handed raw keys, and operators never need to write keys by hand.
+
+A user can hold **several access profiles at once**. Together they decide what the user can reach, and one of them pays for each request - see [Multiple profiles per user](#multiple-profiles-per-user).
 
 <Info>
   For rest of the article we will focus on access profiles for users. But the same principles apply
@@ -17,9 +19,10 @@ An **Access Profile** is a reusable policy template that describes what a user,t
 
 - **Reusable policy** - Define a profile once (for example, "Engineering") and apply it to every user in a role.
 - **Per-user enforcement** - Each user gets an independent copy with isolated budget and rate-limit counters.
-- **Role-default auto-assignment** - Mark a profile as a role's default and new users in that role are provisioned automatically.
+- **Layered access** - A user can hold several profiles at once. What they can reach adds up, and if one profile's budget runs out another can cover their requests.
+- **Role auto-assignment** - Attach profiles to a role and users gaining that role are provisioned automatically.
 - **Safe propagation** - Edit the template, then push selected fields (budgets only, MCP only, and so on) to every user copy in one call.
-- **Managed virtual keys** - Auto-issued keys are write-protected so a user cannot weaken their own policy by editing the key directly.
+- **Managed virtual keys** - Auto-issued keys are write-protected, so a user cannot weaken their own policy by editing the key directly.
 - **Govern user-created keys** - Optionally bring every virtual key a member creates under the profile automatically, not just the auto-issued key.
 - **Audit and versioning** - Every change to a profile is recorded with a full snapshot history.
 
@@ -48,17 +51,35 @@ flowchart LR
 ```
 
 1. **Template** - The Access Profile is the policy you author. Each policy lives once in the workspace.
-2. **User copy** - When a user becomes eligible for a profile, Bifrost clones the template into a per-user copy with fresh budget and rate-limit counters. Each user accumulates usage independently.
-3. **Virtual key** - Bifrost issues a virtual key whose provider configs, budgets, rate limit, and MCP configs are built from the user copy. The key is marked profile-managed so it cannot be edited around the policy.
+2. **How it is granted** - A user gets a profile in one of three ways: you attach it to them by hand, their role grants it, or their identity provider attributes match a mapping rule. Bifrost remembers which, so removing one grant never disturbs the others.
+3. **User copy** - Bifrost copies the template to the user, with its own budget and rate-limit counters. Each user's usage is tracked separately, and a user can hold several profiles at once.
+4. **Virtual key** - Bifrost issues a virtual key to the user. The key belongs to the user rather than to one profile, so it keeps working as their profiles change, and what it may do comes from whichever profiles they currently hold. It is locked against direct edits so the policy cannot be worked around.
+5. **Per-model limits** - Per-model budgets set on the profile appear for each assigned user as their own read-only limit. See [Model Limits](/features/governance/model-limits#per-user-model-limits-enterprise).
 
-### Role-default auto-assignment
+### Multiple profiles per user
 
-When an Access Profile is attached to a role and marked as the default for that role, two flows kick in:
+A user can hold more than one access profile at a time - one from their role, say, and another attached by hand. The profiles do not merge into a single blended policy. Instead:
+
+**Access adds up.** The user can use any provider and any model that *any* of their profiles allows. Giving someone an extra profile can only widen what they can reach; to narrow it, remove a profile or tighten the template.
+
+**One profile pays for each request.** Bifrost picks one of the profiles that allows the request and charges it - its budget, its rate limit, and any per-model limit it sets. The user's other profiles are not charged, and their usage is unaffected.
+
+**If one profile is out of budget, another covers the request.** A user whose Engineering budget is spent keeps working if another of their profiles can still fund the request. Only when every profile that allows the request has run out is the request blocked, and the message names the profile that was tried.
+
+**Usage is tracked per profile.** Each profile has its own counters, so spending against one never eats into another's remaining budget.
+
+<Note>
+  Budgets on a user's teams, customers, and business units are charged for every request they make,
+  no matter which profile paid for it. Those are separate from profile budgets, not an alternative
+  to them.
+</Note>
+
+### Role auto-assignment
+
+A role can grant **any number** of access profiles. When a role is attached to one or more profiles, two flows kick in:
 
 - **Existing users in that role** - Optionally provisioned at attach time.
 - **Users gaining the role later** - Automatically provisioned the moment their role changes.
-
-Role changes only replace assignments that came from a role default. Profiles assigned directly to a user (not via a role default) are preserved across role changes.
 
 ### Managed virtual keys
 
@@ -75,7 +96,6 @@ A few things to know:
 - **Off by default**, and set per profile — flipping it on one profile does not affect others.
 - **Applies to identified users only.** The creator must sign in with their own identity (SSO/SCIM). Keys created from the local admin account or a raw API key are left as ordinary standalone keys.
 - **Create-time only.** Turning the toggle on does not sweep up keys a member already created. To bring an existing key under the profile, assign it to the user from the key's edit sheet — it is adopted into their profile on assignment.
-- **One profile per key.** If a member belongs to more than one profile with the toggle on, the earliest-assigned profile governs the key; policies from multiple profiles are not merged.
 
 ---
 
@@ -124,6 +144,7 @@ In the **Allowed Providers** accordion, add providers from the multi-select. For
 - **Provider Budget** - Add one or more budget lines. Each line has a **max limit** and a **reset duration** (`1h`, `1d`, `1w`, `1M`, `1Q`, `1Y`). You can stack multiple lines with different durations (for example, a hard hourly cap plus a softer monthly cap). A quarterly line can also carry a fiscal quarter start - see [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters).
 - **Maximum Tokens** - Per-provider token rate limit.
 - **Maximum Requests** - Per-provider request rate limit.
+- **Per-model budgets** - Optionally cap individual models under this provider. These are separate from the provider budget above; each assigned user gets their own copy, counted separately. See [Give one user a per-model budget](#give-one-user-a-per-model-budget).
 
 ### Configure global budget and rate limits
 
@@ -135,7 +156,7 @@ Flip **Align to calendar cycle** to reset budgets and rate limits at the start o
 
 ### Toggle member-key governance
 
-Flip **Govern virtual keys created by members** so any virtual key a member of this profile creates is automatically placed under the profile — same providers, model whitelist, budgets, rate limits, and MCP access, attached to the creator, and locked from direct edits. Leave it off (default) to let members create standalone keys freely. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members) for the full behavior and its limits.
+Flip **Govern virtual keys created by members** so any virtual key a member of this profile creates is automatically placed under the profile - same providers, model whitelist, budgets, rate limits, and MCP access, attached to the creator, and locked from direct edits. Leave it off (default) to let members create standalone keys freely. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members) for the full behavior and its limits.
 
 ### Configure MCP tool access
 
@@ -146,7 +167,7 @@ Flip **Govern virtual keys created by members** so any virtual key a member of t
   />
 </Frame>
 
-- **Tool Groups** - Multi-select existing [MCP Tool Groups](/enterprise/mcp-tool-groups) to grant. Selected groups appear as removable badges.
+- **Virtual MCPs** - Multi-select existing [Virtual MCPs](/enterprise/virtual-mcps) to grant. Selected vMCPs appear as removable badges.
 - **MCP Servers** - Multi-select MCP servers. Granting a server means "all tools from this server".
 - **Individual Tool Overrides** - Add specific tools with either `include` or `exclude` action. Use this for surgical adjustments that the group + server selection does not express.
 
@@ -158,7 +179,7 @@ Flip **Govern virtual keys created by members** so any virtual key a member of t
 
 ### Save and assign
 
-Click **Create**. To make the profile take effect for users, attach it to one or more roles from the Roles page:
+Click **Create**. To make the profile take effect for users, attach it to one or more roles from the Roles page, attach it to a user directly from their User Detail Sheet, or map it from an IdP attribute (see [Attribute mappings](/enterprise/user-provisioning#attribute-mappings)). A user can hold profiles from all three sources at once.
 
 <Frame>
   <img
@@ -183,19 +204,15 @@ When you edit an existing profile, the action bar shows **Save** (template-only 
   />
 </Frame>
 
-- Check the fields to propagate: **Provider Configurations**, **Budgets**, **Rate Limit**, **MCP
-  Tool Groups**, **MCP Servers**, **MCP Tool Overrides**. - Click **Propagate** to apply. The response
+- Check the fields to propagate: **Provider Configurations**, **Budgets**, **Rate Limit**, **Virtual
+  MCPs**, **MCP Servers**, **MCP Tool Overrides**. - Click **Propagate** to apply. The response
   reports how many users were updated, failed, or skipped.
 
 By default, propagation **preserves usage**: existing users keep their accumulated budget and rate-limit counters where the reset durations match.
 
 ### Extend individual budgets for a user
 
-Access profile budgets apply uniformly to everyone assigned the template. When you need a one-off override for a specific user — without touching the template for the rest of the role — you can attach an additional per-model budget or rate limit directly to that user via [Model Limits](/features/governance/model-limits).
-
-For example, if Alice is on the Engineering profile but you want to add a separate $20/month cap on Claude Opus just for her, you can create a user-scoped model limit for Alice without changing what the Engineering profile gives everyone else. These limits stack independently alongside the profile budget; both must pass for a request to be allowed, and they are not affected by profile propagation. See [Give one user an individual per-model budget](#give-one-user-an-individual-per-model-budget) for steps for the above.
-
-To temporarily raise the profile budget itself for one user, add a **budget override** from the User Detail Sheet instead. An override is additive and leaves the base limit, current usage, and reset schedule untouched:
+Access profile budgets apply uniformly to everyone assigned the template. To make an exception for one person, add a **budget override** from the User Detail Sheet. An override is additive and leaves the base limit, current usage, and reset schedule untouched:
 
 ```text
 Effective limit = Base budget + Override amount
@@ -245,7 +262,7 @@ A profile carries the following pieces of policy. Use the UI walkthrough above f
 - **Global rate limits** - Token and request caps with the same reset durations.
 - **Calendar alignment** - When on, budgets and rate limits reset at the start of each calendar period (midnight UTC, week start, month start) instead of rolling from creation time. Applies to durations of one day or longer.
 - **Govern created keys** - When on, every virtual key a member creates is adopted into the profile (same policy, attached to the user, profile-managed). Off by default. See [Govern virtual keys created by members](#govern-virtual-keys-created-by-members).
-- **MCP tool access** - Reference [MCP Tool Groups](/enterprise/mcp-tool-groups), grant entire MCP servers, or override individual tools with include/exclude actions.
+- **MCP tool access** - Reference [Virtual MCPs](/enterprise/virtual-mcps), grant entire MCP servers, or override individual tools with include/exclude actions.
 - **Tags** - Up to 50 free-form tags for filtering and grouping in the UI.
 - **Active flag** - Activate or deactivate without deleting; deactivated profiles are hidden from selection but user copies stay intact.
 
@@ -258,7 +275,7 @@ Profiles can be cloned into new templates, propagated to user copies one field s
 ### Auto-assign Engineering profile to the Engineer role
 
 1. Create the profile through the UI or API with the desired provider configs, budgets, and MCP access.
-2. From the Engineer role, attach the profile and mark it default for new users. Toggle "Apply to existing users" to backfill current members.
+2. From the Engineer role, attach the profile. Toggle "Apply to existing users" to backfill current members.
 3. Bifrost issues a virtual key for every member of the Engineer role and continues to auto-issue for any user who later gains the role.
 
 ### Force every key an Engineer creates onto the Engineering policy
@@ -266,7 +283,7 @@ Profiles can be cloned into new templates, propagated to user copies one field s
 Prerequisite: the Engineering profile is already assigned to the Engineer role (see the example above), so members have it to govern their keys.
 
 1. Edit the Engineering profile and turn on **Govern virtual keys created by members**. Save.
-2. From now on, whenever an Engineer (signed in via SSO) creates a virtual key, it is placed under the Engineering profile automatically — same providers, model whitelist, budgets, rate limits, and MCP access — attached to them and locked from direct edits.
+2. From now on, whenever an Engineer (signed in via SSO) creates a virtual key, it is placed under the Engineering profile automatically - same providers, model whitelist, budgets, rate limits, and MCP access - attached to them and locked from direct edits.
 3. To bring keys they created earlier under the policy too, open each key and assign it to the user; it is adopted into their profile on assignment.
 
 ### Raise the monthly budget without resetting accumulated usage
@@ -277,8 +294,8 @@ Prerequisite: the Engineering profile is already assigned to the Engineer role (
 
 ### Tighten MCP access only
 
-1. Edit the template and replace the MCP tool group reference.
-2. Open the propagate dialog. Check **MCP Tool Groups**, **MCP Servers**, and **MCP Tool Overrides**. Leave budgets and rate limits unchecked.
+1. Edit the template and replace the Virtual MCP reference.
+2. Open the propagate dialog. Check **Virtual MCPs**, **MCP Servers**, and **MCP Tool Overrides**. Leave budgets and rate limits unchecked.
 3. Click **Propagate**. Budgets and rate limits are not touched; only MCP access changes flow through.
 
 ### Give one user an individual per-model budget
@@ -307,8 +324,11 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 
 ## Next steps
 
+- **[Projects](/enterprise/projects)** - Scope access and spend to a piece of work rather than to a person, chosen per request.
 - **[Data Access Control](/enterprise/data-access-control)** - Scope which profiles each operator can see.
 - **[RBAC](/enterprise/rbac)** - Define the roles that profiles auto-attach to.
 - **[Virtual Keys](/features/governance/virtual-keys)** - Understand the underlying virtual key concept.
+- **[Virtual MCPs](/enterprise/virtual-mcps)** - Bundle MCP tools for reuse inside profiles.
 - **[MCP Tool Groups](/enterprise/mcp-tool-groups)** - Bundle MCP tools for reuse inside profiles.
+- **[Model Limits](/features/governance/model-limits#per-user-model-limits-enterprise)** - How a profile's per-model budgets surface as per-user limits.
 - **[Audit Logs](/enterprise/audit-logs)** - Cross-reference profile changes with downstream impact.

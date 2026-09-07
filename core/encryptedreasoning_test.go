@@ -241,6 +241,36 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 			req.ResponsesRequest.Provider = rejection.provider
 			req.ResponsesRequest.Model = rejection.model
 
+			// On Anthropic the reasoning item is removed rather than emptied, so the
+			// replayed turn comes back one item shorter. The extra pair gives the
+			// Anthropic-family cases a second reasoning item to account for, which is
+			// what a replayed agent loop looks like.
+			wantItems := 2
+			if dropsWholeReasoningBlocks(nil, rejection.model) {
+				req.ResponsesRequest.Input = append(req.ResponsesRequest.Input,
+					schemas.ResponsesMessage{
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						Status: schemas.Ptr("completed"),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("toolu_1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr("done"),
+							},
+						},
+					},
+					schemas.ResponsesMessage{
+						ID:   schemas.Ptr("rs_latest"),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: schemas.Ptr("PROTECTED_PAYLOAD"),
+						},
+					},
+				)
+				// Both reasoning items go; the user turn and the tool result stay.
+				wantItems = 2
+			}
+
 			callCount := 0
 			var secondAttemptInput []schemas.ResponsesMessage
 			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
@@ -264,15 +294,22 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 			if callCount != 2 {
 				t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
 			}
-			if len(secondAttemptInput) != 2 {
-				t.Fatalf("expected both input items to survive the strip, got %d", len(secondAttemptInput))
+			if len(secondAttemptInput) != wantItems {
+				t.Fatalf("expected %d items after the strip, got %d", wantItems, len(secondAttemptInput))
 			}
-			reasoning := secondAttemptInput[1].ResponsesReasoning
-			if reasoning == nil {
-				t.Fatal("expected the reasoning item to survive with its summary")
+			for i, item := range secondAttemptInput {
+				if item.ResponsesReasoning != nil && item.ResponsesReasoning.EncryptedContent != nil {
+					t.Errorf("item %d still carries encrypted_content %q", i, *item.ResponsesReasoning.EncryptedContent)
+				}
 			}
-			if reasoning.EncryptedContent != nil {
-				t.Errorf("expected encrypted_content to be stripped, got %q", *reasoning.EncryptedContent)
+			if dropsWholeReasoningBlocks(nil, rejection.model) {
+				for i, item := range secondAttemptInput {
+					if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+						t.Errorf("item %d: Anthropic must receive no replayed reasoning item at all", i)
+					}
+				}
+			} else if secondAttemptInput[1].ResponsesReasoning == nil {
+				t.Error("expected the OpenAI reasoning item to survive with its summary")
 			}
 		})
 	}
@@ -1277,6 +1314,27 @@ func newThinkingSignatureChatRequest(signature string) *schemas.BifrostRequest {
 						},
 					},
 				},
+				// A second assistant turn, so the fixture covers a multi-turn replay: the
+				// strip has to reach Input[1] and Input[3] alike, since Anthropic refuses a
+				// signature-less thinking block on any turn it appears in.
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("now lint it")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Linting.")},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ReasoningDetails: []schemas.ChatReasoningDetails{
+							{
+								Index:     0,
+								Type:      schemas.BifrostReasoningDetailsTypeText,
+								Text:      schemas.Ptr("planning the lint"),
+								Signature: schemas.Ptr(signature + "-latest"),
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -1311,59 +1369,52 @@ func TestIsEncryptedReasoningRejection_ThinkingSignature(t *testing.T) {
 	}
 }
 
-// TestStripUnverifiableReasoning_ChatShape covers the gap that let this error reach
-// clients: the strip only ever handled Responses-shaped requests, so a chat-shaped
-// one returned false and the retry never happened.
+// TestStripUnverifiableReasoning_ChatShape covers the chat-shaped request a complexity
+// or virtual-model router produces: it picks a model per turn, so turn N+1 replays a
+// thinking block minted by whichever model answered turn N.
+//
+// On Anthropic the detail is removed, not emptied. Blanking the signature and keeping
+// the prose is refused with "messages.N.content.M: Invalid `signature` in `thinking`
+// block" -- on any turn, not just the latest -- so the rewrite that kept the text spent
+// the one retry turning an accepted request into a refused one.
 func TestStripUnverifiableReasoning_ChatShape(t *testing.T) {
-	t.Run("clears a thinking signature and keeps the reasoning text", func(t *testing.T) {
+	details := func(req *schemas.BifrostRequest, i int) []schemas.ChatReasoningDetails {
+		return req.ChatRequest.Input[i].ChatAssistantMessage.ReasoningDetails
+	}
+
+	t.Run("drops the reasoning detail whole on every assistant turn", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
 
 		if !stripUnverifiableReasoning(nil, req) {
 			t.Fatal("expected the strip to report a change on a chat-shaped request")
 		}
-		details := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
-		if len(details) != 1 {
-			t.Fatalf("expected the reasoning detail to survive, got %d", len(details))
-		}
-		if details[0].Signature != nil {
-			t.Errorf("expected the signature to be cleared, got %q", *details[0].Signature)
-		}
-		if details[0].Text == nil || *details[0].Text != "planning the run" {
-			t.Errorf("expected the reasoning text to survive, got %+v", details[0].Text)
+		for _, i := range []int{1, 3} {
+			if got := len(details(req, i)); got != 0 {
+				t.Errorf("message %d: expected the reasoning detail to be dropped, got %d", i, got)
+			}
 		}
 	})
 
-	t.Run("clears encrypted reasoning data", func(t *testing.T) {
+	t.Run("drops encrypted reasoning data too", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("sig")
-		details := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
-		details[0].Type = schemas.BifrostReasoningDetailsTypeEncrypted
-		details[0].Signature = nil
-		details[0].Data = schemas.Ptr("ciphertext")
+		d := details(req, 1)
+		d[0].Type = schemas.BifrostReasoningDetailsTypeEncrypted
+		d[0].Signature = nil
+		d[0].Data = schemas.Ptr("ciphertext")
 
 		if !stripUnverifiableReasoning(nil, req) {
 			t.Fatal("expected the strip to report a change")
 		}
-		if got := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Data; got != nil {
-			t.Errorf("expected encrypted data to be cleared, got %q", *got)
-		}
-	})
-
-	t.Run("drops a reasoning detail left with nothing to say", func(t *testing.T) {
-		req := newThinkingSignatureChatRequest("sig")
-		req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Text = nil
-
-		if !stripUnverifiableReasoning(nil, req) {
-			t.Fatal("expected the strip to report a change")
-		}
-		if got := len(req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails); got != 0 {
-			t.Errorf("expected the empty reasoning detail to be dropped, got %d", got)
+		if got := len(details(req, 1)); got != 0 {
+			t.Errorf("expected the encrypted detail to be dropped, got %d", got)
 		}
 	})
 
 	// Claiming a change with nothing to strip buys a second identical upstream call.
 	t.Run("reports no change when nothing is unverifiable", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("sig")
-		req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Signature = nil
+		details(req, 1)[0].Signature = nil
+		details(req, 3)[0].Signature = nil
 
 		if stripUnverifiableReasoning(nil, req) {
 			t.Error("expected no change when no signature or encrypted data is present")
@@ -1374,13 +1425,35 @@ func TestStripUnverifiableReasoning_ChatShape(t *testing.T) {
 	// so the rewrite must not mutate them in place.
 	t.Run("does not mutate the caller's reasoning details", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("keep-me")
-		original := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
+		original := details(req, 1)
 
 		if !stripUnverifiableReasoning(nil, req) {
 			t.Fatal("expected the strip to report a change")
 		}
-		if original[0].Signature == nil || *original[0].Signature != "keep-me" {
+		if len(original) != 1 || original[0].Signature == nil || *original[0].Signature != "keep-me" {
 			t.Error("expected the caller's original reasoning detail to be untouched")
+		}
+	})
+
+	// Removal is Anthropic's requirement. OpenAI accepts reasoning text with no
+	// signature, and the narrative is worth keeping, so that path still blanks.
+	t.Run("openai-family keeps the reasoning text", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		req.ChatRequest.Provider = schemas.OpenAI
+		req.ChatRequest.Model = "gpt-5.6-sol"
+
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		d := details(req, 1)
+		if len(d) != 1 {
+			t.Fatalf("expected the detail to survive for OpenAI, got %d", len(d))
+		}
+		if d[0].Signature != nil {
+			t.Errorf("expected the signature to be cleared, got %q", *d[0].Signature)
+		}
+		if d[0].Text == nil || *d[0].Text != "planning the run" {
+			t.Errorf("expected the reasoning text to survive, got %+v", d[0].Text)
 		}
 	})
 }
@@ -1577,7 +1650,7 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 		return ctx
 	}
 
-	t.Run("blanks a thinking signature and keeps the reasoning text", func(t *testing.T) {
+	t.Run("removes the thinking block and leaves the rest of the body alone", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
 		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
 			`{"role":"user","content":"run the tests"},` +
@@ -1585,9 +1658,6 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 			`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD...","unmodeled_field":7},` +
 			`{"type":"text","text":"On it."}` +
 			`]},` +
-			// The later assistant turn matters: Anthropic protects the last message with
-			// role assistant from any edit, so without a turn after it the payload under
-			// test would sit on the protected turn and the rewrite would decline.
 			`{"role":"user","content":"now ship it"},` +
 			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
 			`{"role":"user","content":"thanks"}` +
@@ -1598,17 +1668,16 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 		}
 
 		body := string(req.ChatRequest.RawRequestBody)
-		if strings.Contains(body, "ErUBCkYIBRgCKkD") {
-			t.Errorf("expected the foreign signature to be gone, got %s", body)
+		// The whole block goes: signature, prose and the fields Bifrost does not model.
+		// Anthropic refuses a thinking block whose signature it cannot verify, so there
+		// is nothing in it left to keep.
+		for _, gone := range []string{"ErUBCkYIBRgCKkD", `"planning the run"`, `"unmodeled_field":7`} {
+			if strings.Contains(body, gone) {
+				t.Errorf("expected %s to be gone with the block, got %s", gone, body)
+			}
 		}
-		if !strings.Contains(body, `"signature":""`) {
-			t.Errorf("expected an empty signature rather than an omitted field, got %s", body)
-		}
-		if !strings.Contains(body, `"planning the run"`) || !strings.Contains(body, `"On it."`) {
-			t.Errorf("expected the reasoning text and the reply to survive, got %s", body)
-		}
-		if !strings.Contains(body, `"unmodeled_field":7`) {
-			t.Errorf("expected fields Bifrost does not model to survive, got %s", body)
+		if !strings.Contains(body, `"On it."`) {
+			t.Errorf("expected the turn's own reply to survive, got %s", body)
 		}
 		if !strings.Contains(body, `"max_tokens":1024`) || !strings.Contains(body, `"run the tests"`) {
 			t.Errorf("expected the rest of the body to be untouched, got %s", body)
@@ -1623,7 +1692,8 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 			`{"type":"redacted_thinking","data":"EroBCkYIBRgCKkDdeadbeef"},` +
 			`{"type":"text","text":"On it."}` +
 			`]},` +
-			// Earlier turn, not the protected latest assistant message -- see above.
+			// A later turn follows, so the fixture covers a payload that is not in the
+			// last assistant message either.
 			`{"role":"user","content":"now ship it"},` +
 			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
 			`{"role":"user","content":"thanks"}` +
@@ -1712,61 +1782,62 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 		}
 	})
 
-	// Anthropic verifies that thinking and redacted_thinking blocks in the latest
-	// assistant message arrive exactly as it minted them: "Within the latest assistant
-	// message, the sequence of consecutive thinking blocks must match what the model
-	// generated in the original request: you can't rearrange, edit, or partially drop
-	// them." Editing there swaps the signature refusal for a second 400 -- "`thinking`
-	// or `redacted_thinking` blocks in the latest assistant message cannot be modified"
-	// -- after a wasted upstream call, so the retry has to leave that turn alone.
+	// A thinking block is deleted, never emptied. Anthropic verifies the signature on
+	// every turn it appears in and refuses a blanked one with "messages.N.content.M:
+	// Invalid `signature` in `thinking` block", so the rewrite that kept the prose spent
+	// the retry turning an accepted request into a refused one. Removal is accepted on
+	// every turn, the latest included.
 	// https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks
 
-	t.Run("leaves the latest assistant message untouched", func(t *testing.T) {
+	t.Run("removes the block rather than blanking its signature", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
-		raw := `{"model":"claude-sonnet-5","messages":[` +
+		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
 			`{"role":"user","content":"run the tests"},` +
 			`{"role":"assistant","content":[` +
 			`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."},` +
 			`{"type":"text","text":"On it."}` +
 			`]}` +
-			`],"max_tokens":1024}`
-		req.ChatRequest.RawRequestBody = []byte(raw)
+			`],"max_tokens":1024}`)
 
-		if stripUnverifiableReasoning(anthropicCtx(), req) {
-			t.Error("expected no change to be claimed when only the protected turn carries a payload")
+		if !stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Fatal("expected the latest assistant turn to be rewritten too")
 		}
-		if string(req.ChatRequest.RawRequestBody) != raw {
-			t.Errorf("expected the latest assistant message to survive verbatim, got %s", req.ChatRequest.RawRequestBody)
+		body := string(req.ChatRequest.RawRequestBody)
+		if strings.Contains(body, `"signature"`) || strings.Contains(body, `"type":"thinking"`) {
+			t.Errorf("expected the thinking block to be gone entirely, got %s", body)
+		}
+		if !strings.Contains(body, `"On it."`) {
+			t.Errorf("expected the turn's own text to survive, got %s", body)
 		}
 	})
 
-	t.Run("skips the latest assistant turn even when it is not the last message", func(t *testing.T) {
-		// A tool-result round trip ends on a user message, so the protected turn sits at
-		// index 1 rather than at the end. Treating the last element as the protected one
-		// would rewrite it anyway and earn the "cannot be modified" refusal.
+	t.Run("removes redacted_thinking beside a tool call", func(t *testing.T) {
+		// A tool-result round trip ends on a user message, so the assistant turn carrying
+		// the payload sits at index 1 rather than at the end.
 		req := newThinkingSignatureChatRequest("sig")
-		raw := `{"model":"claude-sonnet-5","messages":[` +
+		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
 			`{"role":"user","content":"what is the weather in Paris?"},` +
 			`{"role":"assistant","content":[` +
 			`{"type":"redacted_thinking","data":"EroBCkYIBRgCKkDdeadbeef"},` +
 			`{"type":"tool_use","id":"toolu_01","name":"get_weather","input":{"city":"Paris"}}` +
 			`]},` +
 			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"20C, sunny"}]}` +
-			`],"max_tokens":1024}`
-		req.ChatRequest.RawRequestBody = []byte(raw)
+			`],"max_tokens":1024}`)
 
-		if stripUnverifiableReasoning(anthropicCtx(), req) {
-			t.Error("expected the protected turn to be located by role, not by array position")
+		if !stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Fatal("expected the redacted block to be removed")
 		}
-		if string(req.ChatRequest.RawRequestBody) != raw {
-			t.Errorf("expected the tool-use turn to survive verbatim, got %s", req.ChatRequest.RawRequestBody)
+		body := string(req.ChatRequest.RawRequestBody)
+		if strings.Contains(body, "deadbeef") {
+			t.Errorf("expected the redacted payload to be gone, got %s", body)
+		}
+		// The tool call has to survive or the tool_result behind it is orphaned.
+		if !strings.Contains(body, `"toolu_01"`) {
+			t.Errorf("expected the tool_use block to survive, got %s", body)
 		}
 	})
 
-	t.Run("still rewrites earlier assistant turns", func(t *testing.T) {
-		// Only the latest assistant message is protected -- "Allowed: outside tool use,
-		// omit prior turns' thinking" -- so an earlier turn is still healed, which is the
-		// case the retry exists to fix.
+	t.Run("rewrites every assistant turn, not just one", func(t *testing.T) {
 		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
 		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
 			`{"role":"user","content":"run the tests"},` +
@@ -1776,26 +1847,25 @@ func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
 			`{"type":"text","text":"On it."}` +
 			`]},` +
 			`{"role":"user","content":"now ship it"},` +
-			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"thinking","thinking":"planning the ship","signature":"EskCCpsBCBEYlater"},` +
+			`{"type":"text","text":"Shipped."}` +
+			`]},` +
 			`{"role":"user","content":"thanks"}` +
 			`],"max_tokens":1024}`)
 
 		if !stripUnverifiableReasoning(anthropicCtx(), req) {
-			t.Fatal("expected the earlier assistant turn to be rewritten")
+			t.Fatal("expected the assistant turns to be rewritten")
 		}
 
 		body := string(req.ChatRequest.RawRequestBody)
-		if strings.Contains(body, "ErUBCkYIBRgCKkD") || strings.Contains(body, "deadbeef") {
-			t.Errorf("expected the earlier turn's unverifiable payloads to be gone, got %s", body)
+		for _, payload := range []string{"ErUBCkYIBRgCKkD", "deadbeef", "EskCCpsBCBEYlater"} {
+			if strings.Contains(body, payload) {
+				t.Errorf("expected %q to be gone, got %s", payload, body)
+			}
 		}
-		if !strings.Contains(body, `"signature":""`) {
-			t.Errorf("expected an empty signature rather than an omitted field, got %s", body)
-		}
-		if !strings.Contains(body, `"planning the run"`) || !strings.Contains(body, `"On it."`) {
-			t.Errorf("expected the earlier turn's own text to survive, got %s", body)
-		}
-		if !strings.Contains(body, `{"type":"text","text":"Shipped."}`) {
-			t.Errorf("expected the latest assistant message to survive verbatim, got %s", body)
+		if !strings.Contains(body, `"On it."`) || !strings.Contains(body, `"Shipped."`) {
+			t.Errorf("expected both turns' own text to survive, got %s", body)
 		}
 	})
 }
@@ -1815,10 +1885,12 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *t
 	req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
 		`{"role":"user","content":"run the tests"},` +
 		`{"role":"assistant","content":[` +
-		`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."}` +
+		`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."},` +
+		// A turn always says something of its own beside the thinking. Removing the only
+		// block would leave an empty content array, which Anthropic rejects, so the
+		// rewrite declines on a thinking-only turn rather than corrupt the request.
+		`{"type":"text","text":"On it."}` +
 		`]},` +
-		// Earlier turn: Anthropic protects the last message with role assistant from
-		// edits, so the payload has to sit behind a later assistant turn to reach a retry.
 		`{"role":"user","content":"now ship it"},` +
 		`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
 		`{"role":"user","content":"thanks"}` +
@@ -1847,11 +1919,11 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *t
 	if callCount != 2 {
 		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
 	}
-	if strings.Contains(secondAttemptBody, "ErUBCkYIBRgCKkD") {
-		t.Errorf("the retry still carried the foreign signature: %s", secondAttemptBody)
+	if strings.Contains(secondAttemptBody, "ErUBCkYIBRgCKkD") || strings.Contains(secondAttemptBody, `"planning the run"`) {
+		t.Errorf("the retry still carried the refused thinking block: %s", secondAttemptBody)
 	}
-	if !strings.Contains(secondAttemptBody, `"planning the run"`) {
-		t.Errorf("expected the reasoning text to survive into the retry, got %s", secondAttemptBody)
+	if !strings.Contains(secondAttemptBody, `"On it."`) {
+		t.Errorf("expected the turn's own reply to survive into the retry, got %s", secondAttemptBody)
 	}
 }
 
@@ -1889,14 +1961,268 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnChatShape(t *testing.
 	if callCount != 2 {
 		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
 	}
-	if len(secondAttemptInput) != 2 {
-		t.Fatalf("expected both messages to survive, got %d", len(secondAttemptInput))
+	if len(secondAttemptInput) != 4 {
+		t.Fatalf("expected every message to survive, got %d", len(secondAttemptInput))
 	}
-	details := secondAttemptInput[1].ChatAssistantMessage.ReasoningDetails
-	if len(details) != 1 {
-		t.Fatalf("expected the reasoning detail to survive, got %d", len(details))
+	// Every assistant turn is rewritten, the latest included: Anthropic refuses a
+	// signature-less thinking block wherever it sits, so the only rewrite that reaches
+	// a 200 is removing them all. The messages themselves keep their own content.
+	for _, i := range []int{1, 3} {
+		if got := len(secondAttemptInput[i].ChatAssistantMessage.ReasoningDetails); got != 0 {
+			t.Errorf("message %d: expected the reasoning detail to be gone from the retry, got %d", i, got)
+		}
+		if secondAttemptInput[i].Content == nil || secondAttemptInput[i].Content.ContentStr == nil {
+			t.Errorf("message %d: expected the assistant's own reply to survive", i)
+		}
 	}
-	if details[0].Signature != nil {
-		t.Errorf("expected the signature to be gone from the retry, got %q", *details[0].Signature)
+}
+
+// newAnthropicThinkingResponsesRequest is the shape an Anthropic-dialect client replays
+// through the Responses path: /anthropic/v1/messages with a Bedrock-served Claude model
+// takes no passthrough (isClaudeModel excludes Bedrock), so the turn arrives as
+// Responses items and leaves through the Bedrock Converse converter.
+//
+// Two assistant turns, each a reasoning item plus a tool call, separated by the tool
+// result that ends the first. Items 1-2 are the earlier turn and items 4-5 the latest;
+// both reasoning items have to go, which is what the tests assert.
+func newAnthropicThinkingResponsesRequest() *schemas.BifrostRequest {
+	reasoning := func(id, text, signature string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:   schemas.Ptr(id),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(text),
+					Signature: schemas.Ptr(signature),
+				}},
+			},
+		}
+	}
+	toolCall := func(callID string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr(callID),
+				Name:      schemas.Ptr("bash"),
+				Arguments: schemas.Ptr(`{}`),
+			},
+		}
+	}
+
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "global.anthropic.claude-opus-5",
+			Input: []schemas.ResponsesMessage{
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("refactor this")},
+				},
+				reasoning("rs_earlier", "planning the refactor", "SIG_EARLIER"),
+				toolCall("toolu_earlier"),
+				{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("toolu_earlier"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesToolCallOutputStr: schemas.Ptr("done"),
+						},
+					},
+				},
+				reasoning("rs_latest", "planning the edit", "SIG_LATEST"),
+				toolCall("toolu_latest"),
+				{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("toolu_latest"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesToolCallOutputStr: schemas.Ptr("done"),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestStripResponsesEncryptedContent_AnthropicDropsWholeReasoningBlocks is the
+// regression test for the reported defect.
+//
+// The strip used to blank the signature and keep the thinking prose. Measured against
+// the live Anthropic API, that is the one rewrite the upstream refuses: the same
+// two-turn tool loop replays 200 untouched, 400 with signatures blanked
+// ("messages.1.content.0: Invalid `signature` in `thinking` block") on the earlier turn
+// as readily as the latest, and 200 again once the blocks are removed whole. So the
+// fail-soft was spending its one retry to turn a request the API accepts into one it
+// refuses.
+func TestStripResponsesEncryptedContent_AnthropicDropsWholeReasoningBlocks(t *testing.T) {
+	req := newAnthropicThinkingResponsesRequest()
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected the replayed reasoning to be strippable")
+	}
+
+	for i, item := range req.ResponsesRequest.Input {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+			t.Errorf("item %d: reasoning item survived; Anthropic refuses a signature-less thinking block", i)
+		}
+		if item.Content == nil {
+			continue
+		}
+		for j, block := range item.Content.ContentBlocks {
+			if block.Signature != nil {
+				t.Errorf("item %d block %d: signature survived as %q", i, j, *block.Signature)
+			}
+		}
+	}
+
+	// Everything that is not reasoning still has to reach the retry: the turns either
+	// side of a deleted thinking block are what keeps the conversation coherent.
+	if got := len(req.ResponsesRequest.Input); got != 5 {
+		t.Errorf("expected the 2 user turns, 2 tool calls and 1 tool result to survive, got %d items", got)
+	}
+}
+
+// A redacted_thinking block replays as a reasoning item carrying only
+// encrypted_content. It goes the same way as a signed thinking block: there is no
+// verifiable half left to keep.
+func TestStripResponsesEncryptedContent_AnthropicDropsRedactedThinking(t *testing.T) {
+	req := newAnthropicThinkingResponsesRequest()
+	req.ResponsesRequest.Input[4] = schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_latest"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{},
+			EncryptedContent: schemas.Ptr("REDACTED_BLOB"),
+		},
+	}
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected the redacted item to be strippable")
+	}
+	for i, item := range req.ResponsesRequest.Input {
+		if item.ResponsesReasoning != nil && item.ResponsesReasoning.EncryptedContent != nil {
+			t.Errorf("item %d still carries the redacted payload", i)
+		}
+	}
+}
+
+// The summary is the visible half of the same block -- on Anthropic it replays as the
+// thinking text the refused signature signed, so it cannot outlive the signature the
+// way an OpenAI summary can.
+func TestStripResponsesEncryptedContent_AnthropicDropsSummaryWithSignature(t *testing.T) {
+	req := newAnthropicThinkingResponsesRequest()
+	req.ResponsesRequest.Input[1] = schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_earlier"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{
+				{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "planning"},
+			},
+			EncryptedContent: schemas.Ptr("SIG_EARLIER"),
+		},
+	}
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected the reasoning item to be strippable")
+	}
+	for i, item := range req.ResponsesRequest.Input {
+		if item.ResponsesReasoning != nil && len(item.ResponsesReasoning.Summary) > 0 {
+			t.Errorf("item %d kept a summary whose signature was refused", i)
+		}
+	}
+}
+
+// The removal is Anthropic's requirement, not a universal one. OpenAI accepts a
+// reasoning summary with no encrypted_content, and the narrative is worth keeping, so
+// that path still blanks the field instead of deleting the item.
+func TestStripResponsesEncryptedContent_OpenAIStillKeepsTheSummary(t *testing.T) {
+	req := newEncryptedReasoningRequest("ciphertext")
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected an OpenAI request's reasoning item to be stripped")
+	}
+	if got := len(req.ResponsesRequest.Input); got != 2 {
+		t.Fatalf("expected the OpenAI reasoning item to survive, got %d items", got)
+	}
+	reasoning := req.ResponsesRequest.Input[1].ResponsesReasoning
+	if reasoning == nil || len(reasoning.Summary) != 1 {
+		t.Fatalf("expected the summary to survive for OpenAI, got %+v", reasoning)
+	}
+	if reasoning.EncryptedContent != nil {
+		t.Errorf("expected encrypted_content to be cleared, got %q", *reasoning.EncryptedContent)
+	}
+}
+
+// A message-typed item whose content was nothing but signed reasoning blocks is left
+// with an empty content array once they are removed. Providers reject that outright, so
+// the item has to go the same way an emptied reasoning item does -- the drop guard tests
+// what survives, not what the item is called.
+func TestStripResponsesEncryptedContent_DropsMessageItemEmptiedByRemoval(t *testing.T) {
+	req := newAnthropicThinkingResponsesRequest()
+	req.ResponsesRequest.Input[1] = schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text:      schemas.Ptr("planning the refactor"),
+				Signature: schemas.Ptr("SIG_EARLIER"),
+			}},
+		},
+	}
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected the reasoning block to be strippable")
+	}
+	for i, item := range req.ResponsesRequest.Input {
+		if item.Content != nil && len(item.Content.ContentBlocks) == 0 && item.Content.ContentStr == nil {
+			t.Errorf("item %d was forwarded with an empty content array", i)
+		}
+	}
+}
+
+// The same guard must not throw away a message that merely carried a signature beside
+// content of its own -- that content is the client's, and it still has something to say.
+func TestStripResponsesEncryptedContent_KeepsMessageItemWithSurvivingContent(t *testing.T) {
+	req := newAnthropicThinkingResponsesRequest()
+	req.ResponsesRequest.Input[1] = schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr("planning the refactor"),
+					Signature: schemas.Ptr("SIG_EARLIER"),
+				},
+				{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("On it.")},
+			},
+		},
+	}
+
+	if !stripResponsesEncryptedContent(nil, req) {
+		t.Fatal("expected the reasoning block to be strippable")
+	}
+	var kept *schemas.ResponsesMessage
+	for i := range req.ResponsesRequest.Input {
+		item := req.ResponsesRequest.Input[i]
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeMessage &&
+			item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleAssistant {
+			kept = &item
+			break
+		}
+	}
+	if kept == nil {
+		t.Fatal("the assistant message was dropped even though its own text survived")
+	}
+	if len(kept.Content.ContentBlocks) != 1 || kept.Content.ContentBlocks[0].Text == nil ||
+		*kept.Content.ContentBlocks[0].Text != "On it." {
+		t.Errorf("expected only the text block to survive, got %+v", kept.Content.ContentBlocks)
 	}
 }

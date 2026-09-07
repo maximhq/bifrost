@@ -470,3 +470,109 @@ The collection and supporting files are maintained under `docs/openapi/`. To ref
 - `runners/run-newman-inference-tests.sh` ← `docs/openapi/run-newman-inference-tests.sh`
 - `provider_config/*.postman_environment.json` and `provider_config/README.md` ← `docs/openapi/provider_config/` (if syncing from docs)
 - `fixtures/*` ← `docs/openapi/fixtures/`
+
+## Video costing checks
+
+Video is priced at **settlement**, not at submission. `POST /v1/videos` returns a queued job with no
+cost, and minutes later a settler writes a *second* log row carrying the real figure. Neither newman
+nor a Go unit test can verify that — one has no way to wait minutes for an out-of-band row, the other
+has no provider. `runners/run-video-costing.mjs` does the whole loop:
+
+```
+submit -> poll to terminal -> wait for the settlement row -> assert the billed cost
+```
+
+The expected figures in `fixtures/video-costing-cases.json` are the providers' **own published
+rates**, so a red case means Bifrost disagrees with a price list.
+
+| Path | Description |
+|------|-------------|
+| `fixtures/video-costing-cases.json` | One case per line of the video-costing checklist: request body, expected dimensions, expected rate. |
+| `runners/run-video-costing.mjs` | The runner: submit, poll, wait for settlement, assert, report. |
+| `runners/lib/video-costing.mjs` | Pure verdict logic — band resolution, expected cost, which row is the cost row. |
+| `runners/lib/video-costing.test.mjs` | Unit tests for the above. No network, no Bifrost, no credentials. Runs under `make test-harness-runner-lib`. |
+
+### Running
+
+```bash
+# What each case covers. No network.
+make list-video-costing-cases
+
+# Everything, against a local Bifrost.
+make run-video-costing-test
+
+# One provider group, against hosted Bifrost with a virtual key.
+make run-video-costing-test ARGS="--group Runware --base-url https://<host> --vk sk-bf-..."
+
+# Print what would run without spending money on generations.
+make run-video-costing-test ARGS="--dry-run"
+```
+
+Exit code is 1 if any case fails, so it drops into CI unchanged once the rates are filled in.
+
+### Flags
+
+| Flag | Meaning |
+|------|---------|
+| `--base-url` | Target Bifrost. Defaults to `http://localhost:8080`. |
+| `--vk` | Virtual key for the inference calls. Required against hosted. |
+| `--api-key` | Management API key, sent as `x-bf-api-key`, for reading `/api/logs`. |
+| `--header "X-Foo: bar"` | Extra headers on every call; comma-separate for several. |
+| `--group` / `--provider` / `--case` | Run a subset. |
+| `--concurrency` | Cases in flight at once (default 3). Every case is a real paid generation. |
+| `--seed-pricing` | Write each case's expected rate as a global pricing override before running. |
+| `--include-optional` | Also run cases marked `optional` (they depend on provoking a provider failure). |
+| `--config-db-url` | Postgres URL for the configstore, which unlocks the job-row checks. |
+| `--dry-run` / `--list` | Show what would run, and stop. |
+| `--out` | Report path. Defaults to `newman-reports/video-costing-report.json`. |
+
+### Why `--seed-pricing` exists
+
+The resolution-band pricing keys (`output_cost_per_video_per_second_{480p,720p,1024p,1080p,4k}`) are
+wired in Bifrost but **not yet published to the upstream datasheet feed**. Without a rate, every
+banded case settles *unpriceable* (cost `NULL`) and proves nothing. `--seed-pricing` writes each
+case's own expected rate as a global pricing override first, so the run measures Bifrost's band
+selection and arithmetic rather than the feed's contents. Drop the flag once the feed publishes them.
+
+### Cases marked `needs_rate`
+
+Runway and Replicate cases ship with `rate_per_second: null` and are reported as **skipped**, not
+passed. Their official rates have not been sourced from provider docs yet (Runway prices in credits,
+Replicate ids are version-pinned), and a made-up number in a billing test is worse than no test. Fill
+in `expect.cost.rate_per_second` and delete `needs_rate` to activate them.
+
+### Reading a failure
+
+Each case reports independent checks, so the report names the property that broke rather than one
+opaque boolean:
+
+```
+OpenAI
+  ✘ sora-2-pro at 1080p (3 of 3 rates) $2.4
+      cost: billed $2.4, wanted $5.6 (0.7/s x 8s x 1)
+```
+
+The checks, in the order they run: `submitted`, `terminal`, `expected-status`, `one-settlement-row`,
+`seconds`, `size`, `output-count`, `band`, `incomplete-flag`, `priced`, `cost`, plus
+`settlement-path-parity` and `job-params.*` where a case asks for them.
+
+Two are worth calling out:
+
+- **`one-settlement-row`** fails on 0 *or* 2+. Two rows means the deterministic-id idempotency key
+  broke, which would double-bill and double-report to governance — a different bug from a wrong rate.
+- **`seconds` / `size`** are asserted separately from `cost` so a bad dimension merge (provider
+  returned 5s for a requested 4s and we priced the request) fails on its own check instead of
+  silently moving the cost target.
+
+### Notes on specific cases
+
+- **`settle_via: "sweeper"`** deliberately does not poll. Calling retrieve settles the job inline, so
+  polling would make the sweeper path untestable. That case waits for the row to appear on its own,
+  and `compare_cost_with` cross-checks that both paths bill the identical figure.
+- **`runway-retrieve-404-stops-polling`** asserts on *latency*, not just the status code — an
+  internally retried 404 blows through the `expect_fast_ms` ceiling.
+- **`runway-seedance25-input-seconds`** is expected to fail on price even once its rate is filled in.
+  Runway bills seedance for input seconds *plus* output seconds and Bifrost has an output-only
+  per-second model, so video-to-video under-bills. Run it to measure the gap.
+- **`expect_job_params`** (the Gemini cases) needs `--config-db-url`; without it those checks report
+  as skipped rather than failing, so every other check still works against hosted Bifrost.

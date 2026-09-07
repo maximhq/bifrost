@@ -111,6 +111,15 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 	return keep, dropped
 }
 
+// ProviderRequiresSyntheticStructuredOutput reports whether a provider's Anthropic Messages
+// surface rejects native structured outputs (output_config.format) and must receive the schema as
+// the synthetic bf_so_* tool instead. Single source of truth for the typed converters and for the
+// raw-body passthrough guards, which have to agree: a body the converter would have rewritten must
+// never reach the provider verbatim ("output_config.format: Extra inputs are not permitted").
+func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
+	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
+}
+
 // ValidateResponsesToolsForProvider is the Responses-path mirror of
 // ValidateChatToolsForProvider. It partitions []schemas.ResponsesTool into a
 // keep-set (function/custom tools + server tools supported on the target
@@ -1182,8 +1191,17 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	var blocks []AnthropicContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
-		// sent and none may be invented — that would burn a cache checkpoint (max 4) the caller
-		// never asked for.
+		// sent and none may be invented HERE — that would burn a cache checkpoint (max 4) the
+		// caller never asked for.
+		//
+		// Breakpoints are synthesized in exactly one place, and it is not this one: the
+		// opt-in injector at core/providers/utils/promptcache.go, gated on the provider's
+		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
+		// request either carries the caller's intent or the operator's, never a third thing
+		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
+		// "never drops": the loop below deliberately collapses intermediate markers onto the
+		// last block, for the reasons stated there. Adding is what changes the caller's cost
+		// profile behind their back; collapsing a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
@@ -2641,6 +2659,21 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 		return providerReason
 	}
 	return AnthropicStopReason(bifrostReason)
+}
+
+// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// Anthropic stop_reason, for terminal events that carry no explicit stop reason.
+func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+	if details == nil {
+		return ""
+	}
+	switch details.Reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return AnthropicStopReasonMaxTokens
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return AnthropicStopReasonRefusal
+	}
+	return ""
 }
 
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format

@@ -222,6 +222,45 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
+export interface DatabricksKeyConfig {
+	workspace_url: SecretVar;
+	api_format?: "auto" | "model_serving" | "ai_gateway";
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	forward_gateway_tags?: boolean;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "pat" | "oauth_m2m";
+}
+
+// Default DatabricksKeyConfig
+export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
+	workspace_url: { value: "", ref: "" },
+	api_format: "auto",
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	forward_gateway_tags: false,
+	_auth_type: "pat",
+} as const satisfies Required<DatabricksKeyConfig>;
+
+// GithubCopilotKeyConfig matching Go's schemas.GithubCopilotKeyConfig
+export interface GithubCopilotKeyConfig {
+	app_id: SecretVar;
+	installation_id: SecretVar;
+	repository_id: SecretVar;
+	private_key: SecretVar;
+	github_domain?: SecretVar;
+}
+
+// Default GithubCopilotKeyConfig
+export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
+	app_id: { value: "", ref: "" },
+	installation_id: { value: "", ref: "" },
+	repository_id: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	github_domain: { value: "", ref: "" },
+} as const satisfies Required<GithubCopilotKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -242,6 +281,8 @@ export interface ModelProviderKey {
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
+	databricks_key_config?: DatabricksKeyConfig;
+	github_copilot_key_config?: GithubCopilotKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -408,6 +449,24 @@ export interface OpenAIConfig {
 	disable_store?: boolean;
 }
 
+// CacheControlInjectionPoint names one place to add a cache breakpoint.
+// A point must set role, index, or both; a point with neither matches nothing.
+export interface CacheControlInjectionPoint {
+	location: "message";
+	role?: "system" | "developer" | "user" | "assistant";
+	// Negative values count from the end, so -1 is the last message.
+	index?: number;
+}
+
+// PromptCacheConfig opts a provider into synthesizing cache breakpoints for requests
+// that carry none. Off by default; requests that already carry their own markers are
+// never modified.
+export interface PromptCacheConfig {
+	auto_inject?: boolean;
+	ttl?: string;
+	cache_control_injection_points?: CacheControlInjectionPoint[];
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -418,6 +477,7 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -446,6 +506,7 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -458,6 +519,7 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	prompt_cache?: PromptCacheConfig;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -589,6 +651,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
+	hidden_request_types: string[];
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
@@ -600,6 +663,7 @@ export interface CompatConfig {
 	convert_chat_to_responses: boolean;
 	should_drop_params: boolean;
 	should_convert_params: boolean;
+	azure_deepseek: boolean;
 }
 
 // Core Bifrost configuration types
@@ -667,7 +731,13 @@ export const DefaultCoreConfig: CoreConfig = {
 	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
+	compat: {
+		convert_text_to_chat: false,
+		convert_chat_to_responses: false,
+		should_drop_params: false,
+		should_convert_params: false,
+		azure_deepseek: false,
+	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",

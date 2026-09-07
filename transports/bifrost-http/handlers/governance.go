@@ -63,6 +63,11 @@ type GovernanceManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
+	ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error)
+	RemoveVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
@@ -124,18 +129,78 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	return fn, ok
 }
 
+// ManagedByResolver returns a human-readable label for what externally manages
+// a non-global model config's scope target (e.g. the access profile that
+// materialized it), distinct from ScopeNameResolver's "who this applies to"
+// name. The second return value is false when no managing entity applies; the
+// UI then renders nothing extra. Implementations must be safe to call
+// concurrently.
+type ManagedByResolver func(ctx context.Context, scopeID string) (configstoreTables.SourceRef, bool)
+
+// managedByResolvers is the package-level registry consulted by
+// resolveModelConfigManagedBy. Empty by default in OSS; downstream builds
+// register resolvers at startup via RegisterManagedByResolver. Guarded by
+// managedByResolversMu.
+var (
+	managedByResolversMu sync.RWMutex
+	managedByResolvers   = map[string]ManagedByResolver{}
+)
+
+// RegisterManagedByResolver wires a managed-by resolver for a model_config
+// scope value. Intended to be called once at process startup, before serving
+// requests. Overwrites any previously registered resolver for the same scope.
+// Safe to call concurrently.
+func RegisterManagedByResolver(scope string, fn ManagedByResolver) {
+	if scope == "" || fn == nil {
+		return
+	}
+	managedByResolversMu.Lock()
+	managedByResolvers[scope] = fn
+	managedByResolversMu.Unlock()
+}
+
+func lookupManagedByResolver(scope string) (ManagedByResolver, bool) {
+	managedByResolversMu.RLock()
+	defer managedByResolversMu.RUnlock()
+	fn, ok := managedByResolvers[scope]
+	return fn, ok
+}
+
 // ExternalQuotaBudgetResolver returns budgets that govern a VK but whose usage is
 // tracked OUTSIDE the VK's own budget rows
 type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
 
+// SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
+// quota responses that can be composed from more than one source. The embedded
+// SourceRef is the same one model configs carry, so both APIs describe an origin
+// with identical keys. All three fields are empty when there is nothing to
+// disambiguate, e.g. a virtual key's own budget rows.
+type SourcedBudget struct {
+	configstoreTables.TableBudget
+	configstoreTables.SourceRef
+}
+
+// SourcedRateLimit is SourcedBudget's counterpart for rate limits.
+type SourcedRateLimit struct {
+	configstoreTables.TableRateLimit
+	configstoreTables.SourceRef
+}
+
 // ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
 // authoritative usage lives outside its own budget rows.
 type ExternalQuotaBudgetResult struct {
-	// Budgets replaces the VK's own budget rows in the quota response.
-	Budgets []configstoreTables.TableBudget
-	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
-	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	// Budgets replaces the VK's own budget rows in the quota response, each tagged
+	// with what governs it.
+	Budgets []SourcedBudget
+	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise: the
+	// single effective, tightest-per-dimension rate limit that carries the real
+	// usage for an AP-managed VK). Kept for backward compatibility with existing
+	// readers of this field.
 	RateLimit *configstoreTables.TableRateLimit
+	// RateLimits lists every rate limit RateLimit was merged from, each tagged with
+	// its source, so a caller can see which one is actually binding instead of only
+	// the merged result. Empty when there's at most one source.
+	RateLimits []SourcedRateLimit
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -225,13 +290,14 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID          *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
-	CustomerID      *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
+	TeamID            *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID        *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	IsActive          *bool                   `json:"is_active,omitempty"`
+	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
+	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
+	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -270,14 +336,15 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID           schemas.OptionalJSON[string] `json:"team_id,omitempty"`
-	CustomerID       schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
-	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
-	IsActive         *bool                        `json:"is_active,omitempty"`
-	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
-	ExpiresAt        *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
+	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	IsActive          *bool                        `json:"is_active,omitempty"`
+	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
+	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
+	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
+	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -1226,7 +1293,11 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
 	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
 	vk.IsAccessProfileManaged = ext.Managed
-	vk.Budgets = ext.Budgets
+	budgets := make([]configstoreTables.TableBudget, len(ext.Budgets))
+	for i := range ext.Budgets {
+		budgets[i] = ext.Budgets[i].TableBudget
+	}
+	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
 }
 
@@ -1622,15 +1693,16 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var vk configstoreTables.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		vk = configstoreTables.TableVirtualKey{
-			ID:              uuid.NewString(),
-			Name:            req.Name,
-			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
-			Description:     req.Description,
-			TeamID:          req.TeamID,
-			CustomerID:      req.CustomerID,
-			IsActive:        isActive,
-			CalendarAligned: req.CalendarAligned,
-			ExpiresAt:       req.ExpiresAt,
+			ID:                uuid.NewString(),
+			Name:              req.Name,
+			Value:             *schemas.NewSecretVar(governance.GenerateVirtualKey()),
+			Description:       req.Description,
+			TeamID:            req.TeamID,
+			CustomerID:        req.CustomerID,
+			IsActive:          isActive,
+			CalendarAligned:   req.CalendarAligned,
+			AllowAllProviders: req.AllowAllProviders,
+			ExpiresAt:         req.ExpiresAt,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1822,8 +1894,16 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
 
+	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
+	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
 	SendJSON(ctx, map[string]interface{}{
-		"virtual_key": vk,
+		"virtual_key":     vk,
+		"virtual_mcp_ids": vmcpIDs,
 	})
 }
 
@@ -2015,6 +2095,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.CalendarAligned != nil {
 			alignmentSwitchedOn = !vk.CalendarAligned && *req.CalendarAligned
 			vk.CalendarAligned = *req.CalendarAligned
+		}
+		if req.AllowAllProviders != nil {
+			vk.AllowAllProviders = *req.AllowAllProviders
 		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
@@ -3580,6 +3663,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		}
 		page := all[offset:end]
 		h.enrichModelConfigScopeNames(ctx, page)
+		h.enrichModelConfigManagedBy(ctx, page)
 		SendJSON(ctx, map[string]any{
 			"model_configs": page,
 			"count":         len(page),
@@ -3599,10 +3683,18 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
 	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
-		// Paginated path
+		// Paginated path. `scope` accepts a comma-separated list so one UI filter
+		// option can cover several scope values; scope values are identifiers and
+		// never contain commas, so splitting is unambiguous.
+		var scopes []string
+		for _, s := range strings.Split(scope, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				scopes = append(scopes, s)
+			}
+		}
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
-			Scope:    scope,
+			Scopes:   scopes,
 			ScopeID:  scopeID,
 			Provider: provider,
 		}
@@ -3639,6 +3731,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		h.enrichModelConfigScopeNames(ctx, modelConfigs)
+		h.enrichModelConfigManagedBy(ctx, modelConfigs)
 		SendJSON(ctx, map[string]any{
 			"model_configs": modelConfigs,
 			"count":         len(modelConfigs),
@@ -3657,6 +3750,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
+	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{
 		"model_configs": modelConfigs,
 		"count":         len(modelConfigs),
@@ -3679,6 +3773,7 @@ func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.resolveModelConfigScopeName(ctx, mc, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, mc, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"model_config": mc,
 	})
@@ -3707,6 +3802,41 @@ func (h *GovernanceHandler) resolveModelConfigScopeName(ctx context.Context, mc 
 		cache[key] = name
 	}
 	mc.ScopeName = name
+}
+
+// resolveModelConfigManagedBy populates the transient ManagedBy for a single non-global
+// model config by dispatching to the resolver registered for mc.Scope. Unknown scopes
+// (no resolver registered) and resolution failures are non-fatal — ManagedBy stays empty
+// and the UI renders nothing extra. The cache lets callers dedupe lookups across many
+// configs; it is keyed by (scope, scope_id) so distinct scopes never collide. Kept
+// separate from resolveModelConfigScopeName (different registry, different meaning —
+// "who this applies to" vs. "what manages it") so neither can affect the other.
+func (h *GovernanceHandler) resolveModelConfigManagedBy(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]configstoreTables.SourceRef) {
+	if mc == nil || mc.Scope == "" || mc.ScopeID == nil {
+		return
+	}
+	resolver, ok := lookupManagedByResolver(mc.Scope)
+	if !ok {
+		return
+	}
+	id := *mc.ScopeID
+	key := mc.Scope + "|" + id
+	ref, cached := cache[key]
+	if !cached {
+		if resolved, found := resolver(ctx, id); found {
+			ref = resolved
+		}
+		cache[key] = ref
+	}
+	mc.SourceRef = ref
+}
+
+// enrichModelConfigManagedBy populates ManagedBy for each non-global config in the slice.
+func (h *GovernanceHandler) enrichModelConfigManagedBy(ctx context.Context, configs []configstoreTables.TableModelConfig) {
+	cache := map[string]configstoreTables.SourceRef{}
+	for i := range configs {
+		h.resolveModelConfigManagedBy(ctx, &configs[i], cache)
+	}
 }
 
 // enrichModelConfigScopeNames populates ScopeName for each non-global config in the slice.
@@ -3860,6 +3990,7 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		preloadedMC = &mc
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
@@ -3997,6 +4128,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
+	h.resolveModelConfigManagedBy(ctx, updatedMC, map[string]configstoreTables.SourceRef{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
@@ -4830,16 +4962,19 @@ type quotaModelSpend struct {
 // (both measured since last_reset). models is empty when logging is disabled.
 type quotaBudget struct {
 	configstoreTables.TableBudget
+	// Identifies what governs this budget (e.g. an access profile), when the caller
+	// supplied one. Empty for a VK's own budget rows.
+	configstoreTables.SourceRef
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
 // buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
 // request logs over that budget's current cycle
-func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []SourcedBudget, now time.Time) ([]quotaBudget, error) {
 	out := make([]quotaBudget, 0, len(budgets))
 	for i := range budgets {
-		b := &budgets[i]
-		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
+		b := &budgets[i].TableBudget
+		entry := quotaBudget{TableBudget: *b, SourceRef: budgets[i].SourceRef, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
@@ -4925,8 +5060,15 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	budgetRows := vk.Budgets
+	budgetRows := make([]SourcedBudget, len(vk.Budgets))
+	for i := range vk.Budgets {
+		budgetRows[i] = SourcedBudget{TableBudget: vk.Budgets[i]}
+	}
 	rateLimit := vk.RateLimit
+	rateLimits := []SourcedRateLimit{}
+	if vk.RateLimit != nil {
+		rateLimits = []SourcedRateLimit{{TableRateLimit: *vk.RateLimit}}
+	}
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -4939,6 +5081,10 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
+			rateLimits = ext.RateLimits
+			if rateLimits == nil {
+				rateLimits = []SourcedRateLimit{}
+			}
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -4956,6 +5102,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
+		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

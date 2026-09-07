@@ -93,6 +93,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.Databricks,
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
@@ -133,7 +134,7 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -214,6 +215,48 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 		if key.SGLKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("sgl_key_config.url is required")
+		}
+	case schemas.GithubCopilot:
+		// Two auth modes, either is sufficient.
+		//
+		//   1. Key.Value holds a Copilot API token, GitHub's documented "direct API token"
+		//      method. Those live about 30 minutes, so this suits testing.
+		//   2. GithubCopilotKeyConfig holds GitHub App credentials and Bifrost mints its own
+		//      tokens server-to-server. This is the mode for real deployments.
+		// Trim before every check. resolveCredentials and validateKeyConfig trim too, so an
+		// untrimmed check here would accept a key that fails at the first inference call
+		// instead of at setup, where the operator can still act on it.
+		if strings.TrimSpace(key.Value.GetValue()) != "" {
+			break
+		}
+		if key.GithubCopilotKeyConfig == nil {
+			return fmt.Errorf("github_copilot_key_config is required when value is not set")
+		}
+		// Ordered, so the reported field is deterministic when several are missing.
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"app_id", key.GithubCopilotKeyConfig.AppID.GetValue()},
+			{"installation_id", key.GithubCopilotKeyConfig.InstallationID.GetValue()},
+			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
+			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
+			}
+		}
+	case schemas.Databricks:
+		// The workspace URL is not required here: an SDK caller may set it once as the
+		// provider base_url instead of per key. The provider raises a configuration error at
+		// request time when neither is set. What is checked here is that the OAuth M2M
+		// service principal is whole, since a half-configured pair can never authenticate.
+		if key.DatabricksKeyConfig != nil {
+			hasClientID := key.DatabricksKeyConfig.ClientID != nil && key.DatabricksKeyConfig.ClientID.GetValue() != ""
+			hasClientSecret := key.DatabricksKeyConfig.ClientSecret != nil && key.DatabricksKeyConfig.ClientSecret.GetValue() != ""
+			if hasClientID != hasClientSecret {
+				return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
+			}
 		}
 	}
 	return nil
@@ -432,6 +475,27 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// PrepareContextForInternalRequest marks ctx as an internal sub-request issued
+// by a plugin on its own behalf. It skips the plugin pipeline — the request
+// cannot recurse back into the plugin that issued it — and sheds the
+// caller-specific key-routing and body-transport state documented on
+// ClearContextForInternalRequest. Plugins should call this instead of setting
+// BifrostContextKeySkipPluginPipeline (a reserved core key) themselves.
+func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	ClearContextForInternalRequest(ctx)
+}
+
+// PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.
+func PrepareContextForInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
+	PrepareContextForInternalRequest(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, false)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {

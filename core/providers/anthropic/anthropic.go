@@ -144,7 +144,13 @@ func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request,
 	// was already activated at transport layer.
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Anthropic)
 	if !usedLargePayloadBody {
+		// Time the payload copy as "request-marshal" so it lands in the marshal bucket
+		// instead of the provider-internal residual.
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		req.SetBody(body)
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
 	}
 	return usedLargePayloadBody
 }
@@ -285,8 +291,14 @@ func completeRequest(
 		return nil, latency, nil, bifrostErr
 	}
 
-	// Extract provider response headers before status check so error responses also forward them
+	// Extract provider response headers before status check so error responses also forward them.
+	// Time the header copy as "response-finalize" so it lands in that bucket instead of the
+	// provider-internal residual.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
+	}
 
 	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -440,12 +452,16 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	response := acquireAnthropicTextResponse()
 	defer releaseAnthropicTextResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostTextCompletionResponse()
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -1342,13 +1358,17 @@ func HandleAnthropicResponsesRequest(
 	response := AcquireAnthropicMessageResponse()
 	defer ReleaseAnthropicMessageResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, config.ShouldSendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, config.ShouldSendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
 
 	// Create final response
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostResponsesResponse(ctx)
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()

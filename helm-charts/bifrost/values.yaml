@@ -285,6 +285,7 @@ bifrost:
       convertChatToResponses: false
       shouldDropParams: false
       shouldConvertParams: false
+      azureDeepseek: false
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -551,11 +552,9 @@ bifrost:
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
 
   # Plugins configuration
-  # Plugin version must be >= 1 (schema minimum). Use values > 1 to force DB-backed plugin config replacement on upgrade.
   plugins:
     telemetry:
       enabled: false
-      version: 1
       config:
         custom_labels: []
         # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
@@ -571,7 +570,6 @@ bifrost:
 
     logging:
       enabled: false
-      version: 1
       config:
         disable_content_logging: false
         logging_headers: []
@@ -583,7 +581,6 @@ bifrost:
 
     governance:
       enabled: false
-      version: 1
       config:
         is_vk_mandatory: false
         required_headers: []
@@ -591,7 +588,6 @@ bifrost:
 
     maxim:
       enabled: false
-      version: 1
       config:
         api_key: ""
         log_repo_id: ""
@@ -602,7 +598,6 @@ bifrost:
 
     semanticCache:
       enabled: false
-      version: 1
       config:
         # Semantic mode (dimension > 1): set provider + embedding_model. The provider's API keys
         #   are inherited from bifrost.providers, so configure that provider there (not here).
@@ -620,7 +615,6 @@ bifrost:
 
     otel:
       enabled: false
-      version: 1
       config:
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "include"           # "include" or "exclude"
@@ -687,7 +681,6 @@ bifrost:
       # inject_timeout: "5s"
     datadog:
       enabled: false
-      version: 1
       config:
         service_name: "bifrost" # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
@@ -723,7 +716,6 @@ bifrost:
 
     bigquery:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
@@ -742,7 +734,6 @@ bifrost:
 
     kafka:
       enabled: false
-      version: 1
       config:
         brokers: [] # Kafka broker addresses (required when enabled)
         topic: "" # Topic to publish traces to (required when enabled)
@@ -765,7 +756,6 @@ bifrost:
 
     pubsub:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         topic_id: "" # Pub/Sub topic ID (required when enabled)
@@ -779,7 +769,6 @@ bifrost:
 
     splunk:
       enabled: false
-      version: 1
       config:
         endpoint: "" # HEC base URL, e.g. https://localhost:8088 (required when enabled). Supports env.VAR_NAME.
         token: "" # HEC token (required when enabled). Supports env.VAR_NAME — e.g. "env.SPLUNK_HEC_TOKEN".
@@ -809,7 +798,6 @@ bifrost:
       # - name: "my-custom-plugin"
       #   enabled: true
       #   path: "/plugins/my-plugin.so"
-      #   version: 1 # must be >= 1; increase to force DB-backed plugin config replacement
       #   config:
       #     key: value
 
@@ -872,6 +860,7 @@ bifrost:
       #   is_active: true
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
+      #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -929,15 +918,36 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
-      # keywords:
-      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
-      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
-      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
+      #   embedding_model: "text-embedding-3-small"
+      #                                      # Bifrost detects the embedding dimension during warmup
+      #   timeout: "1.5s"                  # Ceiling on the inline embedding call; exceeding it skips tier routing for that request
+      #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
+      #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
+      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets (record-only, never enforced)
+      #   vector_store: "embedded"         # Where phrase vectors live.
+      #                                      #   embedded      = in-memory, private to one pod, re-embeds every phrase on restart
+      #                                      #   vector_store  = the configured vectorStore below; shared between pods, re-embeds nothing on restart,
+      #                                      #                   and one pod embeds on a config change while the rest adopt what it wrote.
+      #                                      #                   Falls back to embedded when no vectorStore is configured (reported as
+      #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
+      #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
+      #                                      #                   node-local even with a path, so it is private per pod.
+      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
+      #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
+      #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
+      #   timeout: "4s"                    # Per-request classification timeout; on timeout no tier is published and the request is recorded as skipped
+      #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
+      #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
+      #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
+      # session:                            # Optional session-aware routing; requires semantic configuration above
+      #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+      #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+      #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -994,12 +1004,17 @@ bifrost:
       # mDNS discovery
       mdnsService: ""
 
-  # SCIM/SSO configuration for enterprise SSO
-  scim:
-    enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
-    provider: ""
-    config: {}
+  # SCIM/SSO configuration for enterprise SSO. Not set by default — leave the key out
+  # entirely unless you manage SCIM through Helm. While it is absent the chart emits no
+  # scim_config section at all, so SCIM configured from the dashboard is left untouched.
+  # Once you declare it, Helm owns the section: enabled: true renders
+  # "scim_config": {"enabled": true, ...} and enabled: false renders
+  # "scim_config": {"enabled": false, ...}, which actually turns SCIM off.
+  # scim:
+  #   enabled: true
+  #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
+  #   provider: ""
+  #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
@@ -1464,6 +1479,9 @@ storage:
   # Logs store settings
   logsStore:
     enabled: true
+    # Hide these request types from dashboard/API reads. Logs are still stored.
+    # Example: [count_tokens, embedding, chat_completion_stream]
+    hiddenRequestTypes: []
     # Backend type for logs store. Empty string uses storage.mode as default
     type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
@@ -1483,6 +1501,7 @@ storage:
     #   sslMode: require    # disable, allow, prefer, require, verify-ca, verify-full
     #   connMaxLifetime: 10m
     #   # Command executed by Bifrost to produce the password on stdout (e.g. RDS IAM auth).
+    #   # Mutually exclusive with `password` and `existingSecret` - both must stay empty when set.
     #   passwordCommand:
     #     command: aws
     #     args:
@@ -1562,6 +1581,8 @@ postgresql:
     password: ""
     # Command that prints the PostgreSQL password on stdout, for dynamic credentials (e.g. AWS RDS
     # IAM auth tokens). Result is cached for cache_ttl (default 60s); keep it below the token's validity.
+    # Mutually exclusive with `password` and `existingSecret` above -- both must stay empty when set.
+    # The command runs inside the Bifrost container, so its binary (e.g. `aws`) must exist in the image.
     # passwordCommand:
     #   command: aws
     #   args:
@@ -1631,9 +1652,9 @@ postgresql:
 
 # Vector store configuration
 vectorStore:
-  # Enable vector store for semantic caching
+  # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
 
   # Weaviate configuration
   weaviate:
@@ -1784,6 +1805,12 @@ vectorStore:
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
+
+  # Chromem configuration (embedded in-process vector store, no external service).
+  # The top-level vectorStore.enabled controls activation.
+  chromem:
+    path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
+    compress: false # Gzip-compress persisted documents (only used when path is set)
 
 # Environment variables
 env: []

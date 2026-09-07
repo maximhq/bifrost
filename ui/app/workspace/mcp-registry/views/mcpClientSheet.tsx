@@ -34,15 +34,20 @@ import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpda
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "lucide-react";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { ConnectionFailureBlock } from "./mcpConnectionFailure";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { TokenExchangeFields } from "./tokenExchangeFields";
@@ -54,6 +59,41 @@ interface MCPClientSheetProps {
 	onNavigate?: (direction: "prev" | "next") => void;
 	hasPrev?: boolean;
 	hasNext?: boolean;
+}
+
+// stateDescription is the sentence under the sheet title. The pending and
+// needs_reauth prose is unchanged; unstable and degraded gain a sentence
+// naming what Bifrost's last check ran into, and needs_reauth appends the
+// recorded reason so the explanation sits next to the instruction.
+function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): string {
+	const failure = mcpClient.last_failure;
+	switch (mcpClient.state) {
+		case "pending_verification":
+			return mcpClient.config.auth_type === "token_exchange"
+				? "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call."
+				: mcpClient.config.auth_type === "per_user_oauth"
+					? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
+					: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used.";
+		case "needs_reauth": {
+			// Each auth type names the repair action the actions menu actually
+			// offers for it, matching the credential block below.
+			const base =
+				mcpClient.config.auth_type === "token_exchange"
+					? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. Callers' tool calls are unaffected. Use Re-verify as me from the server's actions menu to fix it."
+					: isPerUserAuth
+						? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use Refresh admin credential from the server's actions menu to fix it."
+						: "This connection's credentials need to be re-authorized. Use Reauthorize from the server's actions menu to redo the OAuth consent flow.";
+			return failure ? `${base} Reason: ${failure.message}` : base;
+		}
+		case "unstable":
+			return failure
+				? `Bifrost's last connection check failed ${formatDurationSince(failure.at)} ago while ${failureStageLabel(failure.stage).toLowerCase()}. Tool calls are still attempted normally; the next check runs within about 10 seconds.`
+				: "Bifrost's last connection check failed. Tool calls are still attempted normally; the next check runs within about 10 seconds.";
+		case "degraded":
+			return "Instances of this deployment disagree about this server's state. Tool calls are still attempted on every instance.";
+		default:
+			return "MCP server configuration and available tools";
+	}
 }
 
 /** API sends tool_sync_interval as nanoseconds (Go time.Duration). Normalize to minutes for form/store. */
@@ -113,6 +153,12 @@ export default function MCPClientSheet({
 		mcpClient.config.auth_type === "per_user_oauth" ||
 		mcpClient.config.auth_type === "per_user_headers" ||
 		mcpClient.config.auth_type === "token_exchange";
+	// Auth types whose server holds an OAuth credential of its own: the shared
+	// token, or the retained admin token used to refresh the tool list.
+	const holdsOwnOauthCredential =
+		mcpClient.config.auth_type === "oauth" ||
+		mcpClient.config.auth_type === "per_user_oauth" ||
+		mcpClient.config.auth_type === "token_exchange";
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
 
 	const { toast } = useToast();
@@ -128,6 +174,9 @@ export default function MCPClientSheet({
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
+	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
+	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
+	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -608,26 +657,14 @@ export default function MCPClientSheet({
 		<>
 			<Sheet open onOpenChange={(open) => !open && onClose()}>
 				<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
-					<SheetHeader className="w-full p-0 px-4 py-4 md:px-8" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<SheetHeader className="w-full p-0 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 						<div className="flex w-full items-center justify-between">
 							<div className="space-y-2">
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 									{mcpClient.config.name}
 									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{titleCaseFromSnakeCase(mcpClient.state)}</Badge>
 								</SheetTitle>
-								<SheetDescription>
-									{mcpClient.state === "pending_verification"
-										? mcpClient.config.auth_type === "token_exchange"
-											? "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call."
-											: mcpClient.config.auth_type === "per_user_oauth"
-												? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
-												: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
-										: mcpClient.state === "needs_reauth"
-											? isPerUserAuth
-												? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use Refresh admin credential from the server's actions menu to fix it."
-												: "This connection's credentials need to be re-authorized. Use Reauthorize from the server's actions menu to redo the OAuth consent flow."
-											: "MCP server configuration and available tools"}
-								</SheetDescription>
+								<SheetDescription>{stateDescription(mcpClient, isPerUserAuth)}</SheetDescription>
 							</div>
 							<SheetNavigationButtons
 								hasPrev={hasPrev}
@@ -661,6 +698,15 @@ export default function MCPClientSheet({
 									</div>
 
 									<TabsContent value="general" className="space-y-6 pb-10">
+										{hasStateReason(mcpClient) && (
+											<div className="space-y-4">
+												<SectionHeader
+													title={mcpClient.node_states ? "Connection checks across instances" : "Last connection check"}
+													description={stateReasonTitle(mcpClient.state, !!mcpClient.node_states)}
+												/>
+												<ConnectionFailureBlock client={mcpClient} />
+											</div>
+										)}
 										<div className="space-y-4">
 											<SectionHeader title="Basic Information" description="Identify this server and review its connection details." />
 											<FormField
@@ -718,6 +764,23 @@ export default function MCPClientSheet({
 													</span>
 												</div>
 											</div>
+											{mcpClient.config.endpoint_slug && (
+												<div className="flex flex-col gap-2">
+													<div className="text-sm font-medium">Endpoint</div>
+													<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+														<span className="font-mono break-all">/mcp/{mcpClient.config.endpoint_slug}</span>
+														<button
+															type="button"
+															onClick={() => copyEndpoint(`${baseUrl}/mcp/${mcpClient.config.endpoint_slug}`)}
+															className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+															aria-label="Copy endpoint URL"
+															data-testid={`mcp-client-sheet-endpoint-copy-${mcpClient.config.endpoint_slug}`}
+														>
+															{endpointCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+														</button>
+													</div>
+												</div>
+											)}
 											{mcpClient.config.connection_type === "stdio" &&
 												mcpClient.config.stdio_config?.envs &&
 												mcpClient.config.stdio_config.envs.length > 0 && (
@@ -1077,6 +1140,13 @@ export default function MCPClientSheet({
 											</>
 										)}
 
+										{mcpClient.config.auth_type === "per_user_headers" && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
 										<DottedSeparator />
 										<div className="space-y-4">
 											<SectionHeader
@@ -1115,6 +1185,20 @@ export default function MCPClientSheet({
 												)}
 											/>
 										</div>
+
+										{holdsOwnOauthCredential && (
+											<>
+												<DottedSeparator />
+												<MCPClientCredentialSection mcpClient={mcpClient} />
+											</>
+										)}
+
+										{(mcpClient.config.auth_type === "per_user_oauth" || mcpClient.config.auth_type === "per_user_headers") && (
+											<>
+												<DottedSeparator />
+												<MCPClientSessionsSection mcpClient={mcpClient} />
+											</>
+										)}
 
 										{(() => {
 											const showTLS = mcpClient.config.connection_type === "http" || mcpClient.config.connection_type === "sse";
@@ -1638,8 +1722,8 @@ export default function MCPClientSheet({
 												{form.watch("allow_by_default") && (
 													<p className="text-muted-foreground flex items-center gap-1 text-xs">
 														<Info className="h-3 w-3 shrink-0" />
-														Configuring access for a virtual key here overrides the{" "}
-														<span className="font-medium">Allow by Default</span>&nbsp;setting for that key.
+														Configuring access for a virtual key here overrides the <span className="font-medium">Allow by Default</span>
+														&nbsp;setting for that key.
 													</p>
 												)}
 											</div>
@@ -1707,7 +1791,9 @@ export default function MCPClientSheet({
 												</div>
 											) : form.watch("allow_by_default") ? (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">This MCP server is allowed by default; a virtual key with an explicit assignment uses that instead.</p>
+													<p className="text-sm">
+														This MCP server is allowed by default; a virtual key with an explicit assignment uses that instead.
+													</p>
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">

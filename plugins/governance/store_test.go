@@ -1451,7 +1451,7 @@ func TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel(t *testing.T) {
 	// Settled the way the funnel settles it: the grant carries the attempt's limits, and the
 	// accounted set is read from there.
 	ctx := resolverCtx(store, vkValue)
-	limits := resolveLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
+	limits := settleAttemptLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
 	require.NotNil(t, limits)
 	budgetIDs := limitIDsOf(limits.Budgets())
 
@@ -1620,26 +1620,26 @@ func ptrInt64(i int64) *int64 {
 	return &i
 }
 
-// An access profile's per-model budgets materialise as user-scoped model configs
-// naming one model and provider. A batch create carries no top-level model, so the
-// in-flight collection matches only the wildcard tiers and those per-model budgets
-// are invisible to it — which is why batch spend never reached them. Settlement
-// knows the models and asks for them by name.
+// A downstream consumer's (e.g. an access profile's) per-model budgets materialise
+// as virtual-key-scoped model configs naming one model and provider. A batch create
+// carries no top-level model, so the in-flight collection matches only the wildcard
+// tiers and those per-model budgets are invisible to it — which is why batch spend
+// never reached them. Settlement knows the models and asks for them by name.
 func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime(t *testing.T) {
 	logger := NewMockLogger()
 	ctx := context.Background()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("ap-model-budget", 100.0, 0.0, "1M")
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, nil)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, nil)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("ap-wildcard-budget", 100.0, 0.0, "1M")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
@@ -1647,31 +1647,21 @@ func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime
 	}, nil, nil)
 	require.NoError(t, err)
 
-	// What batch create settles onto the request: no model, so only the wildcard is gathered. The
-	// user is a scope of its own, read off the request rather than off a permit, so no access is
-	// needed to reach it.
-	inFlightCtx := grantedCtx(ctx)
-	inFlightCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
-	inFlightBudgets, _ := gatherLimits(inFlightCtx, store, nil, schemas.ModelProvider(providerName), "")
-	inFlight := limitIDsOf(inFlightBudgets)
-	assert.Contains(t, inFlight, wildcard.ID)
-	assert.NotContains(t, inFlight, perModel.ID, "the per-model budget cannot be matched without a model")
-
 	// What settlement sees: the model is known, so the per-model budget is reachable.
-	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-5")
+	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-5")
 	assert.Contains(t, atSettlement, perModel.ID)
 	// The wildcard is returned too and overlaps the in-flight set by design; callers
 	// subtract what they already charged rather than relying on it being absent.
 	assert.Contains(t, atSettlement, wildcard.ID)
 
 	// A model with no config of its own still finds the wildcard and nothing else.
-	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-4o")
+	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-4o")
 	assert.NotContains(t, otherModel, perModel.ID)
 	assert.Contains(t, otherModel, wildcard.ID)
 
-	// Scope isolation: another user's id must not reach these configs.
-	otherUser, _ := store.CollectModelScopedGovernanceIDs(ctx, "", "user-bob", schemas.ModelProvider(providerName), "gpt-5")
-	assert.Empty(t, otherUser)
+	// Scope isolation: another virtual key's id must not reach these configs.
+	otherVK, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-bob", "", schemas.ModelProvider(providerName), "gpt-5")
+	assert.Empty(t, otherVK)
 }
 
 // What a request is billed to and what is recorded on its log row are the limits settled on its
@@ -1714,7 +1704,7 @@ func TestSettledLimitsAreWhatIsAccounted(t *testing.T) {
 	// afterwards reads them from there rather than working out a second answer.
 	settle := func(t *testing.T, provider schemas.ModelProvider, model string) schemas.Limits {
 		t.Helper()
-		limits := resolveLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
+		limits := settleAttemptLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
 		require.NotNil(t, limits)
 		return limits
 	}
@@ -1801,8 +1791,8 @@ func TestResolveLimits(t *testing.T) {
 		require.NotNil(t, access)
 		require.Len(t, access.Bases(), 1)
 
-		openaiBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
-		bedrockBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
+		openaiBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
+		bedrockBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
 		assert.Equal(t, []string{"b-key-openai"}, limitIDsOf(openaiBudgets))
 		assert.Equal(t, []string{"b-key-bedrock"}, limitIDsOf(bedrockBudgets))
 		assert.Nil(t, ctx.Grant().Limits(), "nothing is settled yet, which is not the same as nothing applying")
@@ -1811,7 +1801,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("after it runs, the grant carries exactly what this pair answers to", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t,
@@ -1824,7 +1814,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("the settled limits are what everything downstream reads", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		assert.Same(t, settled, ctx.Grant().Limits(),
 			"recorded, or the check and the charge would each resolve their own")
@@ -1836,8 +1826,8 @@ func TestResolveLimits(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 		access := ctx.Grant().Access()
 
-		first := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
-		second := resolveLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
+		first := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		second := settleAttemptLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
 
 		assert.Same(t, access, ctx.Grant().Access(), "what the request may reach is unchanged")
 		assert.NotSame(t, first, second)
@@ -1851,7 +1841,7 @@ func TestResolveLimits(t *testing.T) {
 		// all the same, and they are settled on its grant like anyone else's.
 		ctx := emptyCtx()
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, limitIDsOf(settled.Budgets()))
@@ -1863,14 +1853,14 @@ func TestResolveLimits(t *testing.T) {
 		// and nothing here papers over it.
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-		assert.Nil(t, resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
+		assert.Nil(t, settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
 		assert.Nil(t, ctx.Grant())
 	})
 
 	t.Run("a modelless attempt still answers to its provider", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "")
 
 		ids := limitIDsOf(settled.Budgets())
 		assert.Contains(t, ids, "b-provider")
@@ -2009,4 +1999,42 @@ func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
 
 		assert.Equal(t, 90.0, status.BudgetPercentUsed)
 	})
+}
+
+// TestModelConfigScopesForSkipsEmptyKindExtraScopes covers a registered
+// ExtraScopedIDsResolver returning a ScopedID with an empty Kind — a
+// legitimate value for a batch-only caller (see ScopedID's doc comment), but
+// modelConfigScopesFor is the request-time path: propagating it would let a
+// refusal name an empty holder kind.
+func TestModelConfigScopesForSkipsEmptyKindExtraScopes(t *testing.T) {
+	extraScopedIDsResolversMu.Lock()
+	saved := extraScopedIDsResolvers
+	extraScopedIDsResolvers = nil
+	extraScopedIDsResolversMu.Unlock()
+	t.Cleanup(func() {
+		extraScopedIDsResolversMu.Lock()
+		extraScopedIDsResolvers = saved
+		extraScopedIDsResolversMu.Unlock()
+	})
+
+	RegisterExtraScopedIDsResolver(func(_ context.Context, _, _ string) []ScopedID {
+		return []ScopedID{
+			{Scope: "batch_only", ScopeID: "b-1"}, // Kind deliberately empty
+			{Scope: "with_kind", ScopeID: "w-1", Kind: grant.LimitHolderModelConfig},
+		}
+	})
+
+	scopes := modelConfigScopesFor(nil)
+
+	for _, s := range scopes {
+		assert.NotEqual(t, "batch_only", s.name, "an empty-Kind extra scope must not reach request-time enforcement")
+	}
+	found := false
+	for _, s := range scopes {
+		if s.name == "with_kind" {
+			found = true
+			assert.Equal(t, grant.LimitHolderModelConfig, s.kind)
+		}
+	}
+	assert.True(t, found, "an extra scope with a Kind must still pass through")
 }

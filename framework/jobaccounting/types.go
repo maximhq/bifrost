@@ -204,6 +204,54 @@ type Settler interface {
 	// row, for a caller that lost the settlement claim and only wants to display a
 	// price. The inverse of Settlement.ApplyDebug.
 	HydrateFromLog(entry *logstore.Log, out *Outcome)
+
+	// RepriceFromLog recomputes an already-written aggregate row's cost from the
+	// detail the row carries, returning nil when the row is not one this kind owns.
+	//
+	// An aggregate row is synthesized at settlement, not logged from a provider
+	// response: it has no payload and no usage to reconstruct from, and its Object
+	// is the read that produced it rather than the request that was priced. The
+	// generic recalculation path can therefore never price one — it would reprice
+	// every settled job to nothing. Each kind reprices from its own debug blob
+	// instead, using the same rules it settled with.
+	RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error)
+}
+
+// ErrPricingInputsUnavailable marks a row that could not be priced because no rate
+// exists for it yet, as opposed to a row that failed. The recalculation pass counts
+// these separately so an operator can tell "waiting on the datasheet" from "broken",
+// and so the missing-cost backfill knows to revisit them.
+var ErrPricingInputsUnavailable = errors.New("pricing inputs unavailable")
+
+// RepricedCost is what one kind's repricing pass produced for one aggregate row.
+type RepricedCost struct {
+	Cost float64
+	// DebugJSON is the kind's re-serialized debug blob, to persist alongside the
+	// cost so the row's detail never disagrees with what it was billed. Empty when
+	// repricing changed nothing that needs writing.
+	DebugJSON string
+	// DebugColumn names the column DebugJSON belongs in.
+	DebugColumn string
+	// DisplayOnly marks a row that reprices for display but must not carry a cost
+	// of its own — a batch /results echo row would otherwise bill the batch once
+	// per fetch.
+	DisplayOnly bool
+}
+
+// RepriceLog asks whichever job kind owns this aggregate row to recompute its
+// cost. Returns nil when no kind claims it, which is the signal to fall back to
+// the generic per-request pricing path.
+//
+// The settlers are constructed without a fetcher or retriever on purpose:
+// repricing reads the row, never the provider.
+func RepriceLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error) {
+	for _, settler := range []Settler{NewBatchSettler(nil), NewVideoSettler(nil)} {
+		repriced, err := settler.RepriceFromLog(entry, pricing)
+		if err != nil || repriced != nil {
+			return repriced, err
+		}
+	}
+	return nil, nil
 }
 
 // PollResult is one poll's outcome. Terminal, Settleable and Retry are separate
@@ -311,4 +359,28 @@ type Outcome struct {
 	Accounted         bool
 	Claimed           bool
 	UnpriceableReason string
+}
+
+// PricingScopesForLog builds the pricing-override lookup scopes a log row resolves
+// under, so a repricing pass resolves the same rates the request was billed at.
+// Lives here because both the settlers and the logging plugin's generic pricing
+// path need it, and logging already depends on this package.
+func PricingScopesForLog(entry *logstore.Log) modelcatalog.PricingLookupScopes {
+	if entry == nil {
+		return modelcatalog.PricingLookupScopes{}
+	}
+	virtualKeyID := ""
+	if entry.VirtualKeyID != nil {
+		virtualKeyID = *entry.VirtualKeyID
+	}
+	userID := ""
+	if entry.UserID != nil {
+		userID = *entry.UserID
+	}
+	return modelcatalog.PricingLookupScopes{
+		Provider:      entry.Provider,
+		SelectedKeyID: entry.SelectedKeyID,
+		VirtualKeyID:  virtualKeyID,
+		UserID:        userID,
+	}
 }

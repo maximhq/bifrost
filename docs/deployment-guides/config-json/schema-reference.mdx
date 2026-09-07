@@ -22,10 +22,10 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
-| `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
+| `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams, roles and business units | [Governance](/deployment-guides/config-json/governance) |
 | `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
-| `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
+| `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Access Profiles](/enterprise/access-profiles) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database - SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
@@ -40,7 +40,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 
 ## `version`
 
-Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
+Controls how empty arrays in the allow-list fields of provider keys (`models`) and virtual keys (`allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -48,6 +48,8 @@ Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key
 | `1` *(v1.4.x compat)* | Empty array = **allow all** |
 
 Omitting `version` uses v2 semantics. Set `"version": 1` only if you are migrating from v1.4.x and need the old behaviour temporarily.
+
+Projects declared under `governance.projects` are not covered by this switch: their `key_ids` and `tools_to_execute` always treat an empty or omitted array as granting nothing, under either value.
 
 ---
 
@@ -112,7 +114,7 @@ Full documentation: [Client Configuration](/deployment-guides/config-json/client
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `openai`, `anthropic`, `azure`, `bedrock`, `vertex`, `gemini`, `mistral`, `groq`, `cohere`, `perplexity`, `xai`, `cerebras`, `deepseek`, `openrouter`, `nebius`, `fireworks`, `parasail`, `huggingface`, `replicate`, `ollama`, `vllm`, `sgl`, `elevenlabs`, `runway`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -133,6 +135,7 @@ Seeds governance resources at startup. All sub-keys are optional arrays.
 | `routing_rules` | CEL-based dynamic provider/model routing |
 | `pricing_overrides` | Scoped per-model pricing overrides |
 | `model_configs` | Per-model rate limit and budget configurations |
+| `projects` | Projects: access gates and accounting scopes that requests opt into, with budgets divisible between members *(enterprise only)* |
 
 Full documentation: [Governance](/deployment-guides/config-json/governance).
 
@@ -183,6 +186,83 @@ Enterprise-only. Defines access profile templates that can later be attached to 
   ]
 }
 ```
+
+---
+
+## `governance.roles`
+
+Enterprise-only. Declares RBAC roles, the access profiles they grant, their data access scope, and their permissions.
+
+```json
+{
+  "governance": {
+    "roles": [
+      {
+        "name": "engineer",
+        "description": "Product engineers",
+        "dac": "team-data",
+        "entity_dac": { "PromptRepository": "all-data" },
+        "access_profiles": ["Engineering Baseline", "Opus Pilot"],
+        "permissions": [
+          { "resource": "VirtualKeys", "operation": "View" },
+          { "resource": "PromptRepository", "operation": "Create" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Role name. Identity field — renaming declares a different role. |
+| `description` | string | Optional free-text description. |
+| `dac` | string | Role-level [data access scope](/enterprise/data-access-control): `own-data`, `team-data`, or `all-data`. |
+| `entity_dac` | object | Per-resource scope overrides, keyed by resource name (same names as `permissions`, below). Resources not listed follow `dac`. Applied as a **full replace** — removing `entity_dac` clears every override on the next sync. |
+| `access_profiles` | string[] | Names of every [access profile](/enterprise/access-profiles) this role grants. A role grants **all** of them, and users with the role receive each one. |
+| `access_profile` | string | **Deprecated** — single-profile form, kept for existing files. Ignored whenever `access_profiles` is set. |
+| `permissions` | array | `{ resource, operation }` pairs granted to the role. Both values are case-sensitive — see below. |
+
+Resource and operation names must match Bifrost's own spelling exactly. Resources are PascalCase - `VirtualKeys`, `PromptRepository`, `Teams`, `Customers`, `BusinessUnits`, `AccessProfiles`, `Users`, `RBAC`, `APIKeys`, `Logs`, `AuditLogs`, `MCPGateway`, `RoutingRules`, `GuardrailsConfig`, and so on. Operations are normally `Create`, `View`, `Update`, and `Delete`; a few resources add their own, such as `Reveal` on `Logs`, `Download` on `AuditLogs`, and `CreateStandalone` on `VirtualKeys`.
+
+<Warning>
+  A permission Bifrost does not recognise is skipped with a warning in the startup logs, not
+  rejected. A misspelling like `virtual_keys` or `read` leaves the role without that permission
+  instead of failing the sync, so check the logs after editing this section.
+</Warning>
+
+The `access_profiles` list is the full set of profiles the role grants. On each sync Bifrost attaches any that are missing and removes any that are no longer listed, so editing the list is how you change what a role grants. Note that an explicit empty list (`"access_profiles": []`) means "grant nothing" and removes every profile from the role — leaving the field out entirely is different, and falls back to the deprecated `access_profile`.
+
+<Note>
+  Switching a role from `access_profile: "X"` to `access_profiles: ["X"]` is a no-op — Bifrost treats
+  the two as the same declaration, so nothing re-syncs on upgrade.
+</Note>
+
+---
+
+## `governance.business_units`
+
+Enterprise-only. Declares business unit **definitions** and their governance.
+
+```json
+{
+  "governance": {
+    "business_units": [
+      {
+        "id": "bu-platform",
+        "name": "Platform"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable identifier, referenced by other config rows. |
+| `name` | string | Display name. |
+
+This section defines business units, not who belongs to them. Members are users, and they are added by an admin or by your identity provider — not from `config.json`, which cannot reference users that do not exist yet at startup. See [User Provisioning](/enterprise/user-provisioning#business-unit-membership).
 
 ---
 

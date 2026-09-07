@@ -2,6 +2,8 @@ package routing
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -69,4 +71,32 @@ func resolveAnalyzerConfigFromStoreOrArg(
 		}
 	}
 	return nil
+}
+
+// maxLoggedExemplarChars bounds one operator-supplied tier phrase echoed into
+// a routing log line.
+const maxLoggedExemplarChars = 120
+
+// truncateExemplarForLog bounds one operator-supplied tier phrase echoed into a
+// routing log. It cuts on runes so a multi-byte phrase cannot be split
+// mid-character, and returns "" for a phrase that carries nothing to show.
+func truncateExemplarForLog(phrase string) string {
+	trimmed := strings.TrimSpace(phrase)
+	runes := []rune(trimmed)
+	if len(runes) <= maxLoggedExemplarChars {
+		return trimmed
+	}
+	return string(runes[:maxLoggedExemplarChars]) + "..."
+}
+
+// withMatchedExemplar appends the exemplar a semantic classification landed on
+// to a routing log line. A generation that cannot name its match omits the
+// suffix rather than printing an empty one, which would read as a real match
+// against the empty string.
+func withMatchedExemplar(message, exemplar string) string {
+	matched := truncateExemplarForLog(exemplar)
+	if matched == "" {
+		return message
+	}
+	return fmt.Sprintf("%s matched=%q", message, matched)
 }

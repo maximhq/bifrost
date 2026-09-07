@@ -4,9 +4,19 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.37
+**Latest Version:** 2.1.38
 
 ## Changelog
+
+### Upcoming
+
+- Fixed disabling SCIM/SSO via Helm having no effect. `bifrost.scim.enabled: false` skipped the `scim_config` block entirely, so the section was absent from the rendered `config.json`, the runtime never reconciled it, and SCIM stayed enabled from the previous state. `bifrost.scim` no longer has a chart default (the block is commented out in `values.yaml`), and `scim_config` is now rendered whenever `bifrost.scim` is declared at all — so `enabled: false` emits `"scim_config": {"enabled": false}` and the disable propagates. Installs that never declare `bifrost.scim` emit nothing, leaving dashboard-configured SCIM untouched.
+- Added `bifrost.client.compat.azureDeepseek` (default `false`) — converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses. Renders into `client.compat.azure_deepseek`.
+- Removed the `version` field from every plugin (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`, `bigquery`, `kafka`, `pubsub`, `splunk` and `birost.plugins.custom[]`).
+- Updated `bifrost.governance.complexityAnalyzerConfig` for semantic Complexity Router configuration: set an embedding provider and model, add reference phrases for Simple, Medium, and Complex, and choose `embedded` or `vector_store` phrase storage. Bifrost detects the embedding dimension during warmup. Legacy four-tier lists remain valid: Simple stays Simple, Code and Technical merge into Medium, and Reasoning merges into Complex. Legacy `tier_boundaries` remain accepted during upgrades but are optional and ignored by semantic routing. Renders into `governance.complexity_analyzer_config`.
+- Added `vectorStore.type: chromem` plus a `vectorStore.chromem` block (`path`, `compress`) for the embedded in-process vector store used by semantic complexity routing. Renders into `vector_store.config`.
+- Added `bifrost.governance.complexityAnalyzerConfig.session.enabled` for session-aware Complexity Router behavior. Identified sessions retain their highest observed tier across normally sequential turns for 24 hours of inactivity; overlapping requests for the same session are best-effort and resolve by last writer wins. Renders into `governance.complexity_analyzer_config.session.enabled`.
+- Fixed `postgresql.external.passwordCommand` and `storage.logsStore.postgres.passwordCommand` being unusable: the mutual-exclusion rules in `values.schema.json` tested only for key *presence*, and `values.yaml` ships `password: ""` / `existingSecret: ""` as defaults, so any chart install that set `passwordCommand` failed validation with `'not' failed`. They now check the *value* instead — `password` and `existingSecret` must be empty when `passwordCommand` is set — so RDS IAM auth renders `password_command` into `config_store.config` / `logs_store.config` without needing `password: null` overrides.
 
 ### 2.1.37
 
@@ -792,7 +802,7 @@ Bifrost supports multiple vector stores for semantic caching:
 | Parameter             | Description                                              | Default |
 | --------------------- | -------------------------------------------------------- | ------- |
 | `vectorStore.enabled` | Enable vector store                                      | `false` |
-| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant` | `none`  |
+| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant`, `pinecone`, or `chromem` | `none`  |
 
 #### Weaviate
 

@@ -66,6 +66,8 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
+	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -99,6 +101,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	databricks: false,
+	"github-copilot": false,
 };
 
 export const DefaultNetworkConfig = {
@@ -143,6 +147,23 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// prompt a look at the per-instance breakdown rather than being read as
 	// just another flavor of unhealthy.
 	degraded: "bg-blue-100 text-blue-800",
+};
+
+// Credential row statuses (the admin/shared OAuth token or the admin header
+// values a server holds on its own behalf), in the same soft-pill palette as
+// MCP_STATUS_COLORS so a credential badge reads like every other status
+// badge: green for usable, red for "a human must act", amber for
+// informational.
+export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
+	active: "bg-green-100 text-green-800",
+	needs_reauth: "bg-red-100 text-red-800",
+	needs_update: "bg-red-100 text-red-800",
+	orphaned: "bg-yellow-100 text-yellow-800",
+	// Sessions table only: an OAuth flow that was started but not completed.
+	pending: "bg-gray-100 text-gray-800",
+	// Fallback for a status value this build does not know. Neutral on
+	// purpose: an unrecognized status must not read as usable.
+	unknown: "bg-gray-100 text-gray-800",
 };
 
 // Mapping of what IS supported by each base provider

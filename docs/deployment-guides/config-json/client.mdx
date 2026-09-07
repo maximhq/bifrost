@@ -166,6 +166,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `compat.convert_chat_to_responses` | boolean | `false` | Translate chat completions to Responses API format |
 | `compat.should_drop_params` | boolean | `false` | Silently drop unsupported parameters instead of erroring |
 | `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
+| `compat.azure_deepseek` | boolean | `false` | Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses |
 
 ```json
 {

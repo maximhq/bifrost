@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -174,6 +175,56 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
+	return nil, nil
+}
+func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
 }
 
 // TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
@@ -1630,6 +1681,7 @@ type quotaResponse struct {
 	IsActive        bool                                              `json:"is_active"`
 	Budgets         []quotaBudget                                     `json:"budgets"`
 	RateLimit       *configstoreTables.TableRateLimit                 `json:"rate_limit"`
+	RateLimits      []SourcedRateLimit                                `json:"rate_limits"`
 	ProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig `json:"provider_configs"`
 	Models          []quotaModelUsage                                 `json:"model_configs"`
 }
@@ -1834,8 +1886,8 @@ func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *
 			}
 			return &ExternalQuotaBudgetResult{
 				// The access-profile budget that holds the real ongoing usage.
-				Budgets: []configstoreTables.TableBudget{
-					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
+				Budgets: []SourcedBudget{
+					{TableBudget: configstoreTables.TableBudget{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart}},
 				},
 				Managed:     true,
 				UsageUserID: "user-1",
@@ -2085,6 +2137,15 @@ func TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty(t *testing.T) {
 	}
 	if len(resp.ProviderConfigs) != 1 || len(resp.ProviderConfigs[0].Budgets) != 0 {
 		t.Fatalf("expected provider config with no budgets, got %#v", resp.ProviderConfigs)
+	}
+	if resp.RateLimits == nil {
+		t.Fatalf("expected rate_limits to serialize as [], got a nil slice (renders as null)")
+	}
+	if len(resp.RateLimits) != 0 {
+		t.Fatalf("expected no rate limits, got %#v", resp.RateLimits)
+	}
+	if !bytes.Contains(ctx.Response.Body(), []byte(`"rate_limits":[]`)) {
+		t.Fatalf("expected raw response to contain \"rate_limits\":[], got %s", string(ctx.Response.Body()))
 	}
 }
 

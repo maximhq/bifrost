@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -216,13 +217,13 @@ func TestPermitForVirtualKey_ProviderPermits(t *testing.T) {
 
 	openai := permit.ProviderPermits()[0]
 	assert.Equal(t, "openai", openai.Provider)
-	assert.Equal(t, []string{"gpt-4o"}, openai.AllowedModels)
-	assert.Equal(t, []string{"gpt-4o-mini"}, openai.BlacklistedModels)
-	assert.Equal(t, []string{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
+	assert.Equal(t, schemas.WhiteList{"gpt-4o"}, openai.AllowedModels)
+	assert.Equal(t, schemas.BlackList{"gpt-4o-mini"}, openai.BlacklistedModels)
+	assert.Equal(t, schemas.WhiteList{"*"}, openai.KeyIDs, "allow-all becomes the wildcard")
 	assert.Equal(t, schemas.Ptr(0.7), openai.Weight)
 
 	anthropic := permit.ProviderPermits()[1]
-	assert.Equal(t, []string{"key-a", "key-b"}, anthropic.KeyIDs)
+	assert.Equal(t, schemas.WhiteList{"key-a", "key-b"}, anthropic.KeyIDs)
 	assert.Nil(t, anthropic.Weight, "no weight configured stays no weight")
 
 	bedrock := permit.ProviderPermits()[2]
@@ -263,7 +264,7 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 
 	// Each config's limits are answered for that provider, so which provider they answer for is
 	// what was asked rather than something to filter on.
-	openaiBudgets, openaiRateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	openaiBudgets, openaiRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, openaiBudgets, 1, "the openai config's own")
 	assert.Equal(t, schemas.Limit{
 		ID: "budget-openai", HolderKind: string(grant.LimitHolderVirtualKeyProviderConfig),
@@ -271,11 +272,11 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 	}, openaiBudgets[0])
 	assert.Equal(t, []string{"rl-openai"}, limitIDsOf(openaiRateLimits))
 
-	anthropicBudgets, anthropicRateLimits := gs.ProviderLimits(ctx, permit, schemas.Anthropic)
+	anthropicBudgets, anthropicRateLimits := gs.PermitProviderLimits(ctx, permit, schemas.Anthropic)
 	assert.Empty(t, anthropicBudgets, "a config governed by nothing of its own")
 	assert.Empty(t, anthropicRateLimits)
 
-	noProviderBudgets, _ := gs.ProviderLimits(ctx, permit, "")
+	noProviderBudgets, _ := gs.PermitProviderLimits(ctx, permit, "")
 	assert.Empty(t, noProviderBudgets, "and there is no unscoped bucket to find the key's own in")
 
 	// The key's own limits are HolderLimits' to answer.
@@ -316,7 +317,7 @@ func TestPermitForVirtualKey_LimitsOfTwoConfigsForOneProvider(t *testing.T) {
 	ctx := emptyCtx()
 	permit := gs.permitForVirtualKey(ctx, vk)
 
-	budgets, rateLimits := gs.ProviderLimits(ctx, permit, schemas.OpenAI)
+	budgets, rateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, budgets, 2, "both configs govern openai traffic")
 	assert.Equal(t, []string{"budget-first", "budget-second"}, []string{budgets[0].ID, budgets[1].ID})
 	assert.Equal(t, []string{"1", "2"}, []string{budgets[0].HolderID, budgets[1].HolderID},
@@ -351,21 +352,23 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		assert.Equal(t, schemas.MCPPermit{Client: "jira-id", ClientName: "jira", Tools: []string{"*"}}, permit.MCPPermits()[0])
 	})
 
-	t.Run("an explicit config owns its client, and is never widened", func(t *testing.T) {
+	t.Run("a config with no tools owns its client: dropped, and not reopened by the default", func(t *testing.T) {
 		vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
 		vk.MCPConfigs = []configstoreTables.TableVirtualKeyMCPConfig{
 			vkMCPConfig("github-id", "github", "read_file"),
-			// Configured with no tool at all: the client is still the key's to decide.
+			// Configured with no tool: no permit, but still the key's to decide, so the default must not reopen it.
 			vkMCPConfig("jira-id", "jira"),
 		}
 		open := map[string]string{"github-id": "github", "jira-id": "jira", "slack-id": "slack"}
 
 		permit := vkPermit(vk, open)
 
-		require.Len(t, permit.MCPPermits(), 3)
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
-		assert.Empty(t, permit.MCPPermits()[1].Tools, "an empty config stays empty")
-		assert.Equal(t, "slack-id", permit.MCPPermits()[2].Client, "only the unconfigured client is added")
+		require.Len(t, permit.MCPPermits(), 2)
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
+		assert.Equal(t, "slack-id", permit.MCPPermits()[1].Client, "only the unconfigured client is added")
+		for _, mp := range permit.MCPPermits() {
+			assert.NotEqual(t, "jira-id", mp.Client, "a client configured with no tools is dropped, not reopened by the default")
+		}
 	})
 
 	t.Run("open clients are ordered, so the permit is stable", func(t *testing.T) {
@@ -1324,7 +1327,7 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 	require.Len(t, bases, 1)
 	require.Equal(t, string(grant.PermitVirtualKey), bases[0].Type(), "the type production stamps, not a scope name")
 
-	budgets, _ := store.ProviderAndModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
+	budgets, _ := store.PermitModelLimits(ctx, bases[0], schemas.OpenAI, "gpt-4o")
 
 	assert.Contains(t, limitIDsOf(budgets), "b-vk-model",
 		"a key's own model budget must be found through the permit production builds for it")
@@ -1333,4 +1336,219 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 			assert.Equal(t, string(grant.LimitHolderVirtualKeyModelConfig), budget.HolderKind, "attributed to the key's own model config")
 		}
 	}
+}
+
+// TestEvaluateJudgesEveryPermit covers the state check on the permit scoping a request, not just
+// on the ones its caller holds.
+//
+// A scoping permit that has been deactivated or has expired grants nothing, exactly as a base permit
+// in that state does. Nothing in the fold reads either flag (it answers what a permit enumerates,
+// not whether the permit may still be used), so if this step asks only about the bases, a dead
+// scoping permit goes on permitting everything it names, with nothing anywhere to catch it.
+func TestEvaluateJudgesEveryPermit(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	base := permitWithProviders("other", "h1", "Holder", "openai")
+	request := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	scopingIn := func(isActive, isExpired bool) *permitStore {
+		providers := permitWithProviders("scope", "s1", "Scope", "openai").ProviderPermits()
+		scoping := grant.NewPermit("scope", "s1", "Scope", isActive, isExpired, providers, nil)
+		return &permitStore{baseOverride: base, scoping: scoping, mode: grant.Intersect}
+	}
+
+	for name, tc := range map[string]struct {
+		isActive  bool
+		isExpired bool
+		want      string
+	}{
+		"deactivated": {isActive: false, isExpired: false, want: "scope is inactive"},
+		"expired":     {isActive: true, isExpired: true, want: "scope has expired"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, scopingIn(tc.isActive, tc.isExpired))
+
+			result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+			require.NotNil(t, bifrostErr, "a scoping permit that can no longer be used still scoped the request")
+			assert.Equal(t, DecisionAccessBlocked, result.Decision)
+			assert.Equal(t, tc.want, result.Reason)
+		})
+	}
+
+	t.Run("a scoping permit in good standing is left alone", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, scopingIn(true, false))
+
+		result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+}
+
+// TestEvaluateRefusesARequestNothingScoped is the mirror of the credential rule beside it: a
+// request that named a project and ended up scoped by nothing is refused, not served.
+//
+// Dropping the project instead would serve the request against the caller's own access, which is
+// more than they asked for and not what they asked for. The refusal does not say whether the project
+// was missing or merely not theirs, for the same reason the credential one does not distinguish
+// "does not exist" from "has been revoked".
+func TestEvaluateRefusesARequestNothingScoped(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	base := permitWithProviders("other", "h1", "Holder", "openai")
+
+	// A request names a project by header, and whatever resolves it stamps the resolved id once the
+	// project has admitted the caller. Those two facts, and the gap between them, are the whole
+	// mechanism, so the test supplies them the way a request does.
+	newCtx := func(headers map[string]string, resolvedProjectID string) *schemas.BifrostContext {
+		ctx := emptyCtx()
+		if headers != nil {
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+		}
+		if resolvedProjectID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, resolvedProjectID)
+		}
+		return ctx
+	}
+	named := map[string]string{schemas.HeaderGovernanceProjectName: "Atlas"}
+	chat := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	t.Run("named a project and nothing scoped it", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(named, ""), chat)
+
+		require.NotNil(t, bifrostErr, "a request whose project went missing was served against the caller's own access")
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+		assert.Equal(t, `project "Atlas" not found. It does not exist or does not admit this request.`, result.Reason)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, 403, *bifrostErr.StatusCode, "the caller authenticated fine; what they asked for is refused")
+	})
+
+	t.Run("named a project and it scoped the request", func(t *testing.T) {
+		scoping := permitWithProviders(grant.PermitProject, "s1", "Atlas", "openai")
+		plugin := newAccessTestPlugin(t, vk, &permitStore{
+			baseOverride: base, scoping: scoping, mode: grant.Intersect,
+		})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(named, "s1"), chat)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("named no project", func(t *testing.T) {
+		// Every ordinary request carries no scoping permit, so the rule must key off having named one
+		// rather than off the empty slot, or it refuses everything.
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(nil, ""), chat)
+
+		assert.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("named a project with an empty header", func(t *testing.T) {
+		// It named no project, so none can be resolved from it. Treating that as not having asked
+		// would serve the request against the caller's own access.
+		plugin := newAccessTestPlugin(t, vk, &permitStore{baseOverride: base})
+
+		result, bifrostErr := plugin.Evaluate(newCtx(map[string]string{schemas.HeaderGovernanceProjectID: ""}, ""), chat)
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+	})
+}
+
+// A project fills the scoping slot, and limits are gathered for every permit a request carries, so a
+// project's own per-model limits come off its permit the way any other holder's do. The scope name
+// and the holder kind are the project's, so its per-model spend is looked up where it is stored and
+// attributed to the project rather than to somebody else.
+//
+// The permit is only ever built once a project has been resolved and admitted, so a request that
+// named one it may not use is refused before this ever runs.
+func TestModelConfigScopesIncludeTheProjectScopingARequest(t *testing.T) {
+	scopeNamed := func(scopes []limitScope, name string) (limitScope, bool) {
+		for _, scope := range scopes {
+			if scope.name == name {
+				return scope, true
+			}
+		}
+		return limitScope{}, false
+	}
+
+	t.Run("the project's permit", func(t *testing.T) {
+		project := permitWithProviders(grant.PermitProject, "proj-1", "Atlas", "openai")
+
+		scope, found := scopeNamed(modelConfigScopesFor(project), configstoreTables.ModelConfigScopeProject)
+
+		require.True(t, found, "a request running inside a project answers to none of its per-model limits")
+		assert.Equal(t, "proj-1", scope.id)
+		assert.Equal(t, grant.LimitHolderProjectModelConfig, scope.kind,
+			"a project's per-model spend would be attributed to somebody else")
+	})
+
+	t.Run("a permit that is not a project's", func(t *testing.T) {
+		key := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai")
+
+		_, found := scopeNamed(modelConfigScopesFor(key), configstoreTables.ModelConfigScopeProject)
+
+		assert.False(t, found, "a request outside every project was held to a project's per-model limits")
+	})
+}
+
+// settlingErrorStore wraps a real store so GatherLimits fails the way a store composing several
+// possible payers can: the payers could not be settled at all, not a limit being exhausted.
+type settlingErrorStore struct {
+	GovernanceStore
+	err error
+}
+
+func (s *settlingErrorStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit, error) {
+	return nil, nil, s.err
+}
+
+// newSettlingErrorTestPlugin builds a plugin whose store fails to settle limits with err.
+func newSettlingErrorTestPlugin(t *testing.T, err error) *GovernancePlugin {
+	t.Helper()
+	vk := buildVKForMCPStamping(nil)
+	logger := NewMockLogger()
+	local, localErr := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, localErr)
+
+	plugin, initErr := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, &settlingErrorStore{GovernanceStore: local, err: err}, nil, nil, nil, nil)
+	require.NoError(t, initErr)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
+}
+
+// TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped covers the store.GatherLimits error
+// path for a request that asked not to be checked against anything it answers to (e.g. a read-only
+// list-models call). LocalGovernanceStore never returns one, but the interface allows a store
+// composing several possible payers to fail this way, and such a request spends nothing, so an
+// unsettled payer list is not something it depends on either.
+func TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped(t *testing.T) {
+	request := &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+
+	t.Run("a settling error still blocks a request that did not skip spending checks", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+
+		result, bifrostErr := plugin.Evaluate(emptyCtx(), request)
+
+		require.NotNil(t, bifrostErr, "a request whose payers could not be settled was served anyway")
+		assert.Equal(t, DecisionAccessBlocked, result.Decision)
+	})
+
+	t.Run("a request that skipped spending checks is not blocked by it", func(t *testing.T) {
+		plugin := newSettlingErrorTestPlugin(t, errors.New("payers unavailable"))
+		ctx := emptyCtx()
+		ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
+		result, bifrostErr := plugin.Evaluate(ctx, request)
+
+		assert.Nil(t, bifrostErr, "a read-only request was blocked by a settling failure it does not depend on")
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
 }

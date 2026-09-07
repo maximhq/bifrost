@@ -67,6 +67,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
+	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
+	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualMCP{}, &tables.TableVirtualKeyVirtualMCP{}), "Failed to migrate virtual MCP tables")
+
 	// Setup join table
 	err = db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{})
 	require.NoError(t, err, "Failed to setup join table")
@@ -83,15 +87,13 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	return &ComplexityAnalyzerConfig{
 		TierBoundaries: ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API"},
-			ReasoningKeywords: []string{"tradeoffs"},
-			TechnicalKeywords: []string{"latency"},
-			SimpleKeywords:    []string{"hello"},
+			SimpleKeywords:  []string{"hello"},
+			MediumKeywords:  []string{" Function ", "api", "API", "latency"},
+			ComplexKeywords: []string{"tradeoffs"},
 		},
 	}
 }
@@ -132,11 +134,10 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -144,12 +145,89 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, ComplexityTierBoundaries{
-		SimpleMedium:     0.10,
-		MediumComplex:    0.30,
-		ComplexReasoning: 0.70,
+		SimpleMedium:  0.10,
+		MediumComplex: 0.30,
 	}, got.TierBoundaries)
-	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
+	assert.Equal(t, []string{"api", "function", "latency"}, got.Keywords.MediumKeywords)
 	assert.Equal(t, cfg.ConfigHashes, got.ConfigHashes)
+}
+
+// TestRDBConfigStore_GetComplexityAnalyzerConfigMarksUnreadableRows pins that a
+// stored config this version cannot run is reported as unreadable rather than as
+// a plain error. The API handler degrades to defaults on that distinction and
+// still fails on anything else, so losing it here turns a recoverable page into
+// a 500 without any test noticing.
+func TestRDBConfigStore_GetComplexityAnalyzerConfigMarksUnreadableRows(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("analyzer row", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexityAnalyzerConfigKey,
+			Value: `{"tier_boundaries":{"simple_medium":0.9,"medium_complex":0.1}}`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
+
+	t.Run("semantic row", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexitySemanticConfigKey,
+			Value: `{"keywords":`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
+
+	t.Run("rows that do not combine into a runnable config", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+		// Each row is well formed on its own; the pair is not, because one
+		// phrase claims two tiers. The semantic block has to be present for the
+		// phrase rules to apply at all — without a classifier to embed them,
+		// the lists are just unused strings.
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key: tables.ConfigComplexitySemanticConfigKey,
+			Value: `{"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},` +
+				`"keywords":{"simple_keywords":["shared phrase"],` +
+				`"medium_keywords":["shared phrase"],"complex_keywords":["complex"]}}`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
+
+	t.Run("stored semantic config exceeds phrase limit", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		base := testComplexityAnalyzerConfig()
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, base))
+
+		oversized := *base
+		oversized.Semantic = &ComplexitySemanticConfig{
+			Provider:       "openai",
+			EmbeddingModel: "text-embedding-3-small",
+		}
+		oversized.Keywords.SimpleKeywords = make([]string, MaxComplexitySemanticPhrases-1)
+		for index := range oversized.Keywords.SimpleKeywords {
+			oversized.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		oversized.Keywords.MediumKeywords = []string{"medium"}
+		oversized.Keywords.ComplexKeywords = []string{"complex"}
+		semanticRaw, err := encodeComplexitySemanticConfigRow(oversized)
+		require.NoError(t, err)
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexitySemanticConfigKey,
+			Value: string(semanticRaw),
+		}))
+
+		_, err = store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+		require.ErrorContains(t, err, "contains 751 phrases")
+	})
 }
 
 func TestRDBConfigStore_GetComplexityAnalyzerConfigMissingReturnsNil(t *testing.T) {
@@ -167,11 +245,10 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnR
 
 	fileConfig := testComplexityAnalyzerConfig()
 	fileConfig.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, fileConfig))
 
@@ -190,9 +267,9 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnR
 func TestGenerateComplexityAnalyzerConfigHashesCanonicalizesKeywords(t *testing.T) {
 	left := testComplexityAnalyzerConfig()
 	right := testComplexityAnalyzerConfig()
-	right.Keywords.CodeKeywords = []string{"api", "function"}
-	left.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-a"}
-	right.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-b"}
+	right.Keywords.MediumKeywords = []string{"api", "function", "latency"}
+	left.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-a"}
+	right.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-b"}
 
 	leftHashes, err := GenerateComplexityAnalyzerConfigHashes(left)
 	require.NoError(t, err)
@@ -206,13 +283,11 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	base := testComplexityAnalyzerConfig()
 	file := testComplexityAnalyzerConfig()
 	file.TierBoundaries = ComplexityTierBoundaries{
-		SimpleMedium:     0.20,
-		MediumComplex:    0.40,
-		ComplexReasoning: 0.80,
+		SimpleMedium:  0.20,
+		MediumComplex: 0.40,
 	}
-	file.Keywords.CodeKeywords = []string{"GraphQL", "api"}
-	file.Keywords.ReasoningKeywords = []string{"tradeoffs", "step by step"}
-	file.Keywords.TechnicalKeywords = []string{"latency", "kubernetes"}
+	file.Keywords.MediumKeywords = []string{"GraphQL", "api", "latency", "kubernetes"}
+	file.Keywords.ComplexKeywords = []string{"tradeoffs", "step by step"}
 	file.Keywords.SimpleKeywords = []string{"hello", "thanks"}
 
 	merged, err := MergeComplexityAnalyzerConfig(base, file)
@@ -220,41 +295,39 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	require.NotNil(t, merged)
 
 	assert.Equal(t, file.TierBoundaries, merged.TierBoundaries)
-	assert.Equal(t, []string{"api", "function", "graphql"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, []string{"kubernetes", "latency"}, merged.Keywords.TechnicalKeywords)
+	assert.Equal(t, []string{"api", "function", "graphql", "kubernetes", "latency"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ComplexKeywords)
 	assert.Equal(t, []string{"hello", "thanks"}, merged.Keywords.SimpleKeywords)
 }
 
 func TestMergeComplexityAnalyzerConfigByHashesOnlyAppliesChangedSections(t *testing.T) {
 	base := testComplexityAnalyzerConfig()
 	base.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	base.TierBoundaries.SimpleMedium = 0.12
-	base.Keywords.CodeKeywords = []string{"ui-code"}
-	base.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	base.Keywords.MediumKeywords = []string{"ui-medium"}
+	base.Keywords.ComplexKeywords = []string{"ui-complex"}
 
 	file := testComplexityAnalyzerConfig()
 	file.ConfigHashes = base.ConfigHashes
-	file.ConfigHashes.CodeKeywords = "code-hash-2"
+	file.ConfigHashes.MediumKeywords = "medium-hash-2"
 	file.TierBoundaries.SimpleMedium = 0.20
-	file.Keywords.CodeKeywords = []string{"file-code"}
-	file.Keywords.ReasoningKeywords = []string{"file-reason"}
+	file.Keywords.MediumKeywords = []string{"file-medium"}
+	file.Keywords.ComplexKeywords = []string{"file-complex"}
 
 	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
 	require.NoError(t, err)
 	require.NotNil(t, merged)
 
 	assert.Equal(t, 0.12, merged.TierBoundaries.SimpleMedium)
-	assert.Equal(t, []string{"file-code", "ui-code"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"ui-reason"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, "code-hash-2", merged.ConfigHashes.CodeKeywords)
-	assert.Equal(t, "reason-hash-1", merged.ConfigHashes.ReasoningKeywords)
+	assert.Equal(t, []string{"file-medium", "ui-medium"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"ui-complex"}, merged.Keywords.ComplexKeywords)
+	assert.Equal(t, "medium-hash-2", merged.ConfigHashes.MediumKeywords)
+	assert.Equal(t, "complex-hash-1", merged.ConfigHashes.ComplexKeywords)
 }
 
 func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
@@ -263,11 +336,10 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-2",
-		CodeKeywords:      "code-hash-2",
-		ReasoningKeywords: "reason-hash-2",
-		TechnicalKeywords: "tech-hash-2",
-		SimpleKeywords:    "simple-hash-2",
+		TierBoundaries:  "tier-hash-2",
+		SimpleKeywords:  "simple-hash-2",
+		MediumKeywords:  "medium-hash-2",
+		ComplexKeywords: "complex-hash-2",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -275,7 +347,7 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 	require.NoError(t, err)
 	require.NotNil(t, governanceConfig)
 	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
-	assert.Equal(t, 0.70, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+	assert.Equal(t, 0.30, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.MediumComplex)
 	assert.Equal(t, cfg.ConfigHashes, governanceConfig.ComplexityAnalyzerConfig.ConfigHashes)
 }
 
@@ -294,39 +366,45 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *te
 			},
 		},
 		{
+			name: "simple medium at minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.SimpleMedium = 0
+			},
+		},
+		{
 			name: "medium complex at minimum",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
 				cfg.TierBoundaries.MediumComplex = 0
 			},
 		},
 		{
-			name: "complex reasoning at maximum",
+			name: "medium complex at maximum",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = 1.0
+				cfg.TierBoundaries.MediumComplex = 1.0
 			},
 		},
 		{
 			name: "boundaries out of order",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = cfg.TierBoundaries.MediumComplex - 0.1
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium - 0.05
 			},
 		},
 		{
-			name: "empty code keywords",
+			name: "boundaries equal",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.CodeKeywords = nil
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium
 			},
 		},
 		{
-			name: "empty reasoning keywords",
+			name: "empty medium keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.ReasoningKeywords = nil
+				cfg.Keywords.MediumKeywords = nil
 			},
 		},
 		{
-			name: "empty technical keywords",
+			name: "empty complex keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.TechnicalKeywords = nil
+				cfg.Keywords.ComplexKeywords = nil
 			},
 		},
 		{
@@ -2291,6 +2369,31 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(azureDeepseek bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{AzureDeepseek: azureDeepseek},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.AzureDeepseek, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2592,7 +2695,6 @@ func TestCreateAndGetPlugin(t *testing.T) {
 	plugin := &tables.TablePlugin{
 		Name:    "test-plugin",
 		Enabled: true,
-		Version: 1,
 	}
 
 	err := store.CreatePlugin(ctx, plugin)
@@ -2612,19 +2714,73 @@ func TestUpsertPlugin(t *testing.T) {
 	plugin := &tables.TablePlugin{
 		Name:    "upsert-plugin",
 		Enabled: true,
-		Version: 1,
 	}
 	err := store.UpsertPlugin(ctx, plugin)
 	require.NoError(t, err)
 
 	// Upsert with update
-	plugin.Version = 2
+	plugin.Enabled = false
 	err = store.UpsertPlugin(ctx, plugin)
 	require.NoError(t, err)
 
 	result, err := store.GetPlugin(ctx, "upsert-plugin")
 	require.NoError(t, err)
-	assert.Equal(t, int16(2), result.Version)
+	assert.False(t, result.Enabled)
+}
+
+// TestUpdatePluginPreservesPlacementAndOrder verifies that a UI/API edit, which sends neither
+// field because the UI has no control over them, does not clear the stored placement/order.
+func TestUpdatePluginPreservesPlacementAndOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	preBuiltin := schemas.PluginPlacementPreBuiltin
+	order7 := 7
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "ordering-plugin", Enabled: true, Placement: &preBuiltin, Order: &order7,
+		Config: map[string]any{"setting": "old"},
+	}))
+
+	require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{
+		Name: "ordering-plugin", Enabled: true, Config: map[string]any{"setting": "new"},
+	}))
+
+	result, err := store.GetPlugin(ctx, "ordering-plugin")
+	require.NoError(t, err)
+	require.NotNil(t, result.Placement)
+	assert.Equal(t, preBuiltin, *result.Placement)
+	require.NotNil(t, result.Order)
+	assert.Equal(t, 7, *result.Order)
+	assert.Equal(t, map[string]any{"setting": "new"}, result.Config, "the edit itself must still apply")
+}
+
+// TestUpdatePluginPreservesSyncState verifies that a UI/API edit, which sets neither field,
+// keeps the stored config hash and version. Clearing either makes the next startup read
+// config.json as changed and revert the edit.
+func TestUpdatePluginPreservesSyncState(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name:       "sync-state-plugin",
+		Enabled:    true,
+		Version:    3,
+		ConfigHash: "hash-from-last-file-sync",
+		Config:     map[string]any{"setting": "file-value"},
+	}))
+
+	// A UI/API edit: only the fields the form knows about.
+	require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{
+		Name:    "sync-state-plugin",
+		Enabled: true,
+		Config:  map[string]any{"setting": "ui-value"},
+	}))
+
+	result, err := store.GetPlugin(ctx, "sync-state-plugin")
+	require.NoError(t, err)
+	assert.Equal(t, "hash-from-last-file-sync", result.ConfigHash)
+	assert.Equal(t, int16(3), result.Version)
+	assert.Equal(t, map[string]any{"setting": "ui-value"}, result.Config)
 }
 
 // =============================================================================
@@ -4250,4 +4406,165 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.50, *found.OutputCostPerVideoPerSecond1024p)
 	assert.Equal(t, 0.70, *found.OutputCostPerVideoPerSecond1080p)
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
+}
+
+// TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
+// TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
+// column, so any entity rebuilt from config.json — which carries no created_at —
+// has its original insert timestamp overwritten with the zero time unless the
+// store carries the persisted value forward.
+func TestRDBConfigStore_CreatedAtSurvivesConfigSync(t *testing.T) {
+	ctx := context.Background()
+
+	// seed inserts the entity and returns its persisted created_at. sync re-saves it
+	// shaped exactly the way the config.json reconciler builds one: same ID, changed
+	// payload, zero CreatedAt. verify asserts the changed payload actually landed
+	// before returning the created_at that survived, so an Update that quietly did
+	// nothing cannot pass a case just by leaving the row alone.
+	tests := []struct {
+		name   string
+		seed   func(t *testing.T, store *RDBConfigStore) time.Time
+		sync   func(t *testing.T, store *RDBConfigStore)
+		verify func(t *testing.T, store *RDBConfigStore) time.Time
+	}{
+		{
+			name: "RateLimit",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				max := int64(1000)
+				require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &max, TokenResetDuration: strPtr("1h"),
+				}))
+				created, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				newMax := int64(2000)
+				require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{
+					ID: "rl-a", TokenMaxLimit: &newMax, TokenResetDuration: strPtr("1h"),
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetRateLimit(ctx, "rl-a")
+				require.NoError(t, err)
+				require.Equal(t, int64(2000), *got.TokenMaxLimit)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Team",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A"}))
+				created, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateTeam(ctx, &tables.TableTeam{ID: "team-a", Name: "Team A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetTeam(ctx, "team-a")
+				require.NoError(t, err)
+				require.Equal(t, "Team A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "Customer",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A"}))
+				created, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateCustomer(ctx, &tables.TableCustomer{ID: "cust-a", Name: "Customer A renamed"}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetCustomer(ctx, "cust-a")
+				require.NoError(t, err)
+				require.Equal(t, "Customer A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "ModelConfig",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global",
+				}))
+				created, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdateModelConfig(ctx, &tables.TableModelConfig{
+					ID: "mc-a", ModelName: "gpt-4o", Scope: "global", CalendarAligned: true,
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetModelConfig(ctx, "global", nil, "gpt-4o", nil)
+				require.NoError(t, err)
+				require.True(t, got.CalendarAligned)
+				return got.CreatedAt
+			},
+		},
+		{
+			name: "PricingOverride",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+				created, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePricingOverride(ctx, &tables.TablePricingOverride{
+					ID: "po-a", Name: "Override A renamed", ScopeKind: "global", MatchType: "exact", Pattern: "gpt-4o",
+				}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPricingOverrideByID(ctx, "po-a")
+				require.NoError(t, err)
+				require.Equal(t, "Override A renamed", got.Name)
+				return got.CreatedAt
+			},
+		},
+		{
+			// UpdatePlugin is a delete-and-reinsert, so without a carry-forward
+			// created_at is re-stamped to now() rather than zeroed.
+			name: "Plugin",
+			seed: func(t *testing.T, store *RDBConfigStore) time.Time {
+				require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: true}))
+				created, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				return created.CreatedAt
+			},
+			sync: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.UpdatePlugin(ctx, &tables.TablePlugin{Name: "plug-a", Enabled: false}))
+			},
+			verify: func(t *testing.T, store *RDBConfigStore) time.Time {
+				got, err := store.GetPlugin(ctx, "plug-a")
+				require.NoError(t, err)
+				require.False(t, got.Enabled)
+				return got.CreatedAt
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+
+			createdAt := tt.seed(t, store)
+			require.False(t, createdAt.IsZero())
+
+			tt.sync(t, store)
+
+			syncedAt := tt.verify(t, store)
+			require.False(t, syncedAt.IsZero())
+			require.Equal(t, createdAt, syncedAt, "created_at must survive a config sync")
+		})
+	}
 }

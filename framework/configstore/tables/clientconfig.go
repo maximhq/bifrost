@@ -64,6 +64,7 @@ type TableClientConfig struct {
 	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
 	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
 	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
+	CompatAzureDeepseek          bool `gorm:"column:compat_azure_deepseek;default:false" json:"-"`
 
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.

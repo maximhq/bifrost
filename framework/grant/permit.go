@@ -7,6 +7,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Wildcard marks an unrestricted list: every value is allowed, or every value is blocked, depending
+// on which kind of list carries it.
+//
+// The lists a permit carries are schemas.WhiteList and schemas.BlackList, so what a list means
+// travels on its type: a list holding only the wildcard is unrestricted, an empty list holds
+// nothing, and membership ignores case. Key IDs are the one exception: they are identifiers, so
+// whoever matches them does so exactly rather than through the type's membership methods (see
+// composeKeyIDs), and only their wildcard is read off the type.
+const Wildcard = "*"
+
 // PermitType identifies what kind of source a permit's access comes from. These are the values a
 // schemas.Permit reports from Type. An open string: kinds are declared by whoever resolves permits
 // of that kind, so this package needs no list of them.
@@ -57,8 +67,21 @@ type Permit struct {
 	isActive   bool
 	isExpired  bool
 
-	providerPermits []schemas.ProviderPermit
-	mcpPermits      []schemas.MCPPermit
+	providerPermits   []schemas.ProviderPermit
+	mcpPermits        []schemas.MCPPermit
+	allowAllProviders bool
+}
+
+// PermitOption configures a Permit at construction. Options keep NewPermit's required arguments
+// stable while letting a source set the occasional extra, so a resolver that does not need one is
+// unaffected.
+type PermitOption func(*Permit)
+
+// WithAllowAllProviders grants every provider, including ones the permit holds no provider permit
+// for: those are allowed with all models and all keys, while a provider it does hold a permit for
+// still applies that permit's rules. See schemas.Permit.AllowsAllProviders.
+func WithAllowAllProviders(allow bool) PermitOption {
+	return func(p *Permit) { p.allowAllProviders = allow }
 }
 
 // NewPermit builds a Permit. See schemas.Permit for what each value means. The lists are deep
@@ -72,8 +95,9 @@ func NewPermit(
 	isExpired bool,
 	providerPermits []schemas.ProviderPermit,
 	mcpPermits []schemas.MCPPermit,
+	opts ...PermitOption,
 ) *Permit {
-	return &Permit{
+	p := &Permit{
 		permitType:      permitType,
 		id:              id,
 		name:            name,
@@ -82,6 +106,10 @@ func NewPermit(
 		providerPermits: cloneProviderPermits(providerPermits),
 		mcpPermits:      cloneMCPPermits(mcpPermits),
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // cloneProviderPermits deep-copies each entry: slices.Clone on the outer slice only copies the
@@ -163,6 +191,11 @@ func (p *Permit) MCPPermits() []schemas.MCPPermit {
 	return cloneMCPPermits(p.mcpPermits)
 }
 
+// AllowsAllProviders implements schemas.Permit.
+func (p *Permit) AllowsAllProviders() bool {
+	return p != nil && p.allowAllProviders
+}
+
 // The rules below are written against schemas.Permit rather than *Permit, so the fold asks every
 // permit it holds the same questions whichever implementation answers them.
 
@@ -172,7 +205,8 @@ func isNilPermit(p schemas.Permit) bool {
 }
 
 // allowsProvider reports whether the permit permits provider at all. A permit with no provider
-// permit permits none (deny by default), and so does a permit that is not there.
+// permit permits none (deny by default), and so does a permit that is not there, unless the permit
+// allows all providers, which grants even a provider it holds no permit for.
 func allowsProvider(p schemas.Permit, provider string) bool {
 	if isNilPermit(p) {
 		return false
@@ -182,7 +216,7 @@ func allowsProvider(p schemas.Permit, provider string) bool {
 			return true
 		}
 	}
-	return false
+	return p.AllowsAllProviders()
 }
 
 // blacklistsModel reports whether any of the permit's provider permits for provider blocks model.
@@ -192,7 +226,7 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 		return false
 	}
 	for _, pp := range p.ProviderPermits() {
-		if pp.Provider == provider && listBlocks(pp.BlacklistedModels, model) {
+		if pp.Provider == provider && pp.BlacklistedModels.IsBlocked(model) {
 			return true
 		}
 	}
@@ -230,10 +264,10 @@ func allowsTool(p schemas.Permit, toolPattern string) bool {
 		if toolPattern == clientName+"-"+Wildcard {
 			return len(mp.Tools) > 0
 		}
-		if listIsUnrestricted(mp.Tools) {
+		if mp.Tools.IsUnrestricted() {
 			return true
 		}
-		return listContains(mp.Tools, strings.TrimPrefix(toolPattern, clientName+"-"))
+		return mp.Tools.Contains(strings.TrimPrefix(toolPattern, clientName+"-"))
 	}
 	return false
 }
@@ -252,16 +286,23 @@ func allowsModelByName(p schemas.Permit, provider string, model string) bool {
 	if model != "" && blacklistsModel(p, provider, model) {
 		return false
 	}
+	found := false
 	for _, pp := range p.ProviderPermits() {
 		if pp.Provider != provider {
 			continue
 		}
+		found = true
 		if model == "" {
 			return true
 		}
 		if providerPermitAllowsModel(&pp, model) {
 			return true
 		}
+	}
+	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
+	// lists no permit for is opened up by allow-all, and then every model of it is allowed.
+	if !found && p.AllowsAllProviders() {
+		return true
 	}
 	return false
 }
@@ -272,7 +313,7 @@ func providerPermitAllowsModel(pp *schemas.ProviderPermit, model string) bool {
 	if model == "" {
 		return true
 	}
-	return listAllows(pp.AllowedModels, model) && !listBlocks(pp.BlacklistedModels, model)
+	return pp.AllowedModels.IsAllowed(model) && !pp.BlacklistedModels.IsBlocked(model)
 }
 
 // weightedProviderPermitFor returns the permit's first provider permit for provider that sets a
@@ -350,7 +391,7 @@ func mcpEntries(p schemas.Permit) []string {
 		if len(mp.Tools) == 0 {
 			continue
 		}
-		if listIsUnrestricted(mp.Tools) {
+		if mp.Tools.IsUnrestricted() {
 			entries.add(mp.ClientName + "-" + Wildcard)
 			continue
 		}
