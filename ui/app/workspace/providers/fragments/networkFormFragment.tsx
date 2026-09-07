@@ -101,7 +101,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
-		const requiresBaseUrl = isCustomProvider;
+		const requiresBaseUrl = isCustomProvider || provider.name === "cloudflare";
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
 				toast.error("You can't remove network configuration for this provider.");
@@ -176,8 +176,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	// HTTP/2 PING keepalives only apply when HTTP/2 is enforced
 	const enforceHTTP2 = form.watch("network_config.enforce_http2");
 
-	const baseURLRequired = isCustomProvider;
+	const baseURLRequired = isCustomProvider || provider.name === "cloudflare";
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
+	const canRemoveConfiguration = !hideBaseURL && !baseURLRequired;
 
 	return (
 		<Form {...form}>
@@ -604,7 +605,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 
 				{/* Form Actions */}
 				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:px-6">
-					{!hideBaseURL && (
+					{canRemoveConfiguration && (
 						<Button
 							type="button"
 							variant="outline"
