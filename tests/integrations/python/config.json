@@ -80,6 +80,9 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false
       }
     },
     "gemini": {
