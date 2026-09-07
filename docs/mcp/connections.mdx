@@ -92,13 +92,14 @@ flowchart LR
     B -->|failure, transient| D[unstable]
     C -->|periodic check fails, transient| D
     D -->|periodic check succeeds| C
+    D -->|automatic reconnect succeeds| C
     D -->|credential dead, no silent recovery| E[needs_reauth]
     C -->|credential dead| E
     E -->|admin reauthorizes| B
 ```
 
-- **Connect** happens once at `AddClient` (boot, or client creation) and again on every reconnect. Reconnects are [make-before-break](./gateway#reconnection-behavior): the old connection keeps serving until the new one is ready, so token rotation never causes downtime.
-- **`unstable`** is purely informational — a network blip doesn't stop tool calls, and the client self-heals on the next successful check with no human involvement.
+- **Connect** happens once at `AddClient` (boot, or client creation) and again on every reconnect. For `http` and `sse`, reconnects are [make-before-break](./gateway#reconnection-behavior): the old connection keeps serving until the new one is ready, so token rotation never causes downtime. `stdio` and in-process clients close first instead, because two subprocesses would double resource use and clash over anything held exclusively.
+- **`unstable`** is purely informational: a network blip doesn't stop tool calls, and the client recovers with no human involvement. Two things heal it. A failed periodic check reconnects the connection it just failed to probe, so a session the server expired, a dropped SSE stream, or a `stdio` server whose process exited is replaced on the next check rather than probed forever. And a tool call that fails because the session is gone triggers the same reconnect immediately, usually retrying the caller's own request on the healed connection (see [Auth failure recovery](./tool-execution#auth-failure-recovery), which covers both cases).
 - **`needs_reauth`** is a hard gate specifically for server-level clients: the periodic checker stops retrying entirely (retrying against a known-dead credential is pointless), and tool calls are refused outright rather than attempted. Recovery is [`POST /api/mcp/client/{id}/reauthorize`](./auth/oauth#reauthorization) (also covers `oauth`; `headers`/`none` credentials don't expire the same way, so this state is effectively OAuth-only in practice for server-level clients).
 - Every discovered tool list — from the initial connect and from every periodic refresh — persists to the DB, gated on the tool list actually having changed (no write on an unchanged tick), so a restart doesn't lose anything a running instance had already discovered.
 
