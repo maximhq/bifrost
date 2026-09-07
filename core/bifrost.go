@@ -7843,13 +7843,7 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
 			}
 		}
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
-=======
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
->>>>>>> 292462875 (feat(core): synthesize prompt-cache breakpoints for clients that send none)
-=======
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
->>>>>>> ae7141190 (feat: add x-bf-prompt-cache-auto-inject per-request override)
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
 		if !ok {
