@@ -1909,6 +1909,12 @@
           "enum": ["sqlite", "postgres", "clickhouse"],
           "description": "Logs store type"
         },
+        "hidden_request_types": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types."
+        },
         "config": {
           "type": "object",
           "oneOf": [
