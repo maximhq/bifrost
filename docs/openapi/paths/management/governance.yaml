@@ -908,9 +908,7 @@ model-configs:
           type: string
       - name: scope
         in: query
-        description: >-
           Comma-separated scopes to filter by. `project`, `access_profile` and
-          the legacy `user` are Enterprise only.
         schema:
           type: string
       - name: scope_id
@@ -944,7 +942,13 @@ model-configs:
   post:
     operationId: createModelConfig
     summary: Create model config
-    description: Creates a new model configuration with budget and rate limit settings.
+    description: |
+      Creates a new model configuration with budget and rate limit settings.
+
+      `scope: "user"` is rejected with 403. It is retired as a creatable scope — per-model
+      budgets for a person are now declared on an access profile and materialize per user as
+      `access_profile`-scoped limits. Existing `user`-scoped rows keep working and stay editable
+      through the update endpoint.
     tags:
       - Governance
     requestBody:
@@ -964,6 +968,14 @@ model-configs:
               $ref: '../../schemas/management/governance.yaml#/ModelConfigResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: |
+          The requested scope cannot be assigned to a new limit. Returned for
+          `scope: "user"`, which is retired in favour of access-profile per-model budgets.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
