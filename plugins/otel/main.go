@@ -36,6 +36,32 @@ type TraceType string
 // TraceTypeGenAIExtension is the type of trace to use for the OTEL collector
 const TraceTypeGenAIExtension TraceType = "genai_extension"
 
+// MessageFormat selects the JSON shape of the gen_ai.input.messages and
+// gen_ai.output.messages span attributes.
+type MessageFormat string
+
+const (
+	// MessageFormatFlat is Bifrost's original shape: one object per message carrying a
+	// plain "content" string plus optional tool_calls, tool_call_id and reasoning fields.
+	// The default, so existing collectors and dashboards keep working unchanged.
+	MessageFormatFlat MessageFormat = "flat"
+	// MessageFormatParts is the OpenTelemetry GenAI semantic-conventions shape: one object
+	// per message with a "parts" array of typed parts (text, tool_call, tool_call_response,
+	// reasoning). Backends that validate messages against the spec, Braintrust for one,
+	// only map them into their native input/output fields when they have this shape.
+	MessageFormatParts MessageFormat = "parts"
+)
+
+// validMessageFormat reports whether f is a supported MessageFormat; the empty string
+// means "not configured" and resolves to MessageFormatFlat.
+func validMessageFormat(f MessageFormat) bool {
+	switch f {
+	case "", MessageFormatFlat, MessageFormatParts:
+		return true
+	}
+	return false
+}
+
 // Protocol is the protocol to use for the OTEL collector
 type Protocol string
 
@@ -101,6 +127,12 @@ type Profile struct {
 	Protocol       Protocol           `json:"protocol"`
 	TLSCACert      string             `json:"tls_ca_cert,omitempty"`
 	Insecure       bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+
+	// MessageFormat selects the shape of gen_ai.input.messages / gen_ai.output.messages:
+	// "flat" (default) keeps Bifrost's role+content objects; "parts" emits the OTel GenAI
+	// semantic-conventions shape (role + typed parts) and additionally mirrors
+	// gen_ai.request.instructions as gen_ai.system_instructions. See MessageFormat.
+	MessageFormat MessageFormat `json:"message_format,omitempty"`
 
 	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60).
 	// This is the only deadline on the export: the caller passes context.Background(),
@@ -259,6 +291,7 @@ type profileForStorage struct {
 	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
 	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
 	TraceType              TraceType         `json:"trace_type"`
+	MessageFormat          MessageFormat     `json:"message_format,omitempty"`
 	Protocol               Protocol          `json:"protocol"`
 	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
 	Insecure               bool              `json:"insecure"`
@@ -300,6 +333,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			TraceHeaders:           p.TraceHeaders,
 			MetricsHeaders:         p.MetricsHeaders,
 			TraceType:              p.TraceType,
+			MessageFormat:          p.MessageFormat,
 			Protocol:               p.Protocol,
 			TLSCACert:              p.TLSCACert,
 			Insecure:               p.Insecure,
@@ -386,6 +420,7 @@ type otelTarget struct {
 	serviceName            string
 	url                    string
 	traceType              TraceType
+	messageFormat          MessageFormat
 	client                 OtelClient
 	metricsExporter        *MetricsExporter
 	requestHeaders         []string
@@ -577,10 +612,14 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	if err != nil {
 		return nil, fmt.Errorf("profile %d: %w", index, err)
 	}
+	if !validMessageFormat(profile.MessageFormat) {
+		return nil, fmt.Errorf("profile %d: message_format must be %q or %q, got %q", index, MessageFormatFlat, MessageFormatParts, profile.MessageFormat)
+	}
 
 	target := &otelTarget{
 		serviceName:            serviceName,
 		traceType:              profile.TraceType,
+		messageFormat:          profile.MessageFormat,
 		requestHeaders:         slices.Clone(profile.RequestHeaders),
 		disableContentLogging:  profile.DisableContentLogging,
 		groupTracesBySession:   profile.GroupTracesBySession,
@@ -846,7 +885,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent, t.messageFormat)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)

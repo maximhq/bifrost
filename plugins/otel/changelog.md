@@ -1,0 +1,1 @@
+[feat]: add per-profile `message_format` (`flat` | `parts`); `parts` emits OTel GenAI semconv message parts and mirrors instructions as `gen_ai.system_instructions` [@markdawson](https://github.com/markdawson)

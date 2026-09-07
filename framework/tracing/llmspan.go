@@ -711,6 +711,14 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		}
 	}
 
+	// Instructions are the Responses API's system prompt. They never appear in Input, so
+	// without this a collector sees only the user turn and cannot tell which rubric or
+	// persona produced the output. AttrInstructions is already classified as input content,
+	// so disable_content_logging and redaction cover it.
+	if req.Params.Instructions != nil && *req.Params.Instructions != "" {
+		attrs[schemas.AttrInstructions] = *req.Params.Instructions
+	}
+
 	if req.Params.ParallelToolCalls != nil {
 		attrs[schemas.AttrParallelToolCall] = *req.Params.ParallelToolCalls
 	}
