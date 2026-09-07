@@ -129,10 +129,6 @@ func (s *S3ObjectStore) Put(ctx context.Context, key string, data []byte, tags m
 		input.ContentEncoding = aws.String("gzip")
 	}
 
-	if len(tags) > 0 {
-		input.Tagging = aws.String(encodeTags(tags))
-	}
-
 	_, err := s.client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("objectstore: put object %s: %w", key, err)
