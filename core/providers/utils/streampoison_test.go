@@ -463,7 +463,7 @@ func TestStreamCloseUnderActiveReaderIsSafe(t *testing.T) {
 // leaving the terminating chunk for the drain to consume. A stream that ends on
 // a bare body EOF instead does not, and sse.go names that case explicitly.
 //
-// Fixed upstream in maximhq/fasthttp#1 (requestStream stays at EOF). This test
+// Fixed upstream in valyala/fasthttp#2379 (v1.74.0). This test
 // fails by timing out on any fasthttp without that fix.
 func TestReleaseAfterBodyEOFDoesNotBlock(t *testing.T) {
 	srv := newSSETestServer(t, 5, time.Millisecond)
