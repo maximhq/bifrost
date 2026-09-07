@@ -1209,6 +1209,7 @@
                   "GET /api/logs/dropped",
                   "GET /api/logs/filterdata",
                   "GET /api/logs/rankings",
+                  "GET /api/logs/rankings/by-dimension",
                   "GET /api/logs/dashboard",
                   "POST /api/logs/recalculate-cost",
                   "GET /api/logs/recalculate-cost/status",
@@ -1429,6 +1430,22 @@
                   "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
                   "POST /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
                   "DELETE /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              },
+              {
+                "group": "Projects",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/projects",
+                  "POST /api/governance/projects",
+                  "GET /api/governance/projects/{project_id}",
+                  "PUT /api/governance/projects/{project_id}",
+                  "DELETE /api/governance/projects/{project_id}",
+                  "GET /api/governance/projects/{project_id}/members",
+                  "POST /api/governance/projects/{project_id}/members",
+                  "PUT /api/governance/projects/{project_id}/members/{member_id}",
+                  "DELETE /api/governance/projects/{project_id}/members/{member_id}",
+                  "GET /api/governance/users/{user_id}/projects"
                 ]
               },
               {

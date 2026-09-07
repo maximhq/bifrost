@@ -908,10 +908,18 @@ model-configs:
           type: string
       - name: scope
         in: query
-        description: Filter by scope (`global`, `virtual_key`, or `user`; `user` is Enterprise only)
+        description: >-
+          Comma-separated scopes to filter by. `project`, `access_profile` and
+          the legacy `user` are Enterprise only.
         schema:
           type: string
-          enum: [global, virtual_key, user]
+      - name: scope_id
+        in: query
+        description: >-
+          Filter to one scope target, for example a project id. Pair it with
+          `scope`.
+        schema:
+          type: string
       - name: provider
         in: query
         description: Filter by provider name
