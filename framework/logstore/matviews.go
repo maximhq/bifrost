@@ -1187,7 +1187,7 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 	}
 
 	var interior int64
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
 	q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
 	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&interior); err != nil {
@@ -1257,7 +1257,7 @@ func isDegenerateHybridWindow(start, end *time.Time) bool {
 // counts sum a consistent population across the matview and raw halves.
 func (s *RDBLogStore) countRawTerminal(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (int64, error) {
 	var count int64
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, dimFilters)
 	q = q.Where(timePredicate, timeArgs...)
 	if len(dimFilters.Status) == 0 {
@@ -1278,7 +1278,7 @@ func (s *RDBLogStore) countRawTerminal(ctx context.Context, dimFilters SearchFil
 // eligibility and excludes in-flight rows on every path.
 func (s *RDBLogStore) countRawNonTerminal(ctx context.Context, filters SearchFilters) (int64, error) {
 	var count int64
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, filters)
 	q = q.Where("status IN ?", nonTerminalLogStatuses)
 	if err := q.Count(&count).Error; err != nil {
@@ -1321,7 +1321,7 @@ func (a *matViewStatsAgg) add(b matViewStatsAgg) {
 // fully contained in the window.
 func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters SearchFilters, start, end *time.Time) (matViewStatsAgg, error) {
 	var agg matViewStatsAgg
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
 	q = applyInteriorBucketWindow(q, start, end)
 	err := q.Select(`
@@ -1345,7 +1345,7 @@ func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters Se
 // halves of the hybrid aggregate the same population.
 func (s *RDBLogStore) rawTerminalStatsAgg(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (matViewStatsAgg, error) {
 	var agg matViewStatsAgg
-	q := s.ScopedDB(ctx).Model(&Log{})
+	q := s.scopedLogsDB(ctx).Model(&Log{})
 	q = s.applyFilters(q, dimFilters)
 	q = q.Where(timePredicate, timeArgs...)
 	if len(dimFilters.Status) == 0 {
@@ -1492,7 +1492,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 
 	rawBucketed := func(timePredicate string, timeArgs ...any) ([]histAgg, error) {
 		var rows []histAgg
-		q := s.ScopedDB(ctx).Model(&Log{})
+		q := s.scopedLogsDB(ctx).Model(&Log{})
 		q = s.applyFilters(q, dimFilters)
 		q = q.Where(timePredicate, timeArgs...)
 		q = q.Where("status IN ?", terminalLogStatuses)
@@ -1518,7 +1518,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		merge(rows)
 	} else {
 		var results []histAgg
-		q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		q = s.applyMatViewFilters(q, dimFilters)
 		q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
 		if err := q.Select(fmt.Sprintf(`
@@ -1590,7 +1590,7 @@ func (s *RDBLogStore) getTokenHistogramFromMatView(ctx context.Context, filters 
 		TotalTokens      int64 `gorm:"column:total_tkns"`
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1634,7 +1634,7 @@ func (s *RDBLogStore) getCostHistogramFromMatView(ctx context.Context, filters S
 		Model           string  `gorm:"column:model"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1690,7 +1690,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		ErrorCount      int64  `gorm:"column:error_count"`
 		CancelledCount  int64  `gorm:"column:cancelled_count"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1757,7 +1757,7 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	// Weighted average of percentiles across hourly buckets
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1815,7 +1815,7 @@ func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, fil
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only: status is a matview dimension, so this restricts
 	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
@@ -1862,7 +1862,7 @@ func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Cont
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only — see getThroughputHistogramFromMatView.
 	q = q.Where("status = ?", "success")
@@ -1920,7 +1920,7 @@ func (s *RDBLogStore) getProviderCostHistogramFromMatView(ctx context.Context, f
 		Provider        string  `gorm:"column:provider"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1975,7 +1975,7 @@ func (s *RDBLogStore) getProviderTokenHistogramFromMatView(ctx context.Context, 
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2049,7 +2049,7 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2117,7 +2117,7 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 		DimValue        string  `gorm:"column:dim_value"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2179,7 +2179,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2258,7 +2258,7 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2331,7 +2331,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
 	q = q.Select(`
@@ -2383,7 +2383,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
@@ -2454,7 +2454,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		TotalTokens int64   `gorm:"column:total_tkns"`
 		TotalCost   float64 `gorm:"column:total_cost"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
 	// Same ceiling as the raw path in GetUserRankings: the row scope alone does
@@ -2498,7 +2498,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, "user_id")
@@ -2555,7 +2555,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	}
 
 	var results []row
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
 	// Same ceiling as the raw path in GetDimensionRankings. Only non-bucketed
@@ -2584,7 +2584,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 			ID   string `gorm:"column:id"`
 			Name string `gorm:"column:name"`
 		}
-		if err := s.ScopedDB(ctx).Model(&Log{}).
+		if err := s.scopedLogsDB(ctx).Model(&Log{}).
 			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
 			Where(fmt.Sprintf("%s IN ?", idCol), ids).
 			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
@@ -2616,7 +2616,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, idCol)
@@ -2668,7 +2668,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 // of which path served the request.
 func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var models []string
-	q := s.ScopedDB(ctx).Table("mv_filter_models").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_models").
 		Distinct("model").
 		Where("model != ''")
 	if query != "" {
@@ -2683,7 +2683,7 @@ func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context, limit in
 // getDistinctAliasesFromMatView returns unique alias values from mv_filter_aliases.
 func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var aliases []string
-	q := s.ScopedDB(ctx).Table("mv_filter_aliases").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_aliases").
 		Distinct("alias").
 		Where("alias != ''")
 	if query != "" {
@@ -2698,7 +2698,7 @@ func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context, limit i
 // getDistinctStopReasonsFromMatView returns unique stop reasons from mv_filter_stop_reasons.
 func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var stopReasons []string
-	q := s.ScopedDB(ctx).Table("mv_filter_stop_reasons").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_stop_reasons").
 		Distinct("stop_reason").
 		Where("stop_reason != ''")
 	if query != "" {
@@ -2713,7 +2713,7 @@ func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, lim
 // getDistinctUserAgentsFromMatView returns unique raw User-Agent strings from mv_filter_user_agents.
 func (s *RDBLogStore) getDistinctUserAgentsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var userAgents []string
-	q := s.ScopedDB(ctx).Table("mv_filter_user_agents").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_user_agents").
 		Distinct("user_agent").
 		Where("user_agent != ''")
 	if query != "" {
@@ -2728,7 +2728,7 @@ func (s *RDBLogStore) getDistinctUserAgentsFromMatView(ctx context.Context, limi
 // getDistinctAppsFromMatView returns unique backend-detected app labels from mv_filter_apps.
 func (s *RDBLogStore) getDistinctAppsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var apps []string
-	q := s.ScopedDB(ctx).Table("mv_filter_apps").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_apps").
 		Distinct("app").
 		Where("app != ''")
 	if query != "" {
@@ -2750,7 +2750,7 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 		return nil, false, nil
 	}
 	var results []KeyPairResult
-	q := s.ScopedDB(ctx).Table(view).Where("id != ''")
+	q := s.scopedLogsDB(ctx).Table(view).Where("id != ''")
 	// User matview stores name = id and the view-level WHERE already filters
 	// empty ids; other matviews include name and we additionally guard against
 	// stragglers with empty names.
@@ -2788,7 +2788,7 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 // mv_filter_routing_engines.
 func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var rawValues []string
-	q := s.ScopedDB(ctx).Table("mv_filter_routing_engines").
+	q := s.scopedLogsDB(ctx).Table("mv_filter_routing_engines").
 		Distinct("routing_engines_used").
 		Where("routing_engines_used != ''")
 	if query != "" {
