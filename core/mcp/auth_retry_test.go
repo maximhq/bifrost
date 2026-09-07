@@ -627,8 +627,14 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	if err == nil {
 		t.Fatal("expected the original error to surface when the reconnect exceeds the budget")
 	}
-	if !errors.Is(err, ErrMCPToolCallFailed) {
-		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
+	// The caller's 300ms deadline is what capped the wait, so by the time the
+	// bounded wait gives up the tool call has run out of time. Callers classify
+	// on these sentinels (see mcpErrorType), so this has to read as a timeout
+	// rather than as a tool failure. The sibling
+	// ..._ReconnectFails_OriginalErrorSurfaces test covers the other branch:
+	// recovery failing with budget still left stays ErrMCPToolCallFailed.
+	if !errors.Is(err, ErrMCPToolTimeout) {
+		t.Errorf("expected error to wrap ErrMCPToolTimeout once the budget was consumed, got: %v", err)
 	}
 	if got := ft.CallCount(); got != 1 {
 		t.Errorf("expected no retry when the reconnect exceeds the budget, got %d CallTool invocations", got)
@@ -980,5 +986,49 @@ func TestExecuteTool_NonAuthFailure_NeverTriggersRetryLogic(t *testing.T) {
 	}
 	if got := cm.reconnectCalls.Load(); got != 0 {
 		t.Errorf("ReconnectClient must not run for a non-auth failure, got %d calls", got)
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeout
+// is the complement of ..._FallsBackWhenReconnectExceedsBudget. There, a short
+// caller deadline is what caps the wait, so giving up genuinely means the tool
+// call ran out of time. Here nothing caps it but
+// MCPSharedAuthRetryReconnectBudget itself: the caller has no deadline at all,
+// so the tool still has its full execution budget when the reconnect wait
+// expires. Reporting that as ErrMCPToolTimeout would tell callers the tool
+// timed out when only the reconnect did, and with the default 30s tool timeout
+// against a 10s reconnect budget that is the common case, not a corner.
+//
+// This test necessarily waits out MCPSharedAuthRetryReconnectBudget, because
+// the branch under test is precisely the one where nothing shortens it.
+func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeout(t *testing.T) {
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	reconnectGate := make(chan struct{})
+	defer close(reconnectGate) // let the held reconnect goroutine finish after the test
+
+	reconnectSignal := make(chan struct{}, 1)
+	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cs := &authRetryCredStore{requiresPerCall: false}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	// No caller deadline: the reconnect budget is the only thing bounding the
+	// wait, so the tool's own budget is untouched when it expires.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+
+	if err == nil {
+		t.Fatal("expected the original error to surface when the reconnect exceeds its budget")
+	}
+	if errors.Is(err, ErrMCPToolTimeout) {
+		t.Errorf("the reconnect budget expiring is not the tool call timing out; got: %v", err)
+	}
+	if !errors.Is(err, ErrMCPToolCallFailed) {
+		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
 	}
 }
