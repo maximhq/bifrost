@@ -536,7 +536,18 @@ bifrost:
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
-    # Assign groups of MCP tools to virtual keys / access profiles.
+    # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
+    # served at /mcp/<endpointSlug> and attach it to virtual keys.
+    # virtualMcps:
+    #   - id: 5                        # Optional: DB ID of an existing Virtual MCP; when set, reconciler updates it by ID instead of name
+    #     name: "Platform Tools"
+    #     endpointSlug: "platform-tools"  # Optional; derived from name when omitted. Immutable after creation.
+    #     enabled: true
+    #     tools:
+    #       - mcpClientName: "github"
+    #         toolNames: ["create_pull_request", "list_issues"]
+    #     virtualKeyIds: ["<vk-id>"]
+    # toolGroups (DEPRECATED): use virtualMcps instead. Kept for backward compatibility.
     # toolGroups:
     #   - id: 5                        # Optional: DB ID of an existing group; when set, reconciler updates it by ID instead of name
     #     name: "Platform Tools"

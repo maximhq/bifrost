@@ -198,6 +198,7 @@ type ConfigData struct {
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
+	presentMCPSections        map[string]bool
 	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 }
 
@@ -387,6 +388,13 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 	}
 }
 
+// mcpSectionPresent reports whether a field under the top-level "mcp" object was explicitly
+// provided in config.json (e.g. "virtual_mcps", "client_configs"). Used to decide whether
+// config.json is the source of truth for that MCP subsection.
+func (cd *ConfigData) mcpSectionPresent(name string) bool {
+	return cd.presentMCPSections[name]
+}
+
 // governanceSectionPresent reports whether a governance collection was explicitly provided.
 func (cd *ConfigData) governanceSectionPresent(name string) bool {
 	if cd == nil || cd.Governance == nil {
@@ -484,6 +492,16 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 			cd.presentGovernanceSections = make(map[string]bool, len(rawGovernanceFields))
 			for key := range rawGovernanceFields {
 				cd.presentGovernanceSections[key] = true
+			}
+		}
+	}
+	cd.presentMCPSections = nil
+	if rawMCP, ok := raw["mcp"]; ok && len(rawMCP) > 0 {
+		var rawMCPFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawMCP, &rawMCPFields); err == nil {
+			cd.presentMCPSections = make(map[string]bool, len(rawMCPFields))
+			for key := range rawMCPFields {
+				cd.presentMCPSections[key] = true
 			}
 		}
 	}
@@ -1816,6 +1834,21 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 		}
 	}
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP, configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp"))
+
+	// Reconcile Virtual MCPs declared under mcp.virtual_mcps. This runs after client configs are
+	// synced so tool specs can resolve their source MCP clients by name. forceFileSync makes
+	// config.json authoritative for the virtual_mcps subsection.
+	if configData.MCP != nil {
+		forceFileSync := configData.isConfigJSONSourceOfTruth() && configData.mcpSectionPresent("virtual_mcps")
+		if err := reconcileVirtualMCPsConfig(ctx, config.ConfigStore, configData.MCP.VirtualMCPs, forceFileSync); err != nil {
+			logger.Warn("failed to reconcile virtual MCPs from config.json: %v", err)
+		}
+		if forceFileSync {
+			if err := pruneVirtualMCPsConfigToFile(ctx, config.ConfigStore, configData.MCP.VirtualMCPs); err != nil {
+				logger.Warn("failed to prune virtual MCPs from config.json source of truth: %v", err)
+			}
+		}
+	}
 }
 
 // pinMCPClientImmutableFields rewrites a file-declared client so that fields

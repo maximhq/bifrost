@@ -1414,6 +1414,30 @@ false
 {{- end }}
 {{- $_ := set $mcpConfig "tool_groups" $toolGroups }}
 {{- end }}
+{{- if hasKey .Values.bifrost.mcp "virtualMcps" }}
+{{- $virtualMcps := list }}
+{{- range .Values.bifrost.mcp.virtualMcps }}
+{{- $vmcp := dict "name" .name }}
+{{- if .id }}{{- $_ := set $vmcp "id" .id }}{{- end }}
+{{- if .endpointSlug }}{{- $_ := set $vmcp "endpoint_slug" .endpointSlug }}{{- end }}
+{{- if hasKey . "enabled" }}{{- $_ := set $vmcp "enabled" .enabled }}{{- end }}
+{{- if .description }}{{- $_ := set $vmcp "description" .description }}{{- end }}
+{{- if .tools }}
+{{- $tools := list }}
+{{- range .tools }}
+{{- $tool := dict }}
+{{- if .mcpClientId }}{{- $_ := set $tool "mcp_client_id" .mcpClientId }}{{- end }}
+{{- if .mcpClientName }}{{- $_ := set $tool "mcp_client_name" .mcpClientName }}{{- end }}
+{{- if .toolNames }}{{- $_ := set $tool "tool_names" .toolNames }}{{- end }}
+{{- $tools = append $tools $tool }}
+{{- end }}
+{{- $_ := set $vmcp "tools" $tools }}
+{{- end }}
+{{- if .virtualKeyIds }}{{- $_ := set $vmcp "virtual_key_ids" .virtualKeyIds }}{{- end }}
+{{- $virtualMcps = append $virtualMcps $vmcp }}
+{{- end }}
+{{- $_ := set $mcpConfig "virtual_mcps" $virtualMcps }}
+{{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
 {{- /* Plugins - as array per schema */ -}}
@@ -2511,11 +2535,21 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if .Values.bifrost.mcp.toolGroups }}
 {{- range $idx, $group := .Values.bifrost.mcp.toolGroups }}
-{{- if not $group.name }}
+{{- if not (trim (default "" $group.name)) }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $group.tools }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].tools is required for group '%s'." $idx $group.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.virtualMcps }}
+{{- range $idx, $vmcp := .Values.bifrost.mcp.virtualMcps }}
+{{- if not (trim (default "" $vmcp.name)) }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $vmcp.tools }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].tools is required for Virtual MCP '%s'." $idx $vmcp.name) }}
 {{- end }}
 {{- end }}
 {{- end }}
