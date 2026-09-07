@@ -296,6 +296,13 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"routing_engines_used"}, scopeRequiredColumns...),
 	},
 	{
+		name:            "mv_filter_tool_call_names",
+		selectExpr:      "tool_call_names, " + scopeProjection,
+		whereExpr:       "tool_call_names IS NOT NULL AND tool_call_names != ''",
+		uniqueIdx:       "tool_call_names, " + scopeIdxColumns,
+		requiredColumns: append([]string{"tool_call_names"}, scopeRequiredColumns...),
+	},
+	{
 		name:            "mv_filter_selected_keys",
 		selectExpr:      "selected_key_id AS id, selected_key_name AS name, " + scopeProjection,
 		whereExpr:       "selected_key_id IS NOT NULL AND selected_key_id != '' AND selected_key_name IS NOT NULL AND selected_key_name != ''",
@@ -985,6 +992,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
+		len(f.ToolCallNames) == 0 &&
 		len(f.StopReasons) == 0 &&
 		len(f.ComplexityTiers) == 0 &&
 		len(f.ComplexityMechanisms) == 0 &&
@@ -2811,6 +2819,20 @@ func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, 
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func (s *RDBLogStore) getDistinctToolCallNamesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
+	var rawValues []string
+	q := s.scopedLogsDB(ctx).Table("mv_filter_tool_call_names").
+		Distinct("tool_call_names").
+		Where("tool_call_names != ''")
+	if query != "" {
+		q = q.Where("tool_call_names ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Pluck("tool_call_names", &rawValues).Error; err != nil {
+		return nil, err
+	}
+	return splitCommaListValues(rawValues, query, limit), nil
 }
 
 // ---------------------------------------------------------------------------

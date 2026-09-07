@@ -126,6 +126,7 @@ type parityLogSpec struct {
 	nodeID                     *string
 	budgetIDs                  *string
 	rateLimitIDs               *string
+	toolCallNames              *string
 }
 
 func (s parityLogSpec) toLog(base time.Time) *Log {
@@ -159,6 +160,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		TotalTokens:           s.tokens[2],
 		StopReason:            s.stopReason,
 		RoutingEnginesUsedStr: s.routing,
+		ToolCallNamesStr:      s.toolCallNames,
 		ComplexityTier:        s.tier,
 		ComplexityMechanism:   s.mechanism,
 		ComplexityScore:       s.tierScore,
@@ -180,7 +182,7 @@ func paritySpecs() []parityLogSpec {
 			alias: strPtrP("a1"), canonical: strPtrP("gpt-4o-2024-11-20"), selectedKey: "sk1", vkID: strPtrP("vk1"), vkName: strPtrP("VK One"),
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
-			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
+			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`), toolCallNames: strPtrP("search"),
 			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55), sessionID: strPtrP("session-1"),
 			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
@@ -196,7 +198,7 @@ func paritySpecs() []parityLogSpec {
 		{id: "p4", offsetSec: 70, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u3"),
 			cost: f64PtrP(2.5), latency: f64PtrP(400), tokens: [3]int{400, 100, 500}, stopReason: strPtrP("tool_calls"),
-			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot"},
+			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot", toolCallNames: strPtrP("get_weather,search")},
 		{id: "p5", offsetSec: 60, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "processing",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u1")},
 		{id: "p6", offsetSec: 50, object: "embedding", provider: "openai", model: "gpt-4o", status: "success",
@@ -588,6 +590,8 @@ func TestLogStoreParity(t *testing.T) {
 		"users":                 {UserIDs: []string{"u1"}},
 		"business_units":        {BusinessUnitIDs: []string{"b1"}},
 		"routing_engines":       {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
+		"tool_call_names":       {ToolCallNames: []string{"get_weather"}},
+		"tool_call_names_any":   {ToolCallNames: []string{"get_weather", "search"}},
 		"time_range":            {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
 		"latency_range":         {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
 		"token_range":           {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
@@ -750,6 +754,9 @@ func TestLogStoreParity(t *testing.T) {
 			},
 			"stop_reasons": func(ctx context.Context, s LogStore) (any, error) {
 				return sorted(s.GetDistinctStopReasons(ctx, 50, ""))
+			},
+			"tool_call_names": func(ctx context.Context, s LogStore) (any, error) {
+				return sorted(s.GetDistinctToolCallNames(ctx, 50, ""))
 			},
 			"key_pairs": func(ctx context.Context, s LogStore) (any, error) {
 				pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "")
