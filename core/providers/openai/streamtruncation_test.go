@@ -267,6 +267,153 @@ func TestChatStreamFinishReasonWithoutDoneIsNotTruncated(t *testing.T) {
 	}
 }
 
+// heartbeatSSEServer writes body and then keeps the connection alive with SSE
+// comment frames until the client goes away. It never sends [DONE] and never
+// closes: the shape an upstream has when it ends generation but leaves the
+// connection parked. Write errors are swallowed rather than reported through t,
+// since the handler outlives the test body once the client disconnects.
+func heartbeatSSEServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}))
+}
+
+// https://github.com/maximhq/bifrost/issues/6784: heartbeat comments reset the raw-read
+// idle timer before SSE framing is interpreted, so an upstream that finishes generating
+// and then parks the connection holds the read loop open forever — the client waits on a
+// finish_reason chunk that was already received. custom_provider_config.does_not_send_done_marker
+// is the operator's declaration that this upstream ends on finish_reason, and core stamps it
+// on the context per attempt.
+func TestChatStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != toolCalls {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", toolCalls, final.BifrostChatResponse.Choices)
+	}
+}
+
+// The counterpart: without the opt-in the loop keeps waiting for [DONE], which is
+// what providers emitting a usage-only chunk after finish_reason depend on. Asserted
+// with a bounded wait so a regression here cannot wedge the suite.
+func TestChatStreamHeartbeatAfterFinishReasonWaitsWithoutOptIn(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls))
+	defer server.Close()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	// The content chunk is forwarded as it arrives; the finish_reason chunk is not.
+	select {
+	case chunk, ok := <-stream:
+		if !ok {
+			t.Fatal("stream closed before delivering the content chunk")
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("content chunk carried an error: %+v", chunk.BifrostError)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the content chunk")
+	}
+
+	select {
+	case chunk, ok := <-stream:
+		t.Fatalf("expected the stream to stay open waiting for [DONE], got chunk=%+v open=%v", chunk, ok)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// The text-completion loop terminates on the same switch, so the opt-in has to
+// reach it too.
+func TestTextCompletionStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n")
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	if chunks[len(chunks)-1].BifrostTextCompletionResponse == nil {
+		t.Fatalf("expected a synthesized final text completion chunk, got %+v", chunks[len(chunks)-1])
+	}
+}
+
 func TestTextCompletionStreamTruncated(t *testing.T) {
 	server := truncatingSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"partial"}]}`+"\n\n")
 	defer server.Close()

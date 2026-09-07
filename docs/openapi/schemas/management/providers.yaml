@@ -304,6 +304,12 @@ CustomProviderConfig:
   properties:
     is_key_less:
       type: boolean
+    does_not_send_done_marker:
+      type: boolean
+      description: >-
+        Provider ends streams on finish_reason without sending a data: [DONE] marker.
+        Without this, a provider that also keeps the connection open leaves the stream
+        waiting for a marker it never sends.
     base_provider_type:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     allowed_requests:

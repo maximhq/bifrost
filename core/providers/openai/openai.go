@@ -752,7 +752,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
 				break
 			}
 		}
@@ -1533,7 +1533,7 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
-				if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
 					break
 				}
 			}
