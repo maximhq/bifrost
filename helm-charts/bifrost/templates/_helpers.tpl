@@ -1053,6 +1053,9 @@ false
 {{- end }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
 {{- end }}
+{{- if .Values.storage.logsStore.hiddenRequestTypes }}
+{{- $_ := set (index $config "logs_store") "hidden_request_types" .Values.storage.logsStore.hiddenRequestTypes }}
+{{- end }}
 {{- /* Object Storage for log payloads */ -}}
 {{- if and .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled }}
 {{- $os := .Values.storage.logsStore.objectStorage }}

@@ -1479,6 +1479,9 @@ storage:
   # Logs store settings
   logsStore:
     enabled: true
+    # Hide these request types from dashboard/API reads. Logs are still stored.
+    # Example: [count_tokens, embedding, chat_completion_stream]
+    hiddenRequestTypes: []
     # Backend type for logs store. Empty string uses storage.mode as default
     type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
