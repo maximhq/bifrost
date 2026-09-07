@@ -2906,9 +2906,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
 		// the final persisted state.
 
-		// Multi-budget reconciliation: match by reset_duration, preserve usage on update,
-		// create new budgets for new durations, delete unmatched existing budgets.
-		// Mirrors VK multi-budget handling above.
+		// Multi-budget reconciliation: prefer stable IDs and fall back to
+		// reset_duration for clients that do not send them. Preserve usage on
+		// update, create new budgets, and delete unmatched existing budgets.
 		if req.Budgets != nil {
 			// Validate incoming budgets
 			seenDurations := make(map[string]bool)
@@ -2925,16 +2925,18 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				seenDurations[b.ResetDuration] = true
 			}
 
-			existingByDuration := make(map[string]configstoreTables.TableBudget)
-			for _, existing := range team.Budgets {
-				existingByDuration[existing.ResetDuration] = existing
-			}
+			existingByID, existingByDuration := buildBudgetLookup(team.Budgets, req.Budgets)
 
 			var reconciledBudgets []configstoreTables.TableBudget
 			matchedIDs := make(map[string]bool)
 			for _, b := range req.Budgets {
-				if existing, found := existingByDuration[b.ResetDuration]; found {
+				existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
+				if err != nil {
+					return err
+				}
+				if found {
 					existing.MaxLimit = b.MaxLimit
+					existing.ResetDuration = b.ResetDuration
 					applyResetConfigToExistingBudget(&existing, b)
 					// LastReset is preserved on update: the reset boundary only ever
 					// moves forward, and never as a side effect of a config write.
