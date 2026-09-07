@@ -184,6 +184,9 @@ AccessProfile:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
     auto_rotation_interval:
       type: integer
       format: int64
@@ -262,6 +265,10 @@ CreateAccessProfileRequest:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'
@@ -318,6 +325,10 @@ UpdateAccessProfileRequest:
     calendar_aligned:
       type: boolean
       nullable: true
+    allow_all_providers:
+      type: boolean
+      nullable: true
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged.
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'

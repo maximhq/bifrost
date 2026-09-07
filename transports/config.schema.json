@@ -7752,6 +7752,11 @@
           "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
           "default": false
         },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
+          "default": false
+        },
         "provider_configs": {
           "type": "array",
           "description": "Per-provider restrictions and limits for this profile",
