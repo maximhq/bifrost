@@ -3252,7 +3252,22 @@ func extractPassthroughModel(path string, bodyModel string) string {
 	if model := extractModelFromPath(path); model != "" {
 		return model
 	}
-	return bodyModel
+	return normalizeResourceModel(bodyModel)
+}
+
+// normalizeResourceModel reduces a GenAI/Vertex model resource name
+// ("models/gemini-2.5-flash", "projects/{p}/locations/{l}/publishers/google/models/gemini-2.5-flash")
+// to its bare model id, which is what governance allowlists and key selection match on.
+// Slash-bearing ids that are not resource names (e.g. "openai/gpt-4o") pass through unchanged.
+func normalizeResourceModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "models/"), strings.HasPrefix(model, "tunedModels/"),
+		strings.HasPrefix(model, "projects/"), strings.HasPrefix(model, "publishers/"):
+		if extracted := extractModelFromPath(model); extracted != "" {
+			return extracted
+		}
+	}
+	return model
 }
 
 func extractModelFromPath(path string) string {
@@ -3368,7 +3383,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	resolvedModel := extractPassthroughModel(path, bodyModel)
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
-		provider = cfg.ProviderDetector(ctx, resolvedModel)
+		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
 	provider = getProviderFromHeader(ctx, provider)
 	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
