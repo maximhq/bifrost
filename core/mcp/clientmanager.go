@@ -2522,24 +2522,46 @@ func (m *MCPManager) closeConnHandles(cancel context.CancelFunc, conn *client.Cl
 
 // failConnectAttempt is the shared teardown for every failure exit of
 // connectToMCPClient after the client entry has been prepared. It first
-// writes the standard post-failure entry state under m.mu: no connection,
-// last-known tool maps left intact, connection info reduced to the bare
-// type, a generation bump, and State Disconnected (or NeedsReauth when the
-// failure was classified as a dead OAuth2 credential). Only then are the
-// half-built new connection handles and the previous connection captured
-// for make-before-break closed, outside the lock.
+// writes the post-failure entry state under m.mu, then closes whichever
+// connection handles this attempt is responsible for, outside the lock.
 //
-// The order is load-bearing: during a make-before-break dial the map entry
-// still references the old connection, and other closers (RemoveClient)
-// close whatever the entry references under m.mu. Detaching under the lock
-// before closing gives any residual double-close a happens-before edge, so
-// the transport's own idempotence check suffices; closing first would race
-// it. The generation bump invalidates late writers that captured the old
-// connection: a tool-sync tick whose list_tools succeeded on the old
-// connection mid-dial must not write its results over this entry (toolsync.go
-// compares the generation it captured before running against the current one
-// and drops the write on mismatch), and a late SSE loss callback from the
-// torn-down connection must not overwrite the failure state.
+// Two shapes, decided by whether this attempt had a live connection to fall
+// back on:
+//
+//   - Make-before-break, survivable failure (oldConn != nil and the failure
+//     was not classified as a dead credential): the replacement never
+//     arrived, so the entry keeps the connection it already had. Conn and
+//     CancelFunc are put back (connectToMCPClient detaches CancelFunc at the
+//     top of every attempt) and ConnGeneration is left alone, since nothing
+//     was swapped: a late writer bound to this connection is still writing
+//     about the connection the entry actually holds, so its generation guard
+//     must keep matching rather than start dropping valid writes. Only the
+//     half-built new handles are closed. State still moves to Unstable with
+//     the failure recorded, because the attempt did fail, but Unstable is
+//     informational (see prepareToolExecution), so tool calls keep flowing
+//     over the surviving connection while the periodic checker re-probes it.
+//     Tearing it down instead would turn every failed re-dial (a manual
+//     reconnect during a blip, a credential update, the checker's own
+//     recovery attempt) into a real outage on a connection that was working.
+//   - Everything else: a close-first path, a first dial with nothing to fall
+//     back on, or a credential the upstream confirmed dead, which makes the
+//     still-open connection worthless. The entry is detached (no connection,
+//     connection info reduced to the bare type, a generation bump) and both
+//     the new and the captured old handles are closed. State becomes
+//     Unstable, or NeedsReauth for the dead-credential classification.
+//
+// On the detaching shape the order is load-bearing: during a
+// make-before-break dial the map entry still references the old connection,
+// and other closers (RemoveClient) close whatever the entry references under
+// m.mu. Detaching under the lock before closing gives any residual
+// double-close a happens-before edge, so the transport's own idempotence
+// check suffices; closing first would race it. The generation bump
+// invalidates late writers that captured the now-detached connection: a
+// checker tick whose list_tools succeeded on it mid-dial must not write its
+// results over this entry (writeBackTools compares the generation it
+// captured before running against the current one and drops the write on
+// mismatch), and a late SSE loss callback from the torn-down connection must
+// not overwrite the failure state.
 //
 // Disabled entries keep the state DisableClient wrote, and an entry removed
 // mid-dial leaves the map untouched. entry is the *MCPClientState this
@@ -2557,9 +2579,23 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 	var oldState, newState schemas.MCPConnectionState
 	var recorded *schemas.MCPConnectionFailure
 	stateChanged := false
+	// Decided under the same lock as the state write and consumed by the
+	// teardown below, so the entry can never be left referencing a connection
+	// this function goes on to close.
+	keepOldConn := false
 	if clientState, exists := m.clientMap[config.ID]; exists && clientState == entry && clientState.State != schemas.MCPConnectionStateDisabled {
-		clientState.Conn = nil
-		clientState.CancelFunc = nil
+		keepOldConn = oldConn != nil && !needsReauth
+		if keepOldConn {
+			clientState.Conn = oldConn
+			clientState.CancelFunc = oldCancel
+		} else {
+			clientState.Conn = nil
+			clientState.CancelFunc = nil
+			clientState.ConnectionInfo = &schemas.MCPClientConnectionInfo{
+				Type: config.ConnectionType,
+			}
+			clientState.ConnGeneration++
+		}
 		// ToolMap/ToolNameMapping are deliberately left as last-known-good, not
 		// cleared: GetClientForTool resolves by tool name against this map, and
 		// wiping it here made a dead connection indistinguishable from a tool
@@ -2569,10 +2605,6 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 		// build the advertised tool list (GetToolPerClient) filter on State
 		// directly rather than relying on an empty map, so this doesn't cause
 		// a disconnected client's tools to keep being offered.
-		clientState.ConnectionInfo = &schemas.MCPClientConnectionInfo{
-			Type: config.ConnectionType,
-		}
-		clientState.ConnGeneration++
 		oldState = clientState.State
 		if needsReauth {
 			newState = schemas.MCPConnectionStateNeedsReauth
@@ -2605,7 +2637,9 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 	}
 
 	m.closeConnHandles(newCancel, newConn, config.Name)
-	m.closeConnHandles(oldCancel, oldConn, config.Name)
+	if !keepOldConn {
+		m.closeConnHandles(oldCancel, oldConn, config.Name)
+	}
 
 	// Fired outside the lock — same rationale as ClientConnectionChecker's
 	// setState: a registered callback is caller-supplied and may do
