@@ -110,6 +110,20 @@ Set the actual values through your deployment platform - shell environment, Dock
 
 For Enterprise deployments, `vault.<path>` references are also supported. See [Secret Management](/deployment-guides/config-json/secret-management).
 
+This isn't limited to secrets - `network_config.base_url` accepts the same `env.` (and `vault.`) reference form, so you can keep `config.json` committed and diffable while a provider's base_url still varies by environment (dev vs. prod endpoint) instead of templating the file before Bifrost starts:
+
+```json
+{
+  "providers": {
+    "cerebras": {
+      "network_config": {
+        "base_url": "env.CEREBRAS_BASE_URL"
+      }
+    }
+  }
+}
+```
+
 ---
 
 ## Schema Validation
