@@ -989,6 +989,38 @@ type ChatToolChoice struct {
 	ChatToolChoiceStruct *ChatToolChoiceStruct
 }
 
+// IsForced reports whether the choice obliges the model to call a tool, in any
+// of its spellings — "any"/"required", a named function or custom tool, a
+// pinned server tool, or an allowed-tools set in "required" mode. Only "none"
+// and "auto" are unforced. Models that reject forced tool use (Fable 5.1+)
+// need the choice dropped; see ModelCaps.SupportsForcedToolChoice.
+func (ctc *ChatToolChoice) IsForced() bool {
+	if ctc == nil {
+		return false
+	}
+	if ctc.ChatToolChoiceStr != nil {
+		switch ChatToolChoiceType(*ctc.ChatToolChoiceStr) {
+		case ChatToolChoiceTypeNone, ChatToolChoiceTypeAuto:
+			return false
+		default:
+			return true
+		}
+	}
+	if ctc.ChatToolChoiceStruct != nil {
+		switch ctc.ChatToolChoiceStruct.Type {
+		case ChatToolChoiceTypeNone, ChatToolChoiceTypeAuto:
+			return false
+		case ChatToolChoiceTypeAllowedTools:
+			// The set is a constraint, not a forcing; only its mode forces.
+			return ctc.ChatToolChoiceStruct.AllowedTools != nil &&
+				ctc.ChatToolChoiceStruct.AllowedTools.Mode == string(ChatToolChoiceTypeRequired)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
 func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {

@@ -144430,6 +144430,529 @@
           "description": "Every case above enters through the route that matches its target's own dialect. These cross it: an OpenAI-shaped request routed to Anthropic or Bedrock, and an Anthropic-shaped one routed to gpt-5.6.\n\nThe invariant is where injection lives. It runs at dispatch, on the neutral request, after the inbound dialect has already been parsed away and before the outbound one is written - so the marker's SPELLING must follow the target and its POSITION must follow the neutral transcript, regardless of what the caller spoke. An implementation that keyed either off the inbound shape would pass every native-route case in this folder and fail here.\n\n64.8.5 is the case that found a real bug: the Responses serializer gated its cache_control -> prompt_cache_breakpoint translation on bifrostReq.Provider, the key the request arrived under. A custom provider reports its own name, matched no branch, and fell to the default - where cache_control is stripped with nothing put in its place, silently returning the request to the implicit caching #6180 exists to escape. Fixed in this branch by resolving the base provider first, the way the injector and providers/utils already do.\n\n64.8.7-64.8.9 repeat 64.8.1 on the SDK-compat hosts. They are separate transport entry points, not aliases of /openai, so they reach dispatch independently and can regress alone."
         }
       ]
+    },
+    {
+      "name": "70. Forced tool choice capability flag (PR #6903 / #6887)",
+      "description": "tool_choice is gated by two independent capability questions, each datasheet-backed with a\nname-based fallback (schemas.ModelCaps.ToolChoiceAnySupported / SupportsForcedToolChoice):\n\n  1. WIRE DIALECT - does the endpoint accept the string \"any\"? Mistral and Fireworks do;\n     every other OpenAI-compatible destination rejects it with\n     \"Invalid value: 'any'. Supported values are: 'none', 'auto', and 'required'.\" (#6887).\n     The Anthropic integration emits \"any\", so OpenAI egress must respell it \"required\".\n\n  2. MODEL CAPABILITY - can the model be forced at all? Claude Fable 5.1 and Mythos 5.1\n     removed forced tool use: tool_choice {\"type\":\"any\"} and {\"type\":\"tool\"} return\n     400 'tool_choice: type \"tool\" and \"any\" are not supported for this model.'\n     Bifrost drops the forced choice so the model answers under the default \"auto\";\n     with the tool bound it still calls it. This covers the caller's tool_choice AND the\n     synthetic bf_so_* structured-output pin Bifrost adds itself on Vertex/Azure/Mantle.\n\nControls matter as much as the regressions here: Fable 5 and Sonnet 4.6 must keep being\nforced, or the gate is over-dropping and silently weakening every other model.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages tool_choice any is respelled required - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #6887: the Anthropic integration emits the provider-generic \"any\", which OpenAI",
+                  "// rejects with 400. A 400 here IS the regression, so it must not be guarded away.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('the bare \"any\" tool choice did not reach OpenAI', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include(\"Invalid value: 'any'\");",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('model returned a tool_use block', function () {",
+                  "  var types = (pm.response.json().content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'content types: ' + JSON.stringify(types)).to.include('tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /anthropic/v1/messages tool_choice any is dropped instead of 400 - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /anthropic/v1/messages tool_choice tool pin is dropped instead of 400 - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"get_weather\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /v1/chat/completions tool_choice required is dropped instead of 400 - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI dialect in, Anthropic egress out: \"required\" maps to Anthropic \"any\",",
+                  "// which Fable 5.1 rejects. The gate must drop it before it reaches the wire.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /anthropic/v1/messages streaming tool_choice any is dropped instead of 400 - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('stream reached a terminal event', function () {",
+                  "  pm.expect(pm.response.text()).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5 /anthropic/v1/messages tool_choice any still forces a tool call - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Control: Fable 5 (not 5.1) still supports forced tool use. If the version gate",
+                  "// over-matches, the pin is dropped here and the model may answer in text instead.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('model returned a tool_use block', function () {",
+                  "  var types = (pm.response.json().content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'content types: ' + JSON.stringify(types)).to.include('tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-fable-5-1 /anthropic/v1/messages tool_choice auto is untouched - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only forced choices are dropped; \"auto\" and \"none\" pass through unchanged.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"auto\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /v1/chat/completions synthetic structured output stays pinned - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Control for the synthetic bf_so_* pin. Vertex rejects native output_config.format,",
+                  "// so Bifrost binds a synthetic tool and forces it. Sonnet 4.6 supports forced tool",
+                  "// use, so the pin must survive - if the Fable gate over-fires, structured output",
+                  "// silently degrades to free-form text here.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('content is schema-valid JSON', function () {",
+                  "  var c = pm.response.json().choices[0].message.content;",
+                  "  var parsed = JSON.parse(c);",
+                  "  pm.expect(parsed, 'content: ' + c).to.have.property('city');",
+                  "  pm.expect(parsed, 'content: ' + c).to.have.property('temp_c');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Weather in Tokyo, make it up.\"\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"weather\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          },\n          \"temp_c\": {\n            \"type\": \"number\"\n          }\n        },\n        \"required\": [\n          \"city\",\n          \"temp_c\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-fable-5-1 /v1/chat/completions synthetic structured output drops the pin - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The synthetic bf_so_* pin is a forced tool choice Bifrost adds itself, so it needs",
+                  "// the same gate as the caller's. Without it, structured output on Fable 5.1 over a",
+                  "// provider that lacks native output_config.format returns the same 400.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// Account-scoped gating, not a product defect: Fable 5.1 on Vertex requires data",
+                  "// sharing enabled for the anthropic publisher, and is absent from projects without",
+                  "// it. Skip rather than fail so this case starts asserting once the project is set up.",
+                  "var gated = /data.sharing|does not have access|was not found/i;",
+                  "if (pm.response.code >= 400 && gated.test(pm.response.text())) { return; }",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-fable-5-1\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Weather in Tokyo, make it up.\"\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"weather\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          },\n          \"temp_c\": {\n            \"type\": \"number\"\n          }\n        },\n        \"required\": [\n          \"city\",\n          \"temp_c\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "fireworks/kimi-k2p6 /v1/chat/completions tool_choice any is preserved natively - PR #6903",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fireworks documents \"any\" with \"required\" as its alias, so the dialect fallback",
+                  "// keeps \"any\" here rather than respelling it. Either spelling is accepted upstream;",
+                  "// what this pins is that the rewrite is provider-aware and not unconditional.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/kimi-k2p6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"any\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

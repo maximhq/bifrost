@@ -56,6 +56,7 @@ type ModelCapabilities struct {
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"` // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -223,6 +224,10 @@ type ModelCapabilities struct {
 	// Mistral: tool_choice struct form not supported, must collapse to "any" string.
 	// Mirrors UnsupportedFields["tool_choice_struct"].
 	ToolChoiceStructSupported *bool `json:"tool_choice_struct_supported,omitempty"`
+
+	// Endpoint accepts the forced tool choice "any" on the wire (Mistral,
+	// Fireworks). False ⇒ it must be spelled "required" instead.
+	ToolChoiceAnySupported *bool `json:"tool_choice_any_supported,omitempty"`
 
 	// Fireworks: keep `prediction` field through the openai-compat filter.
 	PreservesPrediction *bool `json:"preserves_prediction,omitempty"`

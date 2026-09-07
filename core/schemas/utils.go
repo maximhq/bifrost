@@ -1862,6 +1862,29 @@ func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
 }
 
+// IsFable51 checks if the model is Claude Fable 5.1 or Claude Mythos 5.1, which
+// removed forced tool use: tool_choice "any" and "tool" (and their OpenAI
+// spellings) return a 400. Matches the Bedrock/Vertex/date-suffixed forms.
+//
+// Only the versions known to have dropped it are matched here; a later model
+// that also drops it is carried by the datasheet's supports_forced_tool_choice
+// rather than this fallback.
+//
+// Source: https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
+func IsFable51(model string) bool {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "fable") && !strings.Contains(m, "mythos") {
+		return false
+	}
+	return strings.Contains(m, "5-1") || strings.Contains(m, "5.1")
+}
+
+// DefaultSupportsForcedToolChoice is the name-based fallback for
+// ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
+func DefaultSupportsForcedToolChoice(model string) bool {
+	return !IsFable51(model)
+}
+
 // IsLlamaModel checks if the model is a Meta Llama model.
 //
 // Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
