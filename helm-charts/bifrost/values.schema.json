@@ -1188,6 +1188,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -1486,6 +1490,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -1559,6 +1567,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -5657,6 +5669,10 @@
         },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
+        },
+        "export_overhead_spans": {
+          "type": "boolean",
+          "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
         }
       },
       "allOf": [
@@ -5733,6 +5749,10 @@
         },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
+        },
+        "export_overhead_spans": {
+          "type": "boolean",
+          "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
         },
         "enabled": {
           "type": "boolean",
