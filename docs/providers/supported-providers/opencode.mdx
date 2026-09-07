@@ -316,7 +316,7 @@ For context window sizes and model capability metadata, point `pricing_url` and 
 
 ## Session Affinity (`x-opencode-session`)
 
-OpenCode's subscription gateway (Go) expects an `x-opencode-session` request header carrying one stable ID per conversation. OpenCode uses it for session-level attribution on shared subscription backends, which is how resold subscriptions get caught (unrelated sessions piling up on one key). Header-less Go requests may be rejected outright. Zen, the pay-as-you-go API, does not enforce it. Bifrost sends the header to both gateways anyway: Zen ignores it, and uniform emission keeps zen-go fallbacks identical.
+OpenCode Go asks each client for a stable `x-opencode-session` per conversation, which OpenCode uses to optimize routing and prompt caching; Go traffic is additionally monitored for abuse (see [Where can I use it?](https://opencode.ai/docs/go/#where-can-i-use-it)). Header-less Go requests may be rejected outright (enforced from 09/06). Zen, the pay-as-you-go API, does not enforce it. Bifrost sends the header to both gateways anyway: Zen ignores it, and uniform emission keeps zen-go fallbacks identical.
 
 Bifrost resolves the value once per request and forwards it upstream on every inference call (chat, responses, streaming — but not `ListModels`):
 
