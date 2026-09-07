@@ -174,6 +174,7 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"maps minimal to low for o4", "o4", "minimal", "low"},
 		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
 		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
+		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
