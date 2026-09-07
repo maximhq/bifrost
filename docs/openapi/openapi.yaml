@@ -1164,10 +1164,16 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-dropped"
   /api/logs/filterdata:
     $ref: "./paths/management/logging.yaml#/logs-filterdata"
+  /api/logs/histogram/throughput:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput"
+  /api/logs/histogram/throughput/by-provider:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput-by-provider"
   /api/logs/rankings:
     $ref: "./paths/management/logging.yaml#/logs-rankings"
   /api/logs/rankings/by-dimension:
     $ref: "./paths/management/logging.yaml#/logs-rankings-by-dimension"
+  /api/logs/rankings/users:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-users"
   /api/logs/dashboard:
     $ref: "./paths/management/logging.yaml#/logs-dashboard"
   /api/logs/recalculate-cost:
@@ -1256,6 +1262,8 @@ paths:
     $ref: "./paths/management/infrastructure.yaml#/mcp-server"
   /metrics:
     $ref: "./paths/management/infrastructure.yaml#/metrics"
+  /inspect:
+    $ref: "./paths/management/inspect.yaml#/inspect"
 
   # Webhooks
   /api/webhooks:

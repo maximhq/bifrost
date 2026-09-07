@@ -83888,6 +83888,588 @@
         }
       }
     },
+    "/api/logs/histogram/throughput": {
+      "get": {
+        "operationId": "getLogsThroughputHistogram",
+        "summary": "Get throughput histogram",
+        "description": "Returns time-bucketed token-generation throughput in tokens per second. The bucket size is derived from the requested window.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_ids",
+            "in": "query",
+            "description": "Comma-separated list of project IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed token-generation throughput.",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One time bucket of token-generation throughput.",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "tokens_per_second": {
+                            "type": "number"
+                          },
+                          "total_completion_tokens": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "total_requests": {
+                            "type": "integer",
+                            "format": "int64"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Bucket width, derived from the requested window."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/histogram/throughput/by-provider": {
+      "get": {
+        "operationId": "getLogsProviderThroughputHistogram",
+        "summary": "Get throughput histogram by provider",
+        "description": "Returns time-bucketed tokens per second with a per-provider breakdown.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_ids",
+            "in": "query",
+            "description": "Comma-separated list of project IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "description": "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed throughput with a per-provider breakdown.",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One time bucket of throughput, broken down by provider.",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "by_provider": {
+                            "type": "object",
+                            "description": "Keyed by provider name.",
+                            "additionalProperties": {
+                              "type": "object",
+                              "description": "Throughput figures for one provider within a bucket.",
+                              "properties": {
+                                "tokens_per_second": {
+                                  "type": "number"
+                                },
+                                "total_completion_tokens": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                },
+                                "total_requests": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Providers present across the returned buckets."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs/rankings": {
       "get": {
         "operationId": "getModelRankings",
@@ -84664,6 +85246,254 @@
                       "type": "integer",
                       "format": "int64",
                       "description": "Requests credited to every dimension value they touch; the sum can\nexceed the real request count. Only set for fan-out dimensions.\n"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/rankings/users": {
+      "get": {
+        "operationId": "getUserRankings",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Get user usage rankings",
+        "description": "Returns users ranked by spend, tokens and request volume, with trend percentages versus the previous comparable period. Only requests that resolved to a user are counted.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_ids",
+            "in": "query",
+            "description": "Comma-separated list of project IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 100
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User rankings retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rankings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One user's usage totals, with its trend.",
+                        "properties": {
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "total_requests": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "total_tokens": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "total_cost": {
+                            "type": "number"
+                          },
+                          "trend": {
+                            "type": "object",
+                            "description": "Change versus the previous comparable period.",
+                            "properties": {
+                              "has_previous_period": {
+                                "type": "boolean",
+                                "description": "False when there is no earlier window to compare against."
+                              },
+                              "requests_trend": {
+                                "type": "number"
+                              },
+                              "tokens_trend": {
+                                "type": "number"
+                              },
+                              "cost_trend": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -91302,13 +92132,90 @@
       "get": {
         "operationId": "websocketConnect",
         "summary": "WebSocket connection",
-        "description": "Upgrades to a WebSocket connection for real-time updates.\nServer pushes log events, MCP log events, and store update notifications.\nHeartbeat pings are sent every 30 seconds.\n",
+        "description": "Upgrades to a WebSocket connection for real-time updates.\nServer pushes log events, MCP log events, and store update notifications.\nHeartbeat pings are sent every 30 seconds.\n\nEvery message is an envelope with a `type` discriminator. Two carry\ngovernance-project state:\n\n- `store_update` names the resources that changed, so a client holding a\n  cached list can refetch it. A project create, edit, delete or member\n  change sends `{\"type\": \"store_update\", \"tags\": [\"Projects\"]}`.\n- `redivision_progress` reports an equal-split project recalculating\n  every member's share of every cap. Its `operation_id` matches the\n  `redivision_job_id` returned by the project and member routes, and by\n  a user deletion, so a client can follow the job it started.\n\nThe message shapes are documented as `StoreUpdateMessage` and\n`RedivisionProgressMessage`; they arrive over the socket rather than as\nan HTTP response body.\n",
         "tags": [
           "Infrastructure"
         ],
         "responses": {
           "101": {
-            "description": "WebSocket upgrade successful"
+            "description": "WebSocket upgrade successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "Names the resources that changed, so a client holding a cached list knows to refetch it. Project creates, edits, deletes and member changes all send `tags: [\"Projects\"]`.",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "store_update"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Resource names, matching the dashboard's cache tags, for example `Projects`, `VirtualKeys`, `Providers`, `MCPClients`.",
+                          "example": [
+                            "Projects"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "Envelope carrying a redivision progress update.",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "redivision_progress"
+                        },
+                        "data": {
+                          "type": "object",
+                          "description": "Progress of one equal-split project recalculating every member's share of every cap it holds.",
+                          "properties": {
+                            "operation_id": {
+                              "type": "string",
+                              "description": "The job this reports on, matching the `redivision_job_id` returned by the project and member routes, or one of the `redivision_job_ids` returned by a user deletion."
+                            },
+                            "project_id": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "type": "string",
+                              "enum": [
+                                "redividing",
+                                "completed",
+                                "error"
+                              ]
+                            },
+                            "total": {
+                              "type": "integer",
+                              "description": "Members in the roster when the job started."
+                            },
+                            "processed": {
+                              "type": "integer"
+                            },
+                            "succeeded": {
+                              "type": "integer"
+                            },
+                            "failed": {
+                              "type": "integer"
+                            },
+                            "message": {
+                              "type": "string",
+                              "description": "A closing summary on `completed`, or the failure text on `error`. A project deleted between queueing and running completes without work."
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "description": "One of the server-pushed message envelopes. Listed here because the spec has nowhere else to describe a socket payload."
+                }
+              }
+            }
           }
         }
       }
@@ -91465,6 +92372,168 @@
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/inspect": {
+      "post": {
+        "operationId": "inspectRequest",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Inspect a request without forwarding it",
+        "description": "Runs the pre-model plugin checks against a request and answers whether\nforwarding it upstream is allowed, without calling any provider. Intended\nfor an intercepting proxy that holds the original request and needs a\nverdict before releasing it.\n\nPlugins that mutate execution or depend on a provider call are skipped.\n\nUnlike the inference routes, this endpoint takes its request context in\nthe body rather than in HTTP headers: entries in `metadata` are read as\nthe request's headers, so `{\"x-bf-project-id\": \"...\"}` scopes the\ninspected request to a governance project exactly as the header would.\nWhen called with `phase: \"response\"` and `log: true`, the resolved\nproject is recorded on the log row this endpoint writes.\n",
+        "tags": [
+          "Infrastructure"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "A request to evaluate, plus the context the caller would otherwise have sent as HTTP headers.",
+                "required": [
+                  "phase"
+                ],
+                "properties": {
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "request",
+                      "response"
+                    ],
+                    "description": "`request` evaluates before the upstream call; `response` reports the outcome afterwards, which is the phase that can write a log row."
+                  },
+                  "log": {
+                    "type": "boolean",
+                    "description": "Write a log row for this call. Honoured on the `response` phase, where the row carries the resolved governance project."
+                  },
+                  "request_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "The Bifrost request being inspected."
+                  },
+                  "response": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "The upstream response, on the `response` phase."
+                  },
+                  "error": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Read as the inspected request's headers, lowercased. This is how a caller scopes the inspection to a governance project, with `x-bf-project-id` or `x-bf-project-name`."
+                  },
+                  "plugin_logs": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "description": "One line a plugin recorded while evaluating the request.",
+                      "properties": {
+                        "plugin_name": {
+                          "type": "string"
+                        },
+                        "level": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Unix milliseconds."
+                        }
+                      }
+                    },
+                    "description": "Lines carried over from an earlier phase."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verdict returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "allow": {
+                      "type": "boolean",
+                      "description": "Whether forwarding the original request is permitted."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "Why it was refused. Absent when allowed."
+                    },
+                    "plugin_logs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One line a plugin recorded while evaluating the request.",
+                        "properties": {
+                          "plugin_name": {
+                            "type": "string"
+                          },
+                          "level": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "timestamp": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Unix milliseconds."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }

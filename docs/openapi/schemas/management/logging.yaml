@@ -1489,3 +1489,114 @@ DashboardResult:
         $ref: '#/DimensionRankingResult'
     mcp:
       $ref: '#/DashboardMCP'
+
+ThroughputHistogramBucket:
+  type: object
+  description: One time bucket of token-generation throughput.
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    tokens_per_second:
+      type: number
+    total_completion_tokens:
+      type: integer
+      format: int64
+    total_requests:
+      type: integer
+      format: int64
+
+ThroughputHistogramResult:
+  type: object
+  description: Time-bucketed token-generation throughput.
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ThroughputHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+      description: Bucket width, derived from the requested window.
+
+ProviderThroughputStats:
+  type: object
+  description: Throughput figures for one provider within a bucket.
+  properties:
+    tokens_per_second:
+      type: number
+    total_completion_tokens:
+      type: integer
+      format: int64
+    total_requests:
+      type: integer
+      format: int64
+
+ProviderThroughputHistogramBucket:
+  type: object
+  description: One time bucket of throughput, broken down by provider.
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_provider:
+      type: object
+      description: Keyed by provider name.
+      additionalProperties:
+        $ref: '#/ProviderThroughputStats'
+
+ProviderThroughputHistogramResult:
+  type: object
+  description: Time-bucketed throughput with a per-provider breakdown.
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ProviderThroughputHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    providers:
+      type: array
+      items:
+        type: string
+      description: Providers present across the returned buckets.
+
+UserRankingTrend:
+  type: object
+  description: Change versus the previous comparable period.
+  properties:
+    has_previous_period:
+      type: boolean
+      description: False when there is no earlier window to compare against.
+    requests_trend:
+      type: number
+    tokens_trend:
+      type: number
+    cost_trend:
+      type: number
+
+UserRankingEntry:
+  type: object
+  description: One user's usage totals, with its trend.
+  properties:
+    user_id:
+      type: string
+    total_requests:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+    trend:
+      $ref: '#/UserRankingTrend'
+
+UserRankingResult:
+  type: object
+  properties:
+    rankings:
+      type: array
+      items:
+        $ref: '#/UserRankingEntry'
