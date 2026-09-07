@@ -7335,7 +7335,6 @@ func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schem
 	drainAndAttachPluginLogs(req.Context)
 }
 
-<<<<<<< HEAD
 // drainAbandonedStream consumes a stream that will never reach the caller, so
 // the provider goroutine feeding it can finish.
 //
@@ -7832,8 +7831,6 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
 	case schemas.ResponsesStreamRequest:
-<<<<<<< HEAD
-<<<<<<< HEAD
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
 			if chatRequest != nil {
