@@ -205,6 +205,6 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 // (`choices: []` plus top-level `usage`), which several inference providers
 // emit after the finish chunk — the stream then completes with zero tokens.
 func TestHuggingFaceSendsDoneMarker(t *testing.T) {
-	assert.True(t, providerUtils.ProviderSendsDoneMarker(schemas.HuggingFace),
+	assert.True(t, providerUtils.ProviderSendsDoneMarker(nil, schemas.HuggingFace),
 		"HuggingFace sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
 }

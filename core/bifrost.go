@@ -6872,6 +6872,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
+		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.
+		if config.CustomProviderConfig != nil && config.CustomProviderConfig.DoesNotSendDoneMarker {
+			req.Context.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+		} else {
+			req.Context.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
+		}
 
 		bifrost.endCoreSpan(workerSetupSpan)
 

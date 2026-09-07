@@ -5939,6 +5939,10 @@
             "is_key_less": {
               "type": "boolean"
             },
+            "does_not_send_done_marker": {
+              "type": "boolean",
+              "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
+            },
             "base_provider_type": {
               "type": "string"
             },
