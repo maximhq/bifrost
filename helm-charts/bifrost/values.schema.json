@@ -6945,7 +6945,7 @@
               },
               "toolNames": {
                 "type": "array",
-                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
                 "items": {
                   "type": "string"
                 }

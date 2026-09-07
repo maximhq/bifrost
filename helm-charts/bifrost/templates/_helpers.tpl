@@ -1386,7 +1386,7 @@ false
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
-{{- if .Values.bifrost.mcp.toolGroups }}
+{{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
 {{- range .Values.bifrost.mcp.toolGroups }}
 {{- $group := dict "name" .name }}
