@@ -2001,12 +2001,10 @@ func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
 	})
 }
 
-// TestModelConfigScopesForSkipsEmptyKindExtraScopes covers a registered
-// ExtraScopedIDsResolver returning a ScopedID with an empty Kind — a
-// legitimate value for a batch-only caller (see ScopedID's doc comment), but
-// modelConfigScopesFor is the request-time path: propagating it would let a
-// refusal name an empty holder kind.
-func TestModelConfigScopesForSkipsEmptyKindExtraScopes(t *testing.T) {
+// TestModelConfigScopesForIgnoresExtraScopedIDsResolvers pins #6724's contract: one permit selects
+// exactly one scope, and registered resolvers are not folded in here. Callers wanting an extra
+// scope enforced ask for it by name via ScopedModelLimits / ProviderScopedModelLimitsInScope.
+func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
 	extraScopedIDsResolversMu.Lock()
 	saved := extraScopedIDsResolvers
 	extraScopedIDsResolvers = nil
@@ -2026,15 +2024,11 @@ func TestModelConfigScopesForSkipsEmptyKindExtraScopes(t *testing.T) {
 
 	scopes := modelConfigScopesFor(nil)
 
+	require.Len(t, scopes, 1, "a nil permit selects the deployment's global scope and nothing else")
+	assert.Equal(t, configstoreTables.ModelConfigScopeGlobal, scopes[0].name)
+	assert.Equal(t, grant.LimitHolderModelConfig, scopes[0].kind)
 	for _, s := range scopes {
-		assert.NotEqual(t, "batch_only", s.name, "an empty-Kind extra scope must not reach request-time enforcement")
+		assert.NotEqual(t, "batch_only", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
+		assert.NotEqual(t, "with_kind", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 	}
-	found := false
-	for _, s := range scopes {
-		if s.name == "with_kind" {
-			found = true
-			assert.Equal(t, grant.LimitHolderModelConfig, s.kind)
-		}
-	}
-	assert.True(t, found, "an extra scope with a Kind must still pass through")
 }
