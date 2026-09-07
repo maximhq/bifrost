@@ -733,6 +733,53 @@ func TestToAnthropicResponsesStreamResponse_CompletedWithStopDetails(t *testing.
 	}
 }
 
+func TestToAnthropicResponsesStreamResponse_IncompleteEmitsMessageStop(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	// A turn truncated by max_output_tokens (or content filter) surfaces as
+	// ResponsesStreamResponseTypeIncomplete, not Completed. Before this fix,
+	// the switch in toAnthropicResponsesStreamEvents had no case for
+	// Incomplete, so it fell through to `default: return nil` and the client
+	// never received message_delta/message_stop for a truncated turn — the
+	// stream just ended after content_block_stop with a bare HTTP 200
+	// (maximhq/bifrost#6081).
+	bifrostResp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeIncomplete,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_incomplete"),
+			Model:      "claude-sonnet-5",
+			StopReason: schemas.Ptr("max_tokens"),
+			Status:     schemas.Ptr(schemas.ResponsesResponseStatusIncomplete),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			},
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 55, OutputTokens: 4096},
+		},
+	}
+
+	events := ToAnthropicResponsesStreamResponse(ctx, bifrostResp)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (message_delta + message_stop), got %d: %+v", len(events), events)
+	}
+	delta := events[0]
+	if delta.Type != AnthropicStreamEventTypeMessageDelta || delta.Delta == nil {
+		t.Fatalf("event[0] = %+v, want message_delta with Delta", delta)
+	}
+	if delta.Delta.StopReason == nil || *delta.Delta.StopReason != AnthropicStopReasonMaxTokens {
+		t.Errorf("event[0].Delta.StopReason = %v, want max_tokens", delta.Delta.StopReason)
+	}
+	if delta.Usage == nil || delta.Usage.OutputTokens != 4096 {
+		t.Errorf("event[0].Usage = %+v, want OutputTokens=4096", delta.Usage)
+	}
+	stop := events[1]
+	if stop.Type != AnthropicStreamEventTypeMessageStop {
+		t.Fatalf("event[1].Type = %v, want message_stop", stop.Type)
+	}
+}
+
 // --- Fallback credit (fallback-credit-2026-06-01 / -09 on AWS) ---
 
 func TestFallbackCredit_StopDetailsRoundTrip(t *testing.T) {
