@@ -96,14 +96,18 @@ export function ProviderConfigsEditor({
 	// While on, keep a row for every available provider so each can be given
 	// budgets/limits or excluded. Providers added later show up here too. Keyed on
 	// the joined names, not the array identity, so it converges without looping.
+	// configuredKey re-runs the effect when the parent swaps `value` (e.g. loads a
+	// different entity) while the flag and provider list stay the same, so missing
+	// rows are backfilled; the missing-empty guard keeps it from looping.
 	const providerNamesKey = availableProviders.map((p) => p.name).join(" ");
+	const configuredKey = value.map((e) => e.providerName).join(" ");
 	useEffect(() => {
 		if (!allowAllProviders || availableProviders.length === 0) return;
 		const missing = availableProviders.filter((p) => p.name && !value.some((e) => e.providerName === p.name));
 		if (missing.length === 0) return;
 		onChange([...value, ...missing.map((p) => makeDefaultEntry(p.name))]);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [allowAllProviders, providerNamesKey]);
+	}, [allowAllProviders, providerNamesKey, configuredKey]);
 
 	const unconfiguredProviders = availableProviders.filter((provider) => !value.some((e) => e.providerName === provider.name));
 	const baseProviders = unconfiguredProviders.filter((p) => p.name && !p.custom_provider_config);
