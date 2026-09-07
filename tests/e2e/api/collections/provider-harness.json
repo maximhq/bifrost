@@ -40726,11 +40726,11 @@
       ]
     },
     {
-      "name": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
+      "name": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
       "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item.",
       "item": [
         {
-          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (non-streaming) - #5101",
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (non-streaming) - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -40738,6 +40738,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+          "pm.test('Chat->Responses conversion actually fired - #5101', function () {",
+          "  // markForConversion is datasheet-driven: x-bf-compat only ENABLES the check, it cannot",
+          "  // force a conversion. On a chat-capable model (this row used openai/gpt-4o-mini until",
+          "  // #6831 testing caught it) nothing converts and the assertions below pass vacuously.",
+          "  var j = pm.response.json();",
+          "  var ef = j.extra_fields || {};",
+          "  pm.expect(ef.converted_request_type, 'chat->responses conversion did not fire, so the replayed tool call never reached ToResponsesRequest and this row proves nothing').to.eql('responses');",
+          "});",
                   "pm.test('No unknown_parameter input[N].role error - #5101', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'OpenAI rejected a replayed function_call input item (regression of PR #5102)').to.not.match(/input\\[\\d+\\]\\.role/);",
@@ -40769,7 +40777,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]}"
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40785,7 +40793,7 @@
           }
         },
         {
-          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (streaming) - #5101",
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (streaming) - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -40793,6 +40801,31 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+          "pm.test('Chat->Responses conversion actually fired - #5101', function () {",
+          "  // markForConversion is datasheet-driven: x-bf-compat only ENABLES the check, it cannot",
+          "  // force a conversion. On a chat-capable model (this row used openai/gpt-4o-mini until",
+          "  // #6831 testing caught it) nothing converts and the assertions below pass vacuously.",
+          "  //",
+          "  // This row streams, so the body is SSE frames rather than one JSON document and",
+          "  // pm.response.json() throws on it. The marker rides extra_fields on the chunks (compat's",
+          "  // PostLLMHook runs per chunk) and is omitempty, so one frame carrying it is enough.",
+          "  var converted = [];",
+          "  (pm.response.text() || '').split('\\n').forEach(function (line) {",
+          "    var t = line.replace(/\\r$/, '');",
+          "    if (t.indexOf('data:') !== 0) { return; }",
+          "    var payload = t.slice(5).trim();",
+          "    if (!payload || payload === '[DONE]') { return; }",
+          "    try {",
+          "      var frame = JSON.parse(payload);",
+          "      var ef = frame.extra_fields || {};",
+          "      if (ef.converted_request_type) { converted.push(ef.converted_request_type); }",
+          "    } catch (e) {}",
+          "  });",
+          "  pm.expect(converted, 'chat->responses conversion did not fire on any streamed chunk, so the replayed tool call never reached ToResponsesRequest and this row proves nothing').to.not.be.empty;",
+          "  converted.forEach(function (marker) {",
+          "    pm.expect(marker, 'a streamed chunk reported a different conversion target').to.eql('responses');",
+          "  });",
+          "});",
                   "pm.test('No unknown_parameter input[N].role error - #5101', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'OpenAI rejected a replayed function_call input item (regression of PR #5102)').to.not.match(/input\\[\\d+\\]\\.role/);",
@@ -40821,7 +40854,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"stream\":true}"
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"stream\":true}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40837,7 +40870,7 @@
           }
         },
         {
-          "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - #5101",
+          "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -144951,6 +144984,1113 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "71. Responses -> Chat finish_reason derivation (#6831) (finish-reason-derivation)",
+      "description": "Issue #6831: when a chat request targets a model whose datasheet lists /v1/responses but not /v1/chat/completions, the compat plugin marks ChangeRequestType=ResponsesRequest, core calls provider.Responses(), and BifrostResponsesResponse.ToBifrostChatResponse() converts the reply back. That converter never set FinishReason, and BifrostResponseChoice.FinishReason carries json:\"finish_reason\" WITHOUT omitempty, so every non-streaming converted reply serialized an explicit \"finish_reason\": null - breaking any agent loop that terminates on finish_reason == 'tool_calls'. Fixed by deriving the Chat reason from the Responses terminal state (status / incomplete_details / stop_reason) in chatFinishReasonFromResponses, and routing the streaming converter through the same helper so both paths agree.\n\nEvery row asserts extra_fields.converted_request_type == 'responses' FIRST. Without that guard a row silently passes on any chat-capable model, because markForConversion is datasheet-driven and the x-bf-compat header only enables the check - it cannot force a conversion.",
+      "item": [
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/chat/completions non-streaming derives finish_reason=stop - finish-reason-derivation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Chat->Responses conversion actually fired - #6831', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'the compat chat->responses conversion did not fire, so this row proves nothing about the finish_reason mapping - the model must have /v1/responses but NOT /v1/chat/completions in its datasheet row').to.eql('responses');",
+                  "});",
+                  "pm.test('finish_reason is derived, not null - #6831', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array').to.be.an('array').that.is.not.empty;",
+                  "  var fr = j.choices[0].finish_reason;",
+                  "  pm.expect(fr, 'finish_reason came back null on a converted non-streaming reply (regression of #6831)').to.not.be.null;",
+                  "  pm.expect(fr, 'expected stop for a completed reply with no function_call output item').to.eql('stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}],\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/chat/completions forced tool call derives finish_reason=tool_calls - finish-reason-derivation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Chat->Responses conversion actually fired - #6831', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'the compat chat->responses conversion did not fire, so this row proves nothing about the finish_reason mapping - the model must have /v1/responses but NOT /v1/chat/completions in its datasheet row').to.eql('responses');",
+                  "});",
+                  "pm.test('a function_call output item maps to tool_calls - #6831', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array').to.be.an('array').that.is.not.empty;",
+                  "  var choice = j.choices[0];",
+                  "  var calls = (choice.message && choice.message.tool_calls) || [];",
+                  "  pm.expect(calls.length, 'expected at least one tool call under tool_choice=required').to.be.above(0);",
+                  "  pm.expect(choice.finish_reason, 'finish_reason was null/wrong on a converted tool-call reply - agent loops key on this exact value (#6831)').to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris?\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"required\",\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/chat/completions truncated reply derives finish_reason=length - finish-reason-derivation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "// A small token budget can be spent entirely on the reasoning pass, leaving output=[reasoning]",
+                  "// with no message item; ToChatMessages then emits nothing and choices comes back []. That is a",
+                  "// separate known gap (no choice to carry any finish_reason), not the #6831 mapping regression,",
+                  "// so skip rather than false-fail. 1024 makes the message item the reliable outcome.",
+                  "var probe = null; try { probe = pm.response.json(); } catch (e) {}",
+                  "if (probe && (!probe.choices || probe.choices.length === 0)) { return; }",
+                  "pm.test('Chat->Responses conversion actually fired - #6831', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'the compat chat->responses conversion did not fire, so this row proves nothing about the finish_reason mapping - the model must have /v1/responses but NOT /v1/chat/completions in its datasheet row').to.eql('responses');",
+                  "});",
+                  "pm.test('incomplete_details.reason=max_output_tokens maps to length - #6831', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].finish_reason, 'expected length for a reply truncated by max_output_tokens').to.eql('length');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"max_completion_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Write a 2000 word essay about the sea. Begin immediately with the essay text, no preamble.\"}],\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/chat/completions streaming terminal chunk carries finish_reason - finish-reason-derivation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('exactly one streamed chunk carries a derived finish_reason - #6831', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var lines = (pm.response.text() || '').split('\\n');",
+                  "  var reasons = [];",
+          "  var converted = null;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    var ln = lines[i];",
+                  "    if (ln.indexOf('data:') !== 0) { continue; }",
+                  "    var payload = ln.slice(5).replace(/^\\s+|\\s+$/g, '');",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var obj = null; try { obj = JSON.parse(payload); } catch (e) { continue; }",
+                  "    var ef = obj && obj.extra_fields;",
+          "    if (ef && ef.converted_request_type) { converted = ef.converted_request_type; }",
+          "    var ch = obj && obj.choices && obj.choices[0];",
+                  "    if (ch && ch.finish_reason !== null && ch.finish_reason !== undefined) { reasons.push(ch.finish_reason); }",
+                  "  }",
+                  "  // Anti-vacuous guard, the streaming counterpart of the converted_request_type check the",
+          "  // non-streaming rows make via pm.response.json(). An SSE body cannot be parsed that way,",
+          "  // so read the marker off the frames instead: on a chat-capable model nothing converts, the",
+          "  // marker is absent from every frame, and this row would otherwise pass on a native stream.",
+          "  pm.expect(converted, 'no streamed frame carried extra_fields.converted_request_type=responses, so the chat->responses conversion did not fire and the finish_reason below proves nothing').to.eql('responses');",
+          "  pm.expect(reasons.length, 'expected exactly one chunk carrying finish_reason, got ' + reasons.length + ' - the streaming converter emits it only on the terminal completed/incomplete event').to.eql(1);",
+                  "  pm.expect(reasons[0], 'streaming terminal reason must match what the non-streaming row derives').to.eql('stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"Count to three.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "72. Reasoning Summary Streaming Event Fields (reasoning-summary-fields)",
+      "description": "The Responses streaming reasoning_summary_* events went out without fields the OpenAI\nResponses streaming spec marks required and non-nullable, and the reasoning item they\ndescribe went out empty. Reported against Gemini on Vertex: a strict client crashed\nmid-reply with \"undefined is not an object (evaluating 'a.text')\" and the session died.\n\nPer openai/openai-openapi, all four events require type, item_id, output_index,\nsummary_index and sequence_number; text.done also requires text, and part.added/done also\nrequire part ({type: \"summary_text\", text}). ReasoningItem requires [id, summary, type].\n\nWhat each case pins:\n  1-2  the four events carry summary_index, text and part (Gemini, and Vertex, which\n       reaches the same converter through HandleGeminiResponsesStream)\n  3    the reasoning item carries the summary its events described, all the way into\n       response.completed - previously the thought text never reached the terminal event\n  4    the same summary_index fix on Anthropic\n  5    Bedrock emitted a hardcoded empty text on reasoning_summary_text.done, dropping the\n       whole summary; the done text must equal the deltas that preceded it\n  6-7  the Bedrock reasoning item carries summary AND encrypted_content, and replays\n       without a 400. These two are one test split in half: populating the summary without\n       the signature that signs it sends an unsigned reasoning block, which upstream refuses\n  8    Gemini 3 thought signatures survive the streaming path (they were dropped entirely,\n       while the non-streaming converter kept them). Gemini 3 usually returns a\n       signature-only thought part, which becomes a reasoning item carrying\n       encrypted_content and no summary events - so the case accepts either route.\n  9-10 the reverse /genai egress reunites a signature with its text on one part, and no\n       longer drops a signature-only reasoning delta (which is how Anthropic and Bedrock\n       send theirs)",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses streaming: reasoning_summary_* events carry summary_index, text and part - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('gemini: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "pm.test('gemini: every reasoning_summary_* event carries summary_index', function () {",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    pm.expect(f.summary_index, f.type + ' is missing summary_index (required, non-nullable)').to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('gemini: reasoning_summary_text.done carries the full summary text', function () {",
+                  "  var done = summaryFrames.filter(function (f) { return f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done event was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'reasoning_summary_text.done is missing text (required)').to.be.a('string');",
+                  "    pm.expect(f.text.length, 'reasoning_summary_text.done carried an empty text, so the summary was dropped').to.be.above(0);",
+                  "  });",
+                  "});",
+                  "pm.test('gemini: reasoning_summary_text.done text equals its own deltas', function () {",
+                  "  var acc = {};",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.delta' || typeof f.delta !== 'string') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    acc[key] = (acc[key] || '') + f.delta;",
+                  "  });",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.done') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    if (acc[key] === undefined) { return; }",
+                  "    pm.expect(f.text, 'done text does not match the deltas streamed for ' + key).to.eql(acc[key]);",
+                  "  });",
+                  "});",
+                  "pm.test('gemini: reasoning_summary_part.{added,done} carry a summary_text part', function () {",
+                  "  var parts = summaryFrames.filter(function (f) {",
+                  "    return f.type === 'response.reasoning_summary_part.added' || f.type === 'response.reasoning_summary_part.done';",
+                  "  });",
+                  "  if (parts.length === 0) { return; }",
+                  "  parts.forEach(function (f) {",
+                  "    pm.expect(f.part, f.type + ' is missing part (required, non-nullable)').to.be.an('object');",
+                  "    pm.expect(f.part.type, f.type + ' part.type must be summary_text').to.eql('summary_text');",
+                  "    pm.expect(f.part.text, f.type + ' part.text must be a string, not absent').to.be.a('string');",
+                  "  });",
+                  "  var done = parts.filter(function (f) { return f.type === 'response.reasoning_summary_part.done'; });",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.part.text.length, 'reasoning_summary_part.done carried an empty part.text').to.be.above(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash /v1/responses streaming: reasoning_summary_* events carry summary_index, text and part - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('vertex: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "pm.test('vertex: every reasoning_summary_* event carries summary_index', function () {",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    pm.expect(f.summary_index, f.type + ' is missing summary_index (required, non-nullable)').to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('vertex: reasoning_summary_text.done carries the full summary text', function () {",
+                  "  var done = summaryFrames.filter(function (f) { return f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done event was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'reasoning_summary_text.done is missing text (required)').to.be.a('string');",
+                  "    pm.expect(f.text.length, 'reasoning_summary_text.done carried an empty text, so the summary was dropped').to.be.above(0);",
+                  "  });",
+                  "});",
+                  "pm.test('vertex: reasoning_summary_text.done text equals its own deltas', function () {",
+                  "  var acc = {};",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.delta' || typeof f.delta !== 'string') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    acc[key] = (acc[key] || '') + f.delta;",
+                  "  });",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.done') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    if (acc[key] === undefined) { return; }",
+                  "    pm.expect(f.text, 'done text does not match the deltas streamed for ' + key).to.eql(acc[key]);",
+                  "  });",
+                  "});",
+                  "pm.test('vertex: reasoning_summary_part.{added,done} carry a summary_text part', function () {",
+                  "  var parts = summaryFrames.filter(function (f) {",
+                  "    return f.type === 'response.reasoning_summary_part.added' || f.type === 'response.reasoning_summary_part.done';",
+                  "  });",
+                  "  if (parts.length === 0) { return; }",
+                  "  parts.forEach(function (f) {",
+                  "    pm.expect(f.part, f.type + ' is missing part (required, non-nullable)').to.be.an('object');",
+                  "    pm.expect(f.part.type, f.type + ' part.type must be summary_text').to.eql('summary_text');",
+                  "    pm.expect(f.part.text, f.type + ' part.text must be a string, not absent').to.be.a('string');",
+                  "  });",
+                  "  var done = parts.filter(function (f) { return f.type === 'response.reasoning_summary_part.done'; });",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.part.text.length, 'reasoning_summary_part.done carried an empty part.text').to.be.above(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses streaming: reasoning item carries its summary into response.completed - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('gemini: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "var reasoningItems = frames.filter(function (f) {",
+                  "  return f && f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning';",
+                  "}).map(function (f) { return f.item; });",
+                  "pm.test('gemini: the completed reasoning item carries the summary its events described', function () {",
+                  "  pm.expect(reasoningItems, 'no reasoning output_item.done was emitted').to.not.be.empty;",
+                  "  var withText = reasoningItems.filter(function (it) {",
+                  "    return Array.isArray(it.summary) && it.summary.length > 0;",
+                  "  });",
+                  "  pm.expect(withText, 'every reasoning item closed with an empty summary, so summary_index resolves against nothing').to.not.be.empty;",
+                  "  withText.forEach(function (it) {",
+                  "    it.summary.forEach(function (s) {",
+                  "      pm.expect(s.type, 'summary entry must be summary_text').to.eql('summary_text');",
+                  "      pm.expect(s.text, 'summary entry text must be a string').to.be.a('string');",
+                  "      pm.expect(s.text.length, 'summary entry carried empty text').to.be.above(0);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('gemini: response.completed carries the reasoning text in its output', function () {",
+                  "  var completed = frames.filter(function (f) { return f && f.type === 'response.completed'; }).pop();",
+                  "  pm.expect(completed, 'stream never emitted response.completed').to.be.an('object');",
+                  "  var out = (completed.response && completed.response.output) || [];",
+                  "  var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning, 'response.completed output has no reasoning item').to.not.be.empty;",
+                  "  var anyText = reasoning.some(function (o) {",
+                  "    return Array.isArray(o.summary) && o.summary.some(function (s) { return s.text && s.text.length > 0; });",
+                  "  });",
+                  "  pm.expect(anyText, 'the thought text never reached response.completed output').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 /v1/responses streaming: reasoning_summary_text events carry summary_index - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('anthropic: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "pm.test('anthropic: every reasoning_summary_* event carries summary_index', function () {",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    pm.expect(f.summary_index, f.type + ' is missing summary_index (required, non-nullable)').to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic: reasoning_summary_text.done carries the full summary text', function () {",
+                  "  var done = summaryFrames.filter(function (f) { return f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done event was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'reasoning_summary_text.done is missing text (required)').to.be.a('string');",
+                  "    pm.expect(f.text.length, 'reasoning_summary_text.done carried an empty text, so the summary was dropped').to.be.above(0);",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic: reasoning_summary_text.done text equals its own deltas', function () {",
+                  "  var acc = {};",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.delta' || typeof f.delta !== 'string') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    acc[key] = (acc[key] || '') + f.delta;",
+                  "  });",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.done') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    if (acc[key] === undefined) { return; }",
+                  "    pm.expect(f.text, 'done text does not match the deltas streamed for ' + key).to.eql(acc[key]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses streaming: reasoning_summary_text.done carries the accumulated text - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('bedrock: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "pm.test('bedrock: every reasoning_summary_* event carries summary_index', function () {",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    pm.expect(f.summary_index, f.type + ' is missing summary_index (required, non-nullable)').to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock: reasoning_summary_text.done carries the full summary text', function () {",
+                  "  var done = summaryFrames.filter(function (f) { return f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done event was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'reasoning_summary_text.done is missing text (required)').to.be.a('string');",
+                  "    pm.expect(f.text.length, 'reasoning_summary_text.done carried an empty text, so the summary was dropped').to.be.above(0);",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock: reasoning_summary_text.done text equals its own deltas', function () {",
+                  "  var acc = {};",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.delta' || typeof f.delta !== 'string') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    acc[key] = (acc[key] || '') + f.delta;",
+                  "  });",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.done') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    if (acc[key] === undefined) { return; }",
+                  "    pm.expect(f.text, 'done text does not match the deltas streamed for ' + key).to.eql(acc[key]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses streaming: reasoning item carries summary and encrypted_content - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "pm.test('bedrock: the stream actually emitted reasoning summary events', function () {",
+                  "  pm.expect(summaryFrames, 'no reasoning_summary_* event was emitted, so every assertion below would pass having tested nothing').to.not.be.empty;",
+                  "});",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "var reasoningItems = frames.filter(function (f) {",
+                  "  return f && f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning';",
+                  "}).map(function (f) { return f.item; });",
+                  "pm.test('bedrock: the completed reasoning item carries the summary its events described', function () {",
+                  "  pm.expect(reasoningItems, 'no reasoning output_item.done was emitted').to.not.be.empty;",
+                  "  var withText = reasoningItems.filter(function (it) {",
+                  "    return Array.isArray(it.summary) && it.summary.length > 0;",
+                  "  });",
+                  "  pm.expect(withText, 'every reasoning item closed with an empty summary, so summary_index resolves against nothing').to.not.be.empty;",
+                  "  withText.forEach(function (it) {",
+                  "    it.summary.forEach(function (s) {",
+                  "      pm.expect(s.type, 'summary entry must be summary_text').to.eql('summary_text');",
+                  "      pm.expect(s.text, 'summary entry text must be a string').to.be.a('string');",
+                  "      pm.expect(s.text.length, 'summary entry carried empty text').to.be.above(0);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock: response.completed carries the reasoning text in its output', function () {",
+                  "  var completed = frames.filter(function (f) { return f && f.type === 'response.completed'; }).pop();",
+                  "  pm.expect(completed, 'stream never emitted response.completed').to.be.an('object');",
+                  "  var out = (completed.response && completed.response.output) || [];",
+                  "  var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning, 'response.completed output has no reasoning item').to.not.be.empty;",
+                  "  var anyText = reasoning.some(function (o) {",
+                  "    return Array.isArray(o.summary) && o.summary.some(function (s) { return s.text && s.text.length > 0; });",
+                  "  });",
+                  "  pm.expect(anyText, 'the thought text never reached response.completed output').to.be.true;",
+                  "});",
+                  "pm.test('bedrock: the completed reasoning item carries its replay token', function () {",
+                  "  var signed = reasoningItems.filter(function (it) {",
+                  "    return typeof it.encrypted_content === 'string' && it.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(signed, 'no reasoning item carried encrypted_content, so the turn cannot be replayed').to.not.be.empty;",
+                  "});",
+                  "// Hand the captured item to the replay case below.",
+                  "pm.collectionVariables.unset('bedrockStreamedReasoningItem_rsf');",
+                  "var firstSigned = reasoningItems.filter(function (it) {",
+                  "  return Array.isArray(it.summary) && it.summary.length > 0 && it.encrypted_content;",
+                  "})[0];",
+                  "if (firstSigned) {",
+                  "  pm.collectionVariables.set('bedrockStreamedReasoningItem_rsf', JSON.stringify(firstSigned));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses replays the streamed reasoning item without a 400 - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\"},\n    {{bedrockStreamedReasoningItem_rsf}},\n    {\"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"Nine sheep remain.\"}]},\n    {\"role\": \"user\", \"content\": \"Now restate that in one short sentence.\"}\n  ],\n  \"reasoning\": {\"effort\": \"medium\", \"summary\": \"auto\"},\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture case above did not run, or produced no signed item: a Bedrock",
+                  "// outage must degrade to a skip rather than a false failure on an unsubstituted variable.",
+                  "if (!pm.collectionVariables.get('bedrockStreamedReasoningItem_rsf')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "// Populating the reasoning item's summary WITHOUT the signature that signs it sends an",
+                  "// unsigned reasoning block upstream, which Bedrock refuses. A 400 here is the regression.",
+                  "pm.test('a streamed reasoning item replays without an upstream rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body.toLowerCase(), 'upstream rejected the replayed reasoning block: ' + body).to.not.include('cannot be modified');",
+                  "  pm.expect(body.toLowerCase(), 'upstream rejected the reasoning signature: ' + body).to.not.include('support the reasoningcontent');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /v1/responses streaming: the thought signature survives the stream - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var summaryFrames = frames.filter(function (f) {",
+                  "  return f && typeof f.type === 'string' && f.type.indexOf('response.reasoning_summary') === 0;",
+                  "});",
+                  "var reasoningItems = frames.filter(function (f) {",
+                  "  return f && f.type === 'response.output_item.done' && f.item && f.item.type === 'reasoning';",
+                  "}).map(function (f) { return f.item; });",
+                  "pm.test('gemini-3: the thought signature reaches the client', function () {",
+                  "  // Route A - a thought part that carried text: the signature rides its reasoning delta.",
+                  "  var signedDeltas = summaryFrames.filter(function (f) {",
+                  "    return f.type === 'response.reasoning_summary_text.delta' && typeof f.signature === 'string' && f.signature.length > 0;",
+                  "  });",
+                  "  // Route B - a signature-only thought part: it becomes a reasoning item's encrypted_content.",
+                  "  var signedItems = reasoningItems.filter(function (it) {",
+                  "    return typeof it.encrypted_content === 'string' && it.encrypted_content.length > 0;",
+                  "  });",
+                  "  pm.expect(reasoningItems, 'the model returned no reasoning item at all, so thinking never engaged and this case tested nothing').to.not.be.empty;",
+                  "  pm.expect(signedDeltas.length + signedItems.length, 'no thought signature survived the stream on either route, so the turn cannot be replayed (Gemini answers a missing signature with its own finish reason)').to.be.above(0);",
+                  "});",
+                  "// A visible summary is discretionary here, but when one IS emitted the events must still",
+                  "// be well formed - the same contract cases 1-2 pin on 2.5.",
+                  "if (summaryFrames.length === 0) { return; }",
+                  "pm.test('gemini-3: every reasoning_summary_* event carries summary_index', function () {",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    pm.expect(f.summary_index, f.type + ' is missing summary_index (required, non-nullable)').to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('gemini-3: reasoning_summary_text.done carries the full summary text', function () {",
+                  "  var done = summaryFrames.filter(function (f) { return f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done event was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'reasoning_summary_text.done is missing text (required)').to.be.a('string');",
+                  "    pm.expect(f.text.length, 'reasoning_summary_text.done carried an empty text, so the summary was dropped').to.be.above(0);",
+                  "  });",
+                  "});",
+                  "pm.test('gemini-3: reasoning_summary_text.done text equals its own deltas', function () {",
+                  "  var acc = {};",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.delta' || typeof f.delta !== 'string') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    acc[key] = (acc[key] || '') + f.delta;",
+                  "  });",
+                  "  summaryFrames.forEach(function (f) {",
+                  "    if (f.type !== 'response.reasoning_summary_text.done') { return; }",
+                  "    var key = String(f.item_id) + '#' + String(f.summary_index);",
+                  "    if (acc[key] === undefined) { return; }",
+                  "    pm.expect(f.text, 'done text does not match the deltas streamed for ' + key).to.eql(acc[key]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /genai streaming: thought text and thoughtSignature travel on one part - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 17 sheep and all but 9 run away. Think it through, then answer.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"thinkingConfig\": {\n      \"includeThoughts\": true\n    },\n    \"maxOutputTokens\": 1024\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.7-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini/gemini-3.7-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "// Gemini-origin: Gemini 3 mints a thoughtSignature on every thinking turn, so one must arrive.",
+                  "var chunks = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var parts = [];",
+                  "chunks.forEach(function (c) {",
+                  "  var cand = (c.candidates || [])[0];",
+                  "  var ps = (cand && cand.content && cand.content.parts) || [];",
+                  "  ps.forEach(function (p) { parts.push(p); });",
+                  "});",
+                  "pm.test('gemini-3: a signed part always carries its text data field', function () {",
+                  "  var signed = parts.filter(function (p) { return p.thoughtSignature; });",
+                  "  pm.expect(signed, 'no part carried a thoughtSignature, so the signature was dropped on the /genai egress').to.not.be.empty;",
+                  "  signed.forEach(function (p) {",
+                  "    pm.expect(p, 'a thoughtSignature part omitted the text data field, which strict adapters reject').to.have.property('text');",
+                  "  });",
+                  "});",
+                  "pm.test('gemini-3: a signed thought part keeps its text on the same part', function () {",
+                  "  var signedThoughts = parts.filter(function (p) { return p.thought === true && p.thoughtSignature; });",
+                  "  if (signedThoughts.length === 0) { return; }",
+                  "  var withText = signedThoughts.filter(function (p) { return typeof p.text === 'string' && p.text.length > 0; });",
+                  "  pm.expect(withText, 'every signed thought part came through with empty text, so the signature was split away from the thought it signs').to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 /genai streaming: thought text and thoughtSignature travel on one part - reasoning-summary-fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 17 sheep and all but 9 run away. Think it through, then answer.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"thinkingConfig\": {\n      \"includeThoughts\": true\n    },\n    \"maxOutputTokens\": 1024\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-sonnet-4-5:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic/claude-sonnet-4-5:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "// Cross-provider: Anthropic sends the signature on its own delta, with no text; whether thinking engages at all through the genai dialect is not guaranteed, so the assertions stay conditional.",
+                  "var chunks = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var parts = [];",
+                  "chunks.forEach(function (c) {",
+                  "  var cand = (c.candidates || [])[0];",
+                  "  var ps = (cand && cand.content && cand.content.parts) || [];",
+                  "  ps.forEach(function (p) { parts.push(p); });",
+                  "});",
+                  "pm.test('anthropic: a signed part always carries its text data field', function () {",
+                  "  var signed = parts.filter(function (p) { return p.thoughtSignature; });",
+                  "  if (signed.length === 0) { return; }",
+                  "  signed.forEach(function (p) {",
+                  "    pm.expect(p, 'a thoughtSignature part omitted the text data field, which strict adapters reject').to.have.property('text');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic: a signed thought part keeps its text on the same part', function () {",
+                  "  var signedThoughts = parts.filter(function (p) { return p.thought === true && p.thoughtSignature; });",
+                  "  if (signedThoughts.length === 0) { return; }",
+                  "  var withText = signedThoughts.filter(function (p) { return typeof p.text === 'string' && p.text.length > 0; });",
+                  "  pm.expect(withText, 'every signed thought part came through with empty text, so the signature was split away from the thought it signs').to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
