@@ -651,6 +651,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
+	hidden_request_types: string[];
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;

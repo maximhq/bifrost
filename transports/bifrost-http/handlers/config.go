@@ -217,6 +217,10 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
 	mapConfig["is_object_storage_connected"] = h.store.LogsStoreConfig != nil && h.store.LogsStoreConfig.ObjectStorage != nil
+	mapConfig["hidden_request_types"] = []string{}
+	if h.store.LogsStoreConfig != nil && len(h.store.LogsStoreConfig.HiddenRequestTypes) > 0 {
+		mapConfig["hidden_request_types"] = h.store.LogsStoreConfig.HiddenRequestTypes
+	}
 	// Fetching proxy config
 	if h.store.ConfigStore != nil {
 		proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)

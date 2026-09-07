@@ -976,6 +976,7 @@ export const bifrostConfigSchema = z.object({
 	is_db_connected: z.boolean(),
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
+	hidden_request_types: z.array(z.string()).default([]),
 	is_git_available: z.boolean().optional().default(false),
 });
 
