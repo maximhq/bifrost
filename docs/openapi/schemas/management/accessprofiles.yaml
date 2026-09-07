@@ -184,6 +184,22 @@ AccessProfile:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    auto_rotation_interval:
+      type: integer
+      format: int64
+      description: Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off.
+    next_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: When the next scheduled rotation is due. Absent while automatic rotation is off.
+    last_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: When the last scheduled rotation run finished.
     mcp_tool_groups:
       type: array
       items:
@@ -246,6 +262,16 @@ CreateAccessProfileRequest:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    auto_rotation_interval:
+      oneOf:
+        - $ref: '#/RotationIntervalString'
+        - $ref: '#/RotationIntervalNanos'
+      description: 'Schedule automatic rotation of the profile''s managed virtual keys. Accepts a day count ("30d"), a Go duration ("12h"), or integer nanoseconds. Between 1h and 365d; omit, "" or 0 to leave it off.'
+      example: 30d
+    next_rotation_at:
+      type: string
+      format: date-time
+      description: Optional first rotation time; must be in the future and requires auto_rotation_interval. Defaults to now + interval.
     mcp_tool_groups:
       type: array
       items:
@@ -292,6 +318,18 @@ UpdateAccessProfileRequest:
     calendar_aligned:
       type: boolean
       nullable: true
+    auto_rotation_interval:
+      oneOf:
+        - $ref: '#/RotationIntervalString'
+        - $ref: '#/RotationIntervalNanos'
+        - type: 'null'
+      description: 'Replace the rotation schedule ("30d", "12h" or nanoseconds); "" or 0 turns it off. Omit to leave the schedule unchanged.'
+    next_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: Override the next rotation time (must be in the future). null clears it, which is only valid when the interval is off. Omit to keep the existing schedule; a changed interval re-anchors it to now + interval.
     mcp_tool_groups:
       type: array
       items:
@@ -585,3 +623,19 @@ AddVirtualKeyResponse:
   properties:
     virtual_key:
       $ref: '#/VirtualKeySummary'
+
+RotationIntervalString:
+  type: string
+  description: 'Rotation interval as a day count ("30d") or a Go duration ("12h", "720h"). Must resolve to between 1h and 365d. "" disables rotation.'
+  pattern: '^$|^[0-9]+d$|^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$'
+  example: 30d
+
+RotationIntervalNanos:
+  type: integer
+  format: int64
+  description: Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).
+  oneOf:
+    - const: 0
+    - minimum: 3600000000000
+      maximum: 31536000000000000
+  example: 2592000000000000
