@@ -73,7 +73,7 @@ The plugin is disabled unless it appears as enabled in the `plugins` array. Shad
 | `active_roles.worker` | `true` | Enable classification for the worker-agent alias. |
 | `keywords` | built-in groups | Optional per-capability keyword overrides. Unspecified groups retain their defaults. |
 
-Main and worker aliases must be different. Deterministic aliases such as `agent-main-max`, `agent-main-cheap`, provider-prefixed models, and every unrelated model name are not intercepted.
+If `aliases` is configured, both `aliases.main` and `aliases.worker` must be provided, and they must be different. Omitting `aliases` keeps both defaults. Deterministic aliases such as `agent-main-max`, `agent-main-cheap`, provider-prefixed models, and every unrelated model name are not intercepted.
 
 ## Routing sequence
 

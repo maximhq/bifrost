@@ -25,7 +25,7 @@ func TestResolveConfigMergesPartialOverrides(t *testing.T) {
 	cfg, err := resolveConfig(&Config{
 		ShadowMode:          &shadow,
 		ConfidenceThreshold: &threshold,
-		Aliases:             &AliasConfig{Main: "main-dynamic"},
+		Aliases:             &AliasConfig{Main: "main-dynamic", Worker: "worker-dynamic"},
 		ActiveRoles:         &ActiveRolesConfig{Worker: &worker},
 		Keywords:            map[string][]string{CapabilityExplore: {"inventory"}},
 	})
@@ -35,7 +35,7 @@ func TestResolveConfigMergesPartialOverrides(t *testing.T) {
 	if cfg.ShadowMode {
 		t.Fatal("shadow mode override was not applied")
 	}
-	if cfg.Aliases.Main != "main-dynamic" || cfg.Aliases.Worker != "agent-worker-auto" {
+	if cfg.Aliases.Main != "main-dynamic" || cfg.Aliases.Worker != "worker-dynamic" {
 		t.Fatalf("aliases = %#v", cfg.Aliases)
 	}
 	if !cfg.ActiveRoles[roleMain] || cfg.ActiveRoles[roleWorker] {
@@ -58,6 +58,8 @@ func TestResolveConfigRejectsInvalidValues(t *testing.T) {
 	}{
 		{"zero confidence", &Config{ConfidenceThreshold: &zero}},
 		{"too much history", &Config{HistoryMessages: &tooMany}},
+		{"empty aliases", &Config{Aliases: &AliasConfig{}}},
+		{"partial aliases", &Config{Aliases: &AliasConfig{Main: "only-main"}}},
 		{"duplicate aliases", &Config{Aliases: &AliasConfig{Main: "same", Worker: "same"}}},
 		{"unknown keyword group", &Config{Keywords: map[string][]string{"other": {"value"}}}},
 	}

@@ -79,12 +79,10 @@ func resolveConfig(input *Config) (resolvedConfig, error) {
 		resolved.HistoryMessages = *input.HistoryMessages
 	}
 	if input.Aliases != nil {
-		if input.Aliases.Main != "" {
-			resolved.Aliases.Main = input.Aliases.Main
+		if input.Aliases.Main == "" || input.Aliases.Worker == "" {
+			return resolvedConfig{}, fmt.Errorf("aliases.main and aliases.worker are required when aliases is configured")
 		}
-		if input.Aliases.Worker != "" {
-			resolved.Aliases.Worker = input.Aliases.Worker
-		}
+		resolved.Aliases = *input.Aliases
 	}
 	if input.ActiveRoles != nil {
 		if input.ActiveRoles.Main != nil {

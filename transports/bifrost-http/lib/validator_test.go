@@ -1613,6 +1613,16 @@ func TestValidateConfigSchema_AgentCapabilityRouter(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "empty aliases",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"aliases":{}}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "partial aliases",
+			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"aliases":{"main":"agent-main-auto"}}}]}`,
+			wantErr: true,
+		},
+		{
 			name:    "unknown config field",
 			config:  `{"plugins":[{"enabled":true,"name":"agent-capability-router","config":{"unexpected":true}}]}`,
 			wantErr: true,

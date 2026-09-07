@@ -2526,6 +2526,7 @@
                         "main": { "type": "string", "minLength": 1 },
                         "worker": { "type": "string", "minLength": 1 }
                       },
+                      "required": ["main", "worker"],
                       "additionalProperties": false
                     },
                     "active_roles": {
