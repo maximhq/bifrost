@@ -365,7 +365,7 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 
 	// gpt-4o is not a reasoning model, so it additionally has cross-provider
 	// encrypted_content stripped (it could never decrypt it).
-	models := map[string]bool{"gpt-5.6-sol": true, "gpt-5.5": true, "o3": true, "gpt-4o": false}
+	models := map[string]bool{"gpt-6-astra": true, "gpt-5.6-sol": true, "gpt-5.5": true, "o3": true, "gpt-4o": false}
 	for model, keepsEncrypted := range models {
 		t.Run(model, func(t *testing.T) {
 			input := newReasoningItem()
@@ -484,6 +484,18 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			model:    "gpt-5.5",
 			effort:   "xhigh",
 			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves max for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "max",
+			expected: "max",
 		},
 		{
 			name:     "maps xhigh to high for gpt-5",

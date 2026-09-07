@@ -108,3 +108,81 @@ func TestGPT6AstraMaxReasoningEffortReachesOpenAIUpstream(t *testing.T) {
 			wire.Reasoning.Effort, schemas.ReasoningEffortMax)
 	}
 }
+
+// TestGPT6AstraReasoningPreservedWithoutDatasheet verifies that when no capability
+// resolver/datasheet entry is present, IsOpenAIReasoningModel ensures reasoning
+// parameters and xhigh effort are preserved rather than stripped or downgraded.
+func TestGPT6AstraReasoningPreservedWithoutDatasheet(t *testing.T) {
+	requests := make(chan astraUpstreamRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		requests <- astraUpstreamRequest{
+			Method:  r.Method,
+			Path:    r.URL.Path,
+			Body:    body,
+			ReadErr: err,
+		}
+		writeJSON(w, http.StatusOK, `{"id":"resp_astra_2","object":"response","created_at":1,"status":"completed","model":"gpt-6-astra","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// Ensure no capability resolver is set
+	schemas.SetCapabilityResolver(nil)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "astra-e2e-key-fallback",
+		Value:  *schemas.NewSecretVar("sk-local-astra-e2e-fallback"),
+		Models: schemas.WhiteList{"gpt-6-astra"},
+		Weight: 100,
+	}})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	response, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("Say hello"),
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: schemas.Ptr(schemas.ReasoningEffortXHigh),
+			},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesRequest failed before reaching the upstream: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("ResponsesRequest returned a nil response")
+	}
+
+	observed := <-requests
+	if observed.ReadErr != nil {
+		t.Fatalf("read upstream request body: %v", observed.ReadErr)
+	}
+
+	var wire struct {
+		Model     string `json:"model"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(observed.Body, &wire); err != nil {
+		t.Fatalf("decode upstream request body %q: %v", observed.Body, err)
+	}
+	if wire.Model != "gpt-6-astra" {
+		t.Fatalf("upstream model = %q, want gpt-6-astra", wire.Model)
+	}
+	if wire.Reasoning.Effort != schemas.ReasoningEffortXHigh {
+		t.Fatalf("upstream reasoning.effort = %q, want %q; reasoning was stripped or downgraded without datasheet",
+			wire.Reasoning.Effort, schemas.ReasoningEffortXHigh)
+	}
+}
