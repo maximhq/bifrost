@@ -95,6 +95,11 @@ type HandlerStore interface {
 	// GetMaxRequestBodySizeMB returns the configured maximum request body size in megabytes.
 	// Returns the configured value or 100 MB if not set.
 	GetMaxRequestBodySizeMB() int
+	// GetMaxResumableUploadSizeMB returns the configured maximum resumable upload size in megabytes.
+	// Returns the configured value or 100 MB if not set.
+	GetMaxResumableUploadSizeMB() int
+	// GetUploadSessionTTL returns the configured upload session TTL.
+	GetUploadSessionTTL() time.Duration
 }
 
 // Retry backoff constants for validation
@@ -5420,7 +5425,7 @@ func (c *Config) GetUploadSessionTTL() time.Duration {
 		return DefaultUploadSessionTTL
 	}
 
-	return c.ClientConfig.UploadSessionTTL
+	return time.Duration(c.ClientConfig.UploadSessionTTL)
 }
 
 // DefaultMaxResumableUploadSizeMB is the default maximum resumable upload size in megabytes.

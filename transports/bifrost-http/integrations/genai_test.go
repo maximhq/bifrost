@@ -957,7 +957,6 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 		// been atomically persisted in the resumable upload session.
 		if callCount == 1 {
 			providerFailureCount.Add(1)
-
 			http.Error(w, "simulated provider failure", http.StatusInternalServerError)
 			return
 		}
@@ -974,6 +973,7 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	t.Cleanup(providerServer.Close)
 
 	providerBaseURL := providerServer.URL
+
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: &genAIUploadTestAccount{
 			baseURL: providerBaseURL,
@@ -986,6 +986,7 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	fileRoutes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
 
 	genAIRouter := NewGenericRouter(client, handlerStore, fileRoutes, nil, bifrost.NewNoOpLogger())
+
 	httpRouter := router.New()
 	genAIRouter.RegisterRoutes(httpRouter)
 
@@ -1005,21 +1006,33 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	})
 
 	httpClient := &http.Client{}
+
 	startBody := strings.NewReader(
 		`{"file":{"display_name":"test.pdf"},"mime_type":"application/pdf"}`,
 	)
 
-	startRequest, err := http.NewRequest(http.MethodPost, "http://"+gatewayListener.Addr().String()+"/genai/upload/v1beta/files", startBody)
+	startRequest, err := http.NewRequest(
+		http.MethodPost,
+		"http://"+gatewayListener.Addr().String()+"/genai/upload/v1beta/files",
+		startBody,
+	)
 	require.NoError(t, err)
 
 	startRequest.Header.Set("Content-Type", "application/json")
 	startRequest.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	startRequest.Header.Set("X-Goog-Upload-Command", "start")
 	startRequest.Header.Set("X-Goog-Upload-Header-Content-Type", "application/pdf")
+	startRequest.Header.Set(string(schemas.BifrostContextKeyVirtualKey), testResumableUploadVirtualKey)
 
 	startResponse, err := httpClient.Do(startRequest)
 	require.NoError(t, err)
 	defer startResponse.Body.Close()
+
+	startResponseBody, err := io.ReadAll(startResponse.Body)
+	require.NoError(t, err)
+
+	t.Logf("START STATUS: %d", startResponse.StatusCode)
+	t.Logf("START BODY: %s", string(startResponseBody))
 
 	require.Equal(t, fasthttp.StatusOK, startResponse.StatusCode)
 	assert.Equal(t, "active", startResponse.Header.Get("X-Goog-Upload-Status"))
@@ -1045,14 +1058,18 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	assert.Equal(t, "test.pdf", session.DisplayName)
 	assert.Equal(t, "application/pdf", session.MimeType)
 	assert.Equal(t, int64(0), session.NextOffset)
+	assert.Equal(t, testResumableUploadVirtualKey, session.VirtualKey)
 
+	// Upload the first chunk without finalizing.
 	firstChunk := "PDF file "
+
 	firstUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(firstChunk))
 	require.NoError(t, err)
 
 	firstUpload.Header.Set("Content-Type", "application/octet-stream")
 	firstUpload.Header.Set("X-Goog-Upload-Command", "upload")
 	firstUpload.Header.Set("X-Goog-Upload-Offset", "0")
+	firstUpload.Header.Set(string(schemas.BifrostContextKeyVirtualKey), testResumableUploadVirtualKey)
 
 	firstResponse, err := httpClient.Do(firstUpload)
 	require.NoError(t, err)
@@ -1073,9 +1090,9 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 
 	assert.Equal(t, int64(len(firstChunk)), session.NextOffset)
 	require.Contains(t, session.Chunks, int64(0))
-
 	assert.Equal(t, []byte(firstChunk), session.Chunks[0])
 
+	// Upload the final chunk. The provider will intentionally fail.
 	finalChunk := "content here"
 	finalOffset := len(firstChunk)
 
@@ -1085,6 +1102,7 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	finalUpload.Header.Set("Content-Type", "application/octet-stream")
 	finalUpload.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	finalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(finalOffset))
+	finalUpload.Header.Set(string(schemas.BifrostContextKeyVirtualKey), testResumableUploadVirtualKey)
 
 	finalResponse, err := httpClient.Do(finalUpload)
 	require.NoError(t, err)
@@ -1096,6 +1114,7 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	assert.Equal(t, int32(1), providerCallCount.Load())
 	assert.Equal(t, int32(1), providerFailureCount.Load())
 
+	// The session must survive the provider failure.
 	stored, err = kvStore.Get(uploadID)
 	require.NoError(t, err, "upload session must survive provider failure")
 
@@ -1104,15 +1123,16 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 
 	assert.Equal(t, int64(len(firstChunk)+len(finalChunk)), session.NextOffset)
 	assert.Equal(t, []byte(firstChunk), session.Chunks[0])
-
 	assert.Equal(t, []byte(finalChunk), session.Chunks[int64(finalOffset)])
 
+	// Retry the same final chunk with the same offset and data.
 	retryFinalUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(finalChunk))
 	require.NoError(t, err)
 
 	retryFinalUpload.Header.Set("Content-Type", "application/octet-stream")
 	retryFinalUpload.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	retryFinalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(finalOffset))
+	retryFinalUpload.Header.Set(string(schemas.BifrostContextKeyVirtualKey), testResumableUploadVirtualKey)
 
 	retryResponse, err := httpClient.Do(retryFinalUpload)
 	require.NoError(t, err)
@@ -1121,13 +1141,17 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	require.NoError(t, err)
 	defer retryResponse.Body.Close()
 
-	require.Equal(t, http.StatusOK, retryResponse.StatusCode, "retry body: %s", retryResponseBody)
+	t.Logf("RETRY STATUS: %d", retryResponse.StatusCode)
+	t.Logf("RETRY BODY: %s", string(retryResponseBody))
+
+	require.Equal(t, http.StatusOK, retryResponse.StatusCode, "retry body: %s", string(retryResponseBody))
 	assert.Equal(t, "final", retryResponse.Header.Get("X-Goog-Upload-Status"))
 
-	// A retry is allowed after the failed provider request cleared Finalizing.
+	// The retry should reach the provider again and succeed.
 	assert.Equal(t, int32(2), providerCallCount.Load())
 	assert.Equal(t, int32(1), providerFailureCount.Load())
 
+	// Successful finalization should delete the upload session.
 	_, err = kvStore.Get(uploadID)
 	assert.ErrorIs(t, err, kvstore.ErrNotFound, "successful retry should delete the upload session")
 }
