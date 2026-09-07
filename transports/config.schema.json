@@ -7938,6 +7938,11 @@
           "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
           "default": false
         },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
+          "default": false
+        },
         "budgets": {
           "type": "array",
           "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",

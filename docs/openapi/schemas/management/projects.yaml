@@ -520,6 +520,13 @@ Project:
       description: >-
         Snaps every window the project holds, including each member's derived
         slice, onto calendar boundaries instead of running from creation.
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: >-
+        When true, grants access to every provider, including ones without a
+        provider_configs entry and providers added later. Listed providers keep
+        their own model, key, budget, and rate-limit rules.
     budgets:
       type: array
       nullable: true
@@ -594,6 +601,10 @@ CreateProjectRequest:
     calendar_aligned:
       type: boolean
       default: false
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.
     budgets:
       type: array
       items:
@@ -647,6 +658,9 @@ UpdateProjectRequest:
       $ref: '#/ProjectSplitPolicy'
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules. Omit to leave unchanged.
     budgets:
       type: array
       nullable: true
