@@ -7,7 +7,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
+import { HiddenProviders, ProviderLabels, ProviderNames, VisibleProviderNames } from "@/lib/constants/logs";
 import { useDismissedProviderCollisions } from "@/lib/hooks/useDismissedProviderCollisions";
 import {
 	getErrorMessage,
@@ -77,15 +77,21 @@ export default function Providers() {
 	const configuredProviderNamesKey = JSON.stringify(configuredProviderNamesArr);
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
 
-	const knownProviders = ProviderNames.map((name) => ({ name }));
+	const knownProviders = VisibleProviderNames.map((name) => ({ name }));
 
 	// Custom providers whose name matches a provider that is now supported natively.
 	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
+	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
-			const key = normalizeProviderName(c.customName);
-			return c.knownProvider !== DATABRICKS_PROVIDER && !dismissedCollisions.has(key) && !handledCollisions.has(key);
-		})
+				const key = normalizeProviderName(c.customName);
+				return (
+					c.knownProvider !== DATABRICKS_PROVIDER &&
+					!HiddenProviders.has(c.knownProvider) &&
+					!dismissedCollisions.has(key) &&
+					!handledCollisions.has(key)
+				);
+			})
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
