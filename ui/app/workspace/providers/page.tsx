@@ -84,14 +84,14 @@ export default function Providers() {
 	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
-				const key = normalizeProviderName(c.customName);
-				return (
-					c.knownProvider !== DATABRICKS_PROVIDER &&
-					!HiddenProviders.has(c.knownProvider) &&
-					!dismissedCollisions.has(key) &&
-					!handledCollisions.has(key)
-				);
-			})
+			const key = normalizeProviderName(c.customName);
+			return (
+				c.knownProvider !== DATABRICKS_PROVIDER &&
+				!HiddenProviders.has(c.knownProvider) &&
+				!dismissedCollisions.has(key) &&
+				!handledCollisions.has(key)
+			);
+		})
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
@@ -281,12 +281,12 @@ export default function Providers() {
 			/>
 			<div
 				className={cn(
-					"w-full flex-col md:flex md:h-[calc(var(--app-content-viewport)_-_70px)] md:w-[300px]",
+					"w-full flex-col md:flex md:h-[calc(var(--app-content-viewport)_-_55px)] md:w-[300px]",
 					mobileDetailOpen ? "hidden" : "flex",
 				)}
 			>
 				<TooltipProvider>
-					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 dark:bg-zinc-800/20">
+					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
 						{/* Pinned lane title */}
 						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Configured Providers</div>
 
@@ -337,26 +337,26 @@ export default function Providers() {
 							) : (
 								<div
 									data-testid="providers-lane-empty"
-									className="flex h-full flex-col items-center justify-center gap-2 px-4 py-8 text-center"
+									className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center"
 								>
 									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
 									<div className="text-muted-foreground text-xs">No providers configured yet</div>
 								</div>
 							)}
-						</div>
 
-						{/* Pinned add action */}
-						{hasProviderCreateAccess ? (
-							<div className="shrink-0 pt-3">
-								<AddProviderDropdown
-									disabled={!hasProviderCreateAccess}
-									existingInSidebar={existingInSidebarNames}
-									knownProviders={knownProviders}
-									onSelectKnownProvider={handleSelectKnownProvider}
-									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
-								/>
-							</div>
-						) : null}
+							{/* Add action: follows the last provider, sticks to the bottom once the list overflows */}
+							{hasProviderCreateAccess ? (
+								<div className="sticky bottom-0 bg-zinc-50/50 backdrop-blur-sm dark:bg-zinc-800/20">
+									<AddProviderDropdown
+										disabled={!hasProviderCreateAccess}
+										existingInSidebar={existingInSidebarNames}
+										knownProviders={knownProviders}
+										onSelectKnownProvider={handleSelectKnownProvider}
+										onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+									/>
+								</div>
+							) : null}
+						</div>
 					</div>
 				</TooltipProvider>
 			</div>
