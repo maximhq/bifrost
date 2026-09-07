@@ -342,40 +342,67 @@ func TestChatStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {
 	}
 }
 
-// The counterpart: without the opt-in the loop keeps waiting for [DONE], which is
-// what providers emitting a usage-only chunk after finish_reason depend on. Asserted
-// with a bounded wait so a regression here cannot wedge the suite.
-func TestChatStreamHeartbeatAfterFinishReasonWaitsWithoutOptIn(t *testing.T) {
+// The opt-in only reaches providers an operator has already diagnosed. The reported
+// shape - a built-in or unconfigured custom provider that omits [DONE] and parks -
+// has to terminate on its own, so the first heartbeat after finish_reason ends the
+// read loop with no configuration at all.
+func TestChatStreamHeartbeatAfterFinishReasonEndsWithoutOptIn(t *testing.T) {
 	toolCalls := "tool_calls"
 	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls))
 	defer server.Close()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-
 	provider := newStreamTestProvider(server.URL)
-	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
 	if bifrostErr != nil {
 		t.Fatalf("stream setup failed: %v", bifrostErr)
 	}
 
-	// The content chunk is forwarded as it arrives; the finish_reason chunk is not.
-	select {
-	case chunk, ok := <-stream:
-		if !ok {
-			t.Fatal("stream closed before delivering the content chunk")
-		}
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
 		if chunk.BifrostError != nil {
-			t.Fatalf("content chunk carried an error: %+v", chunk.BifrostError)
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the content chunk")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != toolCalls {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", toolCalls, final.BifrostChatResponse.Choices)
+	}
+}
+
+// The reported upstream sends its usage-only chunk between finish_reason and the
+// heartbeats. Ending on the heartbeat rather than on finish_reason is what keeps
+// that chunk - and the cost derived from it - on a stream nobody configured.
+func TestChatStreamHeartbeatAfterFinishReasonKeepsTrailingUsage(t *testing.T) {
+	toolCalls := "tool_calls"
+	usageChunk := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}` + "\n\n"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls)+usageChunk)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
 	}
 
-	select {
-	case chunk, ok := <-stream:
-		t.Fatalf("expected the stream to stay open waiting for [DONE], got chunk=%+v open=%v", chunk, ok)
-	case <-time.After(300 * time.Millisecond):
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostChatResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100 from the chunk after finish_reason, got %d", final.BifrostChatResponse.Usage.TotalTokens)
 	}
 }
 
