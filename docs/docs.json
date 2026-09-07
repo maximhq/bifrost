@@ -249,6 +249,7 @@
               "features/observability/content-logging",
               "features/observability/latency-breakdown",
               "features/semantic-caching",
+              "features/prompt-caching",
               "features/skills-repository",
               {
                 "group": "Prompt Repository",
