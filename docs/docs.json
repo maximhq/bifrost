@@ -1225,6 +1225,7 @@
                   "PUT /api/mcp/client/{id}",
                   "DELETE /api/mcp/client/{id}",
                   "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/refresh-tools",
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",

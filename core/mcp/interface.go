@@ -99,6 +99,12 @@ type MCPManagerInterface interface {
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 
+	// RefreshClientTools re-discovers a client's tools from its upstream
+	// server now rather than at the connection checker's next tick, and
+	// returns how many tools it is serving afterwards. Unlike
+	// ReconnectClient, it applies to per-call clients too.
+	RefreshClientTools(ctx context.Context, clientID string) (int, error)
+
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.

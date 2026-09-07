@@ -4335,6 +4335,26 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	return bifrost.MCPManager.ReconnectClient(id)
 }
 
+// RefreshMCPClientTools re-discovers an MCP client's tools from its upstream
+// server immediately, instead of waiting for the periodic connection
+// checker's next tick. Applies to every client type, including the per-call
+// ones ReconnectMCPClient rejects.
+//
+// Parameters:
+//   - ctx: Context bounding the discovery attempt
+//   - id: ID of the client to refresh
+//
+// Returns:
+//   - int: Number of tools the client is serving after the refresh
+//   - error: Any discovery error
+func (bifrost *Bifrost) RefreshMCPClientTools(ctx context.Context, id string) (int, error) {
+	if bifrost.MCPManager == nil {
+		return 0, fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+
+	return bifrost.MCPManager.RefreshClientTools(ctx, id)
+}
+
 // CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
 // connection and flips it to needs_reauth, without attempting a new dial.
 // Used after OAuth credential rotation.
