@@ -3262,6 +3262,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			routingRulesToAdd = append(routingRulesToAdd, configData.Governance.RoutingRules[i])
 		}
 	}
+
+	routingRulesToDelete := routingRulePruneCandidates(governanceConfig.RoutingRules, configData)
 	// Merge PricingOverrides by ID with hash comparison
 	pricingOverridesToAdd := make([]configstoreTables.TablePricingOverride, 0)
 	pricingOverridesToUpdate := make([]configstoreTables.TablePricingOverride, 0)
@@ -3368,7 +3370,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	config.GovernanceConfig.Customers = append(governanceConfig.Customers, customersToAdd...)
 	config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
 	config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
-	config.GovernanceConfig.RoutingRules = append(governanceConfig.RoutingRules, routingRulesToAdd...)
+	config.GovernanceConfig.RoutingRules = dropRoutingRulesByID(append(governanceConfig.RoutingRules, routingRulesToAdd...), routingRulesToDelete)
 	config.GovernanceConfig.PricingOverrides = append(governanceConfig.PricingOverrides, pricingOverridesToAdd...)
 	config.GovernanceConfig.ModelConfigs = append(governanceConfig.ModelConfigs, modelConfigsToAdd...)
 	config.GovernanceConfig.Providers = append(governanceConfig.Providers, providersToAdd...)
@@ -3379,7 +3381,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		len(customersToAdd) > 0 || len(customersToUpdate) > 0 ||
 		len(teamsToAdd) > 0 || len(teamsToUpdate) > 0 ||
 		len(virtualKeysToAdd) > 0 || len(virtualKeysToUpdate) > 0 ||
-		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
+		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 || len(routingRulesToDelete) > 0 ||
 		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0 ||
 		len(modelConfigsToAdd) > 0 || len(modelConfigsToUpdate) > 0 ||
 		len(providersToAdd) > 0 || len(providersToUpdate) > 0 ||
@@ -3394,7 +3396,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			customersToAdd, customersToUpdate,
 			teamsToAdd, teamsToUpdate,
 			virtualKeysToAdd, virtualKeysToUpdate,
-			routingRulesToAdd, routingRulesToUpdate,
+			routingRulesToAdd, routingRulesToUpdate, routingRulesToDelete,
 			pricingOverridesToAdd, pricingOverridesToUpdate,
 			modelConfigsToAdd, modelConfigsToUpdate,
 			providersToAdd, providersToUpdate,
@@ -3562,6 +3564,56 @@ func virtualKeyPruneCandidates(existing []configstoreTables.TableVirtualKey, con
 	return candidates
 }
 
+// routingRulePruneCandidates returns the IDs of stored routing rules a present config.json
+// section no longer declares. Mirrors virtualKeyPruneCandidates, but carries the
+// source-of-truth check itself because it is called from the merge path rather than from
+// pruneGovernanceConfigToFile, which is already gated.
+//
+// Routing rules are the only governance collection with a cross-row invariant: one rule per
+// (scope, scope_id, priority). Rule IDs usually encode the model, so swapping a model mints a
+// new ID that reuses the priority the old row is vacating. Pruning them in
+// pruneGovernanceConfigToFile would delete in a later transaction, after the inserts have
+// already collided with the rows being removed - so these are deleted in the sync transaction
+// instead. The prune condition is unchanged: split keeps DB-only rows, only ordering differs.
+func routingRulePruneCandidates(existing []configstoreTables.TableRoutingRule, configData *ConfigData) []string {
+	if !configData.isConfigJSONSourceOfTruth() || !configData.governanceSectionPresent("routing_rules") {
+		return nil
+	}
+	keep := make(map[string]bool, len(configData.Governance.RoutingRules))
+	for _, rule := range configData.Governance.RoutingRules {
+		keep[rule.ID] = true
+	}
+	candidates := make([]string, 0, len(existing))
+	for _, rule := range existing {
+		if rule.ID != "" && !keep[rule.ID] {
+			candidates = append(candidates, rule.ID)
+		}
+	}
+	return candidates
+}
+
+// dropRoutingRulesByID returns rules minus the given IDs, keeping the in-memory governance
+// snapshot consistent with the deletes applied to the store in the same sync. The governance
+// store is seeded from this slice, so a rule left here after being deleted from the DB would
+// keep routing traffic until the next restart.
+func dropRoutingRulesByID(rules []configstoreTables.TableRoutingRule, ids []string) []configstoreTables.TableRoutingRule {
+	if len(ids) == 0 {
+		return rules
+	}
+	removed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		removed[id] = true
+	}
+	kept := make([]configstoreTables.TableRoutingRule, 0, len(rules))
+	for _, rule := range rules {
+		if removed[rule.ID] {
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	return kept
+}
+
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
 func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
@@ -3604,20 +3656,8 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			config.GovernanceConfig.VirtualKeys = nextVKs
 		}
-		if configData.governanceSectionPresent("routing_rules") {
-			keep := make(map[string]bool, len(configData.Governance.RoutingRules))
-			for _, row := range configData.Governance.RoutingRules {
-				keep[row.ID] = true
-			}
-			for _, existing := range config.GovernanceConfig.RoutingRules {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteRoutingRule(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete routing rule %s: %w", existing.ID, err)
-					}
-				}
-			}
-			config.GovernanceConfig.RoutingRules = configData.Governance.RoutingRules
-		}
+		// Routing rules are pruned in mergeGovernanceConfig instead, where the deletes can run
+		// in the same transaction as the inserts and before them.
 		if configData.governanceSectionPresent("pricing_overrides") {
 			keep := make(map[string]bool, len(configData.Governance.PricingOverrides))
 			for _, row := range configData.Governance.PricingOverrides {
@@ -3743,6 +3783,7 @@ func updateGovernanceConfigInStore(
 	virtualKeysToUpdate []configstoreTables.TableVirtualKey,
 	routingRulesToAdd []configstoreTables.TableRoutingRule,
 	routingRulesToUpdate []configstoreTables.TableRoutingRule,
+	routingRulesToDelete []string,
 	pricingOverridesToAdd []configstoreTables.TablePricingOverride,
 	pricingOverridesToUpdate []configstoreTables.TablePricingOverride,
 	modelConfigsToAdd []configstoreTables.TableModelConfig,
@@ -4014,6 +4055,17 @@ func updateGovernanceConfigInStore(
 		for _, budget := range pendingProviderConfigBudgetsToUpdate {
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Delete before the writes below: a replacement rule usually reuses the priority the
+		// obsolete one is vacating, so inserting first would collide with a row we're removing.
+		for _, ruleID := range routingRulesToDelete {
+			if err := config.ConfigStore.DeleteRoutingRule(ctx, ruleID, tx); err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					continue
+				}
+				return fmt.Errorf("failed to delete routing rule %s: %w", ruleID, err)
 			}
 		}
 
