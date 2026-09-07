@@ -94,17 +94,17 @@ function TopbarHeading({ title }: { title: TopbarTitleValue }) {
 				return (
 					<Fragment key={`${crumb.label}-${index}`}>
 						{index > 0 && <span className="text-muted-foreground/50 shrink-0 font-normal">/</span>}
-						{crumb.to && !isLast ? (
+						{(crumb.to || crumb.onSelect) && !isLast ? (
 							<button
 								type="button"
-								onClick={() => navigate({ to: crumb.to })}
+								onClick={() => (crumb.onSelect ? crumb.onSelect() : navigate({ to: crumb.to! }))}
 								className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer transition-colors"
 								data-testid={`topbar-breadcrumb-${index}`}
 							>
 								{crumb.label}
 							</button>
 						) : (
-							// The current page is never a link, even if a `to` was supplied.
+							// The current page is never a link, even if a `to`/`onSelect` was supplied.
 							<span className={cn("truncate", !isLast && "text-muted-foreground")}>{crumb.label}</span>
 						)}
 					</Fragment>
