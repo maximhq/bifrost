@@ -236,6 +236,17 @@ export const mcpApi = baseApi.injectEndpoints({
 			invalidatesTags: ["MCPClients"],
 		}),
 
+		// Re-discover an MCP client's tools from its upstream server now, rather
+		// than waiting out the tool sync interval (10 minutes by default). Applies
+		// to every client type, including the per-call ones Reconnect cannot act on.
+		refreshMCPClientTools: builder.mutation<{ status: string; message: string; tool_count: number }, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/refresh-tools`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
 		// Get OAuth config status (for polling)
 		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
 			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
@@ -312,6 +323,7 @@ export const {
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
