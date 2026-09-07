@@ -54,6 +54,11 @@ LogEntry:
       items:
         type: string
       description: Array of routing engines used for this request (routing-rule, governance, or loadbalancing)
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Distinct function names the response called. Always recorded, even when content logging is disabled, and kept on the log row in hybrid storage mode. Use the tool_call_names query filter to search on it. Full tool calls with arguments are in tool_calls and are available only when content is retained.
       nullable: true
     routing_rule_id:
       type: string
@@ -641,6 +646,11 @@ FilterDataResponse:
       items:
         type: string
       description: Available routing engine types (routing-rule, governance, loadbalancing)
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Function names that logged responses have called, for the tool calls filter. Read from the persisted tool_call_names metadata, so it stays available when message content is not logged or is offloaded in hybrid storage mode.
     projects:
       type: array
       items:

@@ -97,6 +97,7 @@ var filterDataMatViewBackedDims = map[string]struct{}{
 	filterDimRoutingRules:   {},
 	filterDimRoutingEngines: {},
 	filterDimStopReasons:    {},
+	filterDimToolCallNames:  {},
 	filterDimTeams:          {},
 	filterDimCustomers:      {},
 	filterDimUsers:          {},
@@ -182,6 +183,7 @@ const (
 	filterDimRoutingRules   = "routing_rules"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
+	filterDimToolCallNames  = "tool_call_names"
 	filterDimApps           = "apps"
 	filterDimUserAgents     = "user_agents"
 	filterDimTeams          = "teams"
@@ -203,7 +205,7 @@ const (
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
 	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
 }
@@ -657,6 +659,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -928,6 +931,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -1131,6 +1135,15 @@ func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFi
 	}
 }
 
+// parseToolCallNamesFilter reads the comma-separated tool_call_names query
+// param into filters. Shared by every handler that honours log filters so the
+// list, stats, histogram and ranking endpoints stay in sync.
+func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if names := string(ctx.QueryArgs().Peek("tool_call_names")); names != "" {
+		filters.ToolCallNames = parseCommaSeparated(names)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1183,6 +1196,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -1800,6 +1814,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRules   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
+		toolCallNames  []string
 		apps           []string
 		userAgents     []string
 		teams          []logging.KeyPair
@@ -1896,6 +1911,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			}
 			mu.Lock()
 			stopReasons = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableToolCallNames(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			toolCallNames = result
 			mu.Unlock()
 			return nil
 		})
@@ -2117,6 +2144,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		payload[filterDimStopReasons] = stopReasons
+	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		payload[filterDimToolCallNames] = toolCallNames
 	}
 	if _, ok := want[filterDimApps]; ok {
 		payload[filterDimApps] = apps
