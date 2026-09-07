@@ -114,10 +114,39 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 		}
 	}
 	loggerPlugin.SetBatchUsageReporter(usageReporter)
+	// Wire the tracer so settled batch/video cost reaches the observability connectors
+	// (see LoggerPlugin.emitSettlementSpan). Reload re-runs this against the rebuilt
+	// logging plugin; at first bootstrap the tracing middleware does not exist yet, so
+	// the guard skips here and setSettlementTracer is called again once it is created.
+	s.setSettlementTracer()
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+}
+
+// setSettlementTracer hands the logging plugin the tracer it uses to forward settled
+// batch/video cost to the observability connectors (see LoggerPlugin.emitSettlementSpan).
+// It is a no-op until the tracing middleware exists, so it is safe to call before
+// bootstrap has created it (the bootstrap path calls it again once it has). The tracer
+// instance is stable across reloads; only the logging plugin is rebuilt, so this
+// re-set on reload is what keeps the bridge live after a logging-plugin reload.
+func (s *BifrostHTTPServer) setSettlementTracer() {
+	if s == nil || s.Config == nil || s.TracingMiddleware == nil {
+		return
+	}
+	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	if err != nil || loggerPlugin == nil {
+		return
+	}
+	// Concrete nil-check on *tracing.Tracer before it becomes a schemas.Tracer, so a
+	// missing tracer stays a nil interface (not a non-nil interface wrapping a nil
+	// pointer, which would defeat emitSettlementSpan's nil guard and panic).
+	tracer := s.TracingMiddleware.GetTracer()
+	if tracer == nil {
+		return
+	}
+	loggerPlugin.SetSettlementTracer(tracer)
 }
 
 type bifrostVideoRetriever struct {

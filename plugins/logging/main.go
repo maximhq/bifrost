@@ -559,6 +559,114 @@ func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBa
 
 func (p *LoggerPlugin) EmitAggregateLog(ctx context.Context, entry *logstore.Log) {
 	p.makePostWriteCallback(nil)(entry)
+	p.emitSettlementSpan(ctx, entry)
+}
+
+// emitSettlementSpan mirrors a settled batch/video aggregate cost row onto a
+// one-span trace so the trace-fed observability connectors (Datadog, BigQuery,
+// Splunk, OTEL, Kafka, Pub/Sub) record its cost and tokens.
+//
+// Batch and video cost is computed asynchronously — by the sweeper, and inline on
+// the results/retrieve response — on a path that runs with the plugin pipeline
+// skipped (BifrostContextKeySkipPluginPipeline) and so never produces a span through
+// TracingMiddleware. Without this bridge that cost lands only in the log store and
+// governance budgets, invisible to every span-based connector (which read cost off
+// gen_ai.usage.cost on a span). This is the single seam that reaches all of them,
+// since the tracer's CompleteAndFlushTrace is the only path to a connector's Inject.
+//
+// It fires once per settled aggregate row (EmitAggregateLog is called exactly once
+// per successfully written row, after the row is claimed and marked), so settlement
+// retries never double-count cost.
+//
+// The span is a single non-attempt root span: cost/tokens are read off the trace's
+// root span when it carries no llm.call/retry attempt span, so the connectors record
+// this settled cost without also counting it as a second request against the
+// synchronous batch-create/video-generate call that already produced a live span.
+func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.Log) {
+	if entry == nil || entry.Cost == nil || *entry.Cost <= 0 {
+		return
+	}
+	p.mu.Lock()
+	tracer := p.settlementTracer
+	p.mu.Unlock()
+	if tracer == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	traceID := tracer.CreateTrace("")
+	if traceID == "" {
+		return
+	}
+	// Seed the trace ID into the context so StartSpan attaches the span to this
+	// trace (StartSpanID resolves the trace from context, not from a parameter).
+	spanCtx := context.WithValue(ctx, schemas.BifrostContextKeyTraceID, traceID)
+	// SpanKindUnspecified keeps this off the connectors' llm.call/retry attempt loop
+	// (so no request/latency metric is emitted); the cost still flows because it is
+	// the trace's only span and therefore its root, which the metric path reads when
+	// no attempt span is present.
+	_, handle := tracer.StartSpan(spanCtx, entry.Object, schemas.SpanKindUnspecified)
+	if handle == nil {
+		tracer.CompleteAndFlushTrace(traceID)
+		return
+	}
+
+	setStr := func(key, val string) {
+		if val != "" {
+			tracer.SetAttribute(handle, key, val)
+		}
+	}
+	setStrPtr := func(key string, val *string) {
+		if val != nil {
+			setStr(key, *val)
+		}
+	}
+
+	// Cost + usage — the reason this bridge exists.
+	tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	if entry.PromptTokens > 0 {
+		tracer.SetAttribute(handle, schemas.AttrInputTokens, entry.PromptTokens)
+	}
+	if entry.CompletionTokens > 0 {
+		tracer.SetAttribute(handle, schemas.AttrOutputTokens, entry.CompletionTokens)
+	}
+	if entry.TotalTokens > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTotalTokens, entry.TotalTokens)
+	}
+
+	// Model / provider / method — the identity of the priced call. Object carries the
+	// request type string ("batch_results", "video_retrieve") that connectors read
+	// from request.type, matching the aggregate log row.
+	setStr(schemas.AttrProviderName, entry.Provider)
+	setStr(schemas.AttrRequestModel, entry.Model)
+	setStr(schemas.AttrResponseModel, entry.Model)
+	setStr(schemas.AttrLegacyRequestType, entry.Object)
+
+	// Enrichment dimensions — so settled cost filters by the same team/customer/vk/etc.
+	// as live traffic. Read off the aggregate log row rather than the request context
+	// (there is none at settlement time).
+	setStr(schemas.AttrBifrostSelectedKeyID, entry.SelectedKeyID)
+	setStr(schemas.AttrBifrostSelectedKeyName, entry.SelectedKeyName)
+	setStrPtr(schemas.AttrBifrostVirtualKeyID, entry.VirtualKeyID)
+	setStrPtr(schemas.AttrBifrostVirtualKeyName, entry.VirtualKeyName)
+	setStrPtr(schemas.AttrBifrostRoutingRuleID, entry.RoutingRuleID)
+	setStrPtr(schemas.AttrBifrostRoutingRuleName, entry.RoutingRuleName)
+	setStrPtr(schemas.AttrBifrostTeamID, entry.TeamID)
+	setStrPtr(schemas.AttrBifrostTeamName, entry.TeamName)
+	setStrPtr(schemas.AttrBifrostCustomerID, entry.CustomerID)
+	setStrPtr(schemas.AttrBifrostCustomerName, entry.CustomerName)
+	setStrPtr(schemas.AttrBifrostBusinessUnitID, entry.BusinessUnitID)
+	setStrPtr(schemas.AttrBifrostBusinessUnitName, entry.BusinessUnitName)
+	setStrPtr(schemas.AttrBifrostProjectID, entry.ProjectID)
+	setStrPtr(schemas.AttrBifrostProjectName, entry.ProjectName)
+	setStrPtr(schemas.AttrBifrostUserID, entry.UserID)
+	setStrPtr(schemas.AttrBifrostUserName, entry.UserName)
+	setStrPtr(schemas.AttrBifrostAlias, entry.Alias)
+
+	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	tracer.CompleteAndFlushTrace(traceID)
 }
 
 func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
@@ -1072,6 +1180,7 @@ type LoggerPlugin struct {
 	logger                       schemas.Logger
 	logCallback                  LogCallback
 	batchUsageReporter           jobaccounting.UsageReporter
+	settlementTracer             schemas.Tracer     // Emits a span for each settled batch/video aggregate cost row so trace-fed connectors (Datadog/BigQuery/Splunk/OTEL/Kafka/Pub-Sub) see its cost; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
@@ -1284,6 +1393,16 @@ func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporte
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.batchUsageReporter = reporter
+}
+
+// SetSettlementTracer wires the tracer that emitSettlementSpan uses to forward
+// settled batch/video cost to the observability connectors. Called at bootstrap and
+// on reload (the logging plugin instance is rebuilt when the plugin reloads, so the
+// handle must be re-set alongside the usage reporter); nil safely disables the bridge.
+func (p *LoggerPlugin) SetSettlementTracer(tracer schemas.Tracer) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.settlementTracer = tracer
 }
 
 func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {

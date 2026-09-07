@@ -2939,6 +2939,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	tracer.SetObservabilityPlugins(observabilityPlugins, s.CollectObservabilityLimits())
 	s.Client.SetTracer(tracer)
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
+	// The batch/video sweepers were wired before the tracer existed (WireBatchAccountingSweeper
+	// runs earlier in bootstrap), so hand the logging plugin its settlement tracer now that it
+	// does — this is what lets settled batch/video cost reach the observability connectors.
+	s.setSettlementTracer()
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).
