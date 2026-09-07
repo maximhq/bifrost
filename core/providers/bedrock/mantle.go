@@ -82,6 +82,9 @@ func SignMantleV4Headers(
 // signOpenAIV4Headers is SignMantleV4Headers parameterised by signing service, so the
 // same OpenAI-compatible surface can be signed on bedrock-runtime ("bedrock") as on
 // mantle ("bedrock-mantle"). The two endpoints require different credential scopes.
+// The Bedrock InvokeModel path (bedrock.go, InvokeModel section) signs its native
+// Anthropic Messages body through it as well: the anthropic HTTP handlers send exactly
+// the headers this returns, so the signature covers the bytes and Accept on the wire.
 func signOpenAIV4Headers(
 	ctx *schemas.BifrostContext,
 	jsonData []byte,

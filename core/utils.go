@@ -427,6 +427,11 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// previous provider's headers would otherwise survive on the context and
 	// be forwarded with the fallback's error response (#6973).
 	ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+	// The Bedrock InvokeModel stream path installs an AWS event-stream reader
+	// here; a fallback to a plain-SSE provider on the same context must not
+	// inherit it. Cleared here, not when the invoke method returns, because the
+	// in-flight stream still reads it asynchronously (#6825).
+	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the

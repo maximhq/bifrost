@@ -7,9 +7,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,6 +31,7 @@ import (
 	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -138,13 +141,23 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
 	// Anthropic responses are handled by PrepareResponseStreaming, not by these static settings.
 	mantleFasthttpClient := &fasthttp.Client{
-		ReadTimeout:         requestTimeout,
-		WriteTimeout:        requestTimeout,
-		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
-		MaxConnWaitTimeout:  requestTimeout,
-		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
-		ConnPoolStrategy:    fasthttp.FIFO,
+		// Bedrock model paths may carry a percent-encoded inference-profile ARN
+		// (arn:...:application-inference-profile%2F<id>%2F<model>). fasthttp
+		// normalises the path on parse and re-quotes it on write, which turns
+		// %2F into a literal "/" and lands the request on a route AWS does not
+		// have (UnknownOperationException). net/http, which the Converse path
+		// uses, sends RawPath verbatim; this flag makes the fasthttp paths
+		// (Mantle and the InvokeModel route at the end of this file) match. It is
+		// a client-level setting because HostClient.Do overwrites any
+		// per-request URI flag with the client's value right before writing.
+		DisablePathNormalizing: true,
+		ReadTimeout:            requestTimeout,
+		WriteTimeout:           requestTimeout,
+		MaxConnsPerHost:        config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConnDuration:    time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
+		MaxConnWaitTimeout:     requestTimeout,
+		MaxConnDuration:        time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:       fasthttp.FIFO,
 	}
 	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
 	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig.AllowPrivateNetwork)
@@ -1269,7 +1282,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
-// All other models (including Anthropic/Claude) use the Bedrock Converse API.
+// Claude requests that carry a compaction edit use InvokeModel (see the InvokeModel section at the end of this file).
+// All other models (including the remaining Anthropic/Claude requests) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
@@ -1282,6 +1296,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	}
 	if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIChatCompletions) {
 		return provider.runtimeChatCompletions(ctx, key, request)
+	}
+	if chatUsesAnthropicInvokePath(ctx, request) {
+		return provider.invokeAnthropicChatCompletion(ctx, key, request)
 	}
 
 	// Use Bedrock Converse API for all other models
@@ -1464,7 +1481,8 @@ func accumulateBedrockResponsesUsage(usage *schemas.ResponsesResponseUsage, bill
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
-// All other models (including Anthropic/Claude) use the Bedrock Converse streaming API.
+// Claude requests that carry a compaction edit use InvokeModelWithResponseStream (see the InvokeModel section at the end of this file).
+// All other models (including the remaining Anthropic/Claude requests) use the Bedrock Converse streaming API.
 // Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
@@ -1477,6 +1495,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 	if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIChatCompletions) {
 		return provider.runtimeChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+	if chatUsesAnthropicInvokePath(ctx, request) {
+		return provider.invokeAnthropicChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	// Use Bedrock Converse streaming API for all other models
@@ -1790,7 +1811,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 // Responses performs a responses request to Bedrock's API.
 // OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
-// All other models (including Anthropic/Claude) use the Bedrock Converse API.
+// Claude requests that carry a compaction edit use InvokeModel (see the InvokeModel section at the end of this file).
+// All other models (including the remaining Anthropic/Claude requests) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
@@ -1803,6 +1825,9 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	}
 	if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIResponses) {
 		return provider.runtimeResponses(ctx, key, request)
+	}
+	if responsesUsesAnthropicInvokePath(ctx, request) {
+		return provider.invokeAnthropicResponses(ctx, key, request)
 	}
 
 	// Use Bedrock Converse API for all other models
@@ -1893,6 +1918,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 	if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIResponses) {
 		return provider.runtimeResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+	if responsesUsesAnthropicInvokePath(ctx, request) {
+		return provider.invokeAnthropicResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	// Use Bedrock Converse streaming API for all other models
@@ -4201,4 +4229,299 @@ func (provider *BedrockProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 
 func (provider *BedrockProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// ---------------------------------------------------------------------------
+// InvokeModel route for Anthropic-only features (#6825)
+// ---------------------------------------------------------------------------
+
+// Claude on classic Bedrock is served through the Converse API, which AWS
+// documents as unable to run server-side compaction ("Compaction is currently
+// not supported by the Converse API, however it is supported with InvokeModel",
+// https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-compaction.html).
+// Requests that carry a compact_20260112 edit are therefore sent to
+// InvokeModel / InvokeModelWithResponseStream with the native Anthropic
+// Messages body instead (#6825). Every other Claude request stays on Converse,
+// so the blast radius is limited to callers who opted into compaction.
+//
+// The invoke path reuses the anthropic package end to end: the shared request
+// builder (AnthropicProviderRequestDefaultsMap[schemas.Bedrock] gives it the
+// InvokeModel body shape), the shared HTTP handlers with a SigV4 body signer
+// (the same pattern Bedrock Mantle uses), and the shared stream loop, which
+// reads events through invokeEventStreamReader (below) installed via
+// BifrostContextKeySSEReaderFactory. Field stripping on this path is driven by
+// ProviderFeatures[schemas.Bedrock], which is Converse-oriented and therefore
+// conservative (tool_search, for one, is stripped although InvokeModel could
+// carry it). Widening that matrix is a separate decision from this routing.
+
+const (
+	bedrockInvokeAction       = "invoke"
+	bedrockInvokeStreamAction = "invoke-with-response-stream"
+	bedrockInvokeAccept       = "application/json"
+	bedrockInvokeStreamAccept = "application/vnd.amazon.eventstream"
+)
+
+// usesAnthropicInvokePath reports whether a request must bypass Converse: an
+// Anthropic-family model with at least one compact_20260112 edit in its
+// context_management. The edit can arrive two ways and both must be seen:
+//   - contextManagement: the neutral raw JSON field (OpenAI-style ingress, SDK
+//     callers that set Params.ContextManagement directly).
+//   - extraContextManagement: ExtraParams["context_management"], which is what
+//     the /anthropic/v1/messages ingress populates (a typed
+//     *anthropic.ContextManagement, see AnthropicMessageRequest.ToBifrostResponsesRequest)
+//     and what legacy callers fill with a plain map. This is the path in #6825.
+//
+// The raw field wins when both are set, matching the precedence the anthropic
+// converters apply (chat.go / responses.go ContextManagement handling).
+func usesAnthropicInvokePath(ctx *schemas.BifrostContext, model string, contextManagement json.RawMessage, extraContextManagement interface{}) bool {
+	if !schemas.IsAnthropicModelFamily(ctx, model) {
+		return false
+	}
+	if len(contextManagement) > 0 {
+		return rawContextManagementHasCompactEdit(contextManagement)
+	}
+	switch cm := extraContextManagement.(type) {
+	case nil:
+		return false
+	case *anthropic.ContextManagement:
+		if cm == nil {
+			return false
+		}
+		for _, edit := range cm.Edits {
+			if edit.Type == anthropic.ContextManagementEditTypeCompact {
+				return true
+			}
+		}
+		return false
+	default:
+		// Legacy map-valued (or other JSON-marshalable) payload. Serialise once
+		// for a read-only field check, the same way the anthropic converters
+		// consume this shape.
+		data, err := providerUtils.MarshalSorted(cm)
+		if err != nil {
+			return false
+		}
+		return rawContextManagementHasCompactEdit(data)
+	}
+}
+
+func rawContextManagementHasCompactEdit(contextManagement []byte) bool {
+	for _, edit := range providerUtils.GetJSONField(contextManagement, "edits").Array() {
+		if edit.Get("type").String() == string(anthropic.ContextManagementEditTypeCompact) {
+			return true
+		}
+	}
+	return false
+}
+
+func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
+	if request == nil || request.Params == nil {
+		return false
+	}
+	return usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"])
+}
+
+func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
+	if request == nil || request.Params == nil {
+		return false
+	}
+	return usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"])
+}
+
+// invokeURL builds https://<bedrock-runtime host>/model/<model>/<action> using
+// the same region and model-path resolution as the Converse path.
+func (provider *BedrockProvider) invokeURL(ctx *schemas.BifrostContext, key schemas.Key, model, action string) (requestURL, region string) {
+	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
+	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	return fmt.Sprintf("https://%s/model/%s", host, path), region
+}
+
+// invokeSigner returns a SigV4 body signer for bedrock-runtime, or nil when the
+// key carries a bearer token (auth then flows through the Authorization header,
+// mirroring completeRequest).
+func (provider *BedrockProvider) invokeSigner(ctx *schemas.BifrostContext, key schemas.Key, requestURL, accept, region string) providerUtils.BodySigner {
+	if key.Value.GetValue() != "" {
+		return nil
+	}
+	return func(body []byte) (map[string]string, *schemas.BifrostError) {
+		return signOpenAIV4Headers(ctx, body, requestURL, accept, key, region, provider.networkConfig.ExtraHeaders, bedrockSigningService)
+	}
+}
+
+func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, validateTools bool) anthropic.AnthropicRequestBuildConfig {
+	_, bareModel := parseBedrockRegionAndModel(model)
+	return anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.Bedrock,
+		Model:                     bareModel,
+		IsStreaming:               streaming,
+		ValidateTools:             validateTools,
+		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	}
+}
+
+// invokeStreamHeaders adds Accept-Encoding: identity to the static extra
+// headers so the event stream arrives frame by frame rather than as one gzip
+// burst, matching what makeStreamingRequest does for ConverseStream.
+func (provider *BedrockProvider) invokeStreamHeaders() map[string]string {
+	out := maps.Clone(provider.networkConfig.ExtraHeaders)
+	if out == nil {
+		out = make(map[string]string, 1)
+	}
+	out["Accept-Encoding"] = "identity"
+	return out
+}
+
+func (provider *BedrockProvider) invokeAnthropicChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	return anthropic.HandleAnthropicChatCompletionRequest(
+		ctx, provider.mantleClient, requestURL, request,
+		provider.invokeBuildConfig(request.Model, false, false),
+		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
+		provider.logger,
+	)
+}
+
+func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
+	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, false))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	// The anthropic stream loop reads events through this factory for the rest
+	// of the request. Any factory set earlier is replaced: the wire format here
+	// is AWS event-stream, which an SSE reader could not parse anyway.
+	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
+	return anthropic.HandleAnthropicChatCompletionStreaming(
+		ctx, provider.mantleStreamingClient, requestURL, jsonData,
+		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		provider.networkConfig.BetaHeaderOverrides,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(), postHookRunner, nil,
+		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region),
+		provider.logger, postHookSpanFinalizer,
+	)
+}
+
+func (provider *BedrockProvider) invokeAnthropicResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	return anthropic.HandleAnthropicResponsesRequest(
+		ctx, provider.mantleClient, requestURL, request,
+		provider.invokeBuildConfig(request.Model, false, true),
+		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
+		provider.logger,
+	)
+}
+
+func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
+	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, true))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
+	return anthropic.HandleAnthropicResponsesStream(
+		ctx, provider.mantleStreamingClient, requestURL, jsonData,
+		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		provider.networkConfig.BetaHeaderOverrides,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(), postHookRunner, nil,
+		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region),
+		provider.logger, postHookSpanFinalizer,
+	)
+}
+
+// invokeEventStreamReader adapts InvokeModelWithResponseStream's AWS
+// event-stream framing to the SSEEventReader contract that the anthropic
+// streaming handlers consume. Each "chunk" frame carries {"bytes": <base64>}
+// whose decoded value is one native Anthropic SSE event JSON object; its "type"
+// field is what an SSE "event:" line would have carried. Exception frames
+// (:message-type != "event") are surfaced as a read error so the anthropic loop
+// reports them the same way it reports any broken stream.
+//
+// Installed per request through schemas.BifrostContextKeySSEReaderFactory by
+// the Bedrock invoke path (invokeAnthropic* above), which is what lets the
+// Bedrock provider reuse anthropic.HandleAnthropicResponsesStream and
+// HandleAnthropicChatCompletionStreaming unchanged.
+type invokeEventStreamReader struct {
+	reader     io.Reader
+	decoder    *eventstream.Decoder
+	payloadBuf []byte
+}
+
+func newInvokeEventStreamReader(reader io.Reader) providerUtils.SSEEventReader {
+	return &invokeEventStreamReader{
+		reader:     reader,
+		decoder:    eventstream.NewDecoder(),
+		payloadBuf: make([]byte, 0, 64*1024),
+	}
+}
+
+// invokeSSEReaderFactory routes only the event-typed reader through the
+// event-stream decoder. The data-line reader is left nil so any caller that
+// asks for it still gets the default implementation.
+var invokeSSEReaderFactory = &providerUtils.SSEReaderFactory{
+	NewEventReader: newInvokeEventStreamReader,
+}
+
+// invokeStreamException carries the classified *schemas.BifrostError built by
+// newBedrockStreamException through the shared anthropic stream loop, which
+// only sees an error value. Implementing providerUtils.BifrostErrorCarrier lets
+// ProcessAndSendError forward it as-is, so a retryable AWS exception
+// (throttlingException, serviceUnavailableException, ...) delivered on the
+// InvokeModel stream keeps IsBifrostError:false and its mapped status code, and
+// the retry gate in executeRequestWithRetries can act on it exactly as it does
+// for the Converse stream path.
+type invokeStreamException struct {
+	err *schemas.BifrostError
+}
+
+func (e *invokeStreamException) Error() string {
+	if e.err != nil && e.err.Error != nil {
+		return e.err.Error.Message
+	}
+	return "bedrock invoke stream exception"
+}
+
+func (e *invokeStreamException) BifrostError() *schemas.BifrostError { return e.err }
+
+// ReadEvent returns the next Anthropic event as (event type, event JSON).
+// io.EOF is passed through untouched so the anthropic loop sees a normal end.
+func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
+	for {
+		message, err := r.decoder.Decode(r.reader, r.payloadBuf)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(message.Payload) == 0 {
+			continue
+		}
+		if msgType := message.Headers.Get(":message-type"); msgType != nil && msgType.String() != "event" {
+			excType := msgType.String()
+			if excHeader := message.Headers.Get(":exception-type"); excHeader != nil && excHeader.String() != "" {
+				excType = excHeader.String()
+			}
+			return "", nil, &invokeStreamException{err: newBedrockStreamException(string(schemas.Bedrock), excType, message.Payload)}
+		}
+		var chunk struct {
+			Bytes []byte `json:"bytes"`
+		}
+		if err := sonic.Unmarshal(message.Payload, &chunk); err != nil {
+			return "", nil, fmt.Errorf("bedrock invoke stream: decode chunk payload: %w", err)
+		}
+		if len(chunk.Bytes) == 0 {
+			continue
+		}
+		// chunk.Bytes is a fresh base64-decoded slice, so it does not alias
+		// payloadBuf and is safe to hand to the caller before the next Decode.
+		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
+	}
 }
