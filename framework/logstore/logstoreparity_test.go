@@ -19,8 +19,7 @@ package logstore
 // column-mapping or dialect-SQL defect in any one of them fails here). Known,
 // deliberate divergences are NOT
 // asserted here: multi-value team_ids array *filtering* (postgres-only; the
-// other backends match the scalar column), ILIKE
-// case-insensitivity (fixtures use exact case), FTS-vs-LIKE content search
+// other backends match the scalar column), FTS-vs-LIKE content search
 // semantics (the fixture term matches under all three), and inc_number
 // (Postgres-assigned; NULL elsewhere - excluded from projections).
 //
@@ -36,6 +35,7 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +129,15 @@ type parityLogSpec struct {
 	toolCallNames              *string
 }
 
+// splitCSVPtr mirrors the BeforeSave hook, which rebuilds tool_call_names from
+// the virtual slice and would otherwise drop the fixture's column value.
+func splitCSVPtr(p *string) []string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return strings.Split(*p, ",")
+}
+
 func (s parityLogSpec) toLog(base time.Time) *Log {
 	ts := base.Add(-time.Duration(s.offsetSec) * time.Second)
 	return &Log{
@@ -161,6 +170,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		StopReason:            s.stopReason,
 		RoutingEnginesUsedStr: s.routing,
 		ToolCallNamesStr:      s.toolCallNames,
+		ToolCallNames:         splitCSVPtr(s.toolCallNames),
 		ComplexityTier:        s.tier,
 		ComplexityMechanism:   s.mechanism,
 		ComplexityScore:       s.tierScore,
@@ -779,6 +789,53 @@ func TestLogStoreParity(t *testing.T) {
 		}
 		for name, call := range calls {
 			t.Run(name, func(t *testing.T) { assertParity(t, stores, 1e-6, call) })
+		}
+
+		// Filterdata search must be case-insensitive on every backend. The
+		// needles are deliberately cased against the fixtures ("gpt-4o",
+		// "VK One", "search") so a bare LIKE on ClickHouse or non-ASCII SQLite
+		// would return nothing and break parity with Postgres ILIKE.
+		caseCalls := map[string]struct {
+			call func(context.Context, LogStore) (any, error)
+			want any
+		}{
+			"models_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctModels(ctx, 50, "GPT-4O"))
+				},
+				want: []string{"gpt-4o", "gpt-4o-mini"},
+			},
+			"tool_call_names_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctToolCallNames(ctx, 50, "SEARCH"))
+				},
+				want: []string{"search"},
+			},
+			"key_pairs_lower": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "vk one")
+					if err != nil {
+						return nil, err
+					}
+					names := make([]string, 0, len(pairs))
+					for _, p := range pairs {
+						names = append(names, p.Name)
+					}
+					sort.Strings(names)
+					return names, nil
+				},
+				want: []string{"VK One"},
+			},
+		}
+		for name, tc := range caseCalls {
+			t.Run(name, func(t *testing.T) {
+				assertParity(t, stores, 1e-6, tc.call)
+				for backend, store := range stores {
+					got, err := tc.call(context.Background(), store)
+					require.NoError(t, err, backend)
+					assert.Equal(t, tc.want, got, backend)
+				}
+			})
 		}
 	})
 

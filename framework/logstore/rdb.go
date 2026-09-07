@@ -4035,12 +4035,20 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 	return nil
 }
 
+// applyLikeFilter adds a case-insensitive substring match on column. Postgres
+// gets ILIKE; every other dialect lowers both sides, since SQLite LIKE is only
+// case-insensitive for ASCII and ClickHouse LIKE is fully case-sensitive.
+// ClickHouse's lower() folds ASCII only, so it gets lowerUTF8 to match the
+// Unicode-aware strings.ToLower applied to the needle.
 func (s *RDBLogStore) applyLikeFilter(q *gorm.DB, column, search string) *gorm.DB {
-	pattern := "%" + search + "%"
-	if s.db.Dialector.Name() == "postgres" {
-		return q.Where(fmt.Sprintf("%s ILIKE ?", column), pattern)
+	lower := "LOWER"
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		return q.Where(fmt.Sprintf("%s ILIKE ?", column), "%"+search+"%")
+	case "clickhouse":
+		lower = "lowerUTF8"
 	}
-	return q.Where(fmt.Sprintf("%s LIKE ?", column), pattern)
+	return q.Where(fmt.Sprintf("%s(%s) LIKE ?", lower, column), "%"+strings.ToLower(search)+"%")
 }
 
 // GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
