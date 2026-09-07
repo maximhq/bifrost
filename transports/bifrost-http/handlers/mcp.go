@@ -38,6 +38,12 @@ type MCPManager interface {
 	// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
 	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// RefreshMCPClientTools re-discovers a client's tools from its upstream
+	// server on demand and reports how many it serves afterwards. Unlike
+	// ReconnectMCPClient it applies to per-call clients too, which have no
+	// persistent connection and so no other way to pick up an upstream
+	// tool-set change before the periodic checker's next tick.
+	RefreshMCPClientTools(ctx context.Context, id string) (int, error)
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
@@ -107,6 +113,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{id}/refresh-tools", lib.ChainMiddlewares(h.refreshMCPClientTools, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 	r.POST("/api/mcp/client/{id}/initiate-verification", lib.ChainMiddlewares(h.initiateMCPClientVerification, middlewares...))
 	r.POST("/api/mcp/client/{id}/reauthorize", lib.ChainMiddlewares(h.reauthorizeMCPClient, middlewares...))
@@ -1566,6 +1573,62 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client reconnected successfully",
+	})
+}
+
+// refreshMCPClientTools re-discovers one client's tools from its upstream MCP
+// server right now. It exists because the periodic connection checker is
+// otherwise the only thing that revisits a client's tool list, and its
+// steady-state cadence is the tool sync interval — 10 minutes by default — so
+// an operator who has just added or removed a tool upstream had nothing to
+// reach for. Unlike reconnect, this applies to per-call clients as well, which
+// hold no persistent connection and previously had no refresh path at all.
+func (h *MCPHandler) refreshMCPClientTools(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
+		return
+	}
+	// Reject a disabled client the same way reconnect does: it holds no
+	// connection and runs no workers, so discovered tools would have nothing
+	// to execute them.
+	if h.store.MCPConfig != nil {
+		for _, client := range h.store.MCPConfig.ClientConfigs {
+			if client.ID == id {
+				if client.Disabled {
+					SendError(ctx, fasthttp.StatusBadRequest, "cannot refresh tools for a disabled MCP client: enable the client first")
+					return
+				}
+				break
+			}
+		}
+	}
+	count, err := h.mcpManager.RefreshMCPClientTools(ctx, id)
+	if err != nil {
+		// An unknown client is the caller naming something that does not
+		// exist, not a discovery failure.
+		if errors.Is(err, schemas.ErrMCPClientNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, err.Error())
+			return
+		}
+		// A client that is disabled, needs reauthorization, or is still
+		// awaiting admin verification is a 400: the request is well-formed,
+		// the client just is not in a state where discovery means anything.
+		if errors.Is(err, schemas.ErrMCPRefreshNotApplicable) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh MCP client tools: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{
+		"status":     "success",
+		"message":    "MCP client tools refreshed successfully",
+		"tool_count": count,
 	})
 }
 

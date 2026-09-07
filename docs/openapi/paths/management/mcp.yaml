@@ -330,6 +330,70 @@ client-reconnect:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+client-refresh-tools:
+  post:
+    operationId: refreshMCPClientTools
+    summary: Refresh MCP client tools
+    description: |
+      Re-discovers an MCP client's tools from its upstream server immediately,
+      instead of waiting for the periodic connection checker's next tick (the
+      client's tool_sync_interval, or the global mcp_tool_sync_interval —
+      10 minutes by default).
+
+      Use it after adding, removing, or re-describing a tool on the upstream
+      MCP server. Unlike reconnect, this applies to every client type,
+      including per-call clients (any per-user auth type, and any shared http
+      client with needs_session_stickiness false/omitted), which hold no
+      persistent connection and so have no other on-demand refresh path.
+
+      How the refresh runs depends on the client: a sticky client with a live
+      connection is re-listed over it; a per-call client goes through an
+      ephemeral connect-discover-close cycle; a sticky client whose connection
+      is currently down is reconnected, which re-discovers as part of the dial.
+
+      The freshly discovered set is persisted and the hosted /mcp surface is
+      re-synced automatically, exactly as for every other discovery path.
+      Rejected with 400 when the client is not in a state where discovery
+      means anything: disabled (enable it first), needs_reauth (reauthorize
+      it first), or still pending_verification (complete the one-time admin
+      verification instead — refreshing a client awaiting that flow would
+      bypass it). 404 if no client is registered under the given ID.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: MCP client tools refreshed successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                message:
+                  type: string
+                  example: MCP client tools refreshed successfully
+                tool_count:
+                  type: integer
+                  description: Number of tools the client is serving after the refresh
+                  example: 12
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 client-complete-oauth:
   post:
     operationId: completeMCPClientOAuth
