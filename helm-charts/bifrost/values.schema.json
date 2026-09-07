@@ -761,9 +761,17 @@
                 }
               ]
             },
+            "virtualMcps": {
+              "type": "array",
+              "description": "Virtual MCPs: named bundles of tools from one or more MCP clients, served at /mcp/<endpointSlug> and attachable to virtual keys. Renders into mcp.virtual_mcps. Canonical key; supersedes the deprecated toolGroups alias.",
+              "items": {
+                "$ref": "#/$defs/virtualMcpConfig"
+              }
+            },
             "toolGroups": {
               "type": "array",
-              "description": "Enterprise MCP tool groups with optional governance associations",
+              "description": "DEPRECATED: use virtualMcps instead. Enterprise MCP tool groups with optional governance associations. Renders into mcp.tool_groups.",
+              "deprecated": true,
               "items": {
                 "$ref": "#/$defs/mcpToolGroupConfig"
               }
@@ -6825,8 +6833,82 @@
         }
       ]
     },
+    "virtualMcpConfig": {
+      "type": "object",
+      "description": "A Virtual MCP: a named bundle of tools from one or more MCP clients, served at /mcp/<endpointSlug> and attachable to virtual keys. Renders into mcp.virtual_mcps[].",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this Virtual MCP. When set, the reconciler updates the existing Virtual MCP with this ID rather than matching by name. Maps to mcp.virtual_mcps[].id in config.json."
+        },
+        "name": {
+          "type": "string",
+          "description": "Virtual MCP display name (unique)"
+        },
+        "endpointSlug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe path the Virtual MCP is served at (/mcp/<endpointSlug>). Honored on create only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients. Maps to mcp.virtual_mcps[].endpoint_slug."
+        },
+        "description": {
+          "type": "string",
+          "description": "Virtual MCP description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the Virtual MCP is enabled. A disabled Virtual MCP is not served.",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-client tool specs the Virtual MCP exposes",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcpClientId": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcpClientName": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "toolNames": {
+                "type": "array",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["mcpClientId"]
+              },
+              {
+                "required": ["mcpClientName"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtualKeyIds": {
+          "type": "array",
+          "description": "Virtual keys this Virtual MCP is attached to. Maps to mcp.virtual_mcps[].virtual_key_ids.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "mcpToolGroupConfig": {
       "type": "object",
+      "description": "DEPRECATED: use virtualMcpConfig (bifrost.mcp.virtualMcps) instead.",
+      "deprecated": true,
       "properties": {
         "id": {
           "type": "integer",
@@ -6888,30 +6970,40 @@
         },
         "teamIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "customerIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "userIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "providerNames": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "apiKeyIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "integer"
           }

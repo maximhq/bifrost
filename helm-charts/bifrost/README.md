@@ -114,6 +114,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
 - `postgresql.external.port` now accepts a string in addition to an integer, enabling env-variable substitution via `env.VAR_NAME` references when mounting port from a Kubernetes secret. Renders into `postgres_config.port`.
 - `bifrost.mcp.toolGroups[*].id` — optional integer DB ID for an existing MCP tool group. When set, the reconciler updates the group by ID instead of matching by name. Renders into `mcp.tool_groups[*].id`.
+- Added `bifrost.mcp.virtualMcps` for declarative Virtual MCPs: named bundles of tools from one or more MCP clients, served at `/mcp/<endpointSlug>` and attachable to virtual keys. Supports `id`, `name`, `endpointSlug`, `description`, `enabled`, `tools[]` (`mcpClientId`/`mcpClientName`, `toolNames`), and `virtualKeyIds`. Renders into `mcp.virtual_mcps`. This is the canonical key; `bifrost.mcp.toolGroups` (rendering `mcp.tool_groups`) is deprecated and kept for backward compatibility.
 
 ### 2.1.26
 

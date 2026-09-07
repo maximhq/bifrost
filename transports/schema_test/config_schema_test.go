@@ -937,6 +937,82 @@ func TestSchemaMCPClientEndpointSlug(t *testing.T) {
 	})
 }
 
+func TestSchemaMCPVirtualMCPs(t *testing.T) {
+	schema := loadSchema(t)
+
+	t.Run("mcp includes virtual_mcps property", func(t *testing.T) {
+		_, found := navigateJSON(schema, "properties", "mcp", "properties", "virtual_mcps")
+		if !found {
+			t.Error("mcp is missing 'virtual_mcps' property — MCPConfig Go struct defines this field")
+		}
+	})
+
+	t.Run("virtual_mcp_config def includes endpoint_slug property", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "virtual_mcp_config", "properties", "endpoint_slug")
+		if !found {
+			t.Error("$defs/virtual_mcp_config is missing 'endpoint_slug' — VirtualMCPConfig Go struct serializes this field")
+		}
+	})
+
+	t.Run("virtual_mcps entry with explicit endpoint_slug validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"mcp": {
+				"virtual_mcps": [
+					{
+						"name": "Platform Tools",
+						"endpoint_slug": "platform-tools",
+						"enabled": true,
+						"tools": [
+							{"mcp_client_name": "github", "tool_names": ["create_pull_request"]}
+						],
+						"virtual_key_ids": ["vk-1"]
+					}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("virtual_mcps entry should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("virtual_mcps entry with non-url-safe endpoint_slug rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"mcp": {
+				"virtual_mcps": [
+					{"name": "Bad Slug", "endpoint_slug": "Not A Slug", "tools": [{"mcp_client_id": "c1"}]}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("non-url-safe endpoint_slug must be rejected by the schema")
+		}
+	})
+
+	t.Run("virtual_mcps entry missing required name/tools rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{"mcp": {"virtual_mcps": [{"endpoint_slug": "x"}]}}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("virtual_mcps entry without name and tools must be rejected")
+		}
+	})
+
+	t.Run("deprecated tool_groups still validates for backward compatibility", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"mcp": {
+				"tool_groups": [
+					{"name": "Legacy", "tools": [{"mcp_client_name": "github"}], "team_ids": ["t-1"]}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("deprecated tool_groups should still validate, got: %v", err)
+		}
+	})
+}
+
 func TestSchemaVKRotationCooldownBounds(t *testing.T) {
 	compiled := compileSchema(t)
 
