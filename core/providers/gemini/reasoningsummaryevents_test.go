@@ -2,11 +2,13 @@ package gemini
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // reasoningSummaryStreamChunks mirrors a Gemini stream with visible thinking: two
@@ -264,4 +266,35 @@ func TestGeminiResponsesStreamThoughtSignatureSurvives(t *testing.T) {
 	}
 	assert.Nil(t, ToGeminiResponsesStreamResponse(unusable, NewBifrostToGeminiStreamState()),
 		"a signature that cannot be decoded produces no part")
+}
+
+// The signature-only part the reverse converter now emits for an Anthropic/Bedrock signature
+// delta must carry the empty `text` data field #6745 established. Without it the part is a
+// metadata-only object, which Google's own clients tolerate but strict adapters reject.
+func TestGeminiSignatureOnlyThoughtPartKeepsEmptyText(t *testing.T) {
+	encoded := "c2lnbmF0dXJl"
+	native := ToGeminiResponsesStreamResponse(&schemas.BifrostResponsesStreamResponse{
+		Type:         schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+		OutputIndex:  schemas.Ptr(0),
+		ItemID:       schemas.Ptr("rs_1"),
+		SummaryIndex: schemas.Ptr(0),
+		Signature:    &encoded,
+	}, NewBifrostToGeminiStreamState())
+	if native == nil {
+		t.Fatal("signature-only delta produced no chunk")
+	}
+	raw, err := json.Marshal(native.Candidates[0].Content.Parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("PART: %s", raw)
+	if !gjson.GetBytes(raw, "text").Exists() {
+		t.Errorf("empty text data field missing — regresses #6745: %s", raw)
+	}
+	if gjson.GetBytes(raw, "thoughtSignature").String() != encoded {
+		t.Errorf("signature not single-encoded: %s", raw)
+	}
+	if !gjson.GetBytes(raw, "thought").Bool() {
+		t.Errorf("thought marker missing: %s", raw)
+	}
 }
