@@ -1758,6 +1758,10 @@ const (
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
 
+	// Part type on response.reasoning_summary_part.{added,done}, where the event's
+	// part field is required.
+	ResponsesOutputMessageContentTypeSummaryText ResponsesMessageContentBlockType = "summary_text"
+
 	// gemini sends rendered content in google search results
 	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
 
