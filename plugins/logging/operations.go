@@ -498,6 +498,9 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			}
 		}
 	}
+
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, collectToolCalls(streamResponse.Data.OutputMessage, streamResponse.Data.OutputMessages), contentLoggingEnabled)
 }
 
 // applyServedTierToEntry records the billing tier the provider actually served —
@@ -741,6 +744,29 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
 	}
+
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, nonStreamingToolCalls(result), contentLoggingEnabled)
+}
+
+// nonStreamingToolCalls pulls the tool calls out of whichever response shape a
+// non-streaming result carries.
+func nonStreamingToolCalls(result *schemas.BifrostResponse) []schemas.ChatAssistantMessageToolCall {
+	if result == nil {
+		return nil
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0].ChatNonStreamResponseChoice; choice != nil {
+			return collectToolCalls(choice.Message, nil)
+		}
+	}
+	if result.ResponsesResponse != nil {
+		return collectToolCalls(nil, result.ResponsesResponse.Output)
+	}
+	if result.CompactionResponse != nil {
+		return collectToolCalls(nil, result.CompactionResponse.Output)
+	}
+	return nil
 }
 
 func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -767,6 +793,8 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 			entry.OutputMessageParsed = outputMessage
 		}
 	}
+	// Tool calls - names are always persisted, the full payload follows content policy
+	applyToolCallsToEntry(entry, collectToolCalls(nil, result.ResponsesResponse.Output), contentLoggingEnabled)
 
 	extraFields := result.GetExtraFields()
 	applyRealtimeRawRequestBackfill(entry, extraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
@@ -1038,40 +1066,18 @@ func collectRealtimeRawTextFragments(value any, parts *[]string) {
 
 func extractRealtimeOutputMessage(output []schemas.ResponsesMessage) *schemas.ChatMessage {
 	var contentParts []string
-	toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0)
 	for _, item := range output {
-		if item.Type == nil {
+		if item.Type == nil || *item.Type != schemas.ResponsesMessageTypeMessage {
 			continue
 		}
-		switch *item.Type {
-		case schemas.ResponsesMessageTypeMessage:
-			if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
-				continue
-			}
-			if text := extractRealtimeResponsesContent(item.Content); text != "" {
-				contentParts = append(contentParts, text)
-			}
-		case schemas.ResponsesMessageTypeFunctionCall:
-			if item.ResponsesToolMessage == nil || item.ResponsesToolMessage.Name == nil {
-				continue
-			}
-			toolType := "function"
-			toolCall := schemas.ChatAssistantMessageToolCall{
-				Index: uint16(len(toolCalls)),
-				Type:  &toolType,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      item.ResponsesToolMessage.Name,
-					Arguments: derefString(item.ResponsesToolMessage.Arguments),
-				},
-			}
-			if item.CallID != nil && strings.TrimSpace(*item.CallID) != "" {
-				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.CallID))
-			} else if item.ID != nil && strings.TrimSpace(*item.ID) != "" {
-				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.ID))
-			}
-			toolCalls = append(toolCalls, toolCall)
+		if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
+			continue
+		}
+		if text := extractRealtimeResponsesContent(item.Content); text != "" {
+			contentParts = append(contentParts, text)
 		}
 	}
+	toolCalls := chatToolCallsFromResponsesOutput(output)
 
 	if len(contentParts) == 0 && len(toolCalls) == 0 {
 		return nil
@@ -1333,6 +1339,15 @@ func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context, limit int, q
 		return nil, fmt.Errorf("failed to get available stop reasons: %w", err)
 	}
 	return stopReasons, nil
+}
+
+// GetAvailableToolCallNames returns all unique function names that responses called.
+func (p *LoggerPlugin) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	names, err := p.store.GetDistinctToolCallNames(ctx, limit, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get available tool call names: %w", err)
+	}
+	return names, nil
 }
 
 // GetAvailableUserAgents returns all unique raw User-Agent strings from logs.
