@@ -226,7 +226,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 	steady := c.steadyInterval()
 	c.manager.mu.RLock()
 	clientState, exists := c.manager.clientMap[c.clientID]
-	var isDisabled, needsReauth bool
+	var isDisabled, needsReauth, pendingVerification bool
 	var conn *client.Client
 	var config *schemas.MCPClientConfig
 	var connGeneration uint64
@@ -234,6 +234,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		conn = clientState.Conn
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
 		needsReauth = clientState.State == schemas.MCPConnectionStateNeedsReauth
+		pendingVerification = clientState.State == schemas.MCPConnectionStatePendingVerification
 		config = clientState.ExecutionConfig
 		connGeneration = clientState.ConnGeneration
 	}
@@ -249,7 +250,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		c.Stop()
 		return steady, true
 	}
-	if needsReauth {
+	if needsReauth || pendingVerification {
 		// Stay quiet: the credential is confirmed permanently dead (typed
 		// classification, see connectToMCPClient), so a check here would
 		// just rediscover what's already known and burn a reconnect
@@ -257,6 +258,12 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// interval so a stalled reauthorize eventually gets picked up by
 		// something, but do no work — only an explicit reauthorize (or a
 		// direct UpdateClientCredentials success) moves this out.
+		//
+		// pending_verification is the same shape for the opposite reason:
+		// the one-time admin flow has not run yet, so there is no credential
+		// to check with at all. A check could only fail, and replace an
+		// actionable "an admin must authorize this" (which the UI surfaces
+		// as a Verify CTA) with a generic Unstable.
 		return steady, true
 	}
 	if config == nil {
@@ -475,9 +482,10 @@ func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneratio
 }
 
 // setState is the guarded writer every transition in this file funnels
-// through — Disabled and NeedsReauth are authoritative and never silently
-// overwritten by a check result racing against a DisableClient call or a
-// credential already confirmed dead.
+// through — Disabled, NeedsReauth and PendingVerification are authoritative
+// and never silently overwritten by a check result racing against a
+// DisableClient call, a credential already confirmed dead, or a client parked
+// awaiting its one-time admin verification.
 //
 // connGeneration is dropped if it no longer matches the client's current
 // ConnGeneration, mirroring writeBackTools' own guard: StopChecking does not
@@ -505,7 +513,9 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 		c.logger.Debug("%s Skipping state write for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
 		return
 	}
-	if clientState.State == schemas.MCPConnectionStateDisabled || clientState.State == schemas.MCPConnectionStateNeedsReauth {
+	if clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth ||
+		clientState.State == schemas.MCPConnectionStatePendingVerification {
 		c.manager.mu.Unlock()
 		return
 	}
