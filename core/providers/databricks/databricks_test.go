@@ -57,8 +57,9 @@ func TestDatabricks(t *testing.T) {
 			ImageBase64:           true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
-			ListModels:            true,
 			Reasoning:             true,
+			// listModelsByKey intentionally returns nothing; the datasheet is the catalog.
+			ListModels: false,
 			// Text completions are not exposed by either Databricks surface.
 			TextCompletion:       false,
 			TextCompletionStream: false,
@@ -524,7 +525,8 @@ func TestDatabricksReasoningEffortFollowsDatasheet(t *testing.T) {
 // TestDatabricksChatParamsFollowDatasheet covers the rest of the parameter wiring. Bifrost's
 // neutral parameter set is wider than any single Databricks endpoint accepts, so each
 // optional field is gated on the datasheet record for the model rather than on a
-// provider-wide rule. A model the datasheet does not describe keeps every field.
+// provider-wide rule. A model the datasheet does not describe keeps every field except
+// parallel_tool_calls, which both surfaces reject and so is only sent when a row opts in.
 func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 	sent := []string{
 		"temperature", "top_p", "top_k", "tool_choice", "parallel_tool_calls",
@@ -538,8 +540,14 @@ func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 		wantDropped []string
 	}{
 		{
-			name:  "no datasheet row keeps every field",
-			model: "databricks-unknown-endpoint",
+			name:        "no datasheet row keeps every field but parallel_tool_calls",
+			model:       "databricks-unknown-endpoint",
+			wantDropped: []string{"parallel_tool_calls"},
+		},
+		{
+			name:  "supports_parallel_function_calling true keeps parallel_tool_calls",
+			model: "databricks-parallel-tools-endpoint",
+			caps:  &schemas.ModelCapabilities{SupportsParallelFunctionCalling: schemas.Ptr(true)},
 		},
 		{
 			// The shape of the real databricks/databricks-claude-opus-5 row: adaptive-only
@@ -547,13 +555,13 @@ func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 			name:        "supports_sampling_params false drops temperature, top_p and top_k",
 			model:       "databricks-adaptive-endpoint",
 			caps:        &schemas.ModelCapabilities{SupportsSamplingParams: schemas.Ptr(false)},
-			wantDropped: []string{"temperature", "top_p", "top_k"},
+			wantDropped: []string{"temperature", "top_p", "top_k", "parallel_tool_calls"},
 		},
 		{
 			name:        "supports_tool_choice false drops the tool_choice pin",
 			model:       "databricks-no-tool-choice-endpoint",
 			caps:        &schemas.ModelCapabilities{SupportsToolChoice: schemas.Ptr(false)},
-			wantDropped: []string{"tool_choice"},
+			wantDropped: []string{"tool_choice", "parallel_tool_calls"},
 		},
 		{
 			name:        "supports_parallel_function_calling false drops parallel_tool_calls",
@@ -565,7 +573,7 @@ func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 			name:        "supports_response_schema false drops response_format",
 			model:       "databricks-no-schema-endpoint",
 			caps:        &schemas.ModelCapabilities{SupportsResponseSchema: schemas.Ptr(false)},
-			wantDropped: []string{"response_format"},
+			wantDropped: []string{"response_format", "parallel_tool_calls"},
 		},
 		{
 			name:  "unsupported_fields drops stop and the penalties",
@@ -575,13 +583,13 @@ func TestDatabricksChatParamsFollowDatasheet(t *testing.T) {
 				schemas.FieldPresencePenalty:  true,
 				schemas.FieldFrequencyPenalty: true,
 			}},
-			wantDropped: []string{"stop", "presence_penalty", "frequency_penalty"},
+			wantDropped: []string{"stop", "presence_penalty", "frequency_penalty", "parallel_tool_calls"},
 		},
 		{
 			name:        "unsupported_fields top_p drops the sampling knobs",
 			model:       "databricks-no-top-p-endpoint",
 			caps:        &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{schemas.FieldTopP: true}},
-			wantDropped: []string{"temperature", "top_p", "top_k"},
+			wantDropped: []string{"temperature", "top_p", "top_k", "parallel_tool_calls"},
 		},
 	}
 

@@ -10,14 +10,16 @@ Databricks serves foundation models through two surfaces, both reachable under y
 
 | Surface | Base path | Model name looks like | What it covers |
 |---------|-----------|-----------------------|----------------|
-| **Model Serving** (Foundation Model APIs) | `/serving-endpoints` | `databricks-claude-sonnet-4-5` | Every pay-per-token endpoint, provisioned-throughput endpoints, and the OpenAI Responses API |
+| **Model Serving** (Foundation Model APIs) | `/serving-endpoints` | `databricks-claude-sonnet-4-5` | Every pay-per-token endpoint and provisioned-throughput endpoint |
 | **Unity AI Gateway** (model services) | `/ai-gateway/mlflow/v1` | `system.ai.claude-sonnet-4-5` or `<catalog>.<schema>.<service>` | Ready-to-use `system.ai` models and user-created Unity Catalog model services, governed by Unity Catalog |
 
 Key characteristics:
 
 - **One provider, two surfaces** - the surface is chosen per request, by model name or by an explicit setting
 - **OpenAI-compatible** - Bifrost uses its shared OpenAI converters, so tool calling, structured outputs and streaming work unchanged
-- **Responses API** - served natively on Model Serving, so coding agents (Claude Code, Cursor, Codex CLI) work through Bifrost
+- **Responses API** - works on every endpoint, so coding agents (Claude Code, Cursor, Codex CLI) work through Bifrost; served natively where the endpoint supports it and emulated through Chat Completions elsewhere
+- **Reasoning on Claude** - a `reasoning_effort` or reasoning budget is translated to the `thinking` object Claude endpoints take, and the reasoning they return is surfaced on the standard reasoning fields
+- **Remote images** - `http(s)` image URLs are fetched and inlined, since Claude endpoints on Databricks accept only inline image data
 - **Two auth methods** - a personal access token, or OAuth machine-to-machine with a service principal (Databricks' production recommendation)
 - **Governance tags** - optionally forward Bifrost virtual key / team / customer names to Databricks usage tracking
 
@@ -26,7 +28,7 @@ Key characteristics:
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `<base>/chat/completions` |
-| Responses API | ✅ | ✅ | `/serving-endpoints/responses` (Model Serving); emulated via chat on AI Gateway |
+| Responses API | ✅ | ✅ | `/serving-endpoints/responses` where the endpoint supports it; emulated via chat everywhere else |
 | Embeddings | ✅ | - | `<base>/embeddings` |
 | List Models | ✅ | - | Served from Bifrost's model catalog; no workspace API is called |
 | Text Completions | ❌ | ❌ | - |
@@ -208,10 +210,32 @@ curl -X POST http://localhost:8080/v1/responses \
   }'
 ```
 
-The Responses API is native on Model Serving. On the Unity AI Gateway, which is chat-only, Bifrost emulates it by converting to Chat Completions.
+Bifrost first tries the native `/serving-endpoints/responses` route. Pay-per-token foundation model endpoints commonly decline it (`Responses API passthrough is not supported for model ...`), in which case the request is replayed through Chat Completions and converted back, and later requests for that endpoint skip straight to the emulated path. The Unity AI Gateway is chat-only and is always emulated.
 
 </Tab>
 </Tabs>
+
+### Reasoning on Claude endpoints
+
+Claude endpoints on Databricks reject `reasoning_effort` and take Anthropic's `thinking` object instead. Bifrost translates for you: a reasoning budget (`reasoning.max_tokens`) is sent as `budget_tokens`, an effort label is scaled to a budget the same way the Anthropic provider does, and models that only offer adaptive thinking get `{"type": "adaptive"}`. `max_completion_tokens` is raised above the budget when you have not set one, because the endpoint requires the ceiling to exceed the budget.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/databricks-claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "What is 17 * 23?"}],
+    "reasoning": {"effort": "high", "max_tokens": 2048}
+  }'
+```
+
+Every Databricks endpoint, Claude or not, returns reasoning as a content block (`{"type": "reasoning", "summary": [...]}`). Bifrost lifts it onto `reasoning` and `reasoning_details` (with the signature) on the message and on each streaming delta, so clients read it the same way as from any other provider.
+
+To speak the Databricks dialect directly, send `thinking` as a top-level field; Bifrost passes it through untouched and does not add its own.
+
+### Image inputs
+
+Claude endpoints on Databricks accept only inline image data (`Http data URLs are not supported by Claude`). Bifrost fetches any `http(s)` `image_url` and sends it as a base64 data URL. The fetch uses the same SSRF-safe downloader as the Bedrock and Anthropic providers: only `http`/`https`, no private or loopback addresses, 25 MiB cap. A URL that cannot be fetched fails the request with a 400 rather than sending the model a request with the image silently removed.
 
 ### Provider-specific parameters
 
@@ -240,9 +264,9 @@ Bifrost's parameter set is wider than any single Databricks endpoint accepts, an
 | `response_format` (`text.format` on Responses) | `supports_response_schema: false` |
 | `stop`, `presence_penalty`, `frequency_penalty` | the field is listed in `unsupported_fields` |
 
-A model the datasheet does not describe keeps every field except `reasoning_effort` — Databricks endpoint names are workspace-defined, so there is nothing to identify an unknown endpoint by, and a silent drop is worse than an upstream error you can read.
+A model the datasheet does not describe keeps every field except `reasoning_effort` and `parallel_tool_calls` — Databricks endpoint names are workspace-defined, so there is nothing to identify an unknown endpoint by, and a silent drop is worse than an upstream error you can read. `parallel_tool_calls` is the exception because both surfaces reject it outright; it is only sent when the datasheet row opts in.
 
-`reasoning_effort` resolves through `unsupported_fields` → `supports_reasoning_effort` (or a published effort ladder) → a `reasoning_effort` entry in the row's parameters → the model reasons and is not Claude-family. Claude endpoints on Databricks reason through a thinking budget and reject an effort label, so it is dropped there. A requested effort is clamped onto the levels the model publishes.
+`reasoning_effort` resolves through `unsupported_fields` → `supports_reasoning_effort` (or a published effort ladder) → a `reasoning_effort` entry in the row's parameters → the model reasons and is not Claude-family. Claude endpoints on Databricks reason through a thinking budget and reject an effort label, so it is translated to `thinking` there (see [Reasoning on Claude endpoints](#reasoning-on-claude-endpoints)). A requested effort is clamped onto the levels the model publishes.
 
 Anthropic-native fields — `context_management`, `cache_control`, `speed`, `inference_geo`, `task_budget`, `container`, `mcp_servers` — are always dropped, whatever the model. Both Databricks surfaces are OpenAI-shaped and reject them even on Claude endpoints.
 

@@ -67,6 +67,11 @@ type DatabricksProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+
+	// responsesUnsupported records "<workspace host>|<model>" pairs whose Model Serving
+	// endpoint has declined the native Responses API, so those requests go straight to
+	// chat-completion emulation. See inference.go.
+	responsesUnsupported sync.Map
 }
 
 // NewDatabricksProvider creates a new Databricks provider instance.

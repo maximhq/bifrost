@@ -505,6 +505,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
 					WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
 				},
+				// Databricks has no batch surface. The flag is still required so the
+				// router hands batch and file requests to the provider, whose
+				// unsupported_operation answer is what the harness asserts on.
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.GithubCopilot:
