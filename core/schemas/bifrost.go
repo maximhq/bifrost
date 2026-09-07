@@ -1957,6 +1957,11 @@ type BifrostError struct {
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+
+	// ResponsesTerminalEvent is the Responses SSE event this failure renders as, so a
+	// Responses stream always ends on a typed event. Internal only: the error envelope
+	// itself is unchanged on the wire.
+	ResponsesTerminalEvent *BifrostResponsesStreamResponse `json:"-"`
 }
 
 // PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the

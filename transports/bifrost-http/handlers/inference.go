@@ -22,6 +22,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -2188,6 +2189,19 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 					eventType = string(chunk.BifrostImageGenerationStreamResponse.Type)
 				} else if chunk.BifrostError != nil {
 					eventType = string(schemas.ResponsesStreamResponseTypeError)
+					// Responses failures go out as a typed Responses event, taking both
+					// the event name and the body from it so they always agree — the raw
+					// error envelope carries no `type` the client can dispatch on.
+					if rt := chunk.BifrostError.ExtraFields.RequestType; rt == schemas.ResponsesStreamRequest || rt == schemas.ResponsesRetrieveStreamRequest {
+						if event := openai.ResponsesStreamErrorEvent(chunk.BifrostError); event != nil {
+							if payload, marshalErr := sonic.Marshal(event); marshalErr == nil {
+								eventType = string(event.Type)
+								chunkJSON = payload
+							} else {
+								logger.Warn("Failed to marshal responses stream error event: %v", marshalErr)
+							}
+						}
+					}
 				}
 			}
 

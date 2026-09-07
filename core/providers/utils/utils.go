@@ -3608,12 +3608,19 @@ func SendStreamTruncatedError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 	jsonBody []byte,
+	terminalEvent ...*schemas.BifrostResponsesStreamResponse,
 ) {
 	if logger != nil {
 		logger.Warn("Stream ended without a terminal marker; treating as truncated upstream stream")
 	}
 
 	truncatedErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamTruncated, io.ErrUnexpectedEOF)
+
+	// Responses streams must end on a typed event, so callers on that path pass the
+	// synthesized terminal frame for the transport to emit.
+	if len(terminalEvent) > 0 {
+		truncatedErr.ResponsesTerminalEvent = terminalEvent[0]
+	}
 
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)

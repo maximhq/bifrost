@@ -2008,6 +2008,11 @@ func HandleOpenAIResponsesStreaming(
 
 		lastChunkTime := startTime
 
+		// Identity of the response being streamed, kept so a stream that dies without a
+		// terminal event can still be reported as a well-formed response.failed.
+		var lastResponseSeen *schemas.BifrostResponsesResponse
+		lastSequenceNumber := 0
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -2079,6 +2084,14 @@ func HandleOpenAIResponsesStreaming(
 				}
 			}
 
+			if response.SequenceNumber > lastSequenceNumber {
+				lastSequenceNumber = response.SequenceNumber
+			}
+			if response.Response != nil {
+				snapshot := *response.Response
+				lastResponseSeen = &snapshot
+			}
+
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := responsesStreamError(&response)
 
@@ -2120,7 +2133,8 @@ func HandleOpenAIResponsesStreaming(
 		// surface it rather than closing the channel silently — a silent close is
 		// indistinguishable to the client from a stream that just stopped emitting.
 		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody,
+				newResponsesTruncationEvent(lastResponseSeen, lastSequenceNumber+1))
 		}
 	}()
 
