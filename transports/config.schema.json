@@ -6876,6 +6876,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6929,12 +6932,20 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Set automatically by the SCIM verify step (disabled when the app registration is missing the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -6989,6 +7000,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" }
       },
@@ -7052,6 +7066,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -7104,6 +7121,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -7160,12 +7180,20 @@
           "description": "Claim field for team/group IDs (default: 'groups')",
           "default": "groups"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Set automatically by the SCIM verify step (disabled when the service account is missing the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -7254,6 +7282,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -8945,6 +8976,29 @@
           }
         },
         "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. Every matching rule applies: the user is granted the union of the profiles it matches, on top of any profile assigned by role or from the dashboard. Bifrost keeps the tightest limit across the granted profiles.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in access_profiles) to grant on match"
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
     },

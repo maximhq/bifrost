@@ -580,6 +580,13 @@
               "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
               "default": false
             },
+            "vkRotationCooldown": {
+              "type": ["string", "integer"],
+              "minimum": 0,
+              "maximum": 2592000000000000,
+              "description": "Cooldown after a virtual key rotation: grace period during which the previous key value still authenticates. Accepts a Go duration string (e.g. \"5m\", \"1h\"); integer values are nanoseconds, so prefer strings. 0 or an empty string disables the grace period. Maximum 30 days. Maps to client.vk_rotation_cooldown.",
+              "default": 0
+            },
             "mcpExternalClientUrl": {
               "type": "string",
               "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
@@ -1959,6 +1966,13 @@
                 "required": ["id", "name"]
               }
             },
+            "projects": {
+              "type": "array",
+              "description": "Projects declared under governance.projects: what each allows, what it may spend, and how that is divided between its members. Members are added from the dashboard or the API. Renders into governance.projects.",
+              "items": {
+                "$ref": "#/$defs/project"
+              }
+            },
             "routingRules": {
               "type": "array",
               "description": "Routing rules for dynamic provider/model selection based on CEL expressions",
@@ -2834,6 +2848,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -2904,11 +2919,17 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
+                      "enableBulkSync": {
+                        "type": "boolean",
+                        "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Normally set by the SCIM verify step (disabled when the app registration lacks the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+                        "default": true
+                      },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -2978,6 +2999,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -3045,6 +3067,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -3117,11 +3140,17 @@
                         "description": "Claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
+                      "enableBulkSync": {
+                        "type": "boolean",
+                        "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Normally set by the SCIM verify step (disabled when the service account lacks the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+                        "default": true
+                      },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
@@ -3221,6 +3250,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -3295,6 +3325,7 @@
                       "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
@@ -6212,6 +6243,73 @@
           "required": ["url", "model_name"],
           "additionalProperties": false
         },
+        "databricks_key_config": {
+          "type": "object",
+          "description": "Databricks key configuration. Required on every key of a databricks provider.",
+          "properties": {
+            "workspace_url": {
+              "type": "string",
+              "description": "Databricks workspace URL, e.g. https://dbc-1234abcd-5678.cloud.databricks.com (can use env. prefix). A scheme and trailing path are tolerated."
+            },
+            "api_format": {
+              "type": "string",
+              "enum": ["auto", "model_serving", "ai_gateway"],
+              "description": "Which Databricks inference surface to target. 'model_serving' uses /serving-endpoints; 'ai_gateway' uses /ai-gateway/mlflow/v1; 'auto' (default) picks by model name — a dotted name such as system.ai.claude-sonnet-4-5 goes to the AI Gateway, anything else to Model Serving.",
+              "default": "auto"
+            },
+            "client_id": {
+              "type": "string",
+              "description": "OAuth M2M service principal client ID (can use env. prefix). Set together with client_secret, and leave the key value empty, to authenticate without a personal access token."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "OAuth M2M service principal client secret (can use env. prefix)"
+            },
+            "forward_gateway_tags": {
+              "type": "boolean",
+              "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution.",
+              "default": false
+            }
+          },
+          "required": ["workspace_url"],
+          "dependentRequired": {
+            "client_id": ["client_secret"],
+            "client_secret": ["client_id"]
+          },
+          "additionalProperties": false
+        },
+        "github_copilot_key_config": {
+          "type": "object",
+          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
+          "properties": {
+            "app_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
+            },
+            "installation_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
+            },
+            "repository_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
+            },
+            "private_key": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
+            },
+            "github_domain": {
+              "type": "string",
+              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
+            }
+          },
+          "required": ["app_id", "installation_id", "repository_id", "private_key"],
+          "additionalProperties": false
+        },
         "aliases": {
           "type": "object",
           "additionalProperties": {
@@ -6761,8 +6859,19 @@
         },
         "allowOnAllVirtualKeys": {
           "type": "boolean",
-          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",
+          "deprecated": true,
+          "description": "Deprecated: use allowByDefault. Read only when allowByDefault is absent. Maps to allow_on_all_virtual_keys.",
           "default": false
+        },
+        "allowByDefault": {
+          "type": "boolean",
+          "description": "When true, this MCP server is available to every caller that has not been assigned it explicitly, with all tools allowed. An explicit assignment for a caller takes precedence. Maps to allow_by_default.",
+          "default": false
+        },
+        "endpointSlug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe, immutable slug that serves this client at /mcp/<slug>. Derived from the name when omitted; must be unique across MCP clients and Virtual MCPs. Maps to endpoint_slug."
         },
         "tlsConfig": {
           "type": "object",
@@ -7425,6 +7534,380 @@
           }
         },
         "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "project": {
+      "type": "object",
+      "description": "A project declared under governance.projects: what it allows, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard or the API.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "membership_mode": {
+                "const": "open"
+              }
+            },
+            "required": [
+              "membership_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "split_policy": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique project name. Requests reference it with the x-bf-project-name header; the reconciler matches the declaration to the stored project by this name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional project description"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether the project allows and accounts for anything",
+          "default": true
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the project stops allowing anything; omit to never expire"
+        },
+        "access_rule": {
+          "type": "string",
+          "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "enum": [
+            "union",
+            "intersect"
+          ]
+        },
+        "membership_mode": {
+          "type": "string",
+          "description": "explicit consults the membership rows; open lets any caller opt in. An open project cannot divide its budget between members.",
+          "enum": [
+            "explicit",
+            "open"
+          ],
+          "default": "explicit"
+        },
+        "accounting_mode": {
+          "type": "string",
+          "description": "Which ledgers a request's spend lands on: the project's, the calling principal's, or both",
+          "enum": [
+            "both",
+            "project_only",
+            "principal_only"
+          ],
+          "default": "both"
+        },
+        "split_policy": {
+          "type": "string",
+          "description": "How the budgets and rate limits the project holds, at every tier (its own, each provider's, and each model's), are divided between members: none leaves them shared, equal gives every member an equal share of each. A change to an equal split's roster or caps recomputes every share in the background.",
+          "enum": [
+            "none",
+            "equal"
+          ],
+          "default": "none"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
+          "default": false
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "provider_configs": {
+          "type": "array",
+          "description": "Per-provider access and accounting, one entry per provider",
+          "items": {
+            "$ref": "#/$defs/project_provider_config"
+          }
+        },
+        "mcp_configs": {
+          "type": "array",
+          "description": "MCP clients the project allows, one entry per client",
+          "items": {
+            "$ref": "#/$defs/project_mcp_config"
+          }
+        },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs assigned to the project, one entry per assignment. A request scoped to the project can reach each one at its /mcp/<slug> endpoint.",
+          "items": {
+            "$ref": "#/$defs/project_virtual_mcp"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "access_rule"
+      ],
+      "additionalProperties": false
+    },
+    "project_budget": {
+      "type": "object",
+      "description": "A spend cap on a project, a provider inside it, or a model under that provider",
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "reset_config"
+            ]
+          },
+          "then": {
+            "required": [
+              "reset_duration"
+            ],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "max_limit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". Also what pairs a declared budget with its stored row on a change."
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12. Omitted or 0 means January."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "max_limit",
+        "reset_duration"
+      ],
+      "additionalProperties": false
+    },
+    "project_rate_limit": {
+      "type": "object",
+      "description": "A request and token rate limit on a project, a provider inside it, or a model under that provider. A cap is enforced only with its window, and a limit with neither pair enforces nothing, so at least one complete pair is required.",
+      "properties": {
+        "token_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of tokens allowed in the reset window"
+        },
+        "token_reset_duration": {
+          "type": "string",
+          "description": "Token reset window, e.g. \"1M\", \"1h\""
+        },
+        "request_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of requests allowed in the reset window"
+        },
+        "request_reset_duration": {
+          "type": "string",
+          "description": "Request reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "dependentRequired": {
+        "token_max_limit": [
+          "token_reset_duration"
+        ],
+        "token_reset_duration": [
+          "token_max_limit"
+        ],
+        "request_max_limit": [
+          "request_reset_duration"
+        ],
+        "request_reset_duration": [
+          "request_max_limit"
+        ]
+      },
+      "anyOf": [
+        {
+          "required": [
+            "token_max_limit"
+          ]
+        },
+        {
+          "required": [
+            "request_max_limit"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "project_provider_config": {
+      "type": "object",
+      "properties": {
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name. A project names each provider at most once; on a change the entry is matched to its stored row by this name."
+        },
+        "all_models_allowed": {
+          "type": "boolean",
+          "description": "Whether all models under this provider are allowed",
+          "default": false
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key IDs allowed for this provider. Use [\"*\"] to allow all keys; empty array or omitted allows none, regardless of the top-level version. Specific IDs restrict access to those keys only, and each must belong to this provider.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weight": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
+          "default": null
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps on this provider inside the project",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits under this provider, at most one entry per model",
+          "items": {
+            "$ref": "#/$defs/project_provider_model_budget"
+          }
+        }
+      },
+      "required": [
+        "provider_name"
+      ],
+      "additionalProperties": false
+    },
+    "project_provider_model_budget": {
+      "type": "object",
+      "description": "Per-model budget group under a project provider config, with optional per-model rate limit",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "not": {
+            "const": "*"
+          },
+          "description": "Model this budget group applies to (scoped to the parent provider). The \"*\" tier is not accepted here; the provider's own budgets cover it."
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps for this model",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        }
+      },
+      "required": [
+        "model_name"
+      ],
+      "additionalProperties": false
+    },
+    "project_mcp_config": {
+      "type": "object",
+      "properties": {
+        "mcp_client_name": {
+          "type": "string",
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project allows. Resolved to the stored client on startup; a name that matches no client is refused."
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools of the client the project may execute. Use [\"*\"] to allow every tool; empty array or omitted allows none, regardless of the top-level version.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "mcp_client_name"
+      ],
+      "additionalProperties": false
+    },
+    "project_virtual_mcp": {
+      "type": "object",
+      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "properties": {
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+        }
+      },
+      "required": [
+        "virtual_mcp_id"
+      ],
+      "additionalProperties": false
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. Every matching rule applies: the user is granted the union of the profiles it matches, on top of any profile assigned by role or from the dashboard. Bifrost keeps the tightest limit across the granted profiles.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in bifrost.accessProfiles) to grant on match"
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
     },

@@ -299,6 +299,7 @@ bifrost:
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
@@ -450,6 +451,19 @@ bifrost:
   #         # Optional: route through an interface VPC endpoint (AWS PrivateLink) instead of the public regional host.
   #         # endpoints:
   #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"
+  #
+  # # Databricks example (requires databricks_key_config)
+  # databricks:
+  #   keys:
+  #     - name: "databricks-key"
+  #       value: "env.DATABRICKS_TOKEN"           # Personal access token; leave empty when using OAuth M2M below
+  #       weight: 1
+  #       databricks_key_config:
+  #         workspace_url: "https://dbc-1234abcd-5678.cloud.databricks.com"   # Required
+  #         # api_format: "auto"                  # auto (default) | model_serving | ai_gateway
+  #         # client_id: "env.DATABRICKS_CLIENT_ID"          # OAuth M2M service principal; set with client_secret
+  #         # client_secret: "env.DATABRICKS_CLIENT_SECRET"  # and leave value empty
+  #         # forward_gateway_tags: false         # Send Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -518,9 +532,13 @@ bifrost:
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
-      #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
-      #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
-      #   allowOnAllVirtualKeys: false
+      #   # When true, this MCP server is available to every caller that has not been assigned it
+      #   # explicitly, with all tools allowed. An explicit assignment takes precedence for that caller.
+      #   # Replaces the deprecated allowOnAllVirtualKeys, which is read only when this is absent.
+      #   allowByDefault: false
+      #   # URL-safe, immutable slug serving this client at /mcp/<slug>. Derived from the name when
+      #   # omitted; must be unique across MCP clients and Virtual MCPs.
+      #   endpointSlug: "example-mcp"
       #
       # - name: "example-token-exchange-mcp"
       #   connectionType: "http"
@@ -904,6 +922,44 @@ bifrost:
       #   rate_limit_id: "rate-limit-1"
       #   send_back_raw_request: false
       #   send_back_raw_response: false
+    # Projects: what a project allows, what it may spend, and how that is divided between its
+    # members. Members themselves are added from the dashboard or the API, not here.
+    # Requests select one with the x-bf-project-name header.
+    #
+    # projects:
+      # - name: "platform"                 # Required; also how a declaration is matched to its stored row
+      #   description: "Platform team workloads"
+      #   is_active: true
+      #   # expires_at: "2026-12-31T23:59:59Z"
+      #   access_rule: "union"             # union (default behaviour) | intersect — how project access composes with the caller's
+      #   membership_mode: "explicit"      # explicit (membership rows) | open (any caller may opt in)
+      #   accounting_mode: "both"          # both | project_only | principal_only
+      #   split_policy: "none"             # none (shared caps) | equal (each member gets an equal share); open projects must use none
+      #   calendar_aligned: false          # Snap budget and rate-limit windows to calendar boundaries
+      #   budgets:
+      #     - max_limit: 5000
+      #       reset_duration: "1M"
+      #   rate_limit:
+      #     request_max_limit: 1000
+      #     request_reset_duration: "1h"
+      #   provider_configs:
+      #     - provider_name: "openai"
+      #       all_models_allowed: false
+      #       allowed_models: ["gpt-4o"]
+      #       key_ids: ["*"]               # ["*"] allows every key of the provider; omitted allows none
+      #       budgets:
+      #         - max_limit: 2000
+      #           reset_duration: "1M"
+      #       model_budgets:
+      #         - model_name: "gpt-4o"
+      #           budgets:
+      #             - max_limit: 500
+      #               reset_duration: "1M"
+      #   mcp_configs:
+      #     - mcp_client_name: "example-mcp"
+      #       tools_to_execute: ["*"]
+      #   virtual_mcps:
+      #     - virtual_mcp_id: 1
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -1069,6 +1125,13 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # Attribute -> access-profile grants. Every matching rule applies: the user holds the union of
+      # # the profiles it matches, on top of any profile assigned by role or from the dashboard.
+      # # Bifrost enforces the tightest limit across them.
+      # attributeAccessProfileMappings:
+      #   - attribute: "groups"
+      #     value: "bifrost-power-users"
+      #     accessProfile: "power-user"
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1110,6 +1173,10 @@ bifrost:
       # userIdField: "oid"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # # Bulk-sync users/groups from Microsoft Graph. Normally set by the SCIM verify step
+      # # (turned off when the app registration lacks the Graph permissions); set false to opt
+      # # out of bulk sync while keeping login-time claim sync.
+      # enableBulkSync: true
       # attributeRoleMappings:
       #   - attribute: "roles"
       #     value: "BifrostAdmin"
@@ -1119,6 +1186,7 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1141,6 +1209,7 @@ bifrost:
       #     role: "admin"
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Zitadel configuration:
       # domain: "my-instance.zitadel.cloud"      # no scheme
@@ -1154,6 +1223,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Google Workspace configuration:
       # domain: "company.com"
@@ -1166,9 +1236,14 @@ bifrost:
       # impersonateServiceAccount: ""             # optional, for Workload Identity
       # audience: ""
       # teamIdsField: "groups"
+      # # Bulk-sync users/groups from the Google Workspace Directory API. Normally set by the SCIM
+      # # verify step (turned off when the service account lacks the Directory API scopes); set
+      # # false to opt out of bulk sync while keeping login-time claim sync.
+      # enableBulkSync: true
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Generic OIDC configuration (any standards-compliant OIDC IdP):
       # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
@@ -1185,6 +1260,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
