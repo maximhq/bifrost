@@ -4098,22 +4098,39 @@ func (provider *BedrockProvider) getModelPathAndRegion(ctx *schemas.BifrostConte
 	return p, r
 }
 
+// buildCountTokensBody builds the AWS CountTokens envelope. Its input is a
+// union of "converse" and "invokeModel"
+// (https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CountTokensInput.html).
+// A request that the provider would send through InvokeModel (compaction, tool
+// search) is counted with that same native Anthropic body under "invokeModel",
+// so the count matches what the model will be billed for and the Converse
+// converter never sees features it cannot express. Everything else keeps the
+// Converse shape.
+func (provider *BedrockProvider) buildCountTokensBody(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) ([]byte, error) {
+	countTokensReq := &BedrockCountTokensRequest{}
+	if responsesUsesAnthropicInvokePath(ctx, request) {
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, false, true))
+		if bifrostErr != nil {
+			return nil, fmt.Errorf("build InvokeModel body for count-tokens: %s", bifrostErr.Error.Message)
+		}
+		countTokensReq.Input.InvokeModel = &BedrockCountTokensInvokeModelInput{Body: body}
+		return providerUtils.MarshalSorted(countTokensReq)
+	}
+	converseReq, err := ToBedrockResponsesRequest(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	countTokensReq.Input.Converse = converseReq
+	return providerUtils.MarshalSorted(countTokensReq)
+}
+
 func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
 
 	// Convert to Bedrock Converse format using the existing responses converter
-	converseReq, convErr := ToBedrockResponsesRequest(ctx, request)
-	if convErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, convErr)
-	}
-
-	// Wrap in the CountTokens request envelope
-	countTokensReq := &BedrockCountTokensRequest{}
-	countTokensReq.Input.Converse = converseReq
-
-	jsonData, err := providerUtils.MarshalSorted(countTokensReq)
+	jsonData, err := provider.buildCountTokensBody(ctx, request)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
@@ -4236,13 +4253,19 @@ func (provider *BedrockProvider) PassthroughStream(_ *schemas.BifrostContext, _ 
 // ---------------------------------------------------------------------------
 
 // Claude on classic Bedrock is served through the Converse API, which AWS
-// documents as unable to run server-side compaction ("Compaction is currently
-// not supported by the Converse API, however it is supported with InvokeModel",
-// https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-compaction.html).
-// Requests that carry a compact_20260112 edit are therefore sent to
-// InvokeModel / InvokeModelWithResponseStream with the native Anthropic
-// Messages body instead (#6825). Every other Claude request stays on Converse,
-// so the blast radius is limited to callers who opted into compaction.
+// documents as unable to run two Anthropic features:
+//   - server-side compaction: "Compaction is currently not supported by the
+//     Converse API, however it is supported with InvokeModel"
+//     (https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-compaction.html)
+//   - tool search: "On Amazon Bedrock, server-side tool search is available
+//     only through the InvokeModel API, not the Converse API"
+//     (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+// Requests that carry a compact_20260112 edit, a tool_search tool, or a tool
+// with defer_loading (which only means something alongside tool search) are
+// therefore sent to InvokeModel / InvokeModelWithResponseStream with the native
+// Anthropic Messages body instead (#6825). Every other Claude request stays on
+// Converse, so the blast radius is limited to callers who opted into one of
+// those features.
 //
 // The invoke path reuses the anthropic package end to end: the shared request
 // builder (AnthropicProviderRequestDefaultsMap[schemas.Bedrock] gives it the
@@ -4250,9 +4273,9 @@ func (provider *BedrockProvider) PassthroughStream(_ *schemas.BifrostContext, _ 
 // (the same pattern Bedrock Mantle uses), and the shared stream loop, which
 // reads events through invokeEventStreamReader (below) installed via
 // BifrostContextKeySSEReaderFactory. Field stripping on this path is driven by
-// ProviderFeatures[schemas.Bedrock], which is Converse-oriented and therefore
-// conservative (tool_search, for one, is stripped although InvokeModel could
-// carry it). Widening that matrix is a separate decision from this routing.
+// ProviderFeatures[schemas.Bedrock]; the InvokeModel-only flags (Compaction,
+// ToolSearch) are on there precisely because this routing guarantees the
+// requests that need them never reach Converse.
 
 const (
 	bedrockInvokeAction       = "invoke"
@@ -4314,18 +4337,50 @@ func rawContextManagementHasCompactEdit(contextManagement []byte) bool {
 	return false
 }
 
+// toolNeedsAnthropicInvokePath reports whether a single tool forces the
+// InvokeModel route: a tool_search tool (neutral "tool_search" type or the
+// dated tool_search_tool_* Anthropic type) or a tool marked defer_loading.
+func toolNeedsAnthropicInvokePath(toolType string, deferLoading *bool) bool {
+	if strings.HasPrefix(toolType, "tool_search") {
+		return true
+	}
+	return deferLoading != nil && *deferLoading
+}
+
 func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
 	if request == nil || request.Params == nil {
 		return false
 	}
-	return usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"])
+	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+		return true
+	}
+	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		return false
+	}
+	for _, tool := range request.Params.Tools {
+		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
+			return true
+		}
+	}
+	return false
 }
 
 func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
 	if request == nil || request.Params == nil {
 		return false
 	}
-	return usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"])
+	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+		return true
+	}
+	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		return false
+	}
+	for _, tool := range request.Params.Tools {
+		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
+			return true
+		}
+	}
+	return false
 }
 
 // invokeURL builds https://<bedrock-runtime host>/model/<model>/<action> using

@@ -198,6 +198,7 @@ func TestBedrock(t *testing.T) {
 		ImageVariationModel:      "amazon.nova-canvas-v1:0",
 		InterleavedThinkingModel: "claude-opus-4-5",
 		CompactionModel:          "claude-4.6-sonnet", // compact_20260112 routes to InvokeModel (#6825); Sonnet 4.6 is on the AWS compaction model list
+		ToolSearchModel:          "claude-4.6-sonnet", // tool_search routes to InvokeModel (#6825)
 		BatchExtraParams:         batchExtraParams,
 		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
@@ -240,6 +241,7 @@ func TestBedrock(t *testing.T) {
 			InterleavedThinking:        true,
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
 			Compaction:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			ToolSearch:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},

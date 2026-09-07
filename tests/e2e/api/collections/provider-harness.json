@@ -148624,6 +148624,235 @@
           ]
         }
       ]
+    },
+    {
+      "name": "71. Bedrock tool search routes Claude to InvokeModel (#6825)",
+      "description": "Follow-up to #6825: Anthropic server-side tool search (tool_search_tool_regex / tool_search_tool_bm25 plus defer_loading on function tools) is InvokeModel-only on AWS (\"On Amazon Bedrock, server-side tool search is available only through the InvokeModel API, not the Converse API\", https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool). Bifrost used to strip the tool and defer_loading for bedrock/ models because its Bedrock provider only spoke Converse; it now routes such requests to InvokeModel / InvokeModelWithResponseStream. The cases pin the behaviour through the response: the deferred get_weather tool must be discovered through tool search and actually called (a tool_use / function_call named get_weather; a search alone is not enough, and neither is an unnamed tool call). Gateway 5xx fails these cases; 503 and 529 are skipped only when the body names a provider capacity condition. When the gateway has client_config.allow_per_request_raw_override enabled, x-bf-send-back-raw-request additionally exposes the outbound body and the cases assert the InvokeModel shape plus the tool_search tool, defer_loading and the tool-search-tool-2025-10-19 beta on the wire. Case 1 is the native /anthropic/v1/messages ingress, case 2 its streaming variant, case 3 the /v1/responses ingress with the neutral \"tool_search\" tool type. The Claude API accept-path for tool search lives in folder 12.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages tool_search + defer_loading egresses via InvokeModel - #6825",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search_tool_regex_20251119\",\"name\":\"tool_search_tool_regex\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
+                  "pm.test('bedrock tool_search /anthropic: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('bedrock tool_search /anthropic: deferred get_weather tool was discovered and called', function () {",
+                  "  var blocks = body.content || [];",
+                  "  var called = false;",
+                  "  for (var i = 0; i < blocks.length; i++) {",
+                  "    if (blocks[i].type === 'tool_use' && blocks[i].name === 'get_weather') { called = true; }",
+                  "  }",
+                  "  pm.expect(called, 'no tool_use named get_weather: the deferred tool was not discovered through tool search and expanded (#6825). blocks=' + JSON.stringify(blocks.map(function (b) { return b.type + (b.name ? ':' + b.name : ''); }))).to.be.true;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock tool_search /anthropic: raw_request captured (the harness Makefile enables allow_per_request_raw_override)', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: InvokeModel egress cannot be verified. body=' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "pm.test('bedrock tool_search /anthropic: raw_request shows InvokeModel egress, not Converse', function () {",
+                  "  pm.expect(rr.anthropic_version, 'anthropic_version missing: the request went to Converse. body=' + dump).to.eql('bedrock-2023-05-31');",
+                  "  pm.expect(rr, 'InvokeModel body must not carry model (it is in the URL): ' + dump).to.not.have.property('model');",
+                  "  pm.expect(rr, 'Converse body shape leaked: ' + dump).to.not.have.property('inferenceConfig');",
+                  "});",
+                  "pm.test('bedrock tool_search /anthropic: tool_search tool, defer_loading and beta reached the wire', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  var sawSearch = false, sawDeferred = false;",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    if (String(tools[i].type || '').indexOf('tool_search_tool_') === 0) { sawSearch = true; }",
+                  "    if (tools[i].name === 'get_weather' && tools[i].defer_loading === true) { sawDeferred = true; }",
+                  "  }",
+                  "  pm.expect(sawSearch, 'tool_search tool was stripped: ' + dump).to.be.true;",
+                  "  pm.expect(sawDeferred, 'defer_loading was stripped from get_weather: ' + dump).to.be.true;",
+                  "  pm.expect(rr.anthropic_beta || [], 'anthropic_beta: ' + dump).to.include('tool-search-tool-2025-10-19');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages stream tool_search completes via InvokeModelWithResponseStream - #6825",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":256,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search_tool_regex_20251119\",\"name\":\"tool_search_tool_regex\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
+                  "pm.test('bedrock tool_search /anthropic stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('bedrock tool_search /anthropic stream: native Anthropic SSE frames, no error event', function () {",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected message_start').to.include('message_start');",
+                  "  pm.expect(body, 'expected message_stop').to.include('message_stop');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body.slice(0, 600)).to.not.include('\"type\":\"error\"');",
+                  "});",
+                  "pm.test('bedrock tool_search /anthropic stream: deferred get_weather tool was discovered and called', function () {",
+                  "  pm.expect(body, 'no tool_use content block named get_weather in the stream (#6825): ' + body.slice(0, 800)).to.match(/\"type\":\"tool_use\"[^\\n]*?\"name\":\"get_weather\"/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses tool_search + defer_loading egresses via InvokeModel - #6825",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search\",\"name\":\"tool_search_tool_regex\"},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
+                  "pm.test('bedrock tool_search /v1/responses: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('bedrock tool_search /v1/responses: deferred get_weather tool was discovered and called', function () {",
+                  "  var items = body.output || [];",
+                  "  var called = false;",
+                  "  for (var i = 0; i < items.length; i++) {",
+                  "    if (items[i].type === 'function_call' && items[i].name === 'get_weather') { called = true; }",
+                  "  }",
+                  "  pm.expect(called, 'no function_call named get_weather: the deferred tool was not discovered through tool search and expanded (#6825). items=' + JSON.stringify(items.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }))).to.be.true;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock tool_search /v1/responses: raw_request captured (the harness Makefile enables allow_per_request_raw_override)', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: InvokeModel egress cannot be verified. body=' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "pm.test('bedrock tool_search /v1/responses: raw_request shows InvokeModel egress, not Converse', function () {",
+                  "  pm.expect(rr.anthropic_version, 'anthropic_version missing: the request went to Converse. body=' + dump).to.eql('bedrock-2023-05-31');",
+                  "  pm.expect(rr, 'InvokeModel body must not carry model (it is in the URL): ' + dump).to.not.have.property('model');",
+                  "  pm.expect(rr, 'Converse body shape leaked: ' + dump).to.not.have.property('inferenceConfig');",
+                  "});",
+                  "pm.test('bedrock tool_search /v1/responses: tool_search tool, defer_loading and beta reached the wire', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  var sawSearch = false, sawDeferred = false;",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    if (String(tools[i].type || '').indexOf('tool_search_tool_') === 0) { sawSearch = true; }",
+                  "    if (tools[i].name === 'get_weather' && tools[i].defer_loading === true) { sawDeferred = true; }",
+                  "  }",
+                  "  pm.expect(sawSearch, 'tool_search tool was stripped: ' + dump).to.be.true;",
+                  "  pm.expect(sawDeferred, 'defer_loading was stripped from get_weather: ' + dump).to.be.true;",
+                  "  pm.expect(rr.anthropic_beta || [], 'anthropic_beta: ' + dump).to.include('tool-search-tool-2025-10-19');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

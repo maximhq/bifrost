@@ -1259,13 +1259,13 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("Bedrock/drops_tool_search_beta_header", func(t *testing.T) {
-		// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
-		// only per AWS's docs; classic Bedrock always uses Converse here, so this
-		// must never reach AWS regardless of what the client sends.
+	t.Run("Bedrock/keeps_tool_search_beta_header", func(t *testing.T) {
+		// tool-search-tool-2025-10-19 is InvokeModel-only per AWS's docs; the
+		// Bedrock provider routes tool_search requests to InvokeModel, so the
+		// header must survive (#6825).
 		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Bedrock)
-		if len(result) != 0 {
-			t.Errorf("expected %q to be dropped for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
+		if !slices.Contains(result, AnthropicToolSearchBetaHeader) {
+			t.Errorf("expected %q to be kept for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
 		}
 	})
 
@@ -1596,9 +1596,10 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	})
 
 	t.Run("bedrock_keeps_input_examples_via_standalone_flag", func(t *testing.T) {
-		// Bedrock has InputExamples=true via tool-examples-2025-10-29 but
-		// AdvancedToolUse=false. input_examples should be KEPT; defer_loading
-		// and allowed_callers (bundle-only) should be STRIPPED.
+		// Bedrock has InputExamples=true via tool-examples-2025-10-29 and
+		// ToolSearch=true via InvokeModel routing (#6825), but
+		// AdvancedToolUse=false. input_examples and defer_loading should be
+		// KEPT; allowed_callers (bundle-only) should be STRIPPED.
 		input := []byte(`{
 			"model":"claude-opus-4-6",
 			"tools":[{"name":"t1","input_examples":[{"input":{"a":1}}],"defer_loading":true,"allowed_callers":["direct"]}]
@@ -1607,13 +1608,13 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !providerUtils.JSONFieldExists(result, "tools.0.input_examples") {
-			t.Errorf("expected tools[0].input_examples to survive on Bedrock, got: %s", string(result))
-		}
-		for _, path := range []string{"tools.0.defer_loading", "tools.0.allowed_callers"} {
-			if providerUtils.JSONFieldExists(result, path) {
-				t.Errorf("expected %q to be stripped for Bedrock (AdvancedToolUse bundle unsupported), got: %s", path, string(result))
+		for _, path := range []string{"tools.0.input_examples", "tools.0.defer_loading"} {
+			if !providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q to survive on Bedrock, got: %s", path, string(result))
 			}
+		}
+		if providerUtils.JSONFieldExists(result, "tools.0.allowed_callers") {
+			t.Errorf("expected tools[0].allowed_callers to be stripped for Bedrock (AdvancedToolUse bundle unsupported), got: %s", string(result))
 		}
 	})
 
@@ -1852,7 +1853,9 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 		}
 	})
 
-	t.Run("bedrock_tool_search_false_strips_defer_loading", func(t *testing.T) {
+	t.Run("bedrock_tool_search_true_keeps_defer_loading", func(t *testing.T) {
+		// defer_loading rides on tool search, which Bedrock serves via
+		// InvokeModel routing (#6825), so it survives stripping.
 		req := &AnthropicMessageRequest{
 			Model: "claude-sonnet-4-5",
 			Tools: []AnthropicTool{
@@ -1860,8 +1863,8 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 			},
 		}
 		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
-		if req.Tools[0].DeferLoading != nil {
-			t.Errorf("expected defer_loading to be stripped for Bedrock (ToolSearch=false), got %v", *req.Tools[0].DeferLoading)
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for Bedrock (ToolSearch=true via InvokeModel routing), got %v", req.Tools[0].DeferLoading)
 		}
 	})
 }

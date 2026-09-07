@@ -1011,22 +1011,18 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 			assert.True(t, features.StructuredOutputs, "Bedrock should support StructuredOutputs")
 			assert.True(t, features.Compaction, "Bedrock should support Compaction")
 			assert.True(t, features.ComputerUse, "Bedrock should support ComputerUse")
-			// ToolSearch is a SERVER-side tool, not a client-side one, so it does
-			// not belong in the blanket group below. AWS restricts server-side
-			// tool search to InvokeModel/InvokeModelWithResponseStream and never
-			// exposes it on Converse, which is the only API Bifrost's Bedrock
-			// provider uses for tool-bearing requests — so it can never work
-			// end-to-end here. Cite: "On Amazon Bedrock, server-side tool search
-			// is available only through the InvokeModel API, not the Converse
-			// API." (platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
-			assert.False(t, features.ToolSearch, "Bedrock should NOT support ToolSearch (Converse cannot run it)")
+			// ToolSearch is InvokeModel-only on AWS ("On Amazon Bedrock, server-side
+			// tool search is available only through the InvokeModel API, not the
+			// Converse API." platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool).
+			// The Bedrock provider routes any request carrying a tool_search tool
+			// or defer_loading to InvokeModel, so the flag is on (bedrock.go,
+			// InvokeModel section, #6825).
+			assert.True(t, features.ToolSearch, "Bedrock should support ToolSearch via InvokeModel routing")
 		}
 
-		// ToolSearch is server-side and gated per provider: available on the
-		// Claude API, Vertex and Azure, but not on classic Bedrock (see above).
-		if provider != schemas.Bedrock {
-			assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
-		}
+		// ToolSearch is server-side and supported on every Anthropic-family
+		// provider, on classic Bedrock through InvokeModel routing (see above).
+		assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
 
 		// All providers should support client-side tools
 		assert.True(t, features.ComputerUse, "%s should support ComputerUse", provider)
