@@ -369,50 +369,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("app IN ?", filters.Apps)
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
-		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
-		dialect := s.db.Dialector.Name()
-
-		// Collect non-empty engine values
-		var engines []string
-		for _, engine := range filters.RoutingEngineUsed {
-			engine = strings.TrimSpace(engine)
-			if engine != "" {
-				engines = append(engines, engine)
-			}
-		}
-
-		if len(engines) > 0 {
-			switch dialect {
-			case "postgres":
-				// Use array overlap operator which can leverage the GIN index on
-				// string_to_array(routing_engines_used, ',').
-				placeholders := make([]string, len(engines))
-				args := make([]interface{}, len(engines))
-				for i, e := range engines {
-					placeholders[i] = "?"
-					args[i] = e
-				}
-				baseQuery = baseQuery.Where(
-					"string_to_array(routing_engines_used, ',') && ARRAY["+strings.Join(placeholders, ",")+"]::text[]",
-					args...,
-				)
-			default:
-				// SQLite and others: use delimiter-aware LIKE matching
-				var engineConditions []string
-				var engineArgs []interface{}
-				var concatExpr string
-				if dialect == "sqlite" {
-					concatExpr = "',' || routing_engines_used || ','"
-				} else {
-					concatExpr = "CONCAT(',', routing_engines_used, ',')"
-				}
-				for _, engine := range engines {
-					engineConditions = append(engineConditions, concatExpr+" LIKE ?")
-					engineArgs = append(engineArgs, "%,"+engine+",%")
-				}
-				baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
-			}
-		}
+		// Find logs whose routing_engines_used (comma-separated) contains ANY of the specified engines
+		baseQuery = applyCommaListOverlapFilter(baseQuery, s.db.Dialector.Name(), "routing_engines_used", filters.RoutingEngineUsed)
+	}
+	if len(filters.ToolCallNames) > 0 {
+		// Find logs whose response called ANY of the specified function names
+		baseQuery = applyCommaListOverlapFilter(baseQuery, s.db.Dialector.Name(), "tool_call_names", filters.ToolCallNames)
 	}
 	if filters.RequestID != "" {
 		// The log primary key is the request ID, so this is an exact PK lookup. A
@@ -1269,7 +1231,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
-		"routing_engines_used", "routing_rule_id", "routing_rule_name",
+		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id",
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
@@ -4228,6 +4190,56 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, 
 	return engines, nil
 }
 
+// GetDistinctToolCallNames returns the distinct function names recorded in
+// tool_call_names, split out of the comma-separated column and deduplicated in
+// Go. Matview path is DAC-aware (see GetDistinctModels); falls back to a
+// recency-scoped raw-table scan.
+func (s *RDBLogStore) GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.canUseFilterMatView(ctx) {
+		if res, err := s.getDistinctToolCallNamesFromMatView(ctx, limit, query); !s.fallBackToRaw(err) {
+			return res, err
+		}
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var rawValues []string
+	q := s.scopedLogsDB(ctx).Model(&Log{}).
+		Where("tool_call_names IS NOT NULL AND tool_call_names != '' AND timestamp >= ?", cutoff).
+		Distinct("tool_call_names")
+	if query != "" {
+		q = s.applyLikeFilter(q, "tool_call_names", query)
+	}
+	if err := q.Pluck("tool_call_names", &rawValues).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct tool call names: %w", err)
+	}
+	return splitCommaListValues(rawValues, query, limit), nil
+}
+
+// splitCommaListValues flattens comma-separated column values into a sorted,
+// deduplicated, capped list. The SQL LIKE ran against the whole joined string,
+// so each split value is re-checked against query to drop sibling names that
+// only matched because they shared a row.
+func splitCommaListValues(rawValues []string, query string, limit int) []string {
+	needle := strings.ToLower(strings.TrimSpace(query))
+	seen := make(map[string]struct{})
+	for _, raw := range rawValues {
+		for _, v := range strings.Split(raw, ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if needle != "" && !strings.Contains(strings.ToLower(v), needle) {
+				continue
+			}
+			seen[v] = struct{}{}
+		}
+	}
+	values := sortedStringKeys(seen)
+	if limit > 0 && len(values) > limit {
+		values = values[:limit]
+	}
+	return values
+}
+
 // GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans. Matview path is
 // DAC-aware (see GetDistinctModels).
@@ -5374,4 +5386,63 @@ func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSou
 		return q.Where(unowned)
 	}
 	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
+}
+
+// applyCommaListOverlapFilter matches rows whose comma-separated column
+// contains ANY of values. On Postgres it uses the array overlap operator so the
+// GIN index on string_to_array(column, ',') is usable; elsewhere it falls back to
+// delimiter-aware LIKE matching.
+func applyCommaListOverlapFilter(baseQuery *gorm.DB, dialect string, column string, values []string) *gorm.DB {
+	var cleaned []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			cleaned = append(cleaned, v)
+		}
+	}
+	if len(cleaned) == 0 {
+		return baseQuery
+	}
+	switch dialect {
+	case "postgres":
+		placeholders := make([]string, len(cleaned))
+		args := make([]interface{}, len(cleaned))
+		for i, v := range cleaned {
+			placeholders[i] = "?"
+			args[i] = v
+		}
+		return baseQuery.Where(
+			"string_to_array("+column+", ',') && ARRAY["+strings.Join(placeholders, ",")+"]::text[]",
+			args...,
+		)
+	default:
+		// Delimiter-aware LIKE. Values are matched literally: "_" and "%" are
+		// LIKE wildcards, so an unescaped get_weather would also match
+		// get-weather. SQLite needs the escape character declared; ClickHouse
+		// and MySQL treat backslash as the escape by default and reject an
+		// ESCAPE clause.
+		var concatExpr, escapeClause string
+		if dialect == "sqlite" {
+			concatExpr = "',' || " + column + " || ','"
+			escapeClause = ` ESCAPE '\'`
+		} else {
+			concatExpr = "CONCAT(',', " + column + ", ',')"
+		}
+		conditions := make([]string, 0, len(cleaned))
+		args := make([]interface{}, 0, len(cleaned))
+		for _, v := range cleaned {
+			conditions = append(conditions, concatExpr+" LIKE ?"+escapeClause)
+			args = append(args, "%,"+escapeLikeLiteral(v)+",%")
+		}
+		return baseQuery.Where(strings.Join(conditions, " OR "), args...)
+	}
+}
+
+// escapeLikeLiteral escapes the LIKE metacharacters in v (backslash first) so
+// it matches only itself inside a LIKE pattern using backslash as the escape.
+func escapeLikeLiteral(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, "%", `\%`)
+	v = strings.ReplaceAll(v, "_", `\_`)
+	return v
 }
