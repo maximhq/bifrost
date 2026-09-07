@@ -57,6 +57,7 @@ export default function DashboardPage() {
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			tool_call_names: parseAsSafeArrayOf.withDefault([]),
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
@@ -136,6 +137,7 @@ export default function DashboardPage() {
 				routing_engine_used: urlState.routing_engine_used,
 			}),
 			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.tool_call_names.length > 0 && { tool_call_names: urlState.tool_call_names }),
 			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
 			...(urlState.missing_cost_only && { missing_cost_only: true }),
 			...(metadataFilters &&
@@ -167,6 +169,7 @@ export default function DashboardPage() {
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
 			urlState.stop_reasons,
+			urlState.tool_call_names,
 			urlState.cache_hit_types,
 			urlState.missing_cost_only,
 			metadataFilters,
@@ -371,6 +374,7 @@ export default function DashboardPage() {
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				stop_reasons: newFilters.stop_reasons || [],
+				tool_call_names: newFilters.tool_call_names || [],
 				cache_hit_types: newFilters.cache_hit_types || [],
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters:

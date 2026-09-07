@@ -69,6 +69,41 @@ func TestParseComplexityFilters(t *testing.T) {
 	})
 }
 
+// TestParseToolCallNamesFilter verifies the tool_call_names query param is
+// parsed as a comma-separated list and left alone when absent.
+func TestParseToolCallNamesFilter(t *testing.T) {
+	t.Run("parses comma-separated names", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("tool_call_names", "get_weather,search")
+		filters := &logstore.SearchFilters{}
+
+		parseToolCallNamesFilter(ctx, filters)
+
+		if got, want := filters.ToolCallNames, []string{"get_weather", "search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool call names = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{ToolCallNames: []string{"search"}}
+
+		parseToolCallNamesFilter(&fasthttp.RequestCtx{}, filters)
+
+		if got, want := filters.ToolCallNames, []string{"search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool call names = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("tool_call_names", "search")
+		filters := parseHistogramFilters(ctx)
+		if got, want := filters.ToolCallNames, []string{"search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram tool call names = %#v, want %#v", got, want)
+		}
+	})
+}
+
 // TestParseParentRequestIDFilter verifies the explicit parent-request filter
 // does not consume the distinct generic session_id query parameter.
 func TestParseParentRequestIDFilter(t *testing.T) {
@@ -721,6 +756,9 @@ func (m *dashboardLogManager) GetAvailableRoutingEngines(ctx context.Context, li
 	return nil, nil
 }
 func (m *dashboardLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
+	return nil, nil
+}
+func (m *dashboardLogManager) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
 	return nil, nil
 }
 func (m *dashboardLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {

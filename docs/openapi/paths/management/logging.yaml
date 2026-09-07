@@ -48,6 +48,11 @@ logs:
         description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
         schema:
           type: string
+      - name: tool_call_names
+        in: query
+        description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+        schema:
+          type: string
       - name: complexity_tiers
         in: query
         description: Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)
@@ -236,6 +241,11 @@ logs-stats:
         description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
         schema:
           type: string
+      - name: tool_call_names
+        in: query
+        description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+        schema:
+          type: string
       - name: complexity_tiers
         in: query
         description: Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)
@@ -367,8 +377,8 @@ logs-filterdata:
         description: >-
           Comma-separated dimensions to return. One or more of `models`,
           `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`,
-          `routing_engines`, `stop_reasons`, `apps`, `user_agents`, `teams`,
-          `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
+          `routing_engines`, `stop_reasons`, `tool_call_names`, `apps`, `user_agents`,
+          `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
           Unrecognised values are ignored, and asking for none returns every
           dimension.
         schema:
@@ -458,6 +468,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
       - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/metadata_key"
@@ -1040,6 +1051,12 @@ _histogram-parameters:
     description: Comma-separated list of stop reasons to filter by
     schema:
       type: string
+  tool_call_names:
+    name: tool_call_names
+    in: query
+    description: Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.
+    schema:
+      type: string
   cache_hit_types:
     name: cache_hit_types
     in: query
@@ -1539,6 +1556,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
       - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"
@@ -1609,6 +1627,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
       - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"
@@ -1726,6 +1745,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
       - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"

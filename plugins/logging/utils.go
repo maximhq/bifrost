@@ -98,6 +98,9 @@ type LogManager interface {
 	// GetAvailableStopReasons returns all unique stop reason values from logs
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableToolCallNames returns all unique function names that responses called
+	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableUserAgents returns all unique raw User-Agent strings from logs
 	GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error)
 	// GetAvailableApps returns all unique backend-detected app labels from logs
@@ -346,6 +349,10 @@ func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context, limit
 
 func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableToolCallNames(ctx, limit, query)
 }
 
 // GetAvailableUserAgents returns distinct raw User-Agent strings from logs for the logs "App" filter.

@@ -121,6 +121,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ToolCallsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
@@ -431,6 +432,57 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ToolCallsFilter
+// ---------------------------------------------------------------------------
+
+function ToolCallsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.tool_call_names || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["tool_call_names"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableToolCallNames = filterData?.tool_call_names || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableToolCallNames);
+		const extras = (filters.tool_call_names || []).filter((n) => !seen.has(n));
+		return [...availableToolCallNames, ...extras].map((n) => ({ key: n, label: n }));
+	}, [availableToolCallNames, filters.tool_call_names]);
+
+	if (!isUninitialized && !isLoading && availableToolCallNames.length === 0 && !hasActive && !opened) return null;
+
+	return (
+		<FilterSection
+			title="Tool Calls"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="tool-calls-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a function name"
+				items={items}
+				allowCustom
+				isSelected={(name) => (filters.tool_call_names || []).includes(name)}
+				onToggle={(name) => {
+					const current = filters.tool_call_names || [];
+					const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
+					onFiltersChange({ ...filters, tool_call_names: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="tool-calls-filter"
 			/>
 		</FilterSection>
 	);

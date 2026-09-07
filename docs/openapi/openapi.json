@@ -80008,6 +80008,14 @@
             }
           },
           {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "complexity_tiers",
             "in": "query",
             "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
@@ -80628,6 +80636,14 @@
             }
           },
           {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "complexity_tiers",
             "in": "query",
             "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
@@ -80997,6 +81013,14 @@
             "name": "stop_reasons",
             "in": "query",
             "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
             "schema": {
               "type": "string"
             }
@@ -83794,7 +83818,7 @@
           {
             "name": "dimensions",
             "in": "query",
-            "description": "Comma-separated dimensions to return. One or more of `models`, `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`, `routing_engines`, `stop_reasons`, `apps`, `user_agents`, `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`. Unrecognised values are ignored, and asking for none returns every dimension.",
+            "description": "Comma-separated dimensions to return. One or more of `models`, `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`, `routing_engines`, `stop_reasons`, `tool_call_names`, `apps`, `user_agents`, `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`. Unrecognised values are ignored, and asking for none returns every dimension.",
             "schema": {
               "type": "string"
             }
@@ -83853,6 +83877,13 @@
                         "type": "string"
                       },
                       "description": "Available routing engine types (routing-rule, governance, loadbalancing)"
+                    },
+                    "tool_call_names": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Function names that logged responses have called, for the tool calls filter. Read from the persisted tool_call_names metadata, so it stays available when message content is not logged or is offloaded in hybrid storage mode."
                     },
                     "projects": {
                       "type": "array",
@@ -84682,6 +84713,14 @@
             }
           },
           {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "cache_hit_types",
             "in": "query",
             "description": "Comma-separated list of cache hit types to filter by",
@@ -85084,6 +85123,14 @@
             "name": "stop_reasons",
             "in": "query",
             "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
             "schema": {
               "type": "string"
             }
@@ -85730,6 +85777,14 @@
             "name": "stop_reasons",
             "in": "query",
             "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool_call_names",
+            "in": "query",
+            "description": "Comma-separated list of function names. Matches requests whose response called any of them, using the persisted tool_call_names metadata on the log row. Names are recorded even when content logging is disabled and stay on the row in hybrid storage mode; the call arguments are not.",
             "schema": {
               "type": "string"
             }
@@ -106014,6 +106069,52 @@
               }
             }
           },
+          "prompt_cache": {
+            "type": "object",
+            "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
+            "properties": {
+              "auto_inject": {
+                "type": "boolean",
+                "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns."
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "1h"
+                ],
+                "description": "Lifetime for injected markers. Omit for the provider default."
+              },
+              "cache_control_injection_points": {
+                "type": "array",
+                "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                "items": {
+                  "type": "object",
+                  "description": "One place to add a cache breakpoint. Must set role, index, or both.",
+                  "properties": {
+                    "location": {
+                      "type": "string",
+                      "enum": [
+                        "message"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "developer",
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "index": {
+                      "type": "integer",
+                      "description": "Negative values count from the end, so -1 is the last message."
+                    }
+                  }
+                }
+              }
+            }
+          },
           "provider_status": {
             "type": "string",
             "enum": [
@@ -106202,6 +106303,52 @@
                 }
               }
             }
+          },
+          "prompt_cache": {
+            "type": "object",
+            "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
+            "properties": {
+              "auto_inject": {
+                "type": "boolean",
+                "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns."
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "1h"
+                ],
+                "description": "Lifetime for injected markers. Omit for the provider default."
+              },
+              "cache_control_injection_points": {
+                "type": "array",
+                "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                "items": {
+                  "type": "object",
+                  "description": "One place to add a cache breakpoint. Must set role, index, or both.",
+                  "properties": {
+                    "location": {
+                      "type": "string",
+                      "enum": [
+                        "message"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "developer",
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "index": {
+                      "type": "integer",
+                      "description": "Negative values count from the end, so -1 is the last message."
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -106346,6 +106493,52 @@
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "prompt_cache": {
+            "type": "object",
+            "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
+            "properties": {
+              "auto_inject": {
+                "type": "boolean",
+                "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns."
+              },
+              "ttl": {
+                "type": "string",
+                "enum": [
+                  "1h"
+                ],
+                "description": "Lifetime for injected markers. Omit for the provider default."
+              },
+              "cache_control_injection_points": {
+                "type": "array",
+                "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                "items": {
+                  "type": "object",
+                  "description": "One place to add a cache breakpoint. Must set role, index, or both.",
+                  "properties": {
+                    "location": {
+                      "type": "string",
+                      "enum": [
+                        "message"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "developer",
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "index": {
+                      "type": "integer",
+                      "description": "Negative values count from the end, so -1 is the last message."
+                    }
+                  }
                 }
               }
             }
@@ -111836,7 +112029,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Array of routing engines used for this request (routing-rule, governance, or loadbalancing)",
+            "description": "Array of routing engines used for this request (routing-rule, governance, or loadbalancing)"
+          },
+          "tool_call_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Distinct function names the response called. Always recorded, even when content logging is disabled, and kept on the log row in hybrid storage mode. Use the tool_call_names query filter to search on it. Full tool calls with arguments are in tool_calls and are available only when content is retained.",
             "nullable": true
           },
           "routing_rule_id": {

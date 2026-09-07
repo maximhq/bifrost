@@ -86,6 +86,21 @@ test.describe('LLM Logs', () => {
         .toMatch(/status=success/)
     })
 
+    test('should filter logs by tool call name', async ({ logsPage, page }) => {
+      const filtersVisible = await logsPage.filtersButton.isVisible().catch(() => false)
+      if (!filtersVisible) {
+        test.skip(true, 'Filters button not visible')
+        return
+      }
+
+      await logsPage.filterByToolCallName('get_weather')
+
+      // The tool calls filter persists in the URL like every other sidebar filter
+      await expect
+        .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
+        .toMatch(/tool_call_names=get_weather/)
+    })
+
     test('should search logs by content', async ({ logsPage }) => {
       const searchInput = logsPage.searchInput
       const isVisible = await searchInput.isVisible().catch(() => false)
