@@ -278,9 +278,11 @@ func TestConnectToMCPClient_MakeBeforeBreak_ConcurrentCallsAcrossSwap(t *testing
 }
 
 // =============================================================================
-// Failure paths: a failed re-dial must land in exactly today's post-failure
-// state (Unstable or NeedsReauth, nil Conn, last-known-good tool maps
-// preserved) with the old connection closed.
+// Failure paths: a failed re-dial must land in the right post-failure state,
+// which differs by classification. A generic failure keeps the live
+// connection it could not replace; a credential the upstream confirmed dead
+// makes that connection worthless, so it is torn down. Both keep their
+// last-known-good tool maps.
 // =============================================================================
 
 // flipCredStore succeeds on the first ConnectionHeaders resolution (the
@@ -318,21 +320,27 @@ func (f *flipCredStore) AdminConnectionHeaders(_ context.Context, _ *schemas.MCP
 	return nil, fmt.Errorf("not implemented")
 }
 
-func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldConn(t *testing.T) {
+func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *testing.T) {
 	tests := []struct {
 		name      string
 		failWith  error
 		wantState schemas.MCPConnectionState
+		// keepsOldConn is the classification split: only a credential the
+		// upstream confirmed dead invalidates the connection the entry
+		// already holds, so only that case tears it down.
+		keepsOldConn bool
 	}{
 		{
-			name:      "generic failure lands in Unstable",
-			failWith:  fmt.Errorf("connection refused"),
-			wantState: schemas.MCPConnectionStateUnstable,
+			name:         "generic failure lands in Unstable and keeps the live connection",
+			failWith:     fmt.Errorf("connection refused"),
+			wantState:    schemas.MCPConnectionStateUnstable,
+			keepsOldConn: true,
 		},
 		{
-			name:      "dead OAuth2 credential lands in NeedsReauth",
-			failWith:  fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired),
-			wantState: schemas.MCPConnectionStateNeedsReauth,
+			name:         "dead OAuth2 credential lands in NeedsReauth and tears the connection down",
+			failWith:     fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired),
+			wantState:    schemas.MCPConnectionStateNeedsReauth,
+			keepsOldConn: false,
 		},
 	}
 
@@ -355,8 +363,14 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 			after, ok := snapshotClientState(m, config.ID)
 			require.True(t, ok, "the entry must survive a failed re-dial")
 			assert.Equal(t, tc.wantState, after.State)
-			assert.Nil(t, after.Conn, "a failed re-dial must leave no connection on the entry")
-			assert.Nil(t, after.CancelFunc)
+			if tc.keepsOldConn {
+				assert.Same(t, oldConn, after.Conn, "a survivable failure must leave the connection it could not replace installed")
+				assert.Equal(t, before.ConnGeneration, after.ConnGeneration, "nothing was swapped in, so the generation must not move")
+			} else {
+				assert.Nil(t, after.Conn, "a dead credential makes the open connection worthless; it must be detached")
+				assert.Nil(t, after.CancelFunc)
+				assert.Equal(t, before.ConnGeneration+1, after.ConnGeneration, "detaching must invalidate late writers bound to the old connection")
+			}
 			// The tool map is deliberately left as last-known-good, not cleared:
 			// a dead connection stays distinguishable from a tool that never
 			// existed (GetClientForTool still resolves it, and
@@ -366,31 +380,82 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
 			assert.NotEmpty(t, after.ToolNameMapping)
 
-			// The captured old connection must have been torn down too.
+			// Reachability of the captured connection, which is the whole
+			// point of the split above.
 			callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			_, oldErr := oldConn.CallTool(callCtx, mcpgo.CallToolRequest{
 				Request: mcpgo.Request{Method: string(mcpgo.MethodToolsCall)},
 				Params:  mcpgo.CallToolParams{Name: "echo", Arguments: map[string]interface{}{"message": "ping"}},
 			})
-			require.Error(t, oldErr, "the old connection must be closed on a failed re-dial")
+			if tc.keepsOldConn {
+				require.NoError(t, oldErr, "the kept connection must still be open and serving")
+			} else {
+				require.Error(t, oldErr, "the detached connection must be closed on a failed re-dial")
+			}
 
-			// A second consecutive failure takes the close-first path (Conn is
-			// already nil after the first failure above, so this attempt no
-			// longer qualifies for make-before-break) — exactly where a pre-dial
-			// clear of the tool maps would go unnoticed by the make-before-break
-			// assertions above, since those only exercise the make-before-break
-			// branch on its first failure.
+			// A second consecutive failure. For the tearing-down
+			// classification this takes the close-first path (Conn is already
+			// nil after the first failure), which is exactly where a pre-dial
+			// clear of the tool maps would go unnoticed by the
+			// make-before-break assertions above. For the keep-alive
+			// classification the entry still holds its connection, so this is
+			// make-before-break again and must keep it a second time rather
+			// than eventually giving it up.
 			require.Error(t, m.connectToMCPClient(context.Background(), config))
 
 			afterSecondFailure, ok := snapshotClientState(m, config.ID)
 			require.True(t, ok, "the entry must survive a second failed re-dial")
 			assert.Equal(t, tc.wantState, afterSecondFailure.State)
-			assert.Nil(t, afterSecondFailure.Conn)
-			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial (close-first path) must keep the original last-known tool map")
+			if tc.keepsOldConn {
+				assert.Same(t, oldConn, afterSecondFailure.Conn, "a repeated failure must not eventually give up the working connection")
+			} else {
+				assert.Nil(t, afterSecondFailure.Conn)
+			}
+			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial must keep the original last-known tool map")
 			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
+}
+
+// TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServing
+// pins the other half of the make-before-break contract: the old connection
+// keeps serving not only for the duration of the dial, but past a dial that
+// fails. Tearing it down on failure turns every failed re-dial (a manual
+// reconnect during a blip, a credential update, the periodic checker's own
+// recovery attempt) into a real outage on a connection that was working, and
+// costs the client its connection until some later dial happens to succeed.
+//
+// The needs_reauth classification is deliberately excluded and stays covered
+// by TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldConn:
+// a credential the upstream has confirmed dead makes the still-open
+// connection worthless, so that path keeps tearing down.
+func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServing(t *testing.T) {
+	ts := buildGatedMCPServer(t, nil)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
+	config := newMakeBeforeBreakConfig("dial-failure-keeps-conn", ts.URL)
+	toolName := config.Name + "-echo"
+
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.NotNil(t, before.Conn)
+	require.Equal(t, schemas.MCPConnectionStateHealthy, before.State)
+
+	require.Error(t, m.connectToMCPClient(context.Background(), config), "the re-dial must still fail")
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Same(t, before.Conn, after.Conn, "a failed re-dial must leave the working connection installed")
+	assert.Equal(t, before.ConnGeneration, after.ConnGeneration, "nothing was swapped in, so the generation must not move")
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, after.State, "the failed attempt is still reported")
+	require.NotNil(t, after.LastFailure, "and still carries its reason")
+	assert.Contains(t, after.ToolMap, toolName, "the tool map must survive alongside the connection")
+
+	// The point of every assertion above: traffic keeps flowing.
+	require.NoError(t, callEchoTool(m, toolName), "the surviving connection must still serve tool calls")
 }
 
 // =============================================================================
