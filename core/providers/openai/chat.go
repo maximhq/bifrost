@@ -95,17 +95,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
 		return openaiReq
-	case schemas.Cerebras, schemas.Wafer:
-		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.stripReasoningDetails()
-		return openaiReq
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// DeepSeek is asymmetric: it rejects reasoning_content on ordinary assistant
 		// turns, but *requires* it to be replayed on assistant tool_call turns and 400s
-		// without it. Stripping both (as Cerebras/Wafer do) forced thinking off for every
-		// tool-calling conversation — see issue #5887.
+		// without it. Stripping both forced thinking off for every tool-calling conversation
+		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
+		return openaiReq
+	case schemas.Groq, schemas.Cerebras:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.renameAssistantReasoningToAlias()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -289,18 +289,6 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	}
 }
 
-// stripReasoningDetails for providers that throw error for reasoning_details in assistant messages
-// e.g. Cerebras, DeepSeek
-func (req *OpenAIChatRequest) stripReasoningDetails() {
-	for i := range req.Messages {
-		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
-		if assistantMessage == nil {
-			continue
-		}
-		assistantMessage.Reasoning = nil
-	}
-}
-
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
 // carry no tool calls, and preserves it on assistant tool_call turns. This is DeepSeek's
 // contract: reasoning_content "must be passed back to the API in all subsequent user
@@ -314,6 +302,21 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
 		if assistantMessage == nil || len(assistantMessage.ToolCalls) > 0 {
 			continue
+		}
+		assistantMessage.Reasoning = nil
+	}
+}
+
+// renameAssistantReasoningToAlias moves replayed assistant reasoning from
+// reasoning_content to the "reasoning" key, for providers that only accept the latter.
+func (req *OpenAIChatRequest) renameAssistantReasoningToAlias() {
+	for i := range req.Messages {
+		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
+		if assistantMessage == nil || assistantMessage.Reasoning == nil {
+			continue
+		}
+		if assistantMessage.ReasoningAlias == nil {
+			assistantMessage.ReasoningAlias = assistantMessage.Reasoning
 		}
 		assistantMessage.Reasoning = nil
 	}
