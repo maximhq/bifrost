@@ -22,7 +22,7 @@ Bifrost exposes Prometheus metrics via two methods:
 Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
 
 <Info>
-  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires Basic auth credentials. You must include the same `admin_username` and `admin_password` from your `auth_config` in the Prometheus scrape configuration. Without this, Prometheus will receive `401 Unauthorized` responses and scraping will silently fail.
+  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires credentials. You can authenticate the scraper with either the admin **Basic auth** credentials (`admin_username` / `admin_password` from your `auth_config`) or, on Enterprise, a **Bifrost API key** with the Metrics permission. Without valid credentials, Prometheus receives `401 Unauthorized` responses and scraping silently fails.
 </Info>
 
 ### Prometheus Configuration
@@ -49,6 +49,35 @@ scrape_configs:
       username: '<admin_username>'
       password: '<admin_password>'
 ```
+
+<Warning>
+  Prometheus scrapes over plain `http` by default, which sends the Basic auth credentials or API key in cleartext. When Bifrost is served over TLS, set `scheme: https` (and any required `tls_config`) in the scrape config so credentials are not exposed in transit.
+</Warning>
+
+#### Authenticating with an API Key <sup>Enterprise</sup>
+
+On Enterprise deployments, you can scrape `/metrics` with a Bifrost API key instead of the admin Basic auth credentials. Create an API key with the **Metrics** permission (included in all default roles) from **Settings → API Keys** (see [Creating API Keys](/api/procuring-api-keys)), then pass it as a bearer token in your scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'bifrost'
+    static_configs:
+      - targets: ['bifrost-host:8080']
+    scrape_interval: 15s
+    authorization:
+      type: Bearer
+      credentials: '<bfst-your-api-key>'
+```
+
+Older Prometheus versions that lack the `authorization` block can use `bearer_token` instead:
+
+```yaml
+    bearer_token: '<bfst-your-api-key>'
+```
+
+<Note>
+  API-key auth for `/metrics` is an Enterprise feature. On the open-source build, the `/metrics` endpoint accepts only Basic auth (the `admin_username` / `admin_password` above).
+</Note>
 
 ### Endpoint
 
