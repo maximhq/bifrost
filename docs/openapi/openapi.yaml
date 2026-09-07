@@ -733,6 +733,8 @@ paths:
     $ref: "./paths/management/users.yaml#/users-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
+  /api/governance/users/me/vk-creation-policy:
+    $ref: "./paths/management/governanceextensions.yaml#/user-vk-creation-policy"
   /api/governance/users/{user_id}/role:
     $ref: "./paths/management/users.yaml#/users-role"
   /api/governance/users/{user_id}/teams:
@@ -883,10 +885,10 @@ paths:
     $ref: "./paths/management/businessunits.yaml#/business-units"
   /api/governance/business-units/{business_unit_id}:
     $ref: "./paths/management/businessunits.yaml#/business-units-by-id"
-  /api/governance/business-units/{business_unit_id}/teams:
-    $ref: "./paths/management/businessunits.yaml#/business-units-teams"
-  /api/governance/business-units/{business_unit_id}/teams/{team_id}:
-    $ref: "./paths/management/businessunits.yaml#/business-units-team-by-id"
+  /api/governance/business-units/{business_unit_id}/users:
+    $ref: "./paths/management/businessunits.yaml#/business-units-users"
+  /api/governance/business-units/{business_unit_id}/users/{user_id}:
+    $ref: "./paths/management/businessunits.yaml#/business-units-user-by-id"
   /api/governance/business-units/{business_unit_id}/governance:
     $ref: "./paths/management/businessunits.yaml#/business-units-governance"
   /api/governance/business-units/{business_unit_id}/customers:

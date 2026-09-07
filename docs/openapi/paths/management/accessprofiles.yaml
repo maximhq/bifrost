@@ -790,6 +790,9 @@ users-access-profile-budget-override:
 users-access-profile-virtual-keys:
   post:
     operationId: addUserAccessProfileVirtualKey
+    deprecated: true
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
     x-mint:
       metadata:
         tag: Enterprise
@@ -797,7 +800,18 @@ users-access-profile-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
-    summary: Add an extra virtual key under a user's access profile
+        <Warning>
+          **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)
+          instead. This path still works and behaves identically, but will be removed in a future major release.
+        </Warning>
+    summary: Add an extra virtual key under a user's access profile (deprecated)
+    description: |
+      Issues an additional virtual key for the user. 
+
+      Virtual keys are scoped to the **user**, not to one access profile: what a request may do with
+      the key is resolved at request time from whichever of the user's active profiles grant it. So
+      `profile_id` is ignored — the key minted is the same whichever profile is named, and it is not
+      bound to that profile or removed with it. The user must hold at least one access profile.
     tags:
       - Access Profiles
     parameters:
@@ -809,6 +823,9 @@ users-access-profile-virtual-keys:
       - name: profile_id
         in: path
         required: true
+        description: >
+          Ignored. Kept so the path shape stays valid for existing clients; keys are user-scoped, so
+          any value produces the same result.
         schema:
           type: integer
     requestBody:
@@ -826,8 +843,16 @@ users-access-profile-virtual-keys:
           application/json:
             schema:
               $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: User access profile not found
+        description: User has no access profiles
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '409':
+        description: A virtual key with this name already exists
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

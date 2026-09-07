@@ -631,6 +631,7 @@ VirtualKeyQuotaResponse:
     - is_active
     - budgets
     - rate_limit
+    - rate_limits
     - provider_configs
     - model_configs
   properties:
@@ -648,9 +649,23 @@ VirtualKeyQuotaResponse:
       items:
         $ref: '#/VirtualKeyBudgetUsage'
     rate_limit:
+      description: >
+        The single effective rate limit for this key. For a key managed by an enterprise access
+        profile this is the tightest-per-dimension merge of every profile governing the key, and
+        carries the real usage. Kept for readers that expect one value; see `rate_limits` for the
+        unmerged list.
       oneOf:
         - $ref: '#/RateLimit'
         - type: 'null'
+    rate_limits:
+      type: array
+      description: >
+        Every rate limit `rate_limit` was merged from, each tagged with its source, so a caller can
+        see which one is actually binding rather than only the merged result. A user may hold
+        several enterprise access profiles at once, each contributing its own rate limit, so this
+        can carry more than one entry. Always present; empty when the key has no rate limit at all.
+      items:
+        $ref: '#/SourcedRateLimit'
     provider_configs:
       type: [array, 'null']
       description: Per-provider budget quotas and rate limits (provider-level splits and limits)
@@ -681,6 +696,35 @@ VirtualKeyBudgetUsage:
           description: Per-model actual usage within this budget's current cycle
           items:
             $ref: '#/VirtualKeyModelSpend'
+        source_type:
+          type: string
+          description: >
+            What governs this budget when it did not come from the virtual key's own rows — e.g.
+            `access_profile`. Omitted when there is nothing to disambiguate.
+        source_id:
+          type: string
+          description: ID of the source named by `source_type`.
+        source_name:
+          type: string
+          description: Human-readable label for `source_id`.
+
+SourcedRateLimit:
+  description: >
+    A rate limit tagged with what governs it. The source fields are empty when there is nothing to
+    disambiguate, e.g. a virtual key's own rate-limit row.
+  allOf:
+    - $ref: '#/RateLimit'
+    - type: object
+      properties:
+        source_type:
+          type: string
+          description: What governs this rate limit — e.g. `access_profile`.
+        source_id:
+          type: string
+          description: ID of the source named by `source_type`.
+        source_name:
+          type: string
+          description: Human-readable label for `source_id`.
 
 VirtualKeyModelSpend:
   type: object
@@ -999,8 +1043,9 @@ BusinessUnitListItem:
       type: string
     name:
       type: string
-    team_count:
+    user_count:
       type: integer
+      description: Number of users that belong to this business unit.
     customer_count:
       type: integer
     created_at:
@@ -1035,14 +1080,15 @@ ListBusinessUnitsResponse:
 
 BusinessUnitDetailResponse:
   type: object
-  description: Single business unit with governance and team count
+  description: Single business unit with governance and user count
   properties:
     id:
       type: string
     name:
       type: string
-    team_count:
+    user_count:
       type: integer
+      description: Number of users that belong to this business unit.
     budget:
       $ref: '#/Budget'
     rate_limit:
@@ -1072,26 +1118,26 @@ BusinessUnitMutationResponse:
     name:
       type: string
 
-AssignTeamToBusinessUnitRequest:
+AssignUserToBusinessUnitRequest:
   type: object
-  description: Request to assign a team to a business unit
+  description: Request to assign a user to a business unit
   required:
-    - team_id
+    - user_id
   properties:
-    team_id:
+    user_id:
       type: string
 
-BusinessUnitTeamsResponse:
+BusinessUnitUsersResponse:
   type: object
-  description: Paginated list of teams assigned to a business unit
+  description: Paginated list of users that belong to a business unit
   required:
-    - teams
+    - users
     - count
     - total_count
     - limit
     - offset
   properties:
-    teams:
+    users:
       type: array
       items:
         type: object
@@ -1100,6 +1146,15 @@ BusinessUnitTeamsResponse:
             type: string
           name:
             type: string
+          email:
+            type: string
+          source:
+            type: string
+            description: >
+              Provenance of this user's membership edge. `manual` means an admin or `config.json`
+              assigned it and no claims sync will clear it; the synced values
+              (`scim_user_attribute`, `scim_group_attribute`, `attribute_mapping`, `scim`) mean an
+              identity provider owns it. Empty on legacy unstamped edges, which are treated as synced.
     count:
       type: integer
     total_count:
@@ -1476,14 +1531,24 @@ ModelConfig:
     scope_id:
       type: string
       nullable: true
-      description: >-
-        ID of the scope target, for example a virtual key id, a project id, or
-        the user's access-profile assignment id. Required when scope is not
-        `global`.
+      description: >
+        ID of the scope target — a virtual key ID for `virtual_key`, a user access profile ID for
+        `access_profile`, a user ID for legacy `user` rows. Required when scope is not `global`.
     scope_name:
       type: string
       nullable: true
       description: Resolved human-readable name of the scope target (read-only, set by server).
+    source_type:
+      type: string
+      description: >
+        What materialized this limit, when it was not authored directly — e.g. `access_profile`.
+        Read-only; omitted for limits with no upstream source.
+    source_id:
+      type: string
+      description: ID of the source named by `source_type` (read-only).
+    source_name:
+      type: string
+      description: Human-readable label for `source_id` (read-only).
     calendar_aligned:
       type: boolean
       description: When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).
