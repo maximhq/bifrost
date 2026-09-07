@@ -1339,9 +1339,16 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// The connection failed, but the enable itself stands:
-		// ExecutionConfig.Disabled stays false and a checker is started below,
-		// so the client keeps trying to come up on its own and the caller
-		// keeps its persisted disabled=false (see ErrMCPEnableConnectFailed).
+		// ExecutionConfig.Disabled stays false, so the caller keeps its
+		// persisted disabled=false (see ErrMCPEnableConnectFailed) and the
+		// admin can retry the enable straight away.
+		//
+		// That retry is the only way back up, and it is deliberate rather than
+		// a gap: performCheck stops a checker whose client is Disabled instead
+		// of dialling it, so the one started below does nothing on this path.
+		// It is started for the NeedsReauth case, where performCheck keeps the
+		// timer alive at the relaxed interval so a stalled reauthorize is
+		// eventually picked up by something.
 		//
 		// State goes back to Disabled rather than Unstable. Unstable would
 		// wedge the client: isEnableable would stop matching, so every retry
