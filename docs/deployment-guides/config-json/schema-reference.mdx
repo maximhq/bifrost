@@ -398,6 +398,45 @@ The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth
 
 Clients declared with `auth_type` in `{oauth, per_user_oauth, per_user_headers, token_exchange}` boot into a **`pending_verification`** state. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row; one admin click runs the same verification flow the Web UI Create form uses, after which the client transitions to `healthy`. The same steps are scriptable via `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), `POST /api/mcp/client/{id}/verify-headers` (per-user headers), or `POST /api/mcp/client/{id}/verify-exchange` (token exchange). Verified state is server-side and survives restarts and config re-syncs. Immutable fields (`auth_type`, `connection_type`, `connection_string`, `stdio_config`, `oauth_config`) cannot be changed after creation — file edits to them are ignored with a boot warning naming the fields, matching the update API; delete and re-declare the client to change them. See [MCP Auth](/mcp/auth/overview) and [Connections, States & Lifecycles](/mcp/connections).
 
+### `mcp.virtual_mcps`
+
+Virtual MCPs bundle tools from one or more `client_configs` into a single endpoint served at `/mcp/<endpoint_slug>` and attachable to virtual keys. Reconciled into the config store at load.
+
+```json
+{
+  "mcp": {
+    "virtual_mcps": [
+      {
+        "name": "Support Tools",
+        "endpoint_slug": "support-tools",
+        "enabled": true,
+        "tools": [
+          { "mcp_client_name": "zendesk", "tool_names": ["*"] },
+          { "mcp_client_name": "docs-search", "tool_names": ["query", "get_page"] }
+        ],
+        "virtual_key_ids": ["vk-support"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Positive integer (>= 1). When set, the reconciler matches by this ID first and falls back to name when no stored vMCP has that ID; a name match keeps its existing stored ID |
+| `name` | string | Required. Display name (unique) |
+| `endpoint_slug` | string | Lowercase URL-safe kebab-case (pattern `^[a-z0-9]+(-[a-z0-9]+)*$`) path served at `/mcp/<endpoint_slug>`. Derived from the name when omitted; immutable after creation; unique across vMCPs and direct MCP clients |
+| `description` | string | Free text |
+| `enabled` | boolean | Defaults to `true`. A disabled vMCP is not served |
+| `tools` | array | Required, at least one entry. Each item needs `mcp_client_id` or `mcp_client_name`, plus `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
+| `virtual_key_ids` | string[] | Virtual keys the vMCP is attached to |
+
+When `source_of_truth` is `config.json` and `mcp.virtual_mcps` is present, it is authoritative for vMCPs: any stored vMCP absent from it is removed, and an explicit `"virtual_mcps": []` prunes them all. Omitting `mcp.virtual_mcps` leaves stored vMCPs unchanged. In `split` mode the file creates and updates vMCPs but never prunes runtime-managed ones. See [Source of Truth](/deployment-guides/config-json/source-of-truth).
+
+<Note>
+`mcp.tool_groups` is the deprecated former name for this key, kept for backward compatibility. It carries legacy attachment arrays (`team_ids`, `customer_ids`, `user_ids`, `provider_names`, `api_key_ids`) and does not expose `endpoint_slug`. Prefer `mcp.virtual_mcps`; when both are present, `mcp.virtual_mcps` wins and `mcp.tool_groups` is ignored.
+</Note>
+
 ---
 
 ## `websocket`
