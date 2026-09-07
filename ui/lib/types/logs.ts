@@ -1322,6 +1322,10 @@ export interface WebSocketLogMessage {
 
 // MCP Tool Log Entry - represents a single MCP tool execution
 export interface MCPToolLogEntry {
+	device_id?: string;
+	app_key?: string;
+	decision?: string;
+	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	timestamp: string; // ISO string format
