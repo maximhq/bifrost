@@ -908,7 +908,9 @@ model-configs:
           type: string
       - name: scope
         in: query
+        description: >-
           Comma-separated scopes to filter by. `project`, `access_profile` and
+          the legacy `user` are Enterprise only.
         schema:
           type: string
       - name: scope_id
