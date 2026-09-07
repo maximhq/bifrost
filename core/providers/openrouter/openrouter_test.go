@@ -32,7 +32,7 @@ func TestOpenRouter(t *testing.T) {
 		ReasoningModel:       "openai/gpt-oss-120b",
 		PromptCachingModel:   "anthropic/claude-sonnet-4", // Claude is the only OpenRouter model with explicit caching; its Responses half was broken until #6290
 		TranscriptionModel:   "openai/gpt-4o-mini-transcribe",
-		SpeechSynthesisModel: "openai/gpt-audio-mini",
+		SpeechSynthesisModel: "minimax/speech-2.8-turbo",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
