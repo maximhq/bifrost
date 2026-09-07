@@ -3796,7 +3796,10 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		// Draining that blocks here forever, so abandon the connection: closing with a
 		// non-nil error takes fasthttp's CloseConn path and keeps the half-read stream
 		// out of the idle pool. The response is left to GC as in the branches above.
-		if doesNotSendDoneMarker, _ := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool); doesNotSendDoneMarker {
+		// The same applies when the read loop itself stopped on a post-finish heartbeat.
+		parked, _ := ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish).(bool)
+		doesNotSendDoneMarker, _ := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool)
+		if parked || doesNotSendDoneMarker {
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
