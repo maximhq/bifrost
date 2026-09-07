@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -148,6 +148,8 @@ This is the recommended setup for [multinode OSS deployments](/deployment-guides
 ---
 
 ## logs_store
+
+Use `logs_store.hidden_request_types` to hide selected request types from dashboard and log API reads while continuing to store their logs. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard) for configuration examples and behavior.
 
 <Tabs>
 

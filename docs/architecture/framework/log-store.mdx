@@ -9,7 +9,7 @@ The LogStore is a core component of the Bifrost framework responsible for captur
 ## Core Features
 
 - **Persistent Logging**: Automatically saves detailed information about each API request, including input, output, status, latency, and cost.
-- **Multiple Backend Support**: Comes with built-in support for SQLite and PostgreSQL, allowing you to choose the best storage solution for your deployment needs.
+- **Multiple Backend Support**: Comes with built-in support for SQLite, PostgreSQL, and ClickHouse, allowing you to choose the best storage solution for your deployment needs.
 - **Rich Querying and Filtering**: A powerful search API allows you to filter and sort logs based on a wide range of criteria such as provider, model, status, latency, cost, and content.
 - **Performance Analytics**: The search functionality also provides aggregated statistics, including total requests, success rate, average latency, total tokens, and total cost for the queried data.
 - **Structured Data Model**: Logs are stored in a structured format, with complex objects like message history and tool calls serialized as JSON for efficient storage and retrieval.
@@ -23,8 +23,46 @@ The LogStore is built around the `LogStore` interface, which defines the standar
 
 - **SQLite**: The default, file-based database, ideal for local development and smaller, single-node deployments.
 - **PostgreSQL**: A production-ready database for scalable and high-availability deployments.
+- **ClickHouse**: A column-oriented database for high-volume log storage and analytics.
 
 The backend is configured in Bifrost's main configuration file.
+
+### Hiding request types from the dashboard
+
+Set `logs_store.hidden_request_types` to an array of request type strings in `config.json`:
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "./logs.db" },
+    "hidden_request_types": ["count_tokens", "embedding"]
+  }
+}
+```
+
+For Helm deployments, use `storage.logsStore.hiddenRequestTypes`:
+
+```yaml
+storage:
+  logsStore:
+    hiddenRequestTypes:
+      - count_tokens
+      - embedding
+```
+
+This setting hides matching log rows from the dashboard and log read APIs, including
+pagination counts, statistics, charts, rankings, session details, and filter options.
+A direct lookup of a hidden log returns not found. All requests continue to be logged
+in the database; logging, retention, deletion, and cost recalculation are unchanged.
+MCP tool logs are unaffected.
+
+Use exact request type values, such as `count_tokens`, `embedding`, `chat_completion`,
+`chat_completion_stream`, `responses`, or `responses_stream`. Streaming and
+non-streaming types are separate. An omitted or empty array shows all request types.
+The setting works with SQLite, PostgreSQL, and ClickHouse, including object storage
+for log payloads. Apply the configuration and restart Bifrost to use the new setting.
 
 ### Initialization
 

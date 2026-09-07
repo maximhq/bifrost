@@ -4617,6 +4617,12 @@
             "enabled": {
               "type": "boolean"
             },
+            "hiddenRequestTypes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Request types hidden from dashboard/API reads. Logs are still stored."
+            },
             "type": {
               "type": "string",
               "enum": ["", "sqlite", "postgres", "clickhouse"]
