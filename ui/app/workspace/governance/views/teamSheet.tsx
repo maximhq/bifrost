@@ -284,6 +284,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		const submittableBudgets = formData.budgets
 			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
 			.map((r) => ({
+				id: team?.budgets?.some((budget) => budget.id === r.id) ? r.id : undefined,
 				max_limit: r.maxLimit as number,
 				reset_duration: r.resetDuration,
 				// Only quarterly windows may carry a quarter definition; the API rejects it elsewhere.
