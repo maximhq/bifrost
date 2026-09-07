@@ -113,6 +113,7 @@ func acceptsMinimalEffort(model string) bool {
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6-astra") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
 		strings.Contains(modelLower, "glm-5.2")
 }
