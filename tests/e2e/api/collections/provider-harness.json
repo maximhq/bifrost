@@ -136115,6 +136115,58 @@
           }
         },
         {
+          "name": "62.13a Azure: wait until the uploaded file is processed (files-routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Azure processes uploads asynchronously: the file object reports status",
+                  "// \"pending\" -> \"running\" -> \"processed\", and the content route answers",
+                  "// 204 (surfaced by bifrost as 409) until it is processed. The content rows",
+                  "// below (62.14-62.16) need a processed file, so re-run this row until it is.",
+                  "// Docs: https://learn.microsoft.com/en-us/rest/api/azureopenai/files/get-content?view=rest-azureopenai-2024-10-21",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) {}",
+                  "var tries = Number(pm.collectionVariables.get('filesAzurePollTries') || 0);",
+                  "if (j.status !== 'processed' && j.status !== 'error' && tries < 10) {",
+                  "  pm.collectionVariables.set('filesAzurePollTries', tries + 1);",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('filesAzurePollTries');",
+                  "pm.test('Azure upload: reached status processed', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('processed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{filesAzureId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{filesAzureId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "62.14 Azure: /anthropic content route returns real bytes (files-routes)",
           "event": [
             {
@@ -144457,6 +144509,87 @@
                 "completions"
               ]
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "74. Azure streaming preamble fallback",
+      "description": "Local fixture regression. Configure an isolated gateway's Azure endpoint to the azure-stream-preamble-fixture.mjs server with max_retries=0. Set azureStreamPreambleFixture=1 to enable these cases. The primary model emits startup metadata and then fails; the fallback must return hello without leaking failed-attempt events.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('azureStreamPreambleFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Azure preamble error falls back without leaking events', function () {",
+              "  var body = pm.response.text();",
+              "  pm.expect(pm.response.code, body).to.equal(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
+              "  pm.expect(body).not.to.include('azure-preamble-failed');",
+              "  pm.expect(body).to.include('azure-preamble-success');",
+              "  var text = '';",
+              "  var terminal = false;",
+              "  body.split('\\n').forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) return;",
+              "    var data = line.slice(5).trim();",
+              "    if (!data || data === '[DONE]') return;",
+              "    var event = JSON.parse(data);",
+              "    pm.expect(event.error, data).not.to.be.ok;",
+              "    pm.expect(event.type, data).not.to.equal('response.failed');",
+              "    if (event.response) pm.expect(event.response.error, data).not.to.be.ok;",
+              "    if (event.type === 'response.output_text.delta') text += event.delta || '';",
+              "    if (event.type === 'response.completed') terminal = true;",
+              "    (event.choices || []).forEach(function (choice) {",
+              "      if (choice.delta) text += choice.delta.content || '';",
+              "      if (choice.finish_reason === 'stop') terminal = true;",
+              "    });",
+              "  });",
+              "  pm.expect(text, body).to.equal('hello');",
+              "  pm.expect(terminal, body).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Azure streaming preamble fallback - Chat Completions",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/preamble-error\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"fallbacks\":[\"azure/preamble-success\"]}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "Azure streaming preamble fallback - Responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/preamble-error\",\"input\":\"hi\",\"stream\":true,\"fallbacks\":[\"azure/preamble-success\"]}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
           }
         }
       ]

@@ -927,20 +927,20 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					parseStart := time.Now()
 					err := sonic.Unmarshal(audioData, &response)
 					schemas.AddStreamParse(ctx, time.Since(parseStart))
-					if err != nil {
-						// If JSON parsing fails, check if this might be an error response
-						// Quick check for error field (allocation-free using sonic.Get)
-						if errorNode, _ := sonic.Get(audioData, "error"); errorNode.Exists() {
-							// Only unmarshal when we know there's an error
-							var bifrostErr schemas.BifrostError
-							if errParseErr := sonic.Unmarshal(audioData, &bifrostErr); errParseErr == nil {
-								if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-									ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-									providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
-									return
-								}
+					// Error envelopes can decode successfully into an empty speech response.
+					if providerUtils.JSONFieldExists(audioData, "error") {
+						var bifrostErr schemas.BifrostError
+						if errParseErr := sonic.Unmarshal(audioData, &bifrostErr); errParseErr == nil {
+							if bifrostErr.Error != nil &&
+								(bifrostErr.Error.Message != "" ||
+									bifrostErr.Error.Code != nil || bifrostErr.Error.Type != nil) {
+								ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+								providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+								return
 							}
 						}
+					}
+					if err != nil {
 						// If it's not valid JSON, log and skip
 						provider.logger.Warn("failed to parse speech stream response: %v", err)
 						continue
@@ -1912,6 +1912,21 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			lastErr = bifrostErr
+			continue
+		}
+
+		// Azure answers 204 No Content (undocumented) while the upload is still
+		// "pending"/"running". Echoing 204 to the client would make the HTTP layer
+		// drop the error body, so translate it into a body-bearing 409 that tells
+		// the caller to poll the file status.
+		if resp.StatusCode() == fasthttp.StatusNoContent {
+			wait()
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			pendingErr := providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("file %s is still being processed by Azure; poll GET /v1/files/%s until status is \"processed\"", request.FileID, request.FileID), nil)
+			pendingErr.StatusCode = new(fasthttp.StatusConflict)
+			lastErr = pendingErr
 			continue
 		}
 
