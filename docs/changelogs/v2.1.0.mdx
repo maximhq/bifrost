@@ -19,7 +19,6 @@ description: "v2.1.0 changelog - 2026-09-08"
 <Update label="Bifrost(HTTP)" description="2.1.0">
 ## ✨ Features
 
-- **Projects (Enterprise)** - Named, budgeted governance scope a request opts into with the `x-bf-project-id` or `x-bf-project-name` header. Managed via `/api/governance/projects` and `governance.projects` in config.json (access rule, members, budgets, rate limits, provider configs, `allow_all_providers`). `project_id`/`project_name` land on logs, MCP tool logs, span attributes and metric labels, with a `project_ids` filter, a `project` histogram and ranking dimension, a Governance → Projects page and a Project Rankings dashboard tab. A request naming a project it cannot use is refused with `access_blocked` (#6702, #6703, #6704, #6705, #6777, #6878, #6896, #6897, #6898, #6952)
 - **Virtual MCPs** - Replace MCP Tool Groups with named tool bundles drawn from one or more MCP clients, managed at `/api/mcp/virtual-mcps`, declared under `mcp.virtual_mcps` in config.json (`mcp.tool_groups` is deprecated) and Helm `bifrost.mcp.virtualMcps`, assignable to virtual keys from the VK sheet, and served at `/mcp/<endpoint_slug>`. Direct MCP clients also get an `endpoint_slug` and are reachable at `/mcp/<slug>`. Tool whitelisting is now explicit: `["*"]` grants all tools, `[]` grants none, a named list grants exactly those. Disabled clients and stale definitions are never served. `/workspace/mcp-tool-groups` redirects to the new Virtual MCPs page (#6746, #6747, #6748, #6749, #6750, #6751, #6791, #6826, #6872, #6873, #6874, #6904, #6905, #6919, #6957)
 - **Databricks Provider** - First-class `databricks/<model>` provider covering Model Serving and Unity AI Gateway with PAT or OAuth M2M auth via `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret`, `forward_gateway_tags`). Requests are sanitized per model against datasheet capabilities, `reasoning_effort` is translated to Anthropic `thinking` on Claude endpoints, remote images are inlined, native Responses calls fall back to chat emulation, and upstream error messages are surfaced. The UI adds the key form and a guided migration from a custom provider named `databricks` (#6665, #6666, #6667, #6668, #6669, #6670, #6671, #6676, #6679, #6770, #6876, #6958)
 - **GitHub Copilot Provider** - `github_copilot` provider that mints installation tokens server-to-server from GitHub App credentials (`github_copilot_key_config`: `app_id`, `installation_id`, `repository_id`, `private_key`, optional `github_domain`), supporting chat completions, Responses and list models with cost tracked in GitHub AI Credits. Configurable through config.json and the API only: it is hidden from the Add Provider picker pending release testing (#6352, #6353, #6354, #6355, #6356, #6357, #6895)
@@ -225,7 +224,7 @@ description: "v2.1.0 changelog - 2026-09-08"
 - [#6434](https://github.com/maximhq/bifrost/issues/6434) - Plugin config edited via UI/API is reverted from config.json on every restart under source_of_truth: split
 - [#6624](https://github.com/maximhq/bifrost/issues/6624) - Bedrock reasoning signature field is dropped for Anthropic models, which require it present
 - [#6631](https://github.com/maximhq/bifrost/issues/6631) - add Baseten to Hugging Face inference providers
-- [#6640](https://github.com/maximhq/bifrost/issues/6640) - v2.0.0 rerank sends documents as objects ({"text": ...}) to Cohere-based custom providers, breaking servers that expect Cohere v2 strings
+- [#6640](https://github.com/maximhq/bifrost/issues/6640) - v2.0.0 rerank sends documents as objects `({"text": ...})` to Cohere-based custom providers, breaking servers that expect Cohere v2 strings
 - [#6657](https://github.com/maximhq/bifrost/issues/6657) - Fireworks virtual key with allowed_models: ["*"] blocks every model (empty synced catalog; explicit list works)
 - [#6689](https://github.com/maximhq/bifrost/issues/6689) - Responses omit spec-required nullable fields
 - [#6690](https://github.com/maximhq/bifrost/issues/6690) - [MCP Library] Add: Magic Hour
@@ -235,7 +234,7 @@ description: "v2.1.0 changelog - 2026-09-08"
 - [#6784](https://github.com/maximhq/bifrost/issues/6784) - Chat completion stream hangs forever after finish_reason when upstream omits [DONE] but keeps sending heartbeats
 - [#6831](https://github.com/maximhq/bifrost/issues/6831) - Responses-to-Chat mux drops non-streaming finish_reason
 - [#6880](https://github.com/maximhq/bifrost/issues/6880) - GPT-6 Astra max reasoning effort is silently downgraded to high
-- [#6887](https://github.com/maximhq/bifrost/issues/6887) - Anthropic tool_choice {type: any} forwarded to OpenAI as "any" instead of "required"
+- [#6887](https://github.com/maximhq/bifrost/issues/6887) - Anthropic tool_choice `{type: any}` forwarded to OpenAI as "any" instead of "required"
 - [#6914](https://github.com/maximhq/bifrost/issues/6914) - Team current spend is reset after adjusting budget limit even when choosing Preserve Usage
 
 </Update>
