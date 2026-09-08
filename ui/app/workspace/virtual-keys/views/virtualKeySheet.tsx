@@ -1113,12 +1113,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										<Lock className="h-4 w-4" />
 										<AlertDescription>
 											{isEditing ? (
-												<>
+												<p>
 													This virtual key belongs to an access profile. What it can reach, and what it can spend, are the profile&apos;s:
 													the key itself carries only a name and a description.
-												</>
+												</p>
 											) : (
-												<>
+												<p>
 													This virtual key will be managed by your access profile
 													{vkCreationPolicy?.profile_name ? (
 														<>
@@ -1128,7 +1128,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													) : null}
 													. Set a name and description; providers, budgets, rate limits, and MCP access are applied from the profile on
 													creation.
-												</>
+												</p>
 											)}
 										</AlertDescription>
 									</Alert>
