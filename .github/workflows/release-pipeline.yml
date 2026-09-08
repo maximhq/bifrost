@@ -1666,6 +1666,7 @@ jobs:
         env:
           CI: "1"
           SKIP_GATEWAY_BUILD: "1"
+          BIFROST_SETUP_TOKEN: bifrost-e2e-setup-token
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -1574,7 +1574,7 @@
           "  'List Prompt Versions (Coverage Probe)': ['versions'],",
           "  'List Prompt Sessions (Coverage Probe)': ['sessions'],",
           "  'Issue WS Ticket (Coverage Probe)': ['ticket'],",
-          "  'Get Virtual Key Quota': ['virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs'],",
+          "  'Get Virtual Key Quota': ['virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'rate_limits', 'provider_configs', 'model_configs'],",
           "  'Update Metadata (Coverage Probe)': ['success'],",
           "  'List Feature Flags (Coverage Probe)': ['flags'],",
           "  'Update Feature Flag (Coverage Probe)': ['id', 'enabled', 'source', 'locked', 'enterprise_only', 'registered', 'updated_at'],",
@@ -3356,7 +3356,7 @@
                   "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  var body = pm.response.json();",
                   "  pm.test('Quota response contains all fields with seeded data', function () {",
-                  "    pm.expect(body).to.have.all.keys('virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs');",
+                  "    pm.expect(body).to.have.all.keys('virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'rate_limits', 'provider_configs', 'model_configs');",
                   "    pm.expect(body.virtual_key_name).to.equal(pm.collectionVariables.get('vk_expected_name'));",
                   "    pm.expect(body.is_active).to.equal(true);",
                   "    pm.expect(body.budgets).to.be.an('array').with.length.greaterThan(0);",
@@ -4455,6 +4455,22 @@
             }
           }
         }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
+              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
+              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
+              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "}"
+            ]
+          }
+        }
       ]
     },
     {
@@ -5392,6 +5408,22 @@
                 "{{vmcp_client_id}}"
               ]
             }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
+              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
+              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
+              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "}"
+            ]
           }
         }
       ]
