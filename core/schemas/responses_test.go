@@ -762,3 +762,49 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 		}
 	}
 }
+
+// TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
+func TestCustomToolInputDoneRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
+	var response BifrostResponsesStreamResponse
+	if err := Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	output, err := json.Marshal(response.WithDefaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(output, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["input"] != "grep alice@example.com" {
+		t.Fatalf("terminal input lost: %s", output)
+	}
+}
+
+// TestDeepCopyResponsesMessageCustomInput preserves custom input without sharing mutable tool state.
+func TestDeepCopyResponsesMessageCustomInput(t *testing.T) {
+	for _, input := range []string{"", "grep alice@example.com"} {
+		t.Run(input, func(t *testing.T) {
+			original := ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					Name:                    Ptr("bash"),
+					ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: input},
+				},
+			}
+			copied := DeepCopyResponsesMessage(original)
+			if copied.ResponsesToolMessage == nil || copied.ResponsesCustomToolCall == nil {
+				t.Fatal("copy lost custom tool input")
+			}
+			if copied.ResponsesCustomToolCall.Input != input {
+				t.Fatalf("input = %q, want %q", copied.ResponsesCustomToolCall.Input, input)
+			}
+			copied.ResponsesCustomToolCall.Input = "redacted"
+			if original.ResponsesCustomToolCall.Input != input {
+				t.Fatal("changing copied input mutated the original")
+			}
+		})
+	}
+}

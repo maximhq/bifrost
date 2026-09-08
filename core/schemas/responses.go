@@ -3828,6 +3828,8 @@ type BifrostResponsesStreamResponse struct {
 	Refusal *string `json:"refusal,omitempty"`
 
 	Arguments *string `json:"arguments,omitempty"`
+	// Input carries the full custom-tool payload on custom_tool_call_input.done.
+	Input *string `json:"input,omitempty"`
 
 	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
 	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
@@ -3896,6 +3898,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Text = resp.Text
 	result.Refusal = resp.Refusal
 	result.Arguments = resp.Arguments
+	result.Input = resp.Input
 	result.PartialImageB64 = resp.PartialImageB64
 	result.PartialImageIndex = resp.PartialImageIndex
 	result.Annotation = resp.Annotation
